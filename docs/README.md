@@ -33,3 +33,5 @@ Every document in `docs/` is listed here. A new document is added to this map in
 | [research/2026-10-21-libcurl-engine-research-r2.md](research/2026-10-21-libcurl-engine-research-r2.md) | Read the libcurl download-engine research report, revision 2 |
 
 `images/` holds screenshots that the pages above embed.
+
+<!-- CI demo for #14 (not merged) -->
