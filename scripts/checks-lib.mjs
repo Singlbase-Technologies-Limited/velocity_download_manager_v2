@@ -151,7 +151,7 @@ export function checkCommands(selection) {
         id: 'rust-clippy',
         name: 'Rust lint (cargo clippy -D warnings)',
         tool: 'cargo',
-        args: ['clippy', ...rust, '--all-targets', '--', '-D', 'warnings'],
+        args: ['clippy', ...rust, '--all-targets', '--keep-going', '--', '-D', 'warnings'],
       },
       { id: 'rust-test', name: 'Rust unit tests (cargo test)', tool: 'cargo', args: ['test', ...rust, '--no-fail-fast'] },
     );

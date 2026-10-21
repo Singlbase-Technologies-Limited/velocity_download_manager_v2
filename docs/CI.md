@@ -105,9 +105,17 @@ GitHub's guidance is in [secure use](https://docs.github.com/en/actions/referenc
 
 ## Collecting failures
 
-- **Independent checks run to completion.** A failing check doesn't stop the others in the same run (`continue-on-error` per step, as `check:fast` does locally). Cross-platform matrices use `fail-fast: false`.
-- **Infrastructure problems are reported as BLOCKED,** separately from test failures: a runner lost, a download failed, the quota was exhausted.
-- **One consolidated report.** `ci-required` publishes `ci-diagnostics.json` and a summary: what ran, what failed and why, and what wasn't selected. Built in #91; the `/ci-triage` skill reads it.
+Every run completes every check that can still run, and reports all failures in one place (#91). The details are in [CI_DIAGNOSTICS.md](CI_DIAGNOSTICS.md).
+
+- **Checks run to completion:**
+  - The check runner runs every check even after one fails.
+  - Clippy uses `--keep-going` and `cargo test` uses `--no-fail-fast`.
+  - Report and summary steps use `if: ${{ !cancelled() }}`.
+  - Mandatory checks never use `continue-on-error`, which would turn a failure into a success.
+  - Cross-platform matrices (#16, #17, #19) use `fail-fast: false`.
+- **Infrastructure problems are reported as INFRA,** separately from code defects. That covers a failed checkout, toolchain install, cache restore or `pnpm install`, and a job that died before reporting. A check that couldn't run because its prerequisite failed is **BLOCKED**, with the prerequisite named.
+- **One consolidated report.** `ci-required` (PRs) and the `main` job publish a table in the run summary and the `ci-diagnostics` artifact (`ci-diagnostics.json`). The run fails unless every mandatory check passed or was deselected. The `/ci-triage` skill reads it.
+- **Gated jobs stay strict.** Packaging and release jobs (#17, #18) keep the default `needs` semantics, so nothing is built for release after a failed check.
 
 ## L4 schedule
 

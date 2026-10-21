@@ -6,7 +6,7 @@ import { spawnSync } from 'node:child_process';
 import { existsSync, readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { brokenLinks } from './links-lib.mjs';
-import { root } from './checks-runner.mjs';
+import { recordCheck, root } from './checks-runner.mjs';
 
 const r = spawnSync('git', ['ls-files', '--cached', '--others', '--exclude-standard', '-z', '--', '*.md'], {
   cwd: root,
@@ -30,4 +30,10 @@ const isDir = (p) => {
 const broken = brokenLinks(files, read, isDir);
 for (const b of broken) console.log(`BROKEN  ${b.file}: ${b.link} (${b.problem})`);
 console.log(`check:links: ${files.length} Markdown file(s), ${broken.length} broken link(s).`);
+recordCheck({
+  id: 'links',
+  name: 'Docs (check:links)',
+  status: broken.length ? 'fail' : 'pass',
+  errors: broken.slice(0, 10).map((x) => ({ file: x.file, message: `${x.link} (${x.problem})` })),
+});
 process.exit(broken.length ? 1 : 0);

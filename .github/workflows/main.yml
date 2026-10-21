@@ -22,18 +22,44 @@ jobs:
     timeout-minutes: 45
     env:
       CARGO_INCREMENTAL: 0
+      CI_REPORT_PATH: ${{ github.workspace }}/../ci-checks.json
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - id: checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - id: setup
         uses: ./.github/actions/setup
         with:
           rust: 'true'
-      - name: All L1 checks
+      - id: checks
+        name: All L1 checks
         run: node scripts/check-fast.mjs
-      - name: Docs (check:links)
+      # Runs even when an L1 check failed, so one run reports everything (#91).
+      - id: links
+        name: Docs (check:links)
+        if: ${{ !cancelled() && steps.setup.outcome == 'success' }}
         run: node scripts/check-links.mjs
+
+      # Failure collection (#91, docs/CI_DIAGNOSTICS.md). This workflow has one job, so the report
+      # and the summary run here instead of in an extra job (each job costs a billed minute).
+      - name: Write the job report
+        if: ${{ !cancelled() && steps.checkout.outcome == 'success' }}
+        env:
+          STEPS: ${{ toJSON(steps) }}
+        run: node scripts/ci-report.mjs job --job linux --infra checkout,setup --step-check "checks=L1 checks"
+      - name: Summarise
+        if: ${{ !cancelled() && steps.checkout.outcome == 'success' }}
+        env:
+          NEEDS: '{"linux":{"result":"${{ job.status }}"}}'
+        run: node scripts/ci-report.mjs summary --reports ci-reports --jobs '[{"id":"linux","name":"Linux checks","mandatory":true}]'
+      - name: Upload ci-diagnostics
+        if: ${{ !cancelled() && steps.checkout.outcome == 'success' }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ci-diagnostics
+          path: ci-diagnostics.json
+          retention-days: 14
 
       # Save only after a full green run and only when this key isn't cached yet (keys are
       # immutable). Workspace crates are removed first: they rebuild in seconds, and caching them

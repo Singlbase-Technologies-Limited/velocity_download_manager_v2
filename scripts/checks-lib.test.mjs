@@ -115,6 +115,11 @@ describe('checkCommands', () => {
     expect(cmds.find((c) => c.id === 'rust-test')?.args).toEqual(['test', '-p', 'velocity-core', '--no-fail-fast']);
   });
 
+  it('keeps clippy going past a crate that fails to compile, so every crate reports (#91)', () => {
+    const clippy = checkCommands({ all: true, frontend: false, rustPackages: [] }).find((c) => c.id === 'rust-clippy');
+    expect(clippy?.args.slice(0, clippy.args.indexOf('--'))).toContain('--keep-going');
+  });
+
   it('runs no Rust checks for a frontend-only selection', () => {
     expect(ids({ all: false, frontend: true, rustPackages: [] })).toEqual(['tsc', 'eslint', 'vitest']);
   });

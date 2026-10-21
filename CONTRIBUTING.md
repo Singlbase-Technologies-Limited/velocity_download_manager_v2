@@ -44,6 +44,7 @@ New issues use the forms in `.github/ISSUE_TEMPLATE/`: bug, feature, Product Own
 
 - **Target `main`.** Use a Conventional Commit title, such as `feat(engine): add bounded range probe`, and link the issue.
 - **Describe the change:** what changed, the commands you ran with their results, and every check marked PASS, FAIL, BLOCKED or NOT RUN.
+- **CI:** when a check fails, the run's summary and its `ci-diagnostics` artifact list every failure at once ([docs/CI_DIAGNOSTICS.md](docs/CI_DIAGNOSTICS.md)).
 - **Review:** the Product Owner reviews against [docs/REVIEWING.md](docs/REVIEWING.md) and decides the merge.
 
 ## AI contributors
@@ -58,5 +59,6 @@ AI agents follow the same path and the same [AGENTS.md](AGENTS.md) rules. Claude
 | `/platform-verify [windows\|linux\|all]` | Check on Windows and in the WSL Linux clean clone |
 | `/security-check` | Review the diff against V2's security controls |
 | `/prepare-pr <N>` | Run the pre-PR checklist and draft the description |
+| `/ci-triage [run or PR]` | Turn a failed CI run's report into one fix plan |
 
 The last four are manual: Claude runs them only when asked.
