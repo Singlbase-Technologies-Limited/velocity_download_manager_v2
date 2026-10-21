@@ -80,6 +80,7 @@ Then install Node.js and pnpm.
 | `pnpm test:focused -- <area>` | Level L2: the tests of one crate, `frontend` or `scripts` while you iterate |
 | `pnpm check:pr` | Level L3 run locally: only the checks this branch's changes need |
 | `pnpm check:full` | Level L4 run locally: L1, then the production web build and the Rust release build |
+| `pnpm check:links` | Relative links and heading anchors in every Markdown file |
 | `pnpm test`, `pnpm test:watch` | Frontend and script unit tests (Vitest), once or in watch mode |
 | `pnpm rust:test` | Rust unit tests |
 | `pnpm typecheck`, `pnpm lint` | TypeScript and ESLint on their own |

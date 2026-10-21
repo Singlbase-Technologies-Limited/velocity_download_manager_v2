@@ -18,8 +18,13 @@ export const SELECT_ALL_FILES = [
   '.editorconfig',
   '.gitignore',
 ];
-/** Directories whose change can affect any check (`scripts/` holds the check machinery). */
-export const SELECT_ALL_PREFIXES = ['scripts/', '.cargo/'];
+/** Directories whose change can affect any check (`scripts/` holds the check machinery, `.github/` the CI). */
+export const SELECT_ALL_PREFIXES = ['scripts/', '.cargo/', '.github/'];
+/**
+ * Native dependency pins, wherever they live (for example a libcurl `deps.lock` or a vcpkg manifest,
+ * #35): they change what every native build links, so they select everything even inside a crate.
+ */
+export const NATIVE_LOCK_FILE = /(^|\/)([^/]+\.lock|vcpkg\.json|vcpkg-configuration\.json)$/;
 /** Frontend: TypeScript types, ESLint and Vitest. */
 export const FRONTEND_FILES = ['index.html', 'tsconfig.json', 'vite.config.ts', 'eslint.config.js'];
 export const FRONTEND_PREFIXES = ['src/', 'public/'];
@@ -49,18 +54,19 @@ function withDependents(names, workspace) {
 /**
  * @param {string[]} changedPaths repository-relative paths (added, modified, deleted or renamed)
  * @param {{crates: {name: string, dir: string, deps: string[]}[]}} workspace
- * @returns {{all: boolean, frontend: boolean, rustPackages: string[], reasons: string[]}}
+ * @returns {{all: boolean, frontend: boolean, docs: boolean, rustPackages: string[], reasons: string[]}}
  */
 export function selectChecks(changedPaths, workspace) {
   const reasons = [];
   let all = false;
   let frontend = false;
+  let docs = false;
   const crates = new Set();
 
   for (const raw of changedPaths) {
     const p = normalise(raw);
     const crate = workspace.crates.find((c) => p.startsWith(`${c.dir}/`));
-    if (SELECT_ALL_FILES.includes(p) || SELECT_ALL_PREFIXES.some((d) => p.startsWith(d))) {
+    if (SELECT_ALL_FILES.includes(p) || SELECT_ALL_PREFIXES.some((d) => p.startsWith(d)) || NATIVE_LOCK_FILE.test(p)) {
       all = true;
       reasons.push(`${p}: shared file, selects everything`);
     } else if (crate) {
@@ -70,15 +76,50 @@ export function selectChecks(changedPaths, workspace) {
       frontend = true;
       reasons.push(`${p}: frontend`);
     } else if (NO_CHECK_PREFIXES.some((d) => p.startsWith(d)) || isRootFileWithExtension(p, NO_CHECK_ROOT_EXTENSIONS)) {
-      reasons.push(`${p}: documentation, no checks`);
+      docs = true;
+      reasons.push(`${p}: documentation, no code checks`);
     } else {
       all = true;
       reasons.push(`${p}: no rule for this path, selects everything`);
     }
   }
 
-  if (all) return { all, frontend: true, rustPackages: workspace.crates.map((c) => c.name).sort(), reasons };
-  return { all, frontend, rustPackages: withDependents([...crates], workspace), reasons };
+  if (all) return { all, frontend: true, docs: true, rustPackages: workspace.crates.map((c) => c.name).sort(), reasons };
+  return { all, frontend, docs, rustPackages: withDependents([...crates], workspace), reasons };
+}
+
+/**
+ * CI job selection (#13, docs/CI.md): which pull-request jobs a change needs, each with the reason
+ * it runs or is skipped, so the run summary can show both. Built on `selectChecks`, so local
+ * `check:pr` and CI can't disagree.
+ * @returns {{all: boolean, rustPackages: string[], reasons: string[],
+ *   jobs: {rust: {run: boolean, reason: string}, frontend: {run: boolean, reason: string}, docs: {run: boolean, reason: string}}}}
+ */
+export function selectJobs(changedPaths, workspace) {
+  const s = selectChecks(changedPaths, workspace);
+  const paths = changedPaths.map(normalise);
+  const forcing = s.reasons.filter((r) => r.includes('selects everything')).map((r) => r.slice(0, r.indexOf(':')));
+  const allReason = `everything selected by ${forcing.join(', ')}`;
+  const job = (run, runReason, skipReason) => ({ run, reason: !paths.length ? 'no changed paths' : s.all ? allReason : run ? runReason : skipReason });
+  const docsPaths = s.reasons.filter((r) => r.endsWith('documentation, no code checks')).map((r) => r.slice(0, r.indexOf(':')));
+  return {
+    all: s.all,
+    rustPackages: s.rustPackages,
+    reasons: s.reasons,
+    jobs: {
+      rust: job(s.rustPackages.length > 0, `crates changed: ${s.rustPackages.join(', ')}`, 'no Rust crate changed'),
+      frontend: job(s.frontend, 'frontend files changed', 'no frontend file changed'),
+      docs: job(s.docs, `documentation changed: ${docsPaths.join(', ')}`, 'no documentation changed'),
+    },
+  };
+}
+
+/** The run-summary table for `selectJobs` (GitHub's step summary): every job, run or skipped, with why. */
+export function jobSummaryMarkdown(selection) {
+  const cell = (s) => String(s).replaceAll('|', '\\|');
+  const rows = Object.entries(selection.jobs).map(([name, j]) => `| ${name} | ${j.run ? 'runs' : 'skipped'} | ${cell(j.reason)} |`);
+  const paths = selection.reasons.length ? selection.reasons.map((r) => `- ${cell(r)}`) : ['- (none)'];
+  return ['### Job selection', '', '| Job | Decision | Reason |', '| --- | --- | --- |', ...rows, '', '**Changed paths**', '', ...paths, ''].join('\n');
 }
 
 /** Builds the workspace description from `cargo metadata --format-version 1 --no-deps`. */

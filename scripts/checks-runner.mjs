@@ -48,6 +48,27 @@ export function loadWorkspace() {
   return workspaceFromMetadata(JSON.parse(r.stdout));
 }
 
+function git(...args) {
+  const r = spawnSync('git', args, { cwd: root, encoding: 'utf8', windowsHide: true });
+  if (r.status !== 0) throw new Error(`git ${args.join(' ')} failed:\n${r.stderr}`);
+  return r.stdout;
+}
+const nulList = (out) => out.split('\0').filter(Boolean);
+
+/**
+ * Every path changed since the merge base of HEAD and `base`: committed, staged, unstaged and
+ * untracked. Renames count as a deletion plus an addition, so both paths are judged.
+ * @returns {{mergeBase: string, paths: string[]}}
+ */
+export function changedPathsSince(base) {
+  const mergeBase = git('merge-base', 'HEAD', base).trim();
+  const paths = new Set([
+    ...nulList(git('diff', '--name-only', '--no-renames', '-z', mergeBase)),
+    ...nulList(git('ls-files', '--others', '--exclude-standard', '-z')),
+  ]);
+  return { mergeBase, paths: [...paths] };
+}
+
 /** Runs the commands in order and exits with 0 only if all passed. */
 export function runAndExit(title, commands) {
   const results = [];

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { checkCommands, focusedCommands, selectChecks, workspaceFromMetadata } from './checks-lib.mjs';
+import { checkCommands, focusedCommands, jobSummaryMarkdown, selectChecks, selectJobs, workspaceFromMetadata } from './checks-lib.mjs';
 
 // Mirrors this repository: the desktop shell depends on the core crate.
 const workspace = {
@@ -146,5 +146,65 @@ describe('focusedCommands', () => {
   it('rejects an unknown or missing area with the list of valid ones', () => {
     expect(() => focusedCommands(['nope'], workspace)).toThrow(/velocity-core.*velocity-desktop-v2.*frontend.*scripts/);
     expect(() => focusedCommands([], workspace)).toThrow(/area/);
+  });
+});
+
+describe('selectJobs (CI, #13)', () => {
+  // [case, changed paths, expected jobs, expected Rust packages]
+  const all = ['velocity-core', 'velocity-desktop-v2'];
+  const cases = [
+    ['docs only', ['docs/CI.md', 'README.md'], { rust: false, frontend: false, docs: true }, []],
+    ['frontend only', ['src/App.tsx'], { rust: false, frontend: true, docs: false }, []],
+    ['one crate with a dependent', ['crates/velocity-core/src/lib.rs'], { rust: true, frontend: false, docs: false }, all],
+    ['the shell crate alone', ['src-tauri/src/lib.rs'], { rust: true, frontend: false, docs: false }, ['velocity-desktop-v2']],
+    ['Cargo.lock', ['Cargo.lock'], { rust: true, frontend: true, docs: true }, all],
+    ['package-lock.json (not used by V2, so unknown)', ['package-lock.json'], { rust: true, frontend: true, docs: true }, all],
+    ['pnpm-lock.yaml', ['pnpm-lock.yaml'], { rust: true, frontend: true, docs: true }, all],
+    ['a workflow file', ['.github/workflows/pr.yml'], { rust: true, frontend: true, docs: true }, all],
+    ['a native lock file inside a crate', ['crates/velocity-core/deps.lock'], { rust: true, frontend: true, docs: true }, all],
+    ['a vcpkg manifest', ['src-tauri/vcpkg.json'], { rust: true, frontend: true, docs: true }, all],
+    ['an unknown path', ['tools/new-thing.sh'], { rust: true, frontend: true, docs: true }, all],
+  ];
+
+  it.each(cases)('%s', (_name, paths, expected, packages) => {
+    const s = selectJobs(paths, workspace);
+    expect({ rust: s.jobs.rust.run, frontend: s.jobs.frontend.run, docs: s.jobs.docs.run }).toEqual(expected);
+    expect(s.rustPackages).toEqual(packages);
+  });
+
+  it('gives every job a reason, including skipped ones', () => {
+    const s = selectJobs(['docs/CI.md'], workspace);
+    for (const job of Object.values(s.jobs)) expect(job.reason).toMatch(/\S/);
+    expect(s.jobs.rust.reason).toMatch(/no Rust/i);
+    expect(s.jobs.docs.reason).toContain('docs/CI.md');
+  });
+
+  it('selects nothing for an empty change, with reasons', () => {
+    const s = selectJobs([], workspace);
+    expect(Object.values(s.jobs).map((j) => j.run)).toEqual([false, false, false]);
+    expect(s.jobs.rust.reason).toMatch(/no changed paths/i);
+  });
+
+  it('names the path that forced everything', () => {
+    expect(selectJobs(['.github/workflows/pr.yml'], workspace).jobs.frontend.reason).toContain('.github/workflows/pr.yml');
+  });
+});
+
+describe('jobSummaryMarkdown (run summary, #13)', () => {
+  it('lists every job as run or skipped, with its reason', () => {
+    const md = jobSummaryMarkdown(selectJobs(['docs/CI.md'], workspace));
+    expect(md).toMatch(/\| rust \| skipped \| no Rust crate changed \|/);
+    expect(md).toMatch(/\| frontend \| skipped \| no frontend file changed \|/);
+    expect(md).toMatch(/\| docs \| runs \| documentation changed: docs\/CI\.md \|/);
+  });
+
+  it('lists the changed paths and why each matters', () => {
+    const md = jobSummaryMarkdown(selectJobs(['Cargo.lock', 'docs/CI.md'], workspace));
+    expect(md).toContain('Cargo.lock: shared file, selects everything');
+    expect(md).toContain('docs/CI.md: documentation, no code checks');
+  });
+
+  it('escapes pipes in paths so the table stays intact', () => {
+    expect(jobSummaryMarkdown(selectJobs(['weird|name.txt'], workspace))).toContain('weird\\|name.txt');
   });
 });

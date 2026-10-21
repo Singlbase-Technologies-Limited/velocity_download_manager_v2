@@ -92,6 +92,7 @@ pnpm test:focused -- <area>    # L2: one crate, `frontend` or `scripts`, while i
 pnpm check:fast                # L1 checks: fmt, clippy, cargo test, tsc, ESLint, Vitest
 pnpm check:pr                  # L3: the checks this branch's changes need
 pnpm check:full                # L4 locally: L1 + production web build + Rust release build
+pnpm check:links               # relative links and anchors in all Markdown files
 ```
 
 Run `pnpm check:fast` before opening a pull request. Use pnpm only; `package.json` pins its version. The levels and selection rules are in [docs/TESTING.md](docs/TESTING.md).
