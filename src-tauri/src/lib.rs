@@ -52,3 +52,11 @@ mod tests {
         assert_eq!(c["app"]["windows"][0]["title"].as_str().unwrap(), name);
     }
 }
+
+#[cfg(test)]
+mod fixture_e {
+    #[test]
+    fn fixture_e_desktop_failure() {
+        assert_eq!("a", "b", "fixture E failure in velocity-desktop-v2");
+    }
+}

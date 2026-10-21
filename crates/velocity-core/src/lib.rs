@@ -44,3 +44,11 @@ mod tests {
         assert_eq!(app_info().name, "Velocity Download Manager (dev)");
     }
 }
+
+#[cfg(test)]
+mod fixture_e {
+    #[test]
+    fn fixture_e_core_failure() {
+        assert_eq!(2 + 2, 5, "fixture E failure in velocity-core");
+    }
+}
