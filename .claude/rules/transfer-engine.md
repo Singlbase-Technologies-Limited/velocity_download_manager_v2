@@ -1,5 +1,5 @@
 ---
-# Engine crates don't exist yet: their location is decided in #33 (report section 4.2 proposes these names).
+# Decided in ADR-0002 (#33). The crates are created by the first issue that needs them (#36 or #37).
 paths:
   - "crates/velocity-transfer/**/*"
   - "crates/velocity-curl/**/*"

@@ -19,7 +19,7 @@ V2 is a Tauri 2 desktop app with a React UI and a Rust core. It downloads files 
                                           │                               │
                                           ▼                               ▼
                   Transfer engine: probe, leases, checkpoints,       libtorrent
-                  integrity, retries, limits (pending #33, #38)   (BitTorrent v1, v2,
+                  integrity, retries, limits (process model #38)   (BitTorrent v1, v2,
                                           │                         hybrid, magnets)
                                           ▼                               │
                   libcurl layer: the only code that calls libcurl         │
@@ -33,9 +33,9 @@ V2 is a Tauri 2 desktop app with a React UI and a Rust core. It downloads files 
 | UI | `src/` | React and TypeScript. It talks to Rust only through typed commands and events, and validates every native response before use | Shows the app name and version (`src/appInfo.ts`) | #29, #59 to #61, #63 |
 | Desktop shell | `src-tauri/` | Tauri 2 app: thin typed commands that delegate to the core, the window, the tray, notifications, the single instance and the browser bridge | One command, `app_info` | #27, #29 |
 | Core | `crates/velocity-core/` | Everything that doesn't need a window: domain models, the download manager and queue, input validation, naming, categories, settings, history and SQLite persistence | `app_info()` and the product name | #25, #26, #30 to #32, #50, #58 |
-| `DirectTransfer` contract | pending #33 | The engine-neutral boundary for direct downloads: commands, events, statuses, errors and capabilities. The manager never sees libcurl types | — | #36 |
-| Transfer engine | pending #33 | The range probe, leased segmentation, durable checkpoints, changed-object detection, integrity, retries, connection budgets and speed limits | — | #37, #41 to #49 |
-| libcurl layer | pending #33 | The only crate that touches libcurl: FFI and the `Multi` loop on its own thread. libcurl 8.23.0 or later, with a build identity record | — | #34, #35 |
+| `DirectTransfer` contract | `crates/velocity-core/` (ADR-0002) | The engine-neutral boundary for direct downloads: commands, events, statuses, errors and capabilities. The manager never sees libcurl types | — | #36 |
+| Transfer engine | `crates/velocity-transfer/` (ADR-0002) | The range probe, leased segmentation, durable checkpoints, changed-object detection, integrity, retries, connection budgets and speed limits | — | #37, #41 to #49 |
+| libcurl layer | `crates/velocity-curl/` (ADR-0002) | The only crate that touches libcurl: FFI and the `Multi` loop on its own thread. libcurl 8.23.0 or later, with a build identity record | — | #34, #35 |
 | Engine process | pending #38 | The engine runs either in the app process or as a supervised child process speaking a versioned protocol over stdio | — | #38, #39 |
 | Torrent bridge | to be created | A narrow Rust bridge to libtorrent | — | #62 |
 | Native host | to be created | A short-lived process started by the browser. It validates messages and forwards them to the app over local IPC | — | #65 |
@@ -46,7 +46,7 @@ V2 is a Tauri 2 desktop app with a React UI and a Rust core. It downloads files 
 - UI code lives in `src/`.
 - Tauri commands in `src-tauri/` validate input and delegate to the core, without duplicating its logic. This rule is carried over from V1's `AGENTS.md`.
 - Reusable domain logic lives in `crates/`. This rule is also carried over from V1.
-- Only the libcurl layer calls libcurl, and only the torrent bridge calls libtorrent. This follows the research report, section 4.2, and is pending #33.
+- Only the libcurl layer calls libcurl, and only the torrent bridge calls libtorrent. This follows the research report, section 4.2, decided in [ADR-0002](decisions/0002-engine-crate-layout.md).
 
 ## Ownership of state
 
@@ -91,7 +91,6 @@ These decision issues shape the architecture. Until each is decided and recorded
 
 | Issue | Question | What depends on it |
 |---|---|---|
-| #33 | Engine logic in new `velocity-transfer` and `velocity-curl` crates, or inside `velocity-core`? | Crate layout and paths |
 | #38 | Engine in the app process, or a supervised child process? | Process model, IPC protocol (#39), packaging |
 | #34 | How libcurl is built and pinned | Build, provenance (#35) |
 | #52 | SFTP through libssh2 in libcurl, or russh | SFTP (#53), dependencies |
