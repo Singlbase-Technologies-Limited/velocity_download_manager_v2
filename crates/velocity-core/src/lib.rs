@@ -44,3 +44,17 @@ mod tests {
         assert_eq!(app_info().name, "Velocity Download Manager (dev)");
     }
 }
+
+pub fn badly_formatted( x:i32)->i32{ x }
+
+pub fn lint_bait(v: &Vec<i32>) -> usize {
+    v.len()
+}
+
+#[cfg(test)]
+mod fixture_a {
+    #[test]
+    fn fixture_a_failing_test() {
+        assert_eq!(1 + 1, 3, "fixture A failure");
+    }
+}
