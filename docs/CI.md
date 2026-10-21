@@ -1,0 +1,142 @@
+# CI design
+
+V2's CI runs on GitHub Actions in a private repository on GitHub Free. The plan includes 2,000 runner minutes a month, and usage is **blocked**, not billed, once they run out ([billing](https://docs.github.com/en/billing/concepts/product-billing/github-actions)). Every design choice below protects two things: the checks that matter run on every change, and the monthly quota lasts the month.
+
+This page is the design. The workflows are written in #13, #14, #16 to #19 and #91. Every figure below is labelled as **measured** or **assumed**. Assumed CI times get replaced by measured ones as the jobs start running (#14).
+
+## Tiers
+
+| # | Event | What runs | Platforms | Purpose | Built in |
+|---|---|---|---|---|---|
+| 1 | `pull_request` into `main` (opened, synchronised, reopened) | L1 for the selected areas, plus L2 for those areas. Docs-only changes run only the docs job | Linux | Fast feedback before review. One aggregate check, `ci-required`, summarises it | #13, #14, #91 |
+| 2 | `push` to `main` (that is, after a squash merge) | Broader suites for the merged change's areas. **Windows** jobs when Windows-relevant paths changed (below) | Linux, Windows | Catch what the PR tier deliberately left out, before a release candidate is built from `main` | #16 |
+| 3 | `workflow_dispatch` on a commit, or a `v*-rc.*` tag | Everything runnable (`check:full` and the L2 suites) plus installers | Linux, Windows; macOS once #83 establishes it | A downloadable, labelled release-candidate build from a verified `main` commit | #17 |
+| 4 | `v*` tag (not `-rc`) | The release gate: it rechecks that the tag's commit passed tier 3, then builds artefacts with provenance into a **draft** release | Linux, Windows | Prepare a release the PO publishes by hand | #18 |
+| 5 | `schedule` (weekly) and `workflow_dispatch` | L4: everything on Linux and Windows. Later also fuzzing, stress and extended benchmarks. macOS on demand only | Linux, Windows; macOS manual | Catch slow drift and run what's too expensive per change | #19 |
+
+**No `develop` or `staging` tiers.** All work merges into `main`, and releases are tags on verified `main` commits ([DEVELOPMENT_WORKFLOW.md](DEVELOPMENT_WORKFLOW.md)).
+
+**There is no server-side gate on GitHub Free for a private repository.** Branch protection, required status checks and rulesets return HTTP 403 (verified 2026-10-21, #89). Environment *required reviewers* are only available for public repositories on Free ([environments](https://docs.github.com/en/actions/reference/workflows-and-actions/deployments-and-environments)). So:
+
+- **"Required" means by convention:** the PO merges only when `ci-required` is green (docs/REVIEWING.md).
+- **The release gate is a person:** only the PO pushes `v*` tags or starts a release run (an ask rule in `.claude/settings.json` stops the agent from doing it unprompted). The workflow creates a *draft* release, never a published one.
+- **Revisit when the repository goes public or the plan changes** (#7, #90): rulesets, required checks and environment reviewers become available.
+
+## Selecting jobs
+
+Selection extends the rules `pnpm check:pr` already uses, in [`scripts/checks-lib.mjs`](../scripts/checks-lib.mjs). The same code decides locally and in CI, so the two can't drift apart (#13).
+
+- **Fail-safe:** lockfiles, shared configuration (`Cargo.toml`, `package.json`, `rust-toolchain.toml`…), the check scripts, `.github/`, `.claude/` and **any path no rule knows** select everything.
+- **Crates:** a change inside a crate selects that crate and every crate that depends on it.
+- **Frontend:** frontend paths select `tsc`, ESLint and Vitest.
+- **Docs only:** `docs/` and root `*.md` select only the docs job (link check), on the 1-vCPU `ubuntu-slim` runner.
+- **Windows-relevant paths (tier 2):**
+  - every Rust crate, `src-tauri/`, `Cargo.lock`, `rust-toolchain.toml`;
+  - `scripts/`, since the check runner has Windows-specific code paths;
+  - packaging configuration;
+  - and, as always, unknown paths.
+
+  Frontend-only and docs-only merges skip Windows, because a WebView difference is caught by the release-candidate tier instead.
+- **Every selection prints its reasons** in the job log, as `check:pr` does locally. A job that wasn't selected is reported as **NOT RUN**, never as passed.
+
+Saving minutes never removes a relevant correctness or security test. When in doubt, the selector selects more.
+
+## Caching
+
+The repository gets **10 GB of Actions cache**, separate from artifact storage. GitHub evicts the least recently used entries above that ([billing](https://docs.github.com/en/billing/concepts/product-billing/github-actions)).
+
+| Cache | Key | Contents | Size | Reasoning |
+|---|---|---|---|---|
+| Rust (Linux) | OS + toolchain + `Cargo.lock` hash + job kind | Compiled **dependencies** only (`~/.cargo/registry`, `target/` without workspace crates) | **Measured:** 1.1 GiB raw, 365 MiB gzip-compressed, plus a 201 MiB registry | A cold build is most of a cold job (**measured:** 571 s for the clippy and test builds on 2 vCPUs). Workspace crates rebuild in seconds, so caching them would only add upload time and size |
+| Rust (Windows) | Same | Same | **Assumed:** similar to Linux (not measured) | Windows minutes cost more ($0.010 against $0.006 a minute), so a cache hit saves more |
+| pnpm store | OS + `pnpm-lock.yaml` hash | The pnpm content store | **Measured:** 147 MiB (Linux) | `pnpm install --frozen-lockfile` then only links |
+
+**Caching rules:**
+
+- **Budget:** about 0.6 GB a platform when compressed, so Linux and Windows, with one previous key each during a lockfile change, use about 2.5 GB of the 10 GB.
+- **Save on `main` only;** pull requests restore. A PR branch's cache is visible only to that branch, so saving it there would fill the 10 GB with copies.
+- **Keys change only when the toolchain or lockfile changes,** so a cache uploads rarely.
+- **No cache for Tauri system packages** (`apt`): restoring them costs about as much as installing them. To be measured in #14.
+
+The choice of cache action (GitHub's own `actions/cache`, or a Rust-specific one) is made in #14. Any third-party action is a dependency that needs PO approval (AGENTS.md).
+
+## Cancelling and de-duplicating
+
+- **Superseded PR runs are cancelled.** Each workflow sets `concurrency: { group: <workflow>-<PR or ref>, cancel-in-progress: true }` for pull requests ([concurrency](https://docs.github.com/en/actions/writing-workflows/choosing-what-your-workflow-does/control-the-concurrency-of-workflows-and-jobs)). Runs on `main` and on tags are never cancelled: each commit's result matters.
+- **No duplicate runs for one commit.** Pull-request checks trigger on `pull_request` only, and `push` triggers only for `main` and tags. A branch push therefore doesn't run CI a second time beside its PR.
+- **Path filters live in the selector,** not in `on.paths`. Then the aggregate `ci-required` check always reports, instead of being missing when a workflow is skipped.
+
+## Permissions and supply chain
+
+GitHub's guidance is in [secure use](https://docs.github.com/en/actions/reference/security/secure-use):
+
+- **Read-only by default.** Every workflow declares `permissions: contents: read`, and a job raises only what it needs (for example `contents: write` for the draft-release job in #18).
+- **Pinned actions.** Third-party actions are pinned to a **full commit SHA**, with the version in a comment. GitHub's own `actions/*` are pinned the same way, for consistency.
+- **Dependabot** updates the pins: a `github-actions` entry in `.github/dependabot.yml`, added in #14. Each update is an ordinary PR.
+- **No `pull_request_target`** that checks out PR code. No secrets in PR workflows.
+- **Untrusted text stays out of commands.** Titles, branch names and other user-controlled strings never go straight into `run:` scripts; they pass through environment variables.
+- **Self-hosted runners:** none. If one is ever added (PO decision), it never runs code from a fork.
+
+## Collecting failures
+
+- **Independent checks run to completion.** A failing check doesn't stop the others in the same run (`continue-on-error` per step, as `check:fast` does locally). Cross-platform matrices use `fail-fast: false`.
+- **Infrastructure problems are reported as BLOCKED,** separately from test failures: a runner lost, a download failed, the quota was exhausted.
+- **One consolidated report.** `ci-required` publishes `ci-diagnostics.json` and a summary: what ran, what failed and why, and what wasn't selected. Built in #91; the `/ci-triage` skill reads it.
+
+## L4 schedule
+
+| Run | When | Content | Platforms |
+|---|---|---|---|
+| Weekly full | Mondays 03:00 UTC, only if `main` changed since the last run | `check:full`, all L2 suites | Linux, Windows |
+| Fuzzing, stress, extended benchmarks | Weekly, staggered, once the suites exist (#73, #77, #20) | Time-boxed per target, with a fixed seed recorded | Linux |
+| macOS | `workflow_dispatch` only | `check:full` | macOS (#83) |
+
+macOS minutes cost about 10 times Linux ($0.062 against $0.006 a minute), so macOS never runs on a schedule or per change until it's an established platform and the quota allows it.
+
+## Costs
+
+**Measured locally** (docs/DEVELOPMENT.md, 2026-10-21). A cold dependency build takes 278 s on Windows (16 logical CPUs) and 413 s on Linux (WSL2, 2 vCPUs, similar to a 2-vCPU hosted runner). A warm `check:fast` takes 5.5–9 s. A full `check:full` takes 224–249 s, of which 215–232 s is the release build.
+
+**Assumed CI job times, until #14 measures them.** Runner setup covers checkout, toolchains, Tauri system packages and `pnpm install`.
+
+| Job | Cache | Assumed duration | Basis |
+|---|---|---|---|
+| PR checks, Linux (`ci-required`, all areas) | warm | 6 min | ~3 min setup + `check:fast` warm build of workspace crates on 2 vCPUs |
+| PR checks, Linux | cold | 13 min | Plus the **measured** 571 s cold clippy and test build (WSL2, 2 vCPUs, clean target directory, 2026-10-21) |
+| PR docs-only | — | 1 min | Link check on `ubuntu-slim` |
+| Post-merge, Linux | warm | 8 min | PR checks plus L2 suites (none exist yet) |
+| Post-merge, Windows | warm | 10 min | Slower setup on Windows runners |
+| Release candidate (Linux + Windows, with installers) | warm | 40 min | Two `check:full` runs (~4–5 min of release build each locally on faster hardware) plus bundling |
+| Weekly full (Linux + Windows) | warm | 30 min | Two `check:full` runs |
+
+**Monthly estimate at the current pace.** One agent, about 4 merged PRs a working day, so about 80 a month. About 3 CI runs per PR after cancellation; about a quarter of PRs are docs-only.
+
+| Item | Runs a month | Minutes each | Minutes a month |
+|---|---|---|---|
+| PR checks, code (Linux) | 60 PRs × 3 = 180 | 6 | 1,080 |
+| PR checks, docs-only | 20 PRs × 3 = 60 | 1 | 60 |
+| Post-merge Linux | 60 | 8 | 480 |
+| Post-merge Windows (Windows-relevant merges, assumed half) | 30 | 10 | 300 |
+| Weekly full | 4 | 30 | 120 |
+| Cold-cache penalty (lockfile or toolchain changes, assumed 8) | 8 | +7 | 56 |
+| Release candidates (assumed 2) | 2 | 40 | 80 |
+| **Total** | | | **≈ 2,180** |
+
+**This is over the 2,000-minute quota.** The PR tier dominates. Ways to stay under it, in order of preference:
+
+1. **Measure first (#14).** If warm PR jobs take 4 minutes instead of 6, the total drops to about 1,820.
+2. **Push to the PR branch less often:** batch fixes before pushing. Cancellation already discards superseded runs, but a started job still costs its minutes.
+3. **Run Windows post-merge on a daily batch** of the merged commits, instead of per merge. This saves up to 300 minutes, at the cost of slower Windows feedback.
+4. **PO decisions:** a payment method or plan change (then overage is billed instead of blocked), or making the repository public (standard runners are free; #90).
+
+**The billing page doesn't say whether Windows minutes count at more than one-for-one against the included 2,000** (it lists only dollar rates). Until the first Windows run shows its effect on the usage report, budget Windows as if it counted double. Then the Windows line above becomes 600 minutes.
+
+**Artifact storage is 500 MB** (shared with Packages). Retention is set per upload:
+
+- 7 days for diagnostics and logs;
+- 14 days for release-candidate installers;
+- releases go to GitHub Releases, which don't count as Actions artifacts.
+
+The repository default is 90 days ([retention](https://docs.github.com/en/organizations/managing-organization-settings/configuring-the-retention-period-for-github-actions-artifacts-and-logs-in-your-organization)) and is too long for 500 MB.
+
+**Watching the quota:** check usage in the account's billing settings at least weekly while the CI tiers are new. #14 records the first measured month and updates the tables above.
