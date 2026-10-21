@@ -44,3 +44,5 @@ mod tests {
         assert_eq!(app_info().name, "Velocity Download Manager (dev)");
     }
 }
+
+// CI demo for #14 (not merged).
