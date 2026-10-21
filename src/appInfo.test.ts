@@ -3,8 +3,8 @@ import { parseAppInfo, windowHeading } from './appInfo';
 
 describe('parseAppInfo', () => {
   it('accepts the shape returned by the app_info command', () => {
-    expect(parseAppInfo({ name: 'Velocity Download Manager V2 (dev)', version: '0.1.0' })).toEqual({
-      name: 'Velocity Download Manager V2 (dev)',
+    expect(parseAppInfo({ name: 'Velocity Download Manager (dev)', version: '0.1.0' })).toEqual({
+      name: 'Velocity Download Manager (dev)',
       version: '0.1.0',
     });
   });
@@ -18,8 +18,8 @@ describe('parseAppInfo', () => {
 
 describe('windowHeading', () => {
   it('shows the product name and version', () => {
-    expect(windowHeading({ name: 'Velocity Download Manager V2 (dev)', version: '0.1.0' })).toBe(
-      'Velocity Download Manager V2 (dev) 0.1.0',
+    expect(windowHeading({ name: 'Velocity Download Manager (dev)', version: '0.1.0' })).toBe(
+      'Velocity Download Manager (dev) 0.1.0',
     );
   });
 });
