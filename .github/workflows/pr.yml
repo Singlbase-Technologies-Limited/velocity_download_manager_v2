@@ -40,6 +40,11 @@ jobs:
           # so this job doesn't download the pinned one.
           RUSTUP_TOOLCHAIN: stable
         run: node scripts/ci-select.mjs --base "$BASE_SHA"
+      # The docs check takes about a second, so it runs here instead of in its own job: GitHub bills
+      # every job rounded up to a whole minute, and this job already has the checkout and Node.
+      - name: Docs (check:links)
+        if: steps.select.outputs.docs == 'true'
+        run: node scripts/check-links.mjs
 
   code:
     name: Code checks (check:pr)
@@ -74,25 +79,9 @@ jobs:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: node scripts/check-pr.mjs --base "$BASE_SHA"
 
-  docs:
-    name: Docs (check:links)
-    needs: select
-    if: needs.select.outputs.docs == 'true'
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
-        with:
-          node-version: 24.12.0
-      - name: Check relative links and anchors
-        run: node scripts/check-links.mjs
-
   ci-required:
     name: ci-required
-    needs: [select, code, docs]
+    needs: [select, code]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 2
@@ -101,20 +90,17 @@ jobs:
         env:
           SELECT: ${{ needs.select.result }}
           CODE: ${{ needs.code.result }}
-          DOCS: ${{ needs.docs.result }}
         run: |
           {
             echo "### ci-required"
             echo ""
             echo "| Job | Result |"
             echo "| --- | --- |"
-            echo "| select | $SELECT |"
+            echo "| select (with the docs check) | $SELECT |"
             echo "| code | $CODE |"
-            echo "| docs | $DOCS |"
           } >> "$GITHUB_STEP_SUMMARY"
-          # Selection must succeed; the others may be skipped (by the selection) but never fail.
-          [ "$SELECT" = success ] || { echo "Job selection did not succeed: $SELECT"; exit 1; }
-          for r in "$CODE" "$DOCS"; do
-            case "$r" in success|skipped) ;; *) echo "A selected job did not succeed: $r"; exit 1 ;; esac
-          done
-          echo "All selected jobs passed."
+          # Selection (and the docs check in that job) must succeed; code may be skipped by the
+          # selection but never fail or be cancelled.
+          [ "$SELECT" = success ] || { echo "Job selection or the docs check did not succeed: $SELECT"; exit 1; }
+          case "$CODE" in success|skipped) ;; *) echo "Code checks did not succeed: $CODE"; exit 1 ;; esac
+          echo "All selected checks passed."
