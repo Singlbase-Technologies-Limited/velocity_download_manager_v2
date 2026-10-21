@@ -52,32 +52,26 @@ jobs:
     if: needs.select.outputs.code == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 45
+    env:
+      # Incremental compilation only helps repeated local builds; in CI it costs time and cache space.
+      CARGO_INCREMENTAL: 0
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
           persist-credentials: false
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+      - uses: ./.github/actions/setup
         with:
-          node-version: 24.12.0
-      - name: Install Tauri system packages
-        if: needs.select.outputs.rust == 'true'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends libwebkit2gtk-4.1-dev build-essential file libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev
-      - name: Install the pinned Rust toolchain
-        if: needs.select.outputs.rust == 'true'
-        run: |
-          channel=$(sed -n 's/^channel = "\(.*\)"/\1/p' rust-toolchain.toml)
-          rustup toolchain install "$channel" --profile minimal --component rustfmt --component clippy
-      - name: Install JavaScript dependencies
-        run: |
-          corepack enable
-          pnpm install --frozen-lockfile
+          rust: ${{ needs.select.outputs.rust }}
       - name: Run the selected checks
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
-        run: node scripts/check-pr.mjs --base "$BASE_SHA"
+          RUST: ${{ needs.select.outputs.rust }}
+        run: |
+          # Without Rust, check:pr only reads manifests (`cargo metadata`); the runner's stable
+          # toolchain does that without downloading the pinned one.
+          if [ "$RUST" != true ]; then export RUSTUP_TOOLCHAIN=stable; fi
+          node scripts/check-pr.mjs --base "$BASE_SHA"
 
   ci-required:
     name: ci-required

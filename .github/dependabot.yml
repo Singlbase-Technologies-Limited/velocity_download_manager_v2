@@ -1,0 +1,17 @@
+# Keeps the SHA-pinned GitHub Actions current (docs/CI.md, "Permissions and supply chain").
+# Monthly and grouped into one PR, so updates cost one CI run, not one per action. Each update is
+# an ordinary PR that the PO reviews. Cargo and npm dependencies are not included: new or changed
+# dependencies need PO approval (#9), and their advisory process is #75.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directories:
+      - /
+      - /.github/actions/setup
+    schedule:
+      interval: monthly
+    groups:
+      github-actions:
+        patterns: ['*']
+    commit-message:
+      prefix: ci

@@ -9,7 +9,7 @@ This page is the design. The workflows are written in #13, #14, #16 to #19 and #
 | # | Event | What runs | Platforms | Purpose | Built in |
 |---|---|---|---|---|---|
 | 1 | `pull_request` into `main` (opened, synchronised, reopened) | L1 for the selected areas, plus L2 for those areas. Docs-only changes run only the docs job | Linux | Fast feedback before review. One aggregate check, `ci-required`, summarises it | #13, #14, #91 |
-| 2 | `push` to `main` (that is, after a squash merge) | Broader suites for the merged change's areas. **Windows** jobs when Windows-relevant paths changed (below) | Linux, Windows | Catch what the PR tier deliberately left out, before a release candidate is built from `main` | #16 |
+| 2 | `push` to `main` (that is, after a squash merge) | **Linux:** every L1 check and the docs check, then save the Rust cache ([`main.yml`](../.github/workflows/main.yml), #14). Later: broader suites, and **Windows** jobs when Windows-relevant paths changed (below) | Linux, Windows | Catch what the PR tier deliberately left out, before a release candidate is built from `main`, and keep the PR cache warm | #14, #16 |
 | 3 | `workflow_dispatch` on a commit, or a `v*-rc.*` tag | Everything runnable (`check:full` and the L2 suites) plus installers | Linux, Windows; macOS once #83 establishes it | A downloadable, labelled release-candidate build from a verified `main` commit | #17 |
 | 4 | `v*` tag (not `-rc`) | The release gate: it rechecks that the tag's commit passed tier 3, then builds artefacts with provenance into a **draft** release | Linux, Windows | Prepare a release the PO publishes by hand | #18 |
 | 5 | `schedule` (weekly) and `workflow_dispatch` | L4: everything on Linux and Windows. Later also fuzzing, stress and extended benchmarks. macOS on demand only | Linux, Windows; macOS manual | Catch slow drift and run what's too expensive per change | #19 |
@@ -70,16 +70,21 @@ The repository gets **10 GB of Actions cache**, separate from artifact storage. 
 |---|---|---|---|---|
 | Rust (Linux) | OS + toolchain + `Cargo.lock` hash + job kind | Compiled **dependencies** only (`~/.cargo/registry`, `target/` without workspace crates) | **Measured:** 1.1 GiB raw, 365 MiB gzip-compressed, plus a 201 MiB registry | A cold build is most of a cold job (**measured:** 571 s for the clippy and test builds on 2 vCPUs). Workspace crates rebuild in seconds, so caching them would only add upload time and size |
 | Rust (Windows) | Same | Same | **Assumed:** similar to Linux (not measured) | Windows minutes cost more ($0.010 against $0.006 a minute), so a cache hit saves more |
-| pnpm store | OS + `pnpm-lock.yaml` hash | The pnpm content store | **Measured:** 147 MiB (Linux) | `pnpm install --frozen-lockfile` then only links |
+| pnpm store | — | **Not cached** | 147 MiB (Linux) | `pnpm install --frozen-lockfile` took **4 s** in CI (PR #104), less than a cache restore and save would cost (PO decision on #14) |
 
 **Caching rules:**
 
 - **Budget:** about 0.6 GB a platform when compressed, so Linux and Windows, with one previous key each during a lockfile change, use about 2.5 GB of the 10 GB.
 - **Save on `main` only;** pull requests restore. A PR branch's cache is visible only to that branch, so saving it there would fill the 10 GB with copies.
 - **Keys change only when the toolchain or lockfile changes,** so a cache uploads rarely.
-- **No cache for Tauri system packages** (`apt`): restoring them costs about as much as installing them. To be measured in #14.
+- **No cache for Tauri system packages** (`apt`): they installed in **35 s** in CI (PR #104), about what restoring a cache of them would take.
 
-The choice of cache action (GitHub's own `actions/cache`, or a Rust-specific one) is made in #14. Any third-party action is a dependency that needs PO approval (AGENTS.md).
+**How it's wired (#14):**
+
+- **Action:** GitHub's own `actions/cache/restore` and `actions/cache/save`, pinned by SHA. No third-party cache action is used, because any third-party action is a dependency that needs PO approval (AGENTS.md).
+- **Setup:** the shared composite action [`.github/actions/setup`](../.github/actions/setup/action.yml) restores the cache for every job that builds Rust. When the exact key is missing, it falls back to the newest older key (`restore-keys`), so a dependency bump starts mostly warm.
+- **Saving:** only [`main.yml`](../.github/workflows/main.yml), the Linux checks after each merge to `main`, saves the cache. It does so after a fully green run, when the exact key isn't cached yet, and after removing the workspace crates' artefacts.
+- **No incremental compilation in CI:** `CARGO_INCREMENTAL=0` keeps the cache smaller and CI builds faster.
 
 ## Cancelling and de-duplicating
 
@@ -93,7 +98,7 @@ GitHub's guidance is in [secure use](https://docs.github.com/en/actions/referenc
 
 - **Read-only by default.** Every workflow declares `permissions: contents: read`, and a job raises only what it needs (for example `contents: write` for the draft-release job in #18).
 - **Pinned actions.** Third-party actions are pinned to a **full commit SHA**, with the version in a comment. GitHub's own `actions/*` are pinned the same way, for consistency.
-- **Dependabot** updates the pins: a `github-actions` entry in `.github/dependabot.yml`, added in #14. Each update is an ordinary PR.
+- **Dependabot** updates the pins: [`.github/dependabot.yml`](../.github/dependabot.yml) checks the workflows and the composite action **monthly**, grouped into **one PR**, so an update costs one CI run. Each update is an ordinary PR the PO reviews. Cargo and npm updates aren't automated: dependency changes need PO approval (#9, #75).
 - **No `pull_request_target`** that checks out PR code. No secrets in PR workflows.
 - **Untrusted text stays out of commands.** Titles, branch names and other user-controlled strings never go straight into `run:` scripts; they pass through environment variables.
 - **Self-hosted runners:** none. If one is ever added (PO decision), it never runs code from a fork.

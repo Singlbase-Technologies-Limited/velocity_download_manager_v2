@@ -14,6 +14,8 @@ All commands run every check even after one fails, print a PASS/FAIL summary wit
 | L4 | `pnpm check:full` | Every L1 check, then `vite build` and `cargo build --workspace --release` (the release profile: LTO, one codegen unit) | Before a release candidate, or after changing build settings |
 | L5 | (none yet) | Production acceptance on installed builds | Defined in #15 |
 
+**In CI** ([CI.md](CI.md)): pull requests run `pnpm check:pr` for the selected areas, and every merge to `main` runs `pnpm check:fast` and `pnpm check:links` on Linux.
+
 For documentation, `pnpm check:links` checks that every relative link and heading anchor in the repository's Markdown files resolves. External links aren't fetched. CI's docs job runs it ([CI.md](CI.md)).
 
 L2 integration and protocol suites (for example, an HTTP test server for the engine) don't exist yet. When they arrive they run under `test:focused` for their crate. L4 cross-platform, end-to-end, fuzz, stress and benchmark suites will join `check:full` or get their own deliberate jobs (#15).
