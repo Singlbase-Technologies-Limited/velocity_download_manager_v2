@@ -54,11 +54,11 @@ The PR tier is implemented in [`.github/workflows/pr.yml`](../.github/workflows/
 |---|---|---|
 | `select` | Always | `node scripts/ci-select.mjs --base <PR base>` writes `rust`, `frontend` and `docs` flags to its outputs. It adds a table to the **run summary** with every job, *runs* or *skipped*, the reason for each, and the reason for each changed path. When docs are selected, the same job runs `node scripts/check-links.mjs` as a step |
 | `code` | Rust or frontend selected | `pnpm check:pr`, the same command as locally. Tauri system packages and the pinned toolchain are installed only when Rust is selected |
-| `ci-required` | Always (`if: always()`) | Passes only if `select` succeeded and `code` succeeded or was skipped by the selection. It writes its own table to the run summary |
+| `ci-required` | Unless the run was cancelled (`if: ${{ !cancelled() }}`) | Passes only if `select` succeeded and `code` succeeded or was skipped by the selection. It writes its own table to the run summary. A run superseded by a newer push is cancelled whole and reports nothing; `always()` would report a false failure there |
 
 **Why so few jobs.** GitHub bills every job's time **rounded up to a whole minute** ([runner pricing](https://docs.github.com/en/billing/reference/actions-runner-pricing)), and every job repeats checkout and setup. So Rust and frontend share the `code` job, and the one-second docs check runs inside `select`. A docs-only PR then costs 2 billed minutes (`select` and `ci-required`), and a code PR costs the `code` job plus 2.
 
-**Skipped jobs and required checks.** A job skipped by an `if:` condition reports *Success*, while a workflow skipped by path filters leaves a required check *Pending* forever ([troubleshooting required checks](https://docs.github.com/en/pull-requests/collaborating-with-pull-requests/collaborating-on-repositories-with-code-quality-features/troubleshooting-required-status-checks)). So the workflow never uses `on.paths`, and `ci-required` always reports. That keeps it usable as a required check if branch protection becomes available (#7).
+**Skipped jobs and required checks.** A job skipped by an `if:` condition reports *Success*, while a workflow skipped by path filters leaves a required check *Pending* forever ([troubleshooting required checks](https://docs.github.com/en/pull-requests/collaborating-with-pull-requests/collaborating-on-repositories-with-code-quality-features/troubleshooting-required-status-checks)). So the workflow never uses `on.paths`, and `ci-required` reports on every run that isn't cancelled. That keeps it usable as a required check if branch protection becomes available (#7).
 
 **Selection errors fail the run.** If `ci-select.mjs` can't compute the change (for example, missing history), it exits non-zero rather than guessing, and `ci-required` fails.
 
@@ -68,7 +68,7 @@ The repository gets **10 GB of Actions cache**, separate from artifact storage. 
 
 | Cache | Key | Contents | Size | Reasoning |
 |---|---|---|---|---|
-| Rust (Linux) | OS + toolchain + `Cargo.lock` hash + job kind | Compiled **dependencies** only (`~/.cargo/registry`, `target/` without workspace crates) | **Measured:** 1.1 GiB raw, 365 MiB gzip-compressed, plus a 201 MiB registry | A cold build is most of a cold job (**measured:** 571 s for the clippy and test builds on 2 vCPUs). Workspace crates rebuild in seconds, so caching them would only add upload time and size |
+| Rust (Linux) | OS + toolchain + `Cargo.lock` hash | Compiled **dependencies** only (`~/.cargo/registry`, `target/` without workspace crates) | **Measured in CI:** 319 MiB as saved (1.1 GiB of `target/` plus a 201 MiB registry before compression); locally 365 MiB with gzip | A cold build is most of a cold job (**measured:** 571 s for the clippy and test builds on 2 vCPUs). Workspace crates rebuild in seconds, so caching them would only add upload time and size |
 | Rust (Windows) | Same | Same | **Assumed:** similar to Linux (not measured) | Windows minutes cost more ($0.010 against $0.006 a minute), so a cache hit saves more |
 | pnpm store | — | **Not cached** | 147 MiB (Linux) | `pnpm install --frozen-lockfile` took **4 s** in CI (PR #104), less than a cache restore and save would cost (PO decision on #14) |
 
@@ -123,48 +123,55 @@ macOS minutes cost about 10 times Linux ($0.062 against $0.006 a minute), so mac
 
 **Measured locally** (docs/DEVELOPMENT.md, 2026-10-21). A cold dependency build takes 278 s on Windows (16 logical CPUs) and 413 s on Linux (WSL2, 2 vCPUs, similar to a 2-vCPU hosted runner). A warm `check:fast` takes 5.5–9 s. A full `check:full` takes 224–249 s, of which 215–232 s is the release build.
 
-**Measured in CI.** The first run of the PR tier was on PR #104 ([run 39657529808](https://github.com/vincentarisawork/velocity_download_manager_v2/actions/runs/39657529808), 2026-10-21, `ubuntu-latest`, no cache yet, everything selected).
+**Measured in CI** (`ubuntu-latest`, 2 vCPUs, 2026-10-21). Every run of the PR tier and the first `main` run so far. Billed minutes are each job rounded up to a whole minute ([runner pricing](https://docs.github.com/en/billing/reference/actions-runner-pricing)); a skipped job costs nothing.
 
-| Job | Duration | Billed |
-|---|---|---|
-| `select` | 14 s | 1 min |
-| `code`, cold: setup 57 s (Node 7 s, Tauri packages 35 s, Rust toolchain 9 s, `pnpm install` 4 s), then `check:pr` 7 min 36 s (clippy 302 s, cargo test 146 s) | 8 min 35 s | 9 min |
-| `docs` (then a separate job, now a step in `select`) | 31 s | 1 min |
-| `ci-required` | 4 s | 1 min |
+| Run | Change | Cache | Wall time | Jobs (s) | Billed |
+|---|---|---|---|---|---|
+| [39657529808](https://github.com/vincentarisawork/velocity_download_manager_v2/actions/runs/39657529808) | PR #104, everything | none | 542 s | select 14, code 519, docs 31, ci-required 4 | 12 min |
+| [39663435122](https://github.com/vincentarisawork/velocity_download_manager_v2/actions/runs/39663435122) | PR #104, everything | none | 566 s | select 21, code 536, ci-required 4 | 11 min |
+| [39666333757](https://github.com/vincentarisawork/velocity_download_manager_v2/actions/runs/39666333757) | PR #105, everything | none | 505 s | select 21, code 476, ci-required 3 | 10 min |
+| [39669208703](https://github.com/vincentarisawork/velocity_download_manager_v2/actions/runs/39669208703) | `main` after #105, all L1, **saved the cache** | none | 453 s | linux 453 | 8 min |
+| [39670447026](https://github.com/vincentarisawork/velocity_download_manager_v2/actions/runs/39670447026) | demo #106, docs only | — | 32 s | select 25, ci-required 4 (`code` skipped) | 2 min |
+| [39670571690](https://github.com/vincentarisawork/velocity_download_manager_v2/actions/runs/39670571690) | demo #107, one crate | warm | 113 s | select 12, code 92, ci-required 4 | 4 min |
+| [39670483912](https://github.com/vincentarisawork/velocity_download_manager_v2/actions/runs/39670483912) | demo #108, `Cargo.lock` (everything) | warm, via the fallback key | 181 s | select 22, code 150, ci-required 4 | 5 min |
 
-GitHub bills every job **rounded up to a whole minute** ([runner pricing](https://docs.github.com/en/billing/reference/actions-runner-pricing)). So each run carries 2 billed minutes for `select` and `ci-required`, on top of the `code` job.
+- **Medians:**
+  - Successful PR runs: **343 s** (6 runs).
+  - Cold PR runs: **542 s**, 11 billed minutes.
+  - Warm code PR runs: 113–181 s, **4–5 billed minutes**.
+- **A cold `code` job:** about 1 min of setup (Node 7 s, Tauri packages 35 s, toolchain 9 s, `pnpm install` 4 s), then about 7.5 min of compiling (clippy about 280 s, tests about 140 s).
+- **With the cache restored:** clippy takes 2–3 s and the tests 3–6 s. The cache is **319 MiB** (key `rust-v1-Linux-<hash>`, saved by `main`).
+- **The rest is the 3 billed minutes** of fixed cost per code run: `select`, the setup inside `code`, and `ci-required`.
 
-**Still assumed, until #14 adds caching and measures warm runs:**
+**Still assumed** (no runs yet):
 
 | Job | Cache | Duration | Basis |
 |---|---|---|---|
-| `code` | warm | 3 min (assumed) | The measured 57 s setup, plus rebuilding only the workspace crates on 2 vCPUs |
-| Post-merge Linux | warm | 4 min plus 2 (assumed) | `code` plus L2 suites (none exist yet) |
-| Post-merge Windows | warm | 8 min plus 2 (assumed) | Windows runners set up more slowly |
-| Release candidate (Linux + Windows, with installers) | warm | 40 min (assumed) | Two `check:full` runs plus bundling |
-| Weekly full (Linux + Windows) | warm | 30 min (assumed) | Two `check:full` runs |
+| Post-merge Linux, warm | warm | 4 min billed | The warm `code` job plus about 1 min of setup |
+| Post-merge Windows | warm | 8 min plus 2 | Windows runners set up more slowly |
+| Release candidate (Linux + Windows, with installers) | warm | 40 min | Two `check:full` runs plus bundling |
+| Weekly full (Linux + Windows) | warm | 30 min | Two `check:full` runs |
 
 **Monthly estimate at the current pace.** One agent, about 4 merged PRs a working day, so about 80 a month. About 3 CI runs per PR after cancellation; about a quarter of PRs are docs-only.
 
 | Item | Runs a month | Billed minutes each | Minutes a month |
 |---|---|---|---|
-| PR checks, code (`code` warm 3 + 2) | 60 PRs × 3 = 180 | 5 | 900 |
-| PR checks, docs-only (`select` + `ci-required`) | 20 PRs × 3 = 60 | 2 | 120 |
-| Post-merge Linux | 60 | 6 | 360 |
-| Post-merge Windows (Windows-relevant merges, assumed half) | 30 | 10 | 300 |
+| PR checks, code (measured 4–5, warm) | 60 PRs × 3 = 180 | 5 | 900 |
+| PR checks, docs-only (measured) | 20 PRs × 3 = 60 | 2 | 120 |
+| Post-merge Linux | 80 | 4 | 320 |
+| Post-merge Windows (Windows-relevant merges, assumed half; #16) | 30 | 10 | 300 |
 | Weekly full | 4 | 30 | 120 |
-| Cold-cache penalty (lockfile or toolchain changes, assumed 8; cold `code` is 9 against 3 warm) | 8 | +6 | 48 |
+| Cold-cache penalty (new `Cargo.lock` or toolchain, assumed 8; cold `main` and PR runs) | 8 | +6 | 48 |
 | Release candidates (assumed 2) | 2 | 40 | 80 |
-| **Total** | | | **≈ 1,930** |
+| **Total** | | | **≈ 1,890** |
 
-**That is just under the 2,000-minute quota, with little margin.** The PR tier dominates. If it runs over:
+**That is under the 2,000-minute quota, with little margin.** The PR tier dominates. If it runs over:
 
-1. **Measure warm runs first (#14).** Every minute saved on the `code` job saves about 180 a month.
-2. **Push to the PR branch less often:** batch fixes before pushing. Cancellation discards superseded runs, but a started job still costs its minutes.
-3. **Run Windows post-merge on a daily batch** of the merged commits, instead of per merge. This saves up to 300 minutes, at the cost of slower Windows feedback.
-4. **PO decisions:** a payment method or plan change (then overage is billed instead of blocked), or making the repository public (standard runners are free; #90).
+1. **Push to the PR branch less often:** batch fixes before pushing. Cancellation discards superseded runs (demonstrated on demo #107), but a started job still costs its minutes.
+2. **Run Windows post-merge on a daily batch** of the merged commits, instead of per merge. This saves up to 300 minutes, at the cost of slower Windows feedback.
+3. **PO decisions:** a payment method or plan change (then overage is billed instead of blocked), or making the repository public (standard runners are free; #90).
 
-**Windows minutes:** the runner pricing page lists only dollar rates and states no multiplier against the included minutes. Until the first Windows run shows its effect on the usage report, budget Windows as if it counted double. Then the Windows line above becomes 600 minutes, and the total about 2,230, over the quota.
+**Windows minutes:** the runner pricing page lists only dollar rates and states no multiplier against the included minutes. Until the first Windows run shows its effect on the usage report, budget Windows as if it counted double. Then the Windows line above becomes 600 minutes, and the total about 2,190, over the quota.
 
 **Artifact storage is 500 MB** (shared with Packages). Retention is set per upload:
 
