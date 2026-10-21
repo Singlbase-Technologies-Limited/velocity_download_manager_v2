@@ -1,6 +1,6 @@
 # Documentation map
 
-Every document in `docs/` is listed here. A new document is added to this map in the same PR. Rules for contributors and agents are in [AGENTS.md](../AGENTS.md) at the repository root.
+Every document in `docs/` is listed here. A new document is added to this map in the same PR. At the repository root, [CONTRIBUTING.md](../CONTRIBUTING.md) is the path from clone to pull request, and [AGENTS.md](../AGENTS.md) holds the rules for contributors and AI agents.
 
 ## Start here
 
@@ -10,6 +10,7 @@ Every document in `docs/` is listed here. A new document is added to this map in
 | [TROUBLESHOOTING.md](TROUBLESHOOTING.md) | Fix common setup and build problems |
 | [ARCHITECTURE.md](ARCHITECTURE.md) | Understand the components, who owns which state, and the open architecture decisions |
 | [GLOSSARY.md](GLOSSARY.md) | Look up a term (lease, coverage, validator, checkpoint, capability and more) |
+| [CONVENTIONS.md](CONVENTIONS.md) | Name Rust and TypeScript code, files, tests, commands, events and error codes |
 
 ## How we work
 

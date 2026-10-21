@@ -41,7 +41,7 @@ V2 is a Tauri 2 desktop app with a React UI and a Rust core. It downloads files 
 | Native host | to be created | A short-lived process started by the browser. It validates messages and forwards them to the app over local IPC | — | #65 |
 | Browser extension | to be created | Offers browser downloads to V2 and falls back to the browser on any failure | — | #64 |
 
-**Placement rules** (#4 turns them into agent and contributor rules):
+**Placement rules** (also in [AGENTS.md](../AGENTS.md#architecture)):
 
 - UI code lives in `src/`.
 - Tauri commands in `src-tauri/` validate input and delegate to the core, without duplicating its logic. This rule is carried over from V1's `AGENTS.md`.
