@@ -1,0 +1,35 @@
+# Rust
+/target/
+**/target/
+
+# Node / frontend
+node_modules/
+/dist/
+*.tsbuildinfo
+.vite/
+coverage/
+
+# Tauri generated
+/src-tauri/gen/schemas/
+
+# Local environment and secrets
+.env
+.env.*
+*.pem
+*.key
+
+# Claude Code personal settings (project settings in .claude/settings.json are committed)
+CLAUDE.local.md
+.claude/settings.local.json
+
+# Editors and OS
+.idea/
+.vscode/*
+!.vscode/extensions.json
+*.swp
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+npm-debug.log*
