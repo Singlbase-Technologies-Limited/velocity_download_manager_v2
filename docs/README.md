@@ -19,6 +19,7 @@ Every document in `docs/` is listed here. A new document is added to this map in
 | [DEVELOPMENT_WORKFLOW.md](DEVELOPMENT_WORKFLOW.md) | Follow the branch, commit, pull-request, merge and release-tag workflow |
 | [REVIEWING.md](REVIEWING.md) | Review a pull request |
 | [TESTING.md](TESTING.md) | Choose the right verification level and learn how `check:pr` selects checks |
+| [CI.md](CI.md) | See what CI runs on each event, how jobs are selected, cached and secured, and the monthly cost model |
 | [AI_AGENT_ACCOUNT.md](AI_AGENT_ACCOUNT.md) | Find out which GitHub account an AI agent uses, and how to check it |
 
 ## Decisions and research

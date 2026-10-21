@@ -10,7 +10,7 @@ All commands run every check even after one fails, print a PASS/FAIL summary wit
 |---|---|---|---|
 | L1 | `pnpm check:fast` | Whole workspace: `cargo fmt --check`, `cargo clippy --workspace --all-targets -D warnings`, `cargo test --workspace`, `tsc --noEmit`, ESLint (zero warnings), Vitest | Before every pull request |
 | L2 | `pnpm test:focused -- <area> [args]` | The tests of one area. A crate runs `cargo test -p <crate> [args]` (unit and integration tests); `frontend` runs `vitest run src`; `scripts` runs `vitest run scripts` | While iterating (Red–Green–Refactor) |
-| L3 | `pnpm check:pr [--base <ref>]` | The L1 checks that the branch's changes need, judged from every path changed since the merge base with `origin/main` (committed, staged, unstaged and untracked) | Before pushing; CI (#13, #14) uses the same rules |
+| L3 | `pnpm check:pr [--base <ref>]` | The L1 checks that the branch's changes need, judged from every path changed since the merge base with `origin/main` (committed, staged, unstaged and untracked) | Before pushing; CI uses the same rules ([CI.md](CI.md)) |
 | L4 | `pnpm check:full` | Every L1 check, then `vite build` and `cargo build --workspace --release` (the release profile: LTO, one codegen unit) | Before a release candidate, or after changing build settings |
 | L5 | (none yet) | Production acceptance on installed builds | Defined in #15 |
 
