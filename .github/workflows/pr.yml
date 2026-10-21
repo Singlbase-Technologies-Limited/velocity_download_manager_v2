@@ -76,7 +76,10 @@ jobs:
   ci-required:
     name: ci-required
     needs: [select, code]
-    if: always()
+    # Not `always()`: that also runs in a run cancelled because a newer push superseded it, and
+    # reports a failure there (seen on demo PR #107). `!cancelled()` still runs after failures and
+    # skips, so a real failure is always reported.
+    if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
     timeout-minutes: 2
     steps:
