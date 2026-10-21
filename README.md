@@ -18,7 +18,7 @@ The full setup for Windows, Linux and macOS is in [docs/DEVELOPMENT.md](docs/DEV
 
 ## Contributing
 
-Work is planned as issues on the [project board](https://github.com/users/vincentarisawork/projects/2). Contributor and AI-agent rules are in [AGENTS.md](AGENTS.md); Claude Code reads them through [CLAUDE.md](CLAUDE.md). AI agents work as the machine account `velocity-claude-agent`; see [docs/AI_AGENT_ACCOUNT.md](docs/AI_AGENT_ACCOUNT.md). The branch, pull-request, merge and release workflow is in [docs/DEVELOPMENT_WORKFLOW.md](docs/DEVELOPMENT_WORKFLOW.md), and the review checklist is in [docs/REVIEWING.md](docs/REVIEWING.md).
+Work is planned as issues on the [project board](https://github.com/users/vincentarisawork/projects/2). Start with [CONTRIBUTING.md](CONTRIBUTING.md). Contributor and AI-agent rules are in [AGENTS.md](AGENTS.md); Claude Code reads them through [CLAUDE.md](CLAUDE.md). AI agents work as the machine account `velocity-claude-agent`; see [docs/AI_AGENT_ACCOUNT.md](docs/AI_AGENT_ACCOUNT.md). The branch, pull-request, merge and release workflow is in [docs/DEVELOPMENT_WORKFLOW.md](docs/DEVELOPMENT_WORKFLOW.md), and the review checklist is in [docs/REVIEWING.md](docs/REVIEWING.md).
 
 ## Licence
 
