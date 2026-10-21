@@ -35,7 +35,7 @@ V2 is a Tauri 2 desktop app with a React UI and a Rust core. It downloads files 
 | Core | `crates/velocity-core/` | Everything that doesn't need a window: domain models, the download manager and queue, input validation, naming, categories, settings, history and SQLite persistence | `app_info()` and the product name | #25, #26, #30 to #32, #50, #58 |
 | `DirectTransfer` contract | `crates/velocity-core/` (ADR-0002) | The engine-neutral boundary for direct downloads: commands, events, statuses, errors and capabilities. The manager never sees libcurl types | — | #36 |
 | Transfer engine | `crates/velocity-transfer/` (ADR-0002) | The range probe, leased segmentation, durable checkpoints, changed-object detection, integrity, retries, connection budgets and speed limits | — | #37, #41 to #49 |
-| libcurl layer | `crates/velocity-curl/` (ADR-0002) | The only crate that touches libcurl: FFI and the `Multi` loop on its own thread. libcurl 8.23.0 or later, with a build identity record | — | #34, #35 |
+| libcurl layer | `crates/velocity-curl/` (ADR-0002) | The only crate that touches libcurl: FFI and the `Multi` loop on its own thread. libcurl 8.23.0 or later, with a build identity record; obtained as [ADR-0004](decisions/0004-libcurl-build-path.md) decides | — | #35, #37 |
 | Engine process | pending #38 | The engine runs either in the app process or as a supervised child process speaking a versioned protocol over stdio | — | #38, #39 |
 | Torrent bridge | to be created | A narrow Rust bridge to libtorrent | — | #62 |
 | Native host | to be created | A short-lived process started by the browser. It validates messages and forwards them to the app over local IPC | — | #65 |
@@ -92,7 +92,6 @@ These decision issues shape the architecture. Until each is decided and recorded
 | Issue | Question | What depends on it |
 |---|---|---|
 | #38 | Engine in the app process, or a supervised child process? | Process model, IPC protocol (#39), packaging |
-| #34 | How libcurl is built and pinned | Build, provenance (#35) |
 | #52 | SFTP through libssh2 in libcurl, or russh | SFTP (#53), dependencies |
 | #44 | Resume when the server gives no reliable validator | Checkpoint and resume rules |
 | #56 | Proxy support | Settings, security |

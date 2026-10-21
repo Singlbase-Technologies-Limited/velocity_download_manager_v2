@@ -34,6 +34,7 @@ Every document in `docs/` is listed here. A new document is added to this map in
 | [decisions/0001-v2-direction.md](decisions/0001-v2-direction.md) | Read ADR-0001: own engine on libcurl, libtorrent for BitTorrent, no aria2 |
 | [decisions/0002-engine-crate-layout.md](decisions/0002-engine-crate-layout.md) | Read ADR-0002: the engine lives in `velocity-transfer` and `velocity-curl` |
 | [decisions/0003-v2-app-identity.md](decisions/0003-v2-app-identity.md) | Read ADR-0003: V2's own identifiers (app ID, native host, extension IDs) |
+| [decisions/0004-libcurl-build-path.md](decisions/0004-libcurl-build-path.md) | Read ADR-0004: how libcurl is obtained for the prototype and for releases |
 | [research/README.md](research/README.md) | See the research index; research is input, not decisions |
 | [research/2026-10-21-libcurl-engine-research-r2.md](research/2026-10-21-libcurl-engine-research-r2.md) | Read the libcurl download-engine research report, revision 2 |
 
