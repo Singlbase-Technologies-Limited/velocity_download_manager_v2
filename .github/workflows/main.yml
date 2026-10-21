@@ -1,0 +1,60 @@
+# Checks on `main` after each merge (the Linux part of tier 2 in docs/CI.md; #16 adds Windows).
+# This is also the only workflow that saves the Rust dependency cache, which pull requests restore,
+# so it must run every L1 check and build everything the PR tier builds.
+name: Main checks
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+# Every commit on main gets its own result: queue runs, never cancel them.
+concurrency:
+  group: main-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  linux:
+    name: Linux checks (check:fast)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      CARGO_INCREMENTAL: 0
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - id: setup
+        uses: ./.github/actions/setup
+        with:
+          rust: 'true'
+      - name: All L1 checks
+        run: node scripts/check-fast.mjs
+      - name: Docs (check:links)
+        run: node scripts/check-links.mjs
+
+      # Save only after a full green run and only when this key isn't cached yet (keys are
+      # immutable). Workspace crates are removed first: they rebuild in seconds, and caching them
+      # only adds size. What stays is the compiled dependencies, measured at about 365 MiB compressed.
+      - name: Keep only dependency artefacts
+        if: steps.setup.outputs.rust-cache-hit != 'true'
+        run: |
+          for d in target/debug target/release; do
+            [ -d "$d" ] || continue
+            find "$d/deps" "$d/build" "$d/.fingerprint" -maxdepth 1 -name '*velocity*' -exec rm -rf {} + 2>/dev/null || true
+            rm -rf "$d/incremental"
+            find "$d" -maxdepth 1 -type f -delete
+          done
+          du -sh target ~/.cargo/registry 2>/dev/null || true
+      - name: Save the Rust dependency cache
+        if: steps.setup.outputs.rust-cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          key: ${{ steps.setup.outputs.rust-cache-key }}
+          path: |
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/

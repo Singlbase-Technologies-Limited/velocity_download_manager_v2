@@ -1,0 +1,67 @@
+# Shared job setup for the CI workflows (docs/CI.md): Node, and when Rust is needed the Tauri system
+# packages, the pinned toolchain and the restored dependency cache, then the JavaScript dependencies.
+# The cache is only restored here. Workflows on `main` save it (see main.yml), so pull requests
+# never fill the 10 GB cache with per-branch copies.
+name: Set up a V2 CI job
+description: Node, optional Rust toolchain, Tauri packages and Rust dependency cache, and pnpm install
+
+inputs:
+  rust:
+    description: Whether the job builds Rust ("true" or "false")
+    required: true
+
+outputs:
+  rust-cache-key:
+    description: The exact cache key for this toolchain and Cargo.lock
+    value: ${{ steps.key.outputs.key }}
+  rust-cache-hit:
+    description: '"true" when the exact key was restored'
+    value: ${{ steps.restore.outputs.cache-hit }}
+
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+      with:
+        node-version: 24.12.0
+
+    - name: Install Tauri system packages
+      if: inputs.rust == 'true'
+      shell: bash
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y --no-install-recommends libwebkit2gtk-4.1-dev build-essential file libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev
+
+    - name: Install the pinned Rust toolchain
+      if: inputs.rust == 'true'
+      shell: bash
+      run: |
+        channel=$(sed -n 's/^channel = "\(.*\)"/\1/p' rust-toolchain.toml)
+        rustup toolchain install "$channel" --profile minimal --component rustfmt --component clippy
+
+    # One key per OS, toolchain and Cargo.lock. A new Cargo.lock falls back to the newest older key
+    # (restore-keys), so a dependency bump still starts mostly warm.
+    - id: key
+      if: inputs.rust == 'true'
+      shell: bash
+      run: echo "key=rust-v1-${{ runner.os }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock') }}" >> "$GITHUB_OUTPUT"
+
+    - id: restore
+      if: inputs.rust == 'true'
+      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        key: ${{ steps.key.outputs.key }}
+        restore-keys: rust-v1-${{ runner.os }}-
+        path: |
+          ~/.cargo/registry/index/
+          ~/.cargo/registry/cache/
+          ~/.cargo/git/db/
+          target/
+
+    # No pnpm store cache: `pnpm install --frozen-lockfile` took 4 s in CI (PR #104), less than a
+    # cache restore and save would cost (PO decision on #14).
+    - name: Install JavaScript dependencies
+      shell: bash
+      run: |
+        corepack enable
+        pnpm install --frozen-lockfile
