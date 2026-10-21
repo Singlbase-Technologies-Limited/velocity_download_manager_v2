@@ -14,8 +14,9 @@ These rules apply to every contributor, human or AI agent. This is the bootstrap
 - Every change starts from a GitHub issue.
 - Branch from the latest `main` as `<type>/<issue>-<slug>`, for example `feat/41-range-probe` or `fix/12-ci-cache`.
 - Open a pull request into `main`. Never push to `main` directly; the only exception was the bootstrap commit authorised in #2.
-- Only the Product Owner merges. Delete the branch after merge.
+- Only the Product Owner decides merges. The PO merges, or approves one specific PR (for example, "I approve the PR") for the agent to squash-merge. Delete the branch after merge.
 - Keep each pull request focused on one issue.
+- The full procedure, from branch and commit names to merges and release tags, is in [docs/DEVELOPMENT_WORKFLOW.md](docs/DEVELOPMENT_WORKFLOW.md). What reviewers check is in [docs/REVIEWING.md](docs/REVIEWING.md).
 
 ## GitHub account for AI agents
 
