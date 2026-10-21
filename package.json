@@ -16,10 +16,14 @@
     "typecheck": "tsc --noEmit",
     "lint": "eslint . --max-warnings 0",
     "test": "vitest run",
+    "test:watch": "vitest",
+    "test:focused": "node scripts/test-focused.mjs",
     "rust:fmt": "cargo fmt --all -- --check",
     "rust:lint": "cargo clippy --workspace --all-targets -- -D warnings",
     "rust:test": "cargo test --workspace",
-    "check:fast": "node scripts/check-fast.mjs"
+    "check:fast": "node scripts/check-fast.mjs",
+    "check:pr": "node scripts/check-pr.mjs",
+    "check:full": "node scripts/check-full.mjs"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.12.4",
