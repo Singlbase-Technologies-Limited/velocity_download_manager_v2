@@ -150,6 +150,7 @@ macOS minutes cost about 10 times Linux ($0.062 against $0.006 a minute), so mac
 - **A cold `code` job:** about 1 min of setup (Node 7 s, Tauri packages 35 s, toolchain 9 s, `pnpm install` 4 s), then about 7.5 min of compiling (clippy about 280 s, tests about 140 s).
 - **With the cache restored:** clippy takes 2–3 s and the tests 3–6 s. The cache is **319 MiB** (key `rust-v1-Linux-<hash>`, saved by `main`).
 - **The rest is the 3 billed minutes** of fixed cost per code run: `select`, the setup inside `code`, and `ci-required`.
+- **Failure collection (#91) adds no billed minutes.** A warm run with everything selected cost 4 billed minutes before and after it: [39671582041](https://github.com/vincentarisawork/velocity_download_manager_v2/actions/runs/39671582041) (PR #109) against [39676944320](https://github.com/vincentarisawork/velocity_download_manager_v2/actions/runs/39676944320) (PR #110). `ci-required` grew from 5 s to 17–19 s (checkout, Node, downloading the reports), still within its one billed minute.
 
 **Still assumed** (no runs yet):
 
