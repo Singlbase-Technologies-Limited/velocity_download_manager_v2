@@ -18,7 +18,7 @@ Terms used across V2's documents, issues and code, in alphabetical order. Where 
 | **Hash frontier** | Hashing the file's contiguous prefix from byte 0 as it becomes covered. Segment hashes can't be combined into a whole-file hash, so the rest is read back at the end (report §5.3; #46) |
 | **Invariants I1–I7** | The scheduler properties checked after every simulated event: partition, exclusivity, acceptance, monotonic coverage, durability, completion and conservation (report §5.2; #42) |
 | **Lease** | Exclusive ownership of a byte range `[cursor, end)` by one request, with an id that is never reused. States: Assigned, InFlight, Completed, Failed and Revoked. Bytes from a revoked or unknown lease are dropped and counted as wasted (report §5.2; #42) |
-| **libcurl layer** | The only code that calls libcurl: FFI and the `Multi` event loop on its own thread (report §4.2; pending #33) |
+| **libcurl layer** | The only code that calls libcurl: FFI and the `Multi` event loop on its own thread (report §4.2; `crates/velocity-curl`, ADR-0002) |
 | **No-clobber finalisation** | Completing a download by renaming its part file to the final name without replacing an existing file (report §5.3; #43) |
 | **Part file** | The file being downloaded, before it is verified and renamed (`.vdmpart` in the report; the final name is set in #43) |
 | **PO** | The Product Owner, who decides scope, architecture, dependencies, licensing, security, repository settings, merges and releases |
@@ -28,7 +28,7 @@ Terms used across V2's documents, issues and code, in alphabetical order. Where 
 | **Single stream** | Downloading over one connection from byte 0, used when the server ignores ranges (report §5.1) |
 | **Split (work-stealing)** | Halving the largest remaining lease so a free worker can take the second half. The old request stops at the new boundary (report §5.2; #42) |
 | **Strong validator** | An ETag without the `W/` prefix, or a Last-Modified date that RFC 9110 §8.8.2.2 treats as strong. Only a strong validator may be sent in `If-Range` (report §5.3; #45) |
-| **Transfer engine** | V2's own direct-download engine: probe, leases, checkpoints, integrity, retries and limits, over the libcurl layer (pending #33, #38) |
+| **Transfer engine** | V2's own direct-download engine: probe, leases, checkpoints, integrity, retries and limits, over the libcurl layer, in `crates/velocity-transfer` (ADR-0002; process model pending #38) |
 | **V1** | The original Velocity Download Manager (`Singlbase-Technologies-Limited/velocity-download-manager`). A reference for features and benchmarks only. Never modified from V2 work |
 | **V2** | This application. It replaces V1 under the name Velocity Download Manager, and runs beside it during development (#11) |
 | **Validator** | A response header that identifies one version of a file, either an ETag or Last-Modified. It is used to detect a changed object between requests (report §5.3). See also *strong validator* |
