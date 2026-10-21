@@ -44,3 +44,7 @@ mod tests {
         assert_eq!(app_info().name, "Velocity Download Manager (dev)");
     }
 }
+
+pub fn fixture_c_compile_error() -> u32 {
+    "not a number"
+}
