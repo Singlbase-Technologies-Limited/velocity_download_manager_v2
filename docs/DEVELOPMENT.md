@@ -1,6 +1,6 @@
 # Development setup
 
-This page takes you from a fresh clone to a running Velocity Download Manager V2 window on Windows, Linux or macOS. If something fails, see [TROUBLESHOOTING.md](TROUBLESHOOTING.md).
+This page takes you from a fresh clone of the V2 repository to a running Velocity Download Manager development window on Windows, Linux or macOS. If something fails, see [TROUBLESHOOTING.md](TROUBLESHOOTING.md).
 
 ## Quick start
 
@@ -14,9 +14,13 @@ pnpm dev                      # builds the Rust shell and opens the app with hot
 
 The first `pnpm dev` compiles every Rust dependency and takes several minutes (see [Build times](#build-times)). Later runs reuse the build.
 
-You should see a window titled **Velocity Download Manager V2 (dev)** whose heading shows the name and version reported by the Rust core:
+You should see a window titled **Velocity Download Manager (dev)** whose heading shows the name and version reported by the Rust core:
 
-![The V2 development shell on Windows](images/dev-shell-windows.png)
+![The development shell on Windows](images/dev-shell-windows.png)
+
+The same build on Linux (Ubuntu 24.04 under WSL2/WSLg):
+
+![The development shell on Linux](images/dev-shell-linux-wslg.png)
 
 ## Prerequisites
 
@@ -81,15 +85,15 @@ Run `pnpm check:fast` before every pull request. The other verification levels (
 
 ## Running beside the original Velocity Download Manager
 
-V2 is a separate application. During development it uses placeholder identifiers until the identity decision (issue #11) is recorded:
+V2 will replace V1 under the same product name, Velocity Download Manager (PO decision, #11). During development, both run side by side:
 
-| | V1 | V2 (development placeholder) |
+| | V1 | V2 development build |
 |---|---|---|
-| Product name | Velocity Download Manager | Velocity Download Manager V2 (dev) |
-| Bundle identifier | `com.velocity.downloadmanager` | `dev.velocity.downloadmanager.v2` |
+| Product name | Velocity Download Manager | Velocity Download Manager (dev) |
+| Bundle identifier | `com.velocity.downloadmanager` | `dev.velocity.downloadmanager.v2` (placeholder until #11 records the final value) |
 | Dev server port | 1420 | 1430 |
 
-The identifiers differ, so the two apps don't share data directories or single-instance locks. The ports differ, so both dev servers can run at once.
+The bundle identifier, not the name, keeps the apps apart: it decides the data directory and the single-instance lock. Tests in `src-tauri/src/lib.rs` fail if V2's identifier or dev port ever matches V1's. How a V2 release takes over from an installed V1 is decided in #81 (installer) and #24 (data import).
 
 ## Build times
 
@@ -107,10 +111,20 @@ Measured 2026-10-21 on Windows 11 (build 26200), Intel Core i7-13620H (16 logica
 
 Linking the desktop executable dominates incremental rebuilds. Issue #3 tunes this.
 
+Linux, measured 2026-10-21 on Ubuntu 24.04.4 LTS under WSL2 (kernel 6.6.87.2) on the same PC, limited to 2 vCPUs and 1.9 GiB RAM, with the same tool versions:
+
+| Step | Time |
+|---|---|
+| First `cargo build --workspace` from an empty `target/` | 413 s |
+| `pnpm check:fast`, first run | 191 s |
+| `pnpm check:fast`, warm | 8 s |
+| `cargo build --workspace` with no changes | < 1 s |
+| Rebuild after a one-line change in `crates/velocity-core` | 17 s |
+
 | Platform | Clean-clone run |
 |---|---|
 | Windows 11 | **PASS** (2026-10-21, machine above) |
-| Linux (Ubuntu 24.04) | **NOT RUN**: no Linux machine with the prerequisites installed was available |
+| Linux (Ubuntu 24.04, WSL2/WSLg) | **PASS** (2026-10-21). WSL is a real Linux kernel and userland, but not a native desktop install; WebKitGTK rendered through WSLg |
 | macOS | **NOT RUN**: no macOS machine was available |
 
 ## Repository layout

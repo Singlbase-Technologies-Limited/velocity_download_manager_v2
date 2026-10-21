@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "Velocity Download Manager V2 (dev)",
+  "productName": "Velocity Download Manager (dev)",
   "version": "0.1.0",
   "identifier": "dev.velocity.downloadmanager.v2",
   "build": {
@@ -14,7 +14,7 @@
     "windows": [
       {
         "label": "main",
-        "title": "Velocity Download Manager V2 (dev)",
+        "title": "Velocity Download Manager (dev)",
         "width": 1100,
         "height": 720,
         "minWidth": 800,

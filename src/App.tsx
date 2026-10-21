@@ -18,7 +18,7 @@ export function App() {
 
   return (
     <main className="shell">
-      <h1>{info ? windowHeading(info) : 'Velocity Download Manager V2'}</h1>
+      <h1>{info ? windowHeading(info) : 'Velocity Download Manager (dev)'}</h1>
       {error ? (
         <p role="alert">Could not reach the native shell: {error}</p>
       ) : (
