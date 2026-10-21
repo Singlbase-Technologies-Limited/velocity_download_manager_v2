@@ -157,4 +157,4 @@ Measured 2026-10-21 for #3 on the two machines above. Each figure is the median 
 | `src-tauri/` | Tauri 2 desktop shell. Commands stay thin and delegate to the core |
 | `crates/velocity-core/` | Core domain logic in Rust |
 | `scripts/` | Developer scripts (`check:prereqs`, the `check:*` and `test:focused` commands) and their tests |
-| `docs/` | Project documentation |
+| `docs/` | Project documentation; [README.md](README.md) maps every document |
