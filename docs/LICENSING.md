@@ -27,7 +27,7 @@ No GPL, AGPL or LGPL-only component is in the shipped graph.
 
 ## Planned native libraries
 
-From the research report, section 8.2. Versions are proposals until #34 and #35 record them in the native lock file; "static" means linked into V2's own binaries.
+From the research report, section 8.2. Versions are proposals until #35 records them in the native lock file (the build path is [ADR-0004](decisions/0004-libcurl-build-path.md)); "static" means linked into V2's own binaries.
 
 | Component | Licence | Obligation, as distributed statically |
 |---|---|---|
