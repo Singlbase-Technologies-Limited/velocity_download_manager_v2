@@ -10,6 +10,7 @@ An architecture decision record (ADR) states one decision, why it was taken and 
 | [0002](0002-engine-crate-layout.md) | The transfer engine lives in its own crates (`velocity-transfer`, `velocity-curl`) | Accepted | 2026-10-22 |
 | [0003](0003-v2-app-identity.md) | V2 keeps its own technical identity, separate from V1's | Accepted | 2026-10-22 |
 | [0004](0004-libcurl-build-path.md) | A reviewed git pin of `curl-sys` for the prototype; V2 builds libcurl itself for releases | Accepted | 2026-10-22 |
+| [0005](0005-v1-features-without-aria2.md) | What happens to V1 features whose meaning changes without aria2 | Accepted | 2026-10-22 |
 
 Decisions still open are tracked as GitHub issues titled `decision: …`, for example #38 (in-process or child process). [ARCHITECTURE.md](../ARCHITECTURE.md#open-decisions) lists the ones that shape the architecture.
 
