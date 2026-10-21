@@ -1,0 +1,104 @@
+name: Engineering task
+description: Planned engineering work with a clear scope, acceptance criteria and test level
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use a Conventional Commit-style title, such as `feat: …`, `fix: …`, `docs: …`, `ci: …` or `test: …` (see `docs/DEVELOPMENT_WORKFLOW.md`). Keep one reviewable change per issue.
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem and impact
+    validations:
+      required: true
+  - type: textarea
+    id: outcome
+    attributes:
+      label: Expected outcome
+    validations:
+      required: true
+  - type: textarea
+    id: scope
+    attributes:
+      label: Scope
+    validations:
+      required: true
+  - type: textarea
+    id: non-goals
+    attributes:
+      label: Non-goals
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Current evidence
+      description: Links to the code (at a commit), docs, issues or measurements this task is based on.
+    validations:
+      required: false
+  - type: textarea
+    id: constraints
+    attributes:
+      label: Technical requirements and constraints
+    validations:
+      required: false
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance criteria
+      description: Observable and testable conditions.
+      placeholder: |
+        - [ ] …
+    validations:
+      required: true
+  - type: dropdown
+    id: level
+    attributes:
+      label: Verification level
+      description: The highest level this task must reach (docs/TESTING.md).
+      options:
+        - L1 fast local checks (check:fast)
+        - L2 focused integration or protocol tests
+        - L3 pre-merge selection (check:pr)
+        - L4 expensive suites (cross-platform, end-to-end, fuzz, stress, benchmarks)
+        - L5 production acceptance
+    validations:
+      required: true
+  - type: textarea
+    id: testing
+    attributes:
+      label: Testing
+      description: The tests written first (Red–Green–Refactor) and the commands that prove each acceptance criterion.
+    validations:
+      required: true
+  - type: textarea
+    id: docs
+    attributes:
+      label: Documentation impact
+      description: The documents to update in the same pull request.
+    validations:
+      required: true
+  - type: textarea
+    id: risks
+    attributes:
+      label: Risks and open decisions
+    validations:
+      required: false
+  - type: textarea
+    id: dependencies
+    attributes:
+      label: Dependencies
+    validations:
+      required: false
+  - type: checkboxes
+    id: dod
+    attributes:
+      label: Definition of Done
+      description: Tick these in the pull request, not when opening the issue.
+      options:
+        - label: Acceptance criteria are met and demonstrated in the PR with the commands actually run and their results.
+        - label: Tests at the named level pass; checks not run are reported as NOT RUN.
+        - label: The listed documentation is updated in the same PR; the root README is reviewed.
+        - label: One focused PR from `<type>/<issue>-<slug>` into `main`; the branch is deleted after merge.
+        - label: No test was skipped, deleted or weakened; no security control was weakened.
+        - label: The project board shows the real state.

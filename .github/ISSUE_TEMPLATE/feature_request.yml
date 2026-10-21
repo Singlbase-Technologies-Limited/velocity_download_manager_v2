@@ -1,0 +1,49 @@
+name: Feature request
+description: Propose a user-visible improvement
+title: "feat: "
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem to solve
+      description: What user problem or limitation motivates this request?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed behaviour
+      description: Describe what the user should see and be able to do, not only an implementation idea.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives and trade-offs
+      description: What alternatives have you considered? Does V1 or another download manager do this?
+    validations:
+      required: false
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance criteria
+      description: Observable conditions that would prove the feature is complete.
+      placeholder: |
+        - [ ] …
+    validations:
+      required: true
+  - type: textarea
+    id: non-goals
+    attributes:
+      label: Out of scope
+      description: What this request should not change.
+    validations:
+      required: false
+  - type: textarea
+    id: risks
+    attributes:
+      label: Compatibility, security and platform considerations
+      description: The transfer engine, filesystem, permissions, browser, platforms, performance or licensing, as relevant.
+    validations:
+      required: false

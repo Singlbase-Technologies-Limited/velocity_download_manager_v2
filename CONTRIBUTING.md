@@ -40,6 +40,8 @@ Work is planned as issues on the [project board](https://github.com/users/vincen
 
 ## 5. Open a pull request
 
+New issues use the forms in `.github/ISSUE_TEMPLATE/`: bug, feature, Product Owner decision or engineering task. Pull requests start from `.github/PULL_REQUEST_TEMPLATE.md`.
+
 - **Target `main`.** Use a Conventional Commit title, such as `feat(engine): add bounded range probe`, and link the issue.
 - **Describe the change:** what changed, the commands you ran with their results, and every check marked PASS, FAIL, BLOCKED or NOT RUN.
 - **Review:** the Product Owner reviews against [docs/REVIEWING.md](docs/REVIEWING.md) and decides the merge.
