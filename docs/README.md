@@ -8,6 +8,7 @@ Every document in `docs/` is listed here. A new document is added to this map in
 |---|---|
 | [DEVELOPMENT.md](DEVELOPMENT.md) | Set up a clean clone, run the app, and see the commands and build times |
 | [TROUBLESHOOTING.md](TROUBLESHOOTING.md) | Fix common setup and build problems |
+| [PARITY.md](PARITY.md) | See every V1 feature (commands, settings, views, engine behaviours, extension, persistence) with its V1 code and tests, V2 disposition and V2 issue |
 | [ARCHITECTURE.md](ARCHITECTURE.md) | Understand the components, who owns which state, and the open architecture decisions |
 | [GLOSSARY.md](GLOSSARY.md) | Look up a term (lease, coverage, validator, checkpoint, capability and more) |
 | [CONVENTIONS.md](CONVENTIONS.md) | Name Rust and TypeScript code, files, tests, commands, events and error codes |
