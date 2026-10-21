@@ -36,8 +36,9 @@ The skills in the table below hold the details of each step.
 | [`/platform-verify [windows\|linux\|all]`](.claude/skills/platform-verify/SKILL.md) | You only | Check Windows natively and Linux in the WSL clean clone; macOS is NOT RUN |
 | [`/security-check`](.claude/skills/security-check/SKILL.md) | You only | V2-specific security review of the diff, alongside the built-in `/security-review` |
 | [`/prepare-pr <N>`](.claude/skills/prepare-pr/SKILL.md) | You only | The pre-PR checklist and description draft; it stops before pushing |
+| [`/ci-triage [run or PR]`](.claude/skills/ci-triage/SKILL.md) | You or Claude | Read a failed run's `ci-diagnostics.json`, group the failures by cause, and propose one fix plan (read-only) |
 
-Skills for benchmarks (#20), release candidates (#17, #84) and CI triage (#91) come with those issues, once the procedures they wrap exist.
+Skills for benchmarks (#20) and release candidates (#17, #84) come with those issues, once the procedures they wrap exist.
 
 ## Path-scoped rules
 

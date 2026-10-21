@@ -3,11 +3,12 @@
 // any check failed (it never turns a failure into a pass). Tools run directly, never through a
 // shell, so no argument is ever interpreted by one.
 import { spawnSync } from 'node:child_process';
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { workspaceFromMetadata } from './checks-lib.mjs';
+import { extractErrors } from './diagnostics-lib.mjs';
 
 export const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -69,15 +70,45 @@ export function changedPathsSince(base) {
   return { mergeBase, paths: [...paths] };
 }
 
+/**
+ * Adds one check's result to the JSON report at $CI_REPORT_PATH, when set (CI, #91). The report
+ * holds every check of the job with its status and the errors extracted from its output.
+ */
+export function recordCheck(check) {
+  const path = process.env.CI_REPORT_PATH;
+  if (!path) return;
+  const report = existsSync(path) ? JSON.parse(readFileSync(path, 'utf8')) : { checks: [] };
+  report.checks.push(check);
+  writeFileSync(path, JSON.stringify(report, null, 2));
+}
+
 /** Runs the commands in order and exits with 0 only if all passed. */
 export function runAndExit(title, commands) {
   const results = [];
+  const capture = Boolean(process.env.CI_REPORT_PATH);
   for (const c of commands) {
     console.log(`\n=== ${c.name} ===`);
     const [bin, ...pre] = tools[c.tool]();
     const started = Date.now();
-    const r = spawnSync(bin, [...pre, ...c.args], { cwd: root, stdio: 'inherit', windowsHide: true });
-    results.push({ name: c.name, ok: r.status === 0, seconds: (Date.now() - started) / 1000 });
+    // In CI the output is captured (and then printed) so the report can quote the errors.
+    const r = spawnSync(bin, [...pre, ...c.args], {
+      cwd: root,
+      stdio: capture ? ['inherit', 'pipe', 'pipe'] : 'inherit',
+      encoding: 'utf8',
+      maxBuffer: 256 * 1024 * 1024,
+      windowsHide: true,
+    });
+    if (capture) process.stdout.write(`${r.stdout ?? ''}${r.stderr ?? ''}`);
+    const ok = r.status === 0;
+    const seconds = (Date.now() - started) / 1000;
+    results.push({ name: c.name, ok, seconds });
+    recordCheck({
+      id: c.id,
+      name: c.name,
+      status: ok ? 'pass' : 'fail',
+      seconds,
+      errors: ok ? [] : extractErrors(c.id, `${r.stdout ?? ''}\n${r.stderr ?? ''}${r.error ? `\n${r.error.message}` : ''}`, { root }),
+    });
   }
   console.log(`\n=== ${title} summary ===`);
   for (const r of results) console.log(`${r.ok ? 'PASS' : 'FAIL'}  ${r.name}  (${r.seconds.toFixed(1)} s)`);

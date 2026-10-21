@@ -1,7 +1,11 @@
 # Pull-request checks (tier 1 in docs/CI.md). The `select` job decides from the changed paths which
 # jobs run (scripts/ci-select.mjs, the same rules as `pnpm check:pr`) and writes every decision with
 # its reason to the run summary. Skipped jobs are skipped by `if:` (they report success); path
-# filters are never used, so `ci-required` always reports. Caching and measured timings: #14.
+# filters are never used, so `ci-required` always reports.
+#
+# Failure collection (#91, docs/CI_DIAGNOSTICS.md): every check runs to completion, each job writes
+# a report of its checks (`if: !cancelled()`), and `ci-required` turns them into one table and the
+# `ci-diagnostics` artifact. It fails unless every mandatory check passed or was deselected.
 name: PR checks
 
 on:
@@ -20,16 +24,20 @@ jobs:
     name: Select jobs
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    env:
+      CI_REPORT_PATH: ${{ github.workspace }}/../ci-checks.json
     outputs:
       code: ${{ steps.select.outputs.rust == 'true' || steps.select.outputs.frontend == 'true' }}
       rust: ${{ steps.select.outputs.rust }}
       docs: ${{ steps.select.outputs.docs }}
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - id: checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
           persist-credentials: false
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+      - id: node
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 24.12.0
       - id: select
@@ -42,28 +50,48 @@ jobs:
         run: node scripts/ci-select.mjs --base "$BASE_SHA"
       # The docs check takes about a second, so it runs here instead of in its own job: GitHub bills
       # every job rounded up to a whole minute, and this job already has the checkout and Node.
-      - name: Docs (check:links)
+      - id: links
+        name: Docs (check:links)
         if: steps.select.outputs.docs == 'true'
         run: node scripts/check-links.mjs
+      - name: Write the job report
+        if: ${{ !cancelled() && steps.checkout.outcome == 'success' }}
+        env:
+          STEPS: ${{ toJSON(steps) }}
+        run: node scripts/ci-report.mjs job --job select --infra checkout,node --step-check "select=Job selection"
+      - name: Upload the job report
+        if: ${{ !cancelled() && steps.checkout.outcome == 'success' }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: report-select
+          path: ci-reports/report-select.json
+          retention-days: 7
 
   code:
     name: Code checks (check:pr)
     needs: select
-    if: needs.select.outputs.code == 'true'
+    # Runs whenever the selection decided it is needed, even if the docs check in the same job
+    # failed: otherwise one broken link would hide every code failure (seen on #91's fixture A).
+    # If the selection step itself failed, there is no output, and the job is reported BLOCKED.
+    if: ${{ !cancelled() && needs.select.outputs.code == 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 45
     env:
       # Incremental compilation only helps repeated local builds; in CI it costs time and cache space.
       CARGO_INCREMENTAL: 0
+      CI_REPORT_PATH: ${{ github.workspace }}/../ci-checks.json
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - id: checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
           persist-credentials: false
-      - uses: ./.github/actions/setup
+      - id: setup
+        uses: ./.github/actions/setup
         with:
           rust: ${{ needs.select.outputs.rust }}
-      - name: Run the selected checks
+      - id: checks
+        name: Run the selected checks
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           RUST: ${{ needs.select.outputs.rust }}
@@ -72,6 +100,18 @@ jobs:
           # toolchain does that without downloading the pinned one.
           if [ "$RUST" != true ]; then export RUSTUP_TOOLCHAIN=stable; fi
           node scripts/check-pr.mjs --base "$BASE_SHA"
+      - name: Write the job report
+        if: ${{ !cancelled() && steps.checkout.outcome == 'success' }}
+        env:
+          STEPS: ${{ toJSON(steps) }}
+        run: node scripts/ci-report.mjs job --job code --infra checkout,setup --step-check "checks=Code checks"
+      - name: Upload the job report
+        if: ${{ !cancelled() && steps.checkout.outcome == 'success' }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: report-code
+          path: ci-reports/report-code.json
+          retention-days: 7
 
   ci-required:
     name: ci-required
@@ -81,23 +121,38 @@ jobs:
     # skips, so a real failure is always reported.
     if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
-    timeout-minutes: 2
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: read
     steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          sparse-checkout: scripts
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24.12.0
+      # A job that died before uploading has no report; the summary then classifies it from its
+      # result (INFRA), so a missing artifact must not stop this step.
+      - name: Download the job reports
+        continue-on-error: true
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: report-*
+          path: ci-reports
+          merge-multiple: true
       - name: Combine the results
         env:
-          SELECT: ${{ needs.select.result }}
-          CODE: ${{ needs.code.result }}
-        run: |
-          {
-            echo "### ci-required"
-            echo ""
-            echo "| Job | Result |"
-            echo "| --- | --- |"
-            echo "| select (with the docs check) | $SELECT |"
-            echo "| code | $CODE |"
-          } >> "$GITHUB_STEP_SUMMARY"
-          # Selection (and the docs check in that job) must succeed; code may be skipped by the
-          # selection but never fail or be cancelled.
-          [ "$SELECT" = success ] || { echo "Job selection or the docs check did not succeed: $SELECT"; exit 1; }
-          case "$CODE" in success|skipped) ;; *) echo "Code checks did not succeed: $CODE"; exit 1 ;; esac
-          echo "All selected checks passed."
+          NEEDS: ${{ toJSON(needs) }}
+        run: >-
+          node scripts/ci-report.mjs summary --reports ci-reports --jobs
+          '[{"id":"select","name":"Job selection","mandatory":true},
+          {"id":"code","name":"Code checks","mandatory":true,"selectedBy":"select","selectedOutput":"code"}]'
+      - name: Upload ci-diagnostics
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ci-diagnostics
+          path: ci-diagnostics.json
+          retention-days: 7
