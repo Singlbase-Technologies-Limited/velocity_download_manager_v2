@@ -70,7 +70,10 @@ jobs:
   code:
     name: Code checks (check:pr)
     needs: select
-    if: needs.select.outputs.code == 'true'
+    # Runs whenever the selection decided it is needed, even if the docs check in the same job
+    # failed: otherwise one broken link would hide every code failure (seen on #91's fixture A).
+    # If the selection step itself failed, there is no output, and the job is reported BLOCKED.
+    if: ${{ !cancelled() && needs.select.outputs.code == 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 45
     env:
