@@ -1,6 +1,6 @@
 # Reviewing pull requests
 
-This is what a reviewer (the Product Owner today, future maintainers later) checks before approving and squash-merging a pull request into `main`. The workflow itself is in [DEVELOPMENT_WORKFLOW.md](DEVELOPMENT_WORKFLOW.md).
+This is what a reviewer (the Product Owner today, future maintainers later) checks before approving and squash-merging a pull request into `main`. The workflow itself is in [DEVELOPMENT_WORKFLOW.md](DEVELOPMENT_WORKFLOW.md). The [pull request template](../.github/PULL_REQUEST_TEMPLATE.md) asks authors for the evidence listed here, and links back to this page.
 
 ## Before reading the code
 

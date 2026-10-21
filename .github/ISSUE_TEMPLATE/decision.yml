@@ -1,0 +1,65 @@
+name: Product Owner decision
+description: A question only the Product Owner can decide (scope, architecture, dependencies, licensing, security, settings, releases)
+title: "decision: "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        **Product Owner decision issue.** It records the options and a recommendation; it does not make the decision. Downstream issues stay blocked until the decision is recorded here and written up as an ADR in `docs/decisions/` (see `docs/decisions/README.md`).
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem and impact
+      description: What forces a decision now, and what it blocks.
+    validations:
+      required: true
+  - type: textarea
+    id: outcome
+    attributes:
+      label: Expected outcome
+      description: What exists once the decision is recorded, for example "a recorded crate layout for the engine".
+    validations:
+      required: true
+  - type: textarea
+    id: question
+    attributes:
+      label: Question to decide
+      description: One question, phrased so that each option answers it.
+    validations:
+      required: true
+  - type: textarea
+    id: facts
+    attributes:
+      label: Verified facts
+      description: Evidence with links (code at a commit, official docs, measurements). Mark anything not verified.
+    validations:
+      required: true
+  - type: textarea
+    id: options
+    attributes:
+      label: Options and consequences
+      description: Each option with what it makes easier and what it costs.
+      placeholder: |
+        - **A. …**: …
+        - **B. …**: …
+    validations:
+      required: true
+  - type: textarea
+    id: recommendation
+    attributes:
+      label: Recommendation (not a decision)
+    validations:
+      required: true
+  - type: textarea
+    id: evidence-needed
+    attributes:
+      label: Evidence or prototype needed before deciding
+    validations:
+      required: false
+  - type: textarea
+    id: dependencies
+    attributes:
+      label: Dependencies
+      description: Issues this decision depends on, and the issues it blocks.
+    validations:
+      required: false

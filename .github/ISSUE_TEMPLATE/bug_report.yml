@@ -1,0 +1,87 @@
+name: Bug report
+description: Report a reproducible problem in Velocity Download Manager V2
+title: "fix: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Search existing issues first. **Do not paste passwords, private URLs, cookies, tokens, tracker passkeys, SSH keys or personal files**, here or in attachments. Report security vulnerabilities privately, not in a public issue.
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+      description: What happened?
+      placeholder: A clear description of the problem.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to reproduce
+      description: The smallest sequence that reproduces it. Use a public test file or a local server, not a private link.
+      placeholder: |
+        1. Start Velocity Download Manager (dev)
+        2. Add a download from …
+        3. See the error
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behaviour
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behaviour
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version or commit
+      description: The version in the window title, or the commit you built from.
+      placeholder: "0.1.0 or 5f4f57a"
+    validations:
+      required: true
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating system
+      options:
+        - Windows
+        - Linux
+        - macOS
+        - Other
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      description: Your best guess. It's fine to leave it at "Not sure".
+      options:
+        - Not sure
+        - Direct downloads (HTTP, HTTPS, FTP, SFTP)
+        - BitTorrent
+        - User interface
+        - Browser integration
+        - Settings, categories or history
+        - Installation or update
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Sanitised logs or screenshots
+      description: Remove credentials, tokens, private URLs and personal information first. Screenshots should show only the app window.
+    validations:
+      required: false
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional context
+    validations:
+      required: false
