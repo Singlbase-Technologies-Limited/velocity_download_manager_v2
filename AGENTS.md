@@ -32,7 +32,12 @@ pnpm check:prereqs             # check prerequisites
 pnpm install --frozen-lockfile # install JavaScript dependencies
 pnpm dev                       # run the app
 pnpm check:fast                # L1 checks: fmt, clippy, cargo test, tsc, ESLint, Vitest
+pnpm test:focused -- <area>    # L2: one crate, `frontend` or `scripts`, while iterating
+pnpm check:pr                  # L3: the checks this branch's changes need
+pnpm check:full                # L4 locally: L1 + production web build + Rust release build
 ```
+
+Levels and selection rules: [docs/TESTING.md](docs/TESTING.md).
 
 Run `pnpm check:fast` before opening a pull request. Use pnpm only; `package.json` pins its version.
 

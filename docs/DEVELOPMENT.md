@@ -77,11 +77,14 @@ Then install Node.js and pnpm.
 | `pnpm dev` | Run the desktop app with hot reload (Vite on port 1430, Rust rebuilt on change) |
 | `pnpm dev:web` | Run only the web UI in a browser (native commands are unavailable there) |
 | `pnpm check:fast` | Level L1 checks: `cargo fmt --check`, clippy with `-D warnings`, `cargo test`, `tsc`, ESLint (zero warnings), Vitest. It runs every check even after a failure and prints a summary |
-| `pnpm test` | Frontend and script unit tests (Vitest) |
+| `pnpm test:focused -- <area>` | Level L2: the tests of one crate, `frontend` or `scripts` while you iterate |
+| `pnpm check:pr` | Level L3 run locally: only the checks this branch's changes need |
+| `pnpm check:full` | Level L4 run locally: L1, then the production web build and the Rust release build |
+| `pnpm test`, `pnpm test:watch` | Frontend and script unit tests (Vitest), once or in watch mode |
 | `pnpm rust:test` | Rust unit tests |
 | `pnpm typecheck`, `pnpm lint` | TypeScript and ESLint on their own |
 
-Run `pnpm check:fast` before every pull request. The other verification levels (L2–L5) are defined in issue #15.
+Run `pnpm check:fast` before every pull request. [TESTING.md](TESTING.md) describes each level, how `check:pr` picks checks, and the build settings that keep feedback fast.
 
 ## Running beside the original Velocity Download Manager
 
@@ -97,7 +100,9 @@ The bundle identifier, not the name, keeps the apps apart: it decides the data d
 
 ## Build times
 
-Measured 2026-10-21 on Windows 11 (build 26200), Intel Core i7-13620H (16 logical CPUs), 15.7 GiB RAM, NVMe SSD, Rust 1.99.1, Node.js 24.12.0, pnpm 12.14.0:
+The two tables below were measured on 2026-10-21, before the #3 profile change ([check timings](#check-timings) has the current figures).
+
+Windows 11 (build 26200), Intel Core i7-13620H (16 logical CPUs), 15.7 GiB RAM, NVMe SSD, Rust 1.99.1, Node.js 24.12.0, pnpm 12.14.0:
 
 | Step | Time |
 |---|---|
@@ -109,9 +114,9 @@ Measured 2026-10-21 on Windows 11 (build 26200), Intel Core i7-13620H (16 logica
 | Rebuild after a one-line change in `src-tauri` | 17 s |
 | Vite dev server start | 0.23 s |
 
-Linking the desktop executable dominates incremental rebuilds. Issue #3 tunes this.
+Linking the desktop executable dominates incremental rebuilds. Issue #3 tuned this (see [check timings](#check-timings)).
 
-Linux, measured 2026-10-21 on Ubuntu 24.04.4 LTS under WSL2 (kernel 6.6.87.2) on the same PC, limited to 2 vCPUs and 1.9 GiB RAM, with the same tool versions:
+Linux: Ubuntu 24.04.4 LTS under WSL2 (kernel 6.6.87.2) on the same PC, limited to 2 vCPUs and 1.9 GiB RAM, with the same tool versions:
 
 | Step | Time |
 |---|---|
@@ -127,6 +132,23 @@ Linux, measured 2026-10-21 on Ubuntu 24.04.4 LTS under WSL2 (kernel 6.6.87.2) on
 | Linux (Ubuntu 24.04, WSL2/WSLg) | **PASS** (2026-10-21). WSL is a real Linux kernel and userland, but not a native desktop install; WebKitGTK rendered through WSLg |
 | macOS | **NOT RUN**: no macOS machine was available |
 
+### Check timings
+
+Measured 2026-10-21 for #3 on the two machines above. Each figure is the median of `node scripts/check-fast.mjs` wall time after one warm-up run. "One-file change" means appending a comment line to `crates/velocity-core/src/lib.rs` before each run. That rebuilds the core and the desktop shell that depends on it.
+
+| `pnpm check:fast` | Before tuning | After tuning |
+|---|---|---|
+| Windows, no-op | 9.2 s | 8.9 s |
+| Windows, one-file change | 20.9 s | 14.0 s |
+| Linux (WSL2, 2 vCPU, 1.9 GiB), no-op | 6.1 s | 5.5 s |
+| Linux (WSL2, 2 vCPU, 1.9 GiB), one-file change | 66.7 s (18–123 s) | 7.0 s |
+
+- **Windows:** 5 runs on each side, with the same scripts and only the `Cargo.toml` profile change reverted for "before". A first measurement on `main`'s scripts, with 3 runs, gave 7.5 s and 25.8 s.
+- **Linux:** 3 runs before, on `main`, and 5 runs after.
+- **Where the time goes:** in a no-op run, mostly ESLint (about 4.5 s on Windows, 3 s on Linux). After a Rust change, mostly `cargo test`, which re-links the desktop shell. Before tuning, that link wrote a staticlib of about 660 MB on Linux; it is now about 140 MB. Under WSL's 1.9 GiB of memory, the link time varied a lot.
+
+`pnpm check:full` on Windows: 249 s, of which the Rust release build took 232 s. Linux (WSL2): 224 s across the checks, of which the Rust release build took 215 s.
+
 ## Repository layout
 
 | Path | Purpose |
@@ -134,5 +156,5 @@ Linux, measured 2026-10-21 on Ubuntu 24.04.4 LTS under WSL2 (kernel 6.6.87.2) on
 | `src/` | React and TypeScript UI. It talks to Rust only through typed Tauri commands |
 | `src-tauri/` | Tauri 2 desktop shell. Commands stay thin and delegate to the core |
 | `crates/velocity-core/` | Core domain logic in Rust |
-| `scripts/` | Developer scripts (`check:prereqs`, `check:fast`) and their tests |
+| `scripts/` | Developer scripts (`check:prereqs`, the `check:*` and `test:focused` commands) and their tests |
 | `docs/` | Project documentation |

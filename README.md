@@ -10,7 +10,7 @@ pnpm install --frozen-lockfile
 pnpm dev
 ```
 
-The full setup for Windows, Linux and macOS is in [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md). Common problems are in [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md).
+The full setup for Windows, Linux and macOS is in [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md). Common problems are in [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md). The check commands and verification levels are in [docs/TESTING.md](docs/TESTING.md).
 
 ## Contributing
 

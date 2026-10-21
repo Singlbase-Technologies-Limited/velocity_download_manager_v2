@@ -16,6 +16,14 @@ serde_json = "1"
 # speed, while workspace crates stay unoptimised for fast incremental rebuilds.
 [profile.dev.package."*"]
 opt-level = 1
+debug = false
+
+# Line tables keep file and line numbers in backtraces but drop variable info,
+# which shrinks the multi-hundred-megabyte Tauri test artefacts and their link
+# time (measured in issue #3, see docs/DEVELOPMENT.md). For a debugger session,
+# override it: CARGO_PROFILE_DEV_DEBUG=true cargo build
+[profile.dev]
+debug = "line-tables-only"
 
 [profile.release]
 codegen-units = 1
