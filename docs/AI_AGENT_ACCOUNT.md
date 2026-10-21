@@ -9,7 +9,8 @@ Decision recorded in #89 (2026-10-21).
 | Work | Account | How |
 |---|---|---|
 | This repository (`vincentarisawork/velocity_download_manager_v2`): commits, branches, pull requests, issues, comments, project board | **`velocity-claude-agent`** | git remote alias `github-velocity-agent`; `gh` with the agent's token (below) |
-| Merging, approving, releases, repository settings | **`vincentarisawork`** (Product Owner) | Done by the Product Owner, never by the agent |
+| Approving, releases, repository settings | **`vincentarisawork`** (Product Owner) | Done by the Product Owner, never by the agent |
+| Merging | **`vincentarisawork`**, or **`velocity-claude-agent`** for one PR the PO explicitly approved ("I approve the PR") | Squash merge; see [DEVELOPMENT_WORKFLOW.md](DEVELOPMENT_WORKFLOW.md#merging) |
 | Organisation repositories (`Singlbase-Technologies-Limited/*`, including V1) | **`vincentarisawork`** | The agent is not an organisation member: that would use a paid seat (PO decision) |
 
 - **What the agent can do here:** `velocity-claude-agent` has **Write** access to this repository and to Project 2 (*Velocity Download Manager V2*).
