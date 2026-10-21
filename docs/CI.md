@@ -26,10 +26,15 @@ This page is the design. The workflows are written in #13, #14, #16 to #19 and #
 
 Selection extends the rules `pnpm check:pr` already uses, in [`scripts/checks-lib.mjs`](../scripts/checks-lib.mjs). The same code decides locally and in CI, so the two can't drift apart (#13).
 
-- **Fail-safe:** lockfiles, shared configuration (`Cargo.toml`, `package.json`, `rust-toolchain.toml`…), the check scripts, `.github/`, `.claude/` and **any path no rule knows** select everything.
+- **Fail-safe:** these select everything:
+  - lockfiles (`Cargo.lock`, `pnpm-lock.yaml`);
+  - **native lock files anywhere**, even inside a crate (`*.lock`, `vcpkg.json`);
+  - shared configuration (`Cargo.toml`, `package.json`, `rust-toolchain.toml`…);
+  - the check scripts (`scripts/`), `.github/` and `.claude/`;
+  - **any path no rule knows**, such as a `package-lock.json`, which V2 doesn't use.
 - **Crates:** a change inside a crate selects that crate and every crate that depends on it.
 - **Frontend:** frontend paths select `tsc`, ESLint and Vitest.
-- **Docs only:** `docs/` and root `*.md` select only the docs job (link check), on the 1-vCPU `ubuntu-slim` runner.
+- **Docs only:** `docs/` and root `*.md` select only the docs job (`pnpm check:links`: relative links and heading anchors).
 - **Windows-relevant paths (tier 2):**
   - every Rust crate, `src-tauri/`, `Cargo.lock`, `rust-toolchain.toml`;
   - `scripts/`, since the check runner has Windows-specific code paths;
@@ -40,6 +45,21 @@ Selection extends the rules `pnpm check:pr` already uses, in [`scripts/checks-li
 - **Every selection prints its reasons** in the job log, as `check:pr` does locally. A job that wasn't selected is reported as **NOT RUN**, never as passed.
 
 Saving minutes never removes a relevant correctness or security test. When in doubt, the selector selects more.
+
+### How the PR tier applies it
+
+The PR tier is implemented in [`.github/workflows/pr.yml`](../.github/workflows/pr.yml) (#13):
+
+| Job | Runs when | What it does |
+|---|---|---|
+| `select` | Always | `node scripts/ci-select.mjs --base <PR base>` writes `rust`, `frontend` and `docs` flags to its outputs. It adds a table to the **run summary** with every job, *runs* or *skipped*, the reason for each, and the reason for each changed path |
+| `code` | Rust or frontend selected | `pnpm check:pr`, the same command as locally. Tauri system packages and the pinned toolchain are installed only when Rust is selected. Rust and frontend share one job, because each extra job pays the setup cost again |
+| `docs` | Documentation changed (or everything selected) | `node scripts/check-links.mjs` |
+| `ci-required` | Always (`if: always()`) | Passes only if `select` succeeded and every other job succeeded or was skipped by the selection. It writes its own table to the run summary |
+
+**Skipped jobs and required checks.** A job skipped by an `if:` condition reports *Success*, while a workflow skipped by path filters leaves a required check *Pending* forever ([troubleshooting required checks](https://docs.github.com/en/pull-requests/collaborating-with-pull-requests/collaborating-on-repositories-with-code-quality-features/troubleshooting-required-status-checks)). So the workflow never uses `on.paths`, and `ci-required` always reports. That keeps it usable as a required check if branch protection becomes available (#7).
+
+**Selection errors fail the run.** If `ci-select.mjs` can't compute the change (for example, missing history), it exits non-zero rather than guessing, and `ci-required` fails.
 
 ## Caching
 

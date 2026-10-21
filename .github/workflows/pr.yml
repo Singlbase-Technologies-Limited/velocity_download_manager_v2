@@ -1,0 +1,120 @@
+# Pull-request checks (tier 1 in docs/CI.md). The `select` job decides from the changed paths which
+# jobs run (scripts/ci-select.mjs, the same rules as `pnpm check:pr`) and writes every decision with
+# its reason to the run summary. Skipped jobs are skipped by `if:` (they report success); path
+# filters are never used, so `ci-required` always reports. Caching and measured timings: #14.
+name: PR checks
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pr-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  select:
+    name: Select jobs
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      code: ${{ steps.select.outputs.rust == 'true' || steps.select.outputs.frontend == 'true' }}
+      rust: ${{ steps.select.outputs.rust }}
+      docs: ${{ steps.select.outputs.docs }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24.12.0
+      - id: select
+        name: Decide which jobs run
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          # `cargo metadata --no-deps` only reads manifests; the runner's stable toolchain is enough,
+          # so this job doesn't download the pinned one.
+          RUSTUP_TOOLCHAIN: stable
+        run: node scripts/ci-select.mjs --base "$BASE_SHA"
+
+  code:
+    name: Code checks (check:pr)
+    needs: select
+    if: needs.select.outputs.code == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24.12.0
+      - name: Install Tauri system packages
+        if: needs.select.outputs.rust == 'true'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libwebkit2gtk-4.1-dev build-essential file libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev
+      - name: Install the pinned Rust toolchain
+        if: needs.select.outputs.rust == 'true'
+        run: |
+          channel=$(sed -n 's/^channel = "\(.*\)"/\1/p' rust-toolchain.toml)
+          rustup toolchain install "$channel" --profile minimal --component rustfmt --component clippy
+      - name: Install JavaScript dependencies
+        run: |
+          corepack enable
+          pnpm install --frozen-lockfile
+      - name: Run the selected checks
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: node scripts/check-pr.mjs --base "$BASE_SHA"
+
+  docs:
+    name: Docs (check:links)
+    needs: select
+    if: needs.select.outputs.docs == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24.12.0
+      - name: Check relative links and anchors
+        run: node scripts/check-links.mjs
+
+  ci-required:
+    name: ci-required
+    needs: [select, code, docs]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Combine the results
+        env:
+          SELECT: ${{ needs.select.result }}
+          CODE: ${{ needs.code.result }}
+          DOCS: ${{ needs.docs.result }}
+        run: |
+          {
+            echo "### ci-required"
+            echo ""
+            echo "| Job | Result |"
+            echo "| --- | --- |"
+            echo "| select | $SELECT |"
+            echo "| code | $CODE |"
+            echo "| docs | $DOCS |"
+          } >> "$GITHUB_STEP_SUMMARY"
+          # Selection must succeed; the others may be skipped (by the selection) but never fail.
+          [ "$SELECT" = success ] || { echo "Job selection did not succeed: $SELECT"; exit 1; }
+          for r in "$CODE" "$DOCS"; do
+            case "$r" in success|skipped) ;; *) echo "A selected job did not succeed: $r"; exit 1 ;; esac
+          done
+          echo "All selected jobs passed."
