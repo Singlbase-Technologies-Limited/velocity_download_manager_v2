@@ -1,6 +1,7 @@
 name: Product Owner decision
 description: A question only the Product Owner can decide (scope, architecture, dependencies, licensing, security, settings, releases)
 title: "decision: "
+labels: ["decision"]
 body:
   - type: markdown
     attributes:
