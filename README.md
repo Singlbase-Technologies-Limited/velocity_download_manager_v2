@@ -14,7 +14,7 @@ The full setup for Windows, Linux and macOS is in [docs/DEVELOPMENT.md](docs/DEV
 
 ## Contributing
 
-Work is planned as issues on the [project board](https://github.com/users/vincentarisawork/projects/2). Contributor and AI-agent rules are in [AGENTS.md](AGENTS.md); Claude Code reads them through [CLAUDE.md](CLAUDE.md).
+Work is planned as issues on the [project board](https://github.com/users/vincentarisawork/projects/2). Contributor and AI-agent rules are in [AGENTS.md](AGENTS.md); Claude Code reads them through [CLAUDE.md](CLAUDE.md). AI agents work as the machine account `velocity-claude-agent`; see [docs/AI_AGENT_ACCOUNT.md](docs/AI_AGENT_ACCOUNT.md).
 
 ## Licence
 

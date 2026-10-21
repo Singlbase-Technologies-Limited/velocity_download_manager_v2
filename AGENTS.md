@@ -17,6 +17,13 @@ These rules apply to every contributor, human or AI agent. This is the bootstrap
 - Only the Product Owner merges. Delete the branch after merge.
 - Keep each pull request focused on one issue.
 
+## GitHub account for AI agents
+
+- **The agent account:** AI agents commit, push and open pull requests here as the machine account **`velocity-claude-agent`**, never as the Product Owner. The PO can't approve PRs they authored.
+- **How it's wired:** the PO's account stays the default `gh` account on the PC. Agents pass the agent's token explicitly, and this repository's git remote uses the `github-velocity-agent` SSH alias.
+- **Before pushing:** check the identity as described in [docs/AI_AGENT_ACCOUNT.md](docs/AI_AGENT_ACCOUNT.md). If it isn't the agent, stop and ask the PO.
+- **Organisation repositories,** such as the original Velocity Download Manager, use the PO's account. The agent is not an organisation member.
+
 ## Commands
 
 ```sh
