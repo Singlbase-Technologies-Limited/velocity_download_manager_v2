@@ -18,7 +18,7 @@ Every document in `docs/` is listed here. A new document is added to this map in
 |---|---|
 | [DEVELOPMENT_WORKFLOW.md](DEVELOPMENT_WORKFLOW.md) | Follow the branch, commit, pull-request, merge and release-tag workflow |
 | [REVIEWING.md](REVIEWING.md) | Review a pull request |
-| [TESTING.md](TESTING.md) | Choose the right verification level and learn how `check:pr` selects checks |
+| [TESTING.md](TESTING.md) | The test strategy: levels L1–L5 with durations, the test pyramid, fixture policy and servers, and how `check:pr` selects checks |
 | [DEPENDENCIES.md](DEPENDENCIES.md) | Propose, approve, pin and verify a dependency; the allowed licences and the provenance release blockers |
 | [LICENSING.md](LICENSING.md) | Read the licensing assessment: today's third-party licences, planned native libraries, notices |
 | [CI.md](CI.md) | See what CI runs on each event, how jobs are selected, cached and secured, and the monthly cost model |
