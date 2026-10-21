@@ -21,6 +21,7 @@ If something fails, see [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md).
 - **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md):** the components, who owns which state, and the open decisions.
 - **[docs/GLOSSARY.md](docs/GLOSSARY.md):** the terms the code and issues use.
 - **[docs/CONVENTIONS.md](docs/CONVENTIONS.md):** naming.
+- **[docs/DEPENDENCIES.md](docs/DEPENDENCIES.md):** read before proposing any new library or package.
 - **[docs/decisions/](docs/decisions/README.md):** decisions already taken. Don't reopen one without new evidence.
 
 ## 3. Pick an issue

@@ -29,7 +29,7 @@ This is what a reviewer (the Product Owner today, future maintainers later) chec
 ## Maintainability
 
 - [ ] The change sits in the right layer: UI in `src/`, thin Tauri commands in `src-tauri/`, domain logic in `crates/`.
-- [ ] No new dependency without Product Owner approval and a recorded licence (#9).
+- [ ] No new dependency without Product Owner approval and a recorded licence ([DEPENDENCIES.md](DEPENDENCIES.md)); the register of approved dependencies is updated.
 - [ ] The documentation affected by the change is updated in the same PR, and the README is still accurate.
 
 ## After merging

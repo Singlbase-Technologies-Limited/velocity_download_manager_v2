@@ -47,7 +47,7 @@ The components and who owns what state are in [docs/ARCHITECTURE.md](docs/ARCHIT
   - No unmeasured performance claims.
 - **Unfinished features:** an unfinished feature is absent or clearly labelled, never faked with mock data.
 - **Quality:** TypeScript strictness and Rust warnings matter. Code must pass `pnpm check:fast` with zero lint warnings.
-- **Dependencies:** a new crate, npm package, native library, service or background process needs PO approval, with its licence and maintenance status recorded (#9). Don't add one for behaviour the current stack already has.
+- **Dependencies:** a new crate, npm package, native library, service or background process needs PO approval, with its licence and maintenance status recorded ([docs/DEPENDENCIES.md](docs/DEPENDENCIES.md)). Don't add one for behaviour the current stack already has.
 
 ## Security and data
 
