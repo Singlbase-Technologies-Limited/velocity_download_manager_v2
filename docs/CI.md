@@ -9,7 +9,7 @@ This page is the design. The workflows are written in #13, #14, #16 to #19 and #
 | # | Event | What runs | Platforms | Purpose | Built in |
 |---|---|---|---|---|---|
 | 1 | `pull_request` into `main` (opened, synchronised, reopened) | L1 for the selected areas, plus L2 for those areas. Docs-only changes run only the docs job | Linux | Fast feedback before review. One aggregate check, `ci-required`, summarises it | #13, #14, #91 |
-| 2 | `push` to `main` (that is, after a squash merge) | **Linux:** every L1 check and the docs check, then save the Rust cache ([`main.yml`](../.github/workflows/main.yml), #14). Later: broader suites, and **Windows** jobs when Windows-relevant paths changed (below) | Linux, Windows | Catch what the PR tier deliberately left out, before a release candidate is built from `main`, and keep the PR cache warm | #14, #16 |
+| 2 | `push` to `main` (that is, after a squash merge) | Selected like the PR tier, against the commit `main` was at before the push ([`main.yml`](../.github/workflows/main.yml)). **Linux:** the L1 checks the merge needs (`check:pr`), then save the Rust cache. **Windows:** every L1 check (`check:fast`) when Windows-relevant paths changed (below). The docs and guidance checks always. A red run opens the tracking issue ([below](#when-main-breaks)) | Linux, Windows | Catch what the PR tier deliberately left out, on Windows too, before a release candidate is built from `main`, and keep the PR caches warm | #14, #16 |
 | 3 | `workflow_dispatch` on a commit, or a `v*-rc.*` tag | Everything runnable (`check:full` and the L2 suites) plus installers | Linux, Windows; macOS once #83 establishes it | A downloadable, labelled release-candidate build from a verified `main` commit | #17 |
 | 4 | `v*` tag (not `-rc`) | The release gate: it rechecks that the tag's commit passed tier 3, then builds artefacts with provenance into a **draft** release | Linux, Windows | Prepare a release the PO publishes by hand | #18 |
 | 5 | `schedule` (weekly) and `workflow_dispatch` | L4: everything on Linux and Windows. Later also fuzzing, stress and extended benchmarks. macOS on demand only | Linux, Windows; macOS manual | Catch slow drift and run what's too expensive per change | #19 |
@@ -89,6 +89,29 @@ The repository gets **10 GB of Actions cache**, separate from artifact storage. 
 - **Saving:** only [`main.yml`](../.github/workflows/main.yml), the Linux checks after each merge to `main`, saves the cache. It does so after a fully green run, when the exact key isn't cached yet, and after removing the workspace crates' artefacts.
 - **No incremental compilation in CI:** `CARGO_INCREMENTAL=0` keeps the cache smaller and CI builds faster.
 
+### The post-merge tier
+
+[`main.yml`](../.github/workflows/main.yml) has four jobs (#16):
+
+| Job | Runs when | What it does |
+|---|---|---|
+| `select` | Always | `node scripts/ci-select.mjs --base <github.event.before>`: the same selection as a pull request, for what the merge changed. Also `check:links` and `check:guidance` |
+| `linux` | Rust or frontend selected | `check:pr --base <before>`, which runs the native build before any Rust check, then saves the Linux Rust cache when Rust ran and its key is new |
+| `windows` | Windows-relevant paths changed (Rust, `scripts/`, CI files, unknown paths) | `check:fast` on `windows-latest`, with its own Rust cache (key `rust-v1-Windows-<hash>`). It doesn't depend on `linux`, so a Linux-only failure doesn't stop it (scenario B of #91) |
+| `summary` | Unless the run was cancelled | Combines the job reports into the run summary and `ci-diagnostics`, then opens, comments on or closes the tracking issue. It's the only job allowed to write issues |
+
+A docs-only merge runs only `select` and `summary`.
+
+**Manual runs:** `gh workflow run main.yml --ref <branch> [-f base=<commit>] [-f tracking-title="<title>"]`. They're for trying a change to this workflow. Without `base`, a manual run checks everything. A tracking title is for test runs only: on `main` the title is always `main is failing`, so a test run never touches the real issue.
+
+## When main breaks
+
+`main` must stay releasable (DEVELOPMENT_WORKFLOW.md):
+
+- **Visible within the run:** a red `main` run opens the issue **"main is failing"**. It holds the failing checks with their first error, the run link and this policy ([`scripts/ci-main-status.mjs`](../scripts/ci-main-status.mjs)). While the issue is open, each further red run comments on it, and the next green run closes it.
+- **The policy:** fix forward with a `fix/` PR, or revert the offending squash commit through a PR, within one working day (*project judgment*). The tracking issue is where that is coordinated.
+- **A missing report counts as red:** if a run leaves no `ci-diagnostics` report, the issue still opens, saying so. A broken run is never silent.
+
 ## Cancelling and de-duplicating
 
 - **Superseded PR runs are cancelled.** Each workflow sets `concurrency: { group: <workflow>-<PR or ref>, cancel-in-progress: true }` for pull requests ([concurrency](https://docs.github.com/en/actions/writing-workflows/choosing-what-your-workflow-does/control-the-concurrency-of-workflows-and-jobs)). Runs on `main` and on tags are never cancelled: each commit's result matters.
@@ -155,12 +178,19 @@ macOS minutes cost about 10 times Linux ($0.062 against $0.006 a minute), so mac
 - **The rest is the 3 billed minutes** of fixed cost per code run: `select`, the setup inside `code`, and `ci-required`.
 - **Failure collection (#91) adds no billed minutes.** A warm run with everything selected cost 4 billed minutes before and after it: [39671582041](https://github.com/vincentarisawork/velocity_download_manager_v2/actions/runs/39671582041) (PR #109) against [39676944320](https://github.com/vincentarisawork/velocity_download_manager_v2/actions/runs/39676944320) (PR #110). `ci-required` grew from 5 s to 17–19 s (checkout, Node, downloading the reports), still within its one billed minute.
 
+**Measured on the post-merge tier** (#16, 2026-10-22; manual runs of `main.yml` on demo branches; Windows minutes count double):
+
+| Run | Change | Jobs (s) | Billed |
+|---|---|---|---|
+| [39775990305](https://github.com/vincentarisawork/velocity_download_manager_v2/actions/runs/39775990305) | One crate, with a deliberate Linux-only test failure | select 24, linux 96 (failed), **windows 1084 (cold, no Windows cache yet)**, summary 23 | 42 min (Windows 38) |
+| [39778706769](https://github.com/vincentarisawork/velocity_download_manager_v2/actions/runs/39778706769) | Docs only | select 28, summary 25 (`linux` and `windows` skipped) | 2 min |
+
 **Still assumed** (no runs yet):
 
 | Job | Cache | Duration | Basis |
 |---|---|---|---|
 | Post-merge Linux, warm | warm | 4 min billed | The warm `code` job plus about 1 min of setup |
-| Post-merge Windows | warm | 8 min plus 2 | Windows runners set up more slowly |
+| Post-merge Windows | warm | about 10 min billed | The cold run measured above was 18 min; the warm figure waits for the first run after `main` saves the Windows cache |
 | Release candidate (Linux + Windows, with installers) | warm | 40 min | Two `check:full` runs plus bundling |
 | Weekly full (Linux + Windows) | warm | 30 min | Two `check:full` runs |
 
@@ -174,10 +204,11 @@ macOS minutes cost about 10 times Linux ($0.062 against $0.006 a minute), so mac
 | Post-merge Windows (Windows-relevant merges, assumed half; #16) | 30 | 10 | 300 |
 | Weekly full | 4 | 30 | 120 |
 | Cold-cache penalty (new `Cargo.lock` or toolchain, assumed 8; cold `main` and PR runs) | 8 | +6 | 48 |
+| Cold Windows post-merge (new `Cargo.lock` or toolchain, assumed 8; measured 38 billed, about 28 above warm) | 8 | +28 | 224 |
 | Release candidates (assumed 2) | 2 | 40 | 80 |
-| **Total** | | | **≈ 1,890** |
+| **Total** | | | **≈ 2,110** |
 
-**That is under the 2,000-minute quota, with little margin.** The PR tier dominates. If it runs over:
+**That is slightly over the 2,000-minute quota** once the measured cold Windows runs are counted (#16). The PR tier still dominates. Ways to bring it under:
 
 1. **Push to the PR branch less often:** batch fixes before pushing. Cancellation discards superseded runs (demonstrated on demo #107), but a started job still costs its minutes.
 2. **Run Windows post-merge on a daily batch** of the merged commits, instead of per merge. This saves up to 300 minutes, at the cost of slower Windows feedback.

@@ -199,7 +199,7 @@ describe('selectJobs (CI, #13)', () => {
 
   it('selects nothing for an empty change, with reasons', () => {
     const s = selectJobs([], workspace);
-    expect(Object.values(s.jobs).map((j) => j.run)).toEqual([false, false, false, false]);
+    expect(Object.values(s.jobs).map((j) => j.run)).toEqual([false, false, false, false, false]);
     expect(s.jobs.rust.reason).toMatch(/no changed paths/i);
   });
 
@@ -227,6 +227,26 @@ describe('selectJobs (CI, #13)', () => {
     ['docs only', ['docs/CI.md'], false],
   ])('runs the native builds for %s: %s', (_name, paths, run) => {
     expect(selectJobs(paths, withCurl).jobs.native.run).toBe(run);
+  });
+
+  // Post-merge Windows checks (#16, docs/CI.md "Windows-relevant paths"): everything Rust, the
+  // scripts (they have Windows code paths), CI files and unknown paths; not frontend or docs alone.
+  it.each([
+    ['a crate', ['crates/velocity-core/src/lib.rs'], true],
+    ['the shell crate', ['src-tauri/tauri.conf.json'], true],
+    ['Cargo.lock', ['Cargo.lock'], true],
+    ['a check script', ['scripts/checks-lib.mjs'], true],
+    ['a workflow file', ['.github/workflows/main.yml'], true],
+    ['an unknown path', ['tools/new-thing.sh'], true],
+    ['frontend only', ['src/App.tsx'], false],
+    ['docs only', ['docs/CI.md', 'README.md'], false],
+  ])('runs the Windows checks for %s: %s', (_name, paths, run) => {
+    expect(selectJobs(paths, workspace).jobs.windows.run).toBe(run);
+  });
+
+  it('says why the Windows checks run or are skipped', () => {
+    expect(selectJobs(['crates/velocity-core/src/lib.rs'], workspace).jobs.windows.reason).toBe('Windows-relevant: crates changed: velocity-core, velocity-desktop-v2');
+    expect(selectJobs(['src/App.tsx'], workspace).jobs.windows.reason).toBe('no Windows-relevant path changed (frontend and docs run on Linux only)');
   });
 
   it('says why the native builds run or are skipped', () => {

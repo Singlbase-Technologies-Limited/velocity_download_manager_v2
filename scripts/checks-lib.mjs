@@ -128,6 +128,13 @@ export function selectJobs(changedPaths, workspace) {
       rust: job(s.rustPackages.length > 0, `crates changed: ${s.rustPackages.join(', ')}`, 'no Rust crate changed'),
       frontend: job(s.frontend, 'frontend files changed', 'no frontend file changed'),
       docs: job(s.docs, `documentation changed: ${docsPaths.join(', ')}`, 'no documentation changed'),
+      // Post-merge Windows checks (#16): every Rust selection, which includes the scripts, CI files
+      // and unknown paths (they select everything); frontend and docs alone run on Linux only.
+      windows: job(
+        s.rustPackages.length > 0,
+        `Windows-relevant: crates changed: ${s.rustPackages.join(', ')}`,
+        'no Windows-relevant path changed (frontend and docs run on Linux only)',
+      ),
       native: {
         run: nativePaths.length > 0,
         reason: !paths.length ? 'no changed paths' : nativePaths.length ? `native build inputs changed: ${nativePaths.join(', ')}` : 'no native build input changed',
