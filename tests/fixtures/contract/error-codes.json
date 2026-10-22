@@ -1,0 +1,90 @@
+[
+  {
+    "code": "INVALID_INPUT",
+    "message": "Some of the values entered aren't valid."
+  },
+  {
+    "code": "INVALID_URL",
+    "message": "The link isn't a valid download address."
+  },
+  {
+    "code": "UNSUPPORTED_SCHEME",
+    "message": "This kind of link can't be downloaded."
+  },
+  {
+    "code": "INVALID_PATH",
+    "message": "The folder path isn't valid."
+  },
+  {
+    "code": "INVALID_FILENAME",
+    "message": "The file name isn't allowed on this system."
+  },
+  {
+    "code": "DESTINATION_MISSING",
+    "message": "The download folder doesn't exist."
+  },
+  {
+    "code": "PERMISSION_DENIED",
+    "message": "Velocity isn't allowed to write to that location."
+  },
+  {
+    "code": "FILE_EXISTS",
+    "message": "A file with that name already exists."
+  },
+  {
+    "code": "NOT_FOUND",
+    "message": "That download or file no longer exists."
+  },
+  {
+    "code": "INVALID_STATE",
+    "message": "That action isn't possible in the download's current state."
+  },
+  {
+    "code": "ENGINE_MISSING",
+    "message": "The transfer engine is missing from this installation."
+  },
+  {
+    "code": "ENGINE_INCOMPATIBLE",
+    "message": "The transfer engine doesn't match this version of Velocity."
+  },
+  {
+    "code": "ENGINE_START_FAILED",
+    "message": "The transfer engine couldn't be started."
+  },
+  {
+    "code": "ENGINE_UNAVAILABLE",
+    "message": "The transfer engine isn't responding."
+  },
+  {
+    "code": "DATABASE",
+    "message": "Velocity couldn't read or save its data."
+  },
+  {
+    "code": "DATABASE_MIGRATION",
+    "message": "Velocity couldn't upgrade its data to this version."
+  },
+  {
+    "code": "IO",
+    "message": "A file couldn't be read or written."
+  },
+  {
+    "code": "INSUFFICIENT_DISK_SPACE",
+    "message": "There isn't enough free disk space."
+  },
+  {
+    "code": "PROTOCOL_DISABLED",
+    "message": "This kind of download is turned off in Settings."
+  },
+  {
+    "code": "CONFIRMATION_REQUIRED",
+    "message": "This action needs your confirmation first."
+  },
+  {
+    "code": "UNSUPPORTED",
+    "message": "This isn't supported on this system yet."
+  },
+  {
+    "code": "INTERNAL",
+    "message": "Something went wrong inside Velocity."
+  }
+]

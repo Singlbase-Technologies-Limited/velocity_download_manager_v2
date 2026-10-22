@@ -1,0 +1,10 @@
+{
+  "liveConnectionChanges": true,
+  "maxConnectionsPerHost": 8,
+  "metalink": false,
+  "protocols": [
+    "http",
+    "ftp"
+  ],
+  "validatorResume": true
+}
