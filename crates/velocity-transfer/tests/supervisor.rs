@@ -225,20 +225,31 @@ fn a_restart_by_hand_stops_the_old_engine_and_fails_its_transfers_as_retryable()
     );
     wait_health(&health, |h| h == EngineHealth::Running);
     assert_ne!(engine.process_id(), old);
-    // The old engine was stopped, not left running: it cancelled the transfer and removed the
-    // part file before exiting.
-    let deadline = Instant::now() + WAIT;
-    while part_of(&dest).exists() {
-        assert!(
-            Instant::now() < deadline,
-            "the old engine still has its part file"
-        );
-        std::thread::sleep(Duration::from_millis(20));
-    }
+    // The old engine was stopped, not left running: the server soon sends nothing more. Since
+    // #43 it pauses its transfers and keeps their part files, so the app can resume them.
+    assert_server_stops(&server);
+    assert!(
+        part_of(&dest).exists(),
+        "the part file is kept for a resume"
+    );
+}
+
+/// The server sends nothing more once the bytes it had under way are counted. (It counts a chunk
+/// before writing it, and on Windows a write into a socket its peer just closed can still
+/// succeed.)
+fn assert_server_stops(server: &TestServer) {
+    std::thread::sleep(Duration::from_millis(300));
+    let sent = server.counters().body_bytes_sent;
+    std::thread::sleep(Duration::from_millis(500));
+    assert_eq!(
+        server.counters().body_bytes_sent,
+        sent,
+        "the old engine still downloads"
+    );
 }
 
 #[test]
-fn stopping_the_supervisor_stops_its_engine_and_cleans_up() {
+fn stopping_the_supervisor_stops_its_engine_and_keeps_the_part_file() {
     let server = slow_server();
     let dir = Dir::new("stop");
     let dest = dir.0.join("out.bin");
@@ -249,10 +260,10 @@ fn stopping_the_supervisor_stops_its_engine_and_cleans_up() {
         .expect("add");
     wait_for(&events, id, |s| s == DownloadStatus::Downloading);
     drop(engine);
-    assert!(
-        !dest.exists() && !part_of(&dest).exists(),
-        "a graceful stop cancels the transfer and removes its part file"
-    );
+    // A graceful stop pauses the transfer (#43): the part file stays for a resume, nothing looks
+    // finished, and the engine stopped downloading.
+    assert!(part_of(&dest).exists() && !dest.exists());
+    assert_server_stops(&server);
 }
 
 /// What the engine process really got: its command line and environment, read from `/proc`.

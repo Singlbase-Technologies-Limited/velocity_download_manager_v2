@@ -11,7 +11,7 @@ Terms used across V2's documents, issues and code, in alphabetical order. Where 
 | **Build identity record** | `build-info.json`: what one native build contains and how it was made: each library's source, SHA-256, signature result and build options, what `curl -V` reports as linked, the artefact checksums, the toolchains and the V2 commit (#35; [BUILDING_NATIVE.md](BUILDING_NATIVE.md#build-infojson)) |
 | **Capability** | Something an engine or build really supports, such as a protocol, live connection changes or validator-checked resume. It is reported, never assumed, so the UI can explain differences truthfully (report §4.2; #57) |
 | **Changed object** | A file that changed on the server during a download, detected through its validator, its total length or its encoding. The old bytes are discarded and the download restarts once (report §5.3; #45) |
-| **Checkpoint** | The durable record of a transfer's progress: the format version, a URL fingerprint, the total length, the validator, the encoding and the durable coverage. It is written atomically after an fsync (report §5.2; #43) |
+| **Checkpoint** | The durable record of a transfer's progress: the format version, the source without login or query, the total length, the validators and the durable coverage D. The engine sends it after syncing the part file, and the app saves it in its database (report §5.2; #43; [ENGINE_INTERNALS.md](ENGINE_INTERNALS.md#persistence-and-recovery-43)) |
 | **Coverage (C)** | The disjoint byte intervals of a file that were written to disk by the lease that owned them (report §5.2) |
 | **Credential handle** | An opaque number that refers to credentials the app keeps in memory. Only the handle crosses the `DirectTransfer` contract, never the secret (#36, #70) |
 | **`DirectTransfer`** | The engine-neutral contract between the manager and the direct-download engine: add, pause, resume, cancel, remove, limits, connections, snapshots and events (report §4.2; #36) |
@@ -24,12 +24,13 @@ Terms used across V2's documents, issues and code, in alphabetical order. Where 
 | **libcurl layer** | The only code that calls libcurl: FFI and the `Multi` event loop on its own thread (report §4.2; `crates/velocity-curl`, ADR-0002) |
 | **Native lock file** | `scripts/native/deps.lock`: the pinned version, source URL, SHA-256, signing key and licence of every native library V2 builds (#35; [DEPENDENCIES.md](DEPENDENCIES.md#lock-file)) |
 | **No-clobber finalisation** | Completing a download by renaming its part file to the final name without replacing an existing file (report §5.3; #43) |
-| **Part file** | The file being downloaded, before it is verified and renamed (`.vdmpart` in the report; the final name is set in #43) |
+| **Part file** | The file being downloaded, `<destination>.vdmpart`, until it is complete and renamed into place without replacing an existing file. Sparse on Windows (#43) |
 | **PO** | The Product Owner, who decides scope, architecture, dependencies, licensing, security, repository settings, merges and releases |
 | **Probe** | The first request of a download: a bounded range request whose bytes are kept. Its response decides between ranges, sequential ranges and a single stream, without a wasted full transfer. V2 doesn't use HEAD as proof of range support (report §5.1; #41) |
 | **Ranges lost** | The state when a server that accepted ranges stops honouring them: a `200` for a later range, or a second *anomaly*. The rest comes as one stream that writes only the bytes not yet covered (report §5.1; #41) |
 | **Sequential ranges** | A server that honours ranges but gives no total (`bytes 0-b/*`). The rest is fetched as one open range at a time, without parallel segments, until a `416` marks the end (report §5.1; #41) |
 | **Sidecar** | A helper program shipped with the app and started by it, such as the child-process engine ([ADR-0012](decisions/0012-engine-child-process.md)) |
+| **Sparse file** | A file whose unwritten ranges take no space and are never filled with zeros. V2's part files are sparse on Windows, because NTFS otherwise zero-fills the gap in front of a write far into a new file (#42's measurement, #43) |
 | **Single stream** | Downloading over one connection from byte 0, used when the server ignores ranges (report §5.1) |
 | **Split (work-stealing)** | Halving the largest remaining lease so a free worker can take the second half. The old request stops at the new boundary (report §5.2; #42) |
 | **Strong validator** | An ETag without the `W/` prefix, or a Last-Modified date that RFC 9110 §8.8.2.2 treats as strong. Only a strong validator may be sent in `If-Range` (report §5.3; #45) |

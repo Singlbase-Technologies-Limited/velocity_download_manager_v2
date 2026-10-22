@@ -262,17 +262,15 @@ pub fn download_resumable(
             resumed_bytes = part.coverage.len();
             ck.etag.clone_from(&checkpoint.etag);
             ck.last_modified.clone_from(&checkpoint.last_modified);
-            let connections = options.connections.max(1);
+            ck.resumed = true;
             fetch_ranges(
                 lp,
                 url,
                 checkpoint.total,
-                connections,
-                options.leases,
+                options,
                 &mut part,
                 &mut ck,
                 control,
-                true,
             )
             .map(|(fetches, splits, mode)| Fetched {
                 mode,
@@ -349,14 +347,20 @@ fn fetch_fresh(
     let mut fetches = 1;
     let mut splits = 0;
     let request = FetchRequest::range(url.to_owned(), 0, Some(probe_end));
-    let (outcome, cursor, validators) = match probe(lp, request, probe_end, part, control)? {
+    let (outcome, cursor, validators) = match probe(lp, request, probe_end, part, ck, control)? {
         Probed::Outcome(outcome, cursor, validators) => (outcome, cursor, validators),
+        Probed::Paused(total, validators) => {
+            return paused_in_probe(total, validators, part, ck, control)
+        }
         // Report 5.1: a multipart answer to one range is retried once without Range.
         Probed::Multipart => {
             fetches += 1;
             let request = FetchRequest::get(url.to_owned());
-            match probe(lp, request, probe_end, part, control)? {
+            match probe(lp, request, probe_end, part, ck, control)? {
                 Probed::Outcome(outcome, cursor, validators) => (outcome, cursor, validators),
+                Probed::Paused(total, validators) => {
+                    return paused_in_probe(total, validators, part, ck, control)
+                }
                 Probed::Multipart => {
                     return Err(TransferError::new(
                         FailureClass::Permanent,
@@ -389,18 +393,7 @@ fn fetch_fresh(
             (mode, total)
         }
         ProbeOutcome::RangesOk { total, .. } => {
-            let connections = options.connections.max(1);
-            let (n, s, mode) = fetch_ranges(
-                lp,
-                url,
-                total,
-                connections,
-                options.leases,
-                part,
-                ck,
-                control,
-                false,
-            )?;
+            let (n, s, mode) = fetch_ranges(lp, url, total, options, part, ck, control)?;
             fetches += n;
             splits = s;
             (mode, total)
@@ -412,6 +405,23 @@ fn fetch_fresh(
         fetches,
         splits,
     })
+}
+
+/// A pause while the probe ran. When the probe's answer gave the file's total, ranges work, so
+/// its bytes are synced and checkpointed like any others; otherwise there is nothing to resume
+/// from, and a resume starts over.
+fn paused_in_probe(
+    total: Option<u64>,
+    validators: Validators,
+    part: &mut PartFile,
+    ck: &mut Checkpointer,
+    control: &Control,
+) -> Result<Fetched, DownloadError> {
+    if let Some(total) = total {
+        (ck.etag, ck.last_modified) = validators;
+        ck.take_probe(part, total, control)?;
+    }
+    Err(DownloadError::Paused)
 }
 
 /// The durable ranges of `checkpoint`, if it can be trusted for `url`: this format, this source,
@@ -454,6 +464,8 @@ struct Checkpointer {
     last_at: Instant,
     written_at_last: u64,
     sent: u32,
+    /// The download resumed from a checkpoint: what it starts with is durable already.
+    resumed: bool,
 }
 
 impl Checkpointer {
@@ -466,6 +478,7 @@ impl Checkpointer {
             last_at: Instant::now(),
             written_at_last: 0,
             sent: 0,
+            resumed: false,
         }
     }
 
@@ -474,6 +487,7 @@ impl Checkpointer {
             || self.last_at.elapsed() >= self.cadence.interval
     }
 
+    /// Syncs the part file, marks what the scheduler covers durable, and sends the checkpoint.
     fn take(
         &mut self,
         part: &PartFile,
@@ -482,23 +496,40 @@ impl Checkpointer {
     ) -> Result<(), DownloadError> {
         part.sync()?;
         sched.synced();
+        self.send(sched.total(), sched.durable(), part, control);
+        Ok(())
+    }
+
+    /// During the probe, before a scheduler exists: everything written so far is the probe's own,
+    /// at its place, so once synced it is all durable.
+    fn take_probe(
+        &mut self,
+        part: &PartFile,
+        total: u64,
+        control: &Control,
+    ) -> Result<(), DownloadError> {
+        part.sync()?;
+        self.send(total, &part.coverage, part, control);
+        Ok(())
+    }
+
+    fn send(&mut self, total: u64, durable: &Coverage, part: &PartFile, control: &Control) {
         control.checkpoint(Checkpoint {
             format: CHECKPOINT_FORMAT,
             source: self.source.clone(),
-            total: sched.total(),
+            total,
             etag: self.etag.clone(),
             last_modified: self.last_modified.clone(),
-            durable: sched.durable().intervals().to_vec(),
+            durable: durable.intervals().to_vec(),
         });
         self.sent += 1;
         self.last_at = Instant::now();
         self.written_at_last = part.written;
-        Ok(())
     }
 }
 
 /// `<destination>.vdmpart`.
-fn part_path(destination: &Path) -> PathBuf {
+pub(crate) fn part_path(destination: &Path) -> PathBuf {
     let mut p = destination.as_os_str().to_owned();
     p.push(".vdmpart");
     PathBuf::from(p)
@@ -513,6 +544,8 @@ enum Probed {
     Outcome(ProbeOutcome, u64, Validators),
     /// A `multipart/byteranges` answer, aborted before any byte was written.
     Multipart,
+    /// Paused while the probe ran; the file's total, if its answer gave one, and its validators.
+    Paused(Option<u64>, Validators),
 }
 
 /// Runs the probe, or its retry without `Range`, and writes the bytes it may keep. The outcome is
@@ -522,6 +555,7 @@ fn probe(
     request: FetchRequest,
     probe_end: u64,
     part: &mut PartFile,
+    ck: &mut Checkpointer,
     control: &Control,
 ) -> Result<Probed, DownloadError> {
     let probe_verdict = Arc::new(Mutex::new(None));
@@ -551,7 +585,7 @@ fn probe(
     });
     // The probe's bytes start at 0; how far they may go depends on its outcome.
     let mut cursor = 0u64;
-    let probe_done = drain(&fetch, control, |chunk| {
+    let drained = drain(&fetch, control, |chunk| {
         let (limit, total) = match probe_verdict
             .lock()
             .expect("the probe verdict lock")
@@ -569,8 +603,34 @@ fn probe(
         };
         part.accept(&mut cursor, limit, chunk)?;
         control.report(part.written, total);
+        // With a total, ranges work, so the probe's bytes can be resumed from: checkpoint them.
+        let total = match probe_verdict
+            .lock()
+            .expect("the probe verdict lock")
+            .as_ref()
+        {
+            Some(Ok(ProbeOutcome::RangesOk { total, .. })) => Some(*total),
+            _ => None,
+        };
+        if let (Some(total), true) = (total, ck.due(part)) {
+            (ck.etag, ck.last_modified) = validators.lock().expect("the validators lock").clone();
+            ck.take_probe(part, total, control)?;
+        }
         Ok(())
-    })?;
+    });
+    if matches!(drained, Err(DownloadError::Paused)) {
+        let total = match probe_verdict
+            .lock()
+            .expect("the probe verdict lock")
+            .as_ref()
+        {
+            Some(Ok(ProbeOutcome::RangesOk { total, .. })) => Some(*total),
+            _ => None,
+        };
+        let validators = validators.lock().expect("the validators lock").clone();
+        return Ok(Probed::Paused(total, validators));
+    }
+    let probe_done = drained?;
     if multipart.load(Ordering::Acquire) {
         return Ok(Probed::Multipart);
     }
@@ -667,15 +727,14 @@ fn fetch_ranges(
     lp: &CurlLoop,
     url: &str,
     total: u64,
-    connections: u32,
-    sizes: Sizes,
+    options: DownloadOptions,
     part: &mut PartFile,
     ck: &mut Checkpointer,
     control: &Control,
-    resumed: bool,
 ) -> Result<(u32, u32, Mode), DownloadError> {
-    let mut sched = Scheduler::new(total, &part.coverage, sizes);
-    if resumed {
+    let connections = options.connections.max(1);
+    let mut sched = Scheduler::new(total, &part.coverage, options.leases);
+    if ck.resumed {
         // What a resumed download starts with came from a checkpoint: it is on disk already.
         sched.synced();
     }

@@ -63,7 +63,7 @@ For example:
 
 ## Shutdown
 
-- **Graceful stop:** closing the engine's stdin is the stop request. The engine cancels every transfer, waits up to 5 seconds for their part files to be removed, and exits.
+- **Graceful stop:** closing the engine's stdin is the stop request. The engine pauses every transfer, keeping its part file for a resume from its last checkpoint (#43), waits up to 5 seconds for its workers to stop, and exits.
 - **Kill:** the app waits up to 5 seconds for the engine's stdout to end, and kills it if it doesn't. The engine does the same when the app goes away.
 - **No polling:** the app waits on the end of the engine's stdout, not on a polling loop.
 

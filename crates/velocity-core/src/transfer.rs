@@ -216,13 +216,30 @@ pub trait DirectTransfer: Send {
 #[serde(tag = "command", rename_all = "camelCase", deny_unknown_fields)]
 pub enum TransferCommand {
     Capabilities {},
-    Add { spec: TransferSpec },
-    Pause { id: TransferId },
-    Resume { id: TransferId },
-    Cancel { id: TransferId },
-    Remove { id: TransferId },
-    SetLimits { id: TransferId, limits: Limits },
-    SetConnections { id: TransferId, connections: u32 },
+    /// Boxed, because a spec with a checkpoint is much larger than any other command.
+    Add {
+        spec: Box<TransferSpec>,
+    },
+    Pause {
+        id: TransferId,
+    },
+    Resume {
+        id: TransferId,
+    },
+    Cancel {
+        id: TransferId,
+    },
+    Remove {
+        id: TransferId,
+    },
+    SetLimits {
+        id: TransferId,
+        limits: Limits,
+    },
+    SetConnections {
+        id: TransferId,
+        connections: u32,
+    },
     Snapshot {},
 }
 
@@ -248,7 +265,7 @@ pub fn dispatch(
             capabilities: engine.capabilities(),
         },
         TransferCommand::Add { spec } => TransferReply::Added {
-            id: engine.add(spec)?,
+            id: engine.add(*spec)?,
         },
         TransferCommand::Pause { id } => {
             engine.pause(id)?;
@@ -359,7 +376,9 @@ mod tests {
 
         for command in [
             TransferCommand::Capabilities {},
-            TransferCommand::Add { spec: spec() },
+            TransferCommand::Add {
+                spec: Box::new(spec()),
+            },
             TransferCommand::Pause { id: TransferId(1) },
             TransferCommand::Resume { id: TransferId(1) },
             TransferCommand::Cancel { id: TransferId(1) },
@@ -410,7 +429,9 @@ mod tests {
 
     #[test]
     fn the_wire_forms_refuse_unknown_fields() {
-        let add = TransferCommand::Add { spec: spec() };
+        let add = TransferCommand::Add {
+            spec: Box::new(spec()),
+        };
         for pointer in [
             "",
             "/spec",
@@ -445,10 +466,10 @@ mod tests {
             refuses_an_extra_field(&add, pointer);
         }
         let discard = TransferCommand::Add {
-            spec: TransferSpec {
+            spec: Box::new(TransferSpec {
                 resume: Some(Resume::DiscardPartFile {}),
                 ..spec()
-            },
+            }),
         };
         refuses_an_extra_field(&discard, "/spec/resume");
     }
@@ -570,7 +591,14 @@ mod tests {
     #[test]
     fn dispatch_runs_each_command_against_the_engine() {
         let mut engine = FakeTransfer::new();
-        let id = match dispatch(&mut engine, TransferCommand::Add { spec: spec() }).unwrap() {
+        let id = match dispatch(
+            &mut engine,
+            TransferCommand::Add {
+                spec: Box::new(spec()),
+            },
+        )
+        .unwrap()
+        {
             TransferReply::Added { id } => id,
             other => panic!("{other:?}"),
         };

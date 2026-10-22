@@ -506,6 +506,30 @@ fn a_download_sends_checkpoints_of_what_it_synced() {
 }
 
 #[test]
+fn the_probe_checkpoints_its_bytes_too() {
+    // The probe can be the whole file (here 300 KB under a 1 MiB probe): a crash during it must
+    // lose at most one checkpoint interval, like any other bytes.
+    let (s, data) = throttled(300_000, 45, 200_000);
+    let dir = Dir::new("probe-checkpoints");
+    let dest = dir.file("out.bin");
+    let (control, points) = recording();
+    let options = DownloadOptions {
+        probe_bytes: 1 << 20,
+        checkpoints: FAST,
+        ..OPTIONS
+    };
+    let report = download_with(&curl_loop(), &s.url("f.bin"), &dest, options, &control)
+        .expect("the download succeeds");
+    assert!(std::fs::read(&dest).unwrap() == data);
+    assert_eq!(report.fetches, 1, "the probe was the whole download");
+    let points = points.lock().unwrap();
+    assert!(points.len() >= 2, "{} checkpoints", points.len());
+    assert!(points
+        .iter()
+        .all(|c| c.durable.first().map(|r| r.0) == Some(0) && c.total == 300_000));
+}
+
+#[test]
 fn a_paused_download_keeps_its_part_file_and_resumes_from_its_last_checkpoint() {
     const LEN: usize = 2_000_000;
     let (s, data) = throttled(LEN, 43, 400_000);
