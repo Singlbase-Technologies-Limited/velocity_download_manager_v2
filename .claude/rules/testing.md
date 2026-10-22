@@ -8,7 +8,7 @@ paths:
 
 # Tests
 
-The levels and commands are in [docs/TESTING.md](../../docs/TESTING.md). The strategy and fixtures policy come in #15.
+The levels, commands, test strategy and fixture policy are in [docs/TESTING.md](../../docs/TESTING.md).
 
 - **Red first:** for meaningful behaviour, the new test runs and fails for the right reason before the code exists. The PR records that failure.
 - **Behaviour, not internals:** test behaviour and external contracts. A refactor that keeps the behaviour should not break a test.

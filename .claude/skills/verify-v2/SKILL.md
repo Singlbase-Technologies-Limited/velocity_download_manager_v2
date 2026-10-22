@@ -28,6 +28,6 @@ The levels and their scope are in [docs/TESTING.md](../../../docs/TESTING.md). S
 | … | the exact command | Windows / Linux (WSL) / macOS | PASS, FAIL, BLOCKED or NOT RUN, with the key output line |
 
 - **Only the checks that actually ran.** Anything not run is NOT RUN, with the reason.
-- **A FAIL shows its actual error output,** and the work stops there (CLAUDE.md, step 5).
+- **A FAIL shows its actual error output,** and the work stops there (CLAUDE.md, step 4).
 - **Platforms:** a Windows pass says nothing about Linux or macOS. Use `/platform-verify` when the change can behave differently per platform.
-- **CI:** once CI exists (#14), report CI checks only after seeing their results. An unselected job is NOT RUN, not passed.
+- **CI:** report CI checks only after seeing their results. An unselected job is NOT RUN, not passed. For a failed run, use `/ci-triage`.
