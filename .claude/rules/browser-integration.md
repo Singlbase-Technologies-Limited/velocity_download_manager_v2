@@ -1,5 +1,6 @@
 ---
-# Neither path exists yet: the extension is ported in #64, the native host in #65.
+# pending: "browser-extension/**/*" (#64)
+# pending: "crates/velocity-native-host/**/*" (#65)
 paths:
   - "browser-extension/**/*"
   - "crates/velocity-native-host/**/*"

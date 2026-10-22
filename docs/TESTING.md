@@ -19,7 +19,7 @@ All check commands run every check even after one fails, print a PASS/FAIL summa
 | **L4** | `pnpm check:full`; later the cross-platform, end-to-end, fuzz, stress and benchmark suites | Every L1 check, then `vite build` and `cargo build --workspace --release` (LTO, one codegen unit). Later: browser end-to-end (#64), fuzzing (#73), stress and resource bounds (#77), benchmarks (#20, #21), macOS (#83) | **Measured:** 224–249 s locally, mostly the release build; suites to be measured | Before a release candidate, after build-setting changes, and weekly in CI (#19) |
 | **L5** | Production acceptance (none yet) | Installed builds on real machines: install and upgrade beside V1 (#81), parity with V1 (#85), soak runs (research report section 7, at least 300 runs per key scenario), release-readiness review (#78) | Hours to days | Before a release is published |
 
-**In CI** ([CI.md](CI.md)): pull requests run `pnpm check:pr` for the selected areas, and every merge to `main` runs `pnpm check:fast` and `pnpm check:links` on Linux. Every run publishes one report with every failure ([CI_DIAGNOSTICS.md](CI_DIAGNOSTICS.md)).
+**In CI** ([CI.md](CI.md)): pull requests run `pnpm check:pr` for the selected areas, and every merge to `main` runs `pnpm check:fast`, `pnpm check:links` and `pnpm check:guidance` on Linux. Every run publishes one report with every failure ([CI_DIAGNOSTICS.md](CI_DIAGNOSTICS.md)).
 
 For documentation, `pnpm check:links` checks that every relative link and heading anchor in the repository's Markdown files resolves. External links aren't fetched.
 

@@ -40,6 +40,10 @@ jobs:
         name: Docs (check:links)
         if: ${{ !cancelled() && steps.setup.outcome == 'success' }}
         run: node scripts/check-links.mjs
+      - id: guidance
+        name: Agent guidance (check:guidance)
+        if: ${{ !cancelled() && steps.setup.outcome == 'success' }}
+        run: node scripts/check-guidance.mjs
 
       # Failure collection (#91, docs/CI_DIAGNOSTICS.md). This workflow has one job, so the report
       # and the summary run here instead of in an extra job (each job costs a billed minute).

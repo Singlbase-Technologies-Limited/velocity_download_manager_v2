@@ -55,6 +55,12 @@ jobs:
         name: Docs (check:links)
         if: steps.select.outputs.docs == 'true'
         run: node scripts/check-links.mjs
+      # The agent guidance check (#88) takes under a second, and any path can change its result (a
+      # rule's glob dies when its folder goes), so it runs on every pull request, here.
+      - id: guidance
+        name: Agent guidance (check:guidance)
+        if: ${{ !cancelled() && steps.checkout.outcome == 'success' }}
+        run: node scripts/check-guidance.mjs
       - name: Write the job report
         if: ${{ !cancelled() && steps.checkout.outcome == 'success' }}
         env:

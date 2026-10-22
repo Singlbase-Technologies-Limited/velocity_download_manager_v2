@@ -1,5 +1,4 @@
 ---
-# .github/ is created in #5 (templates) and #14 (workflows).
 paths:
   - ".github/**/*"
   - "scripts/**/*"

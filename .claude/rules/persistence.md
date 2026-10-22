@@ -1,5 +1,7 @@
 ---
-# Persistence doesn't exist yet: the database module and migrations are created in #26, checkpoints in #43.
+# pending: "crates/*/src/database/**/*" (#26)
+# pending: "crates/*/migrations/**/*" (#26)
+# pending: "crates/*/src/**/checkpoint*.rs" (#43)
 paths:
   - "crates/*/src/database/**/*"
   - "crates/*/migrations/**/*"
