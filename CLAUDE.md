@@ -6,7 +6,12 @@ AGENTS.md above holds the rules for everyone. This file adds how Claude Code wor
 
 ## Instructions versus enforcement
 
-These files are guidance. `.claude/settings.json` adds a few deny and ask rules that block the most damaging git and GitHub commands outright. Those rules match command text only, so they are a safety net, not a security boundary. The rules stand whether a command is blocked or not.
+These files are guidance. `.claude/settings.json` adds two layers that block the most damaging git commands outright:
+
+- **Deny and ask rules** match command text only, so forms such as `git -C . push origin main` or `bash -c '…'` get past them.
+- **The agent guard** ([`scripts/agent-guard.mjs`](scripts/agent-guard.mjs), #98) is a `PreToolUse` hook on every Bash and PowerShell command. It reads the command the way a shell would, and refuses a push to `main`, a force push or `git reset --hard` in any spelling, in every permission mode. If it can't read a command that mentions git push or reset, or if it fails, it refuses.
+
+Both are a safety net, not a security boundary. The guard can't see inside a script file the command runs, and it lets the call through if Node itself can't start. The rules stand whether a command is blocked or not.
 
 ## Working on an issue
 
