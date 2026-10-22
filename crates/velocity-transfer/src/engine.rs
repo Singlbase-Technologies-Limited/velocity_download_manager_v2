@@ -85,12 +85,21 @@ fn lock(state: &Mutex<State>) -> MutexGuard<'_, State> {
 impl InProcessEngine {
     /// Starts libcurl (refusing one that fails the capability check, #35) and the engine's loop.
     pub fn start() -> Result<Self, String> {
+        Self::start_from(TransferId(1))
+    }
+
+    /// Starts the engine with `first` as the first transfer id it assigns. A child process gets
+    /// it from the app, so a restarted engine never reuses an earlier engine's ids (#39).
+    pub fn start_from(first: TransferId) -> Result<Self, String> {
         let libcurl = Libcurl::start().map_err(|e| e.to_string())?;
         let curl = CurlLoop::start(&libcurl, LoopOptions::default()).map_err(|e| e.to_string())?;
         Ok(InProcessEngine {
             shared: Arc::new(Shared {
                 curl,
-                state: Mutex::new(State::default()),
+                state: Mutex::new(State {
+                    next_id: first.0.saturating_sub(1),
+                    ..State::default()
+                }),
             }),
         })
     }

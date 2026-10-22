@@ -1,6 +1,6 @@
 //! The prototype engine behind the `DirectTransfer` contract (#36), in both deployment modes
-//! (#37, #38): in the app's process, and as a child process speaking JSON lines over stdio. One
-//! test function per behaviour runs against both, so they can't drift apart.
+//! (#37, #38): in the app's process, and as a child process speaking the framed protocol over
+//! stdio (#39). One test function per behaviour runs against both, so they can't drift apart.
 
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::Receiver;
@@ -275,7 +275,7 @@ fn a_child_whose_parent_goes_away_cancels_and_cleans_up() {
     );
     let dir = Dir::new("orphan");
     let dest = dir.0.join("out.bin");
-    let mut engine = ChildProcessEngine::spawn(Path::new(env!("CARGO_BIN_EXE_velocity-transfer")))
+    let engine = ChildProcessEngine::spawn(Path::new(env!("CARGO_BIN_EXE_velocity-transfer")))
         .expect("the child engine starts");
     let events = engine.subscribe();
     let id = engine

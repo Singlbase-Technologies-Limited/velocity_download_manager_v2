@@ -83,7 +83,7 @@ pub enum FailureClass {
 
 /// A transfer failure as the engine reports it, independent of the engine behind it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct TransferError {
     pub class: FailureClass,
     pub http_status: Option<u16>,
@@ -105,7 +105,7 @@ impl TransferError {
 
 /// Progress of one download. Sizes in bytes, speeds in bytes per second.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Progress {
     pub completed_bytes: u64,
     /// `None` while the size is unknown (a chunked response, a magnet before metadata).
@@ -137,7 +137,7 @@ pub struct DownloadRecord {
 
 /// What an engine really supports, reported rather than assumed (research report section 4.2).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Capabilities {
     pub protocols: Vec<DownloadKind>,
     /// Connections can change during a transfer without restarting it.

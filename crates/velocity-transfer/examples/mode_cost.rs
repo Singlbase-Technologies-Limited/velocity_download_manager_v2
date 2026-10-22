@@ -22,7 +22,7 @@ use velocity_core::domain::DownloadStatus;
 use velocity_core::transfer::{
     DirectTransfer, Limits, TransferEvent, TransferId, TransferSnapshot, TransferSpec,
 };
-use velocity_test_http::{seeded_bytes, ServerOptions, TestServer};
+use velocity_test_http::{kill_process, seeded_bytes, ServerOptions, TestServer};
 use velocity_transfer::engine::InProcessEngine;
 use velocity_transfer::stdio::ChildProcessEngine;
 
@@ -386,7 +386,7 @@ fn once(args: &[String]) -> Result<(), String> {
         )?;
         let pid = engine.child_pid().ok_or("no child")?;
         // Timed from when the kill has finished, so the kill command's own start-up isn't counted.
-        kill(pid)?;
+        kill_process(pid)?;
         let t = Instant::now();
         loop {
             match events.recv_timeout(WAIT) {
@@ -452,11 +452,6 @@ fn peak_bytes(pid: u32) -> Result<f64, String> {
     Ok(kib * 1024.0)
 }
 
-#[cfg(target_os = "linux")]
-fn kill(pid: u32) -> Result<(), String> {
-    run(Command::new("kill").args(["-9", &pid.to_string()]))
-}
-
 /// Windows has no `/proc`; without a new dependency for the API, `Get-Process` reads the same
 /// counters. The command is fixed text plus a process id, never outside input.
 #[cfg(windows)]
@@ -482,21 +477,4 @@ fn cpu_seconds(pid: u32) -> Result<f64, String> {
 #[cfg(windows)]
 fn peak_bytes(pid: u32) -> Result<f64, String> {
     process_counter(pid, "$p.PeakWorkingSet64")
-}
-
-#[cfg(windows)]
-fn kill(pid: u32) -> Result<(), String> {
-    run(Command::new("taskkill").args(["/F", "/PID", &pid.to_string()]))
-}
-
-fn run(command: &mut Command) -> Result<(), String> {
-    let status = command
-        .stdout(Stdio::null())
-        .status()
-        .map_err(|e| e.to_string())?;
-    if status.success() {
-        Ok(())
-    } else {
-        Err(format!("{command:?} failed"))
-    }
 }

@@ -68,3 +68,16 @@ A 512 MiB run of 7 per mode on Windows gave the same picture: medians of 368 and
 - **Time to resume after a crash:** this needs checkpoints (#43).
 - **Other machines:** native Linux on hardware, and macOS (#83).
 - **Real networks:** these are loopback results only.
+
+## Rerun after #39
+
+**Date:** 2026-10-22. **Code:** branch `feat/39-engine-protocol-supervisor`: the framed protocol, and a client that waits for the child's stdout to end instead of polling every 20 ms. **Machine:** the same Windows 11 machine. **Command:** `mode_cost --mib 256 --runs 11`, as above, and one more series with `--mib 64 --runs 11`. Linux was not rerun.
+
+| Metric (child, median and range) | #38, 256 MiB | #39, 256 MiB | #39, 64 MiB |
+|---|---|---|---|
+| Shutdown (ms) | about 40 | 24.9 (23.4 to 25.7) | 24.9 (23.1 to 26.2) |
+| Crash detection (ms) | 0.03 (0.01 to 7,000) | 0.02 (0.02 to 687) | 2.37 (0.03 to 29.3) |
+
+- **Shutdown** fell by about 15 ms, the polling it no longer does.
+- **The 7 s crash-detection outlier** didn't recur in these 22 runs, but one run took 0.7 s. Its cause is still unknown. The supervisor notices a crash the same way, by the end of the child's stdout, so a slow end on Windows still delays a restart by that long.
+- **Download outliers in both modes:** one 256 MiB run took 28.5 s for the child and another 9.4 s in process, against a median of 0.85 s; one 64 MiB child run took 5.9 s. As on WSL, this affects both modes, and points at the disk (#48, #49).

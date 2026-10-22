@@ -31,6 +31,7 @@ Terms used across V2's documents, issues and code, in alphabetical order. Where 
 | **Single stream** | Downloading over one connection from byte 0, used when the server ignores ranges (report §5.1) |
 | **Split (work-stealing)** | Halving the largest remaining lease so a free worker can take the second half. The old request stops at the new boundary (report §5.2; #42) |
 | **Strong validator** | An ETag without the `W/` prefix, or a Last-Modified date that RFC 9110 §8.8.2.2 treats as strong. Only a strong validator may be sent in `If-Range` (report §5.3; #45) |
+| **Supervisor** | `SupervisedEngine`: it starts the engine's child process, restarts it after a crash (at most 5 times in 5 minutes), and otherwise leaves it *unavailable* until the user restarts it by hand ([ENGINE_PROTOCOL.md](ENGINE_PROTOCOL.md); #39) |
 | **Transfer engine** | V2's own direct-download engine: probe, leases, checkpoints, integrity, retries and limits, over the libcurl layer, in `crates/velocity-transfer` (ADR-0002), run as a child process (ADR-0012) |
 | **V1** | The original Velocity Download Manager (`Singlbase-Technologies-Limited/velocity-download-manager`). A reference for features and benchmarks only. Never modified from V2 work |
 | **V2** | This application. It replaces V1 under the name Velocity Download Manager, and runs beside it during development (#11) |

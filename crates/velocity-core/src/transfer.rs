@@ -34,7 +34,7 @@ pub struct CredentialHandle(pub u64);
 /// A custom request header. Its value may be a secret (a cookie, a token), so `Debug` never
 /// prints it.
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Header {
     pub name: String,
     pub value: String,
@@ -61,7 +61,7 @@ pub enum HashAlgorithm {
 
 /// A whole-file hash to verify before the download is marked Completed (#46).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Checksum {
     pub algorithm: HashAlgorithm,
     /// Lowercase hexadecimal digest.
@@ -70,7 +70,7 @@ pub struct Checksum {
 
 /// Per-transfer limits. `None` means no limit.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Limits {
     pub max_download_bps: Option<u64>,
 }
@@ -78,7 +78,7 @@ pub struct Limits {
 /// Everything an engine needs to start one direct transfer. The manager builds it from a
 /// validated download record; the engine still treats it as untrusted input.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct TransferSpec {
     /// The source and any mirrors, primary first, with credentials removed. Never empty.
     pub urls: Vec<String>,
@@ -95,7 +95,7 @@ pub struct TransferSpec {
 
 /// The state of one transfer as its engine reports it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct TransferSnapshot {
     pub id: TransferId,
     pub status: DownloadStatus,
@@ -108,7 +108,7 @@ pub struct TransferSnapshot {
 
 /// Something that happened to a transfer, pushed by the engine.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "camelCase")]
+#[serde(tag = "type", rename_all = "camelCase", deny_unknown_fields)]
 pub enum TransferEvent {
     /// The transfer's status, progress or error changed.
     Changed { snapshot: TransferSnapshot },
@@ -149,10 +149,14 @@ pub trait DirectTransfer: Send {
 }
 
 /// One command, in the form that crosses a process boundary (#39).
+///
+/// Every wire form refuses unknown fields. Variants without data are written `Snapshot {}`, not
+/// `Snapshot`, because serde checks the fields of a struct variant but ignores extra fields on a
+/// unit variant of a tagged enum. The JSON is the same: `{"command":"snapshot"}`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "command", rename_all = "camelCase")]
+#[serde(tag = "command", rename_all = "camelCase", deny_unknown_fields)]
 pub enum TransferCommand {
-    Capabilities,
+    Capabilities {},
     Add { spec: TransferSpec },
     Pause { id: TransferId },
     Resume { id: TransferId },
@@ -160,16 +164,16 @@ pub enum TransferCommand {
     Remove { id: TransferId },
     SetLimits { id: TransferId, limits: Limits },
     SetConnections { id: TransferId, connections: u32 },
-    Snapshot,
+    Snapshot {},
 }
 
 /// The successful reply to a [`TransferCommand`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "reply", rename_all = "camelCase")]
+#[serde(tag = "reply", rename_all = "camelCase", deny_unknown_fields)]
 pub enum TransferReply {
     Capabilities { capabilities: Capabilities },
     Added { id: TransferId },
-    Done,
+    Done {},
     Connections { connections: u32 },
     Snapshot { transfers: Vec<TransferSnapshot> },
 }
@@ -181,7 +185,7 @@ pub fn dispatch(
     command: TransferCommand,
 ) -> Result<TransferReply, ErrorCode> {
     Ok(match command {
-        TransferCommand::Capabilities => TransferReply::Capabilities {
+        TransferCommand::Capabilities {} => TransferReply::Capabilities {
             capabilities: engine.capabilities(),
         },
         TransferCommand::Add { spec } => TransferReply::Added {
@@ -189,28 +193,28 @@ pub fn dispatch(
         },
         TransferCommand::Pause { id } => {
             engine.pause(id)?;
-            TransferReply::Done
+            TransferReply::Done {}
         }
         TransferCommand::Resume { id } => {
             engine.resume(id)?;
-            TransferReply::Done
+            TransferReply::Done {}
         }
         TransferCommand::Cancel { id } => {
             engine.cancel(id)?;
-            TransferReply::Done
+            TransferReply::Done {}
         }
         TransferCommand::Remove { id } => {
             engine.remove(id)?;
-            TransferReply::Done
+            TransferReply::Done {}
         }
         TransferCommand::SetLimits { id, limits } => {
             engine.set_limits(id, limits)?;
-            TransferReply::Done
+            TransferReply::Done {}
         }
         TransferCommand::SetConnections { id, connections } => TransferReply::Connections {
             connections: engine.set_connections(id, connections)?,
         },
-        TransferCommand::Snapshot => TransferReply::Snapshot {
+        TransferCommand::Snapshot {} => TransferReply::Snapshot {
             transfers: engine.snapshot()?,
         },
     })
@@ -281,7 +285,7 @@ mod tests {
         assert_wire::<TransferSnapshot>();
 
         for command in [
-            TransferCommand::Capabilities,
+            TransferCommand::Capabilities {},
             TransferCommand::Add { spec: spec() },
             TransferCommand::Pause { id: TransferId(1) },
             TransferCommand::Resume { id: TransferId(1) },
@@ -295,7 +299,7 @@ mod tests {
                 id: TransferId(1),
                 connections: 8,
             },
-            TransferCommand::Snapshot,
+            TransferCommand::Snapshot {},
         ] {
             round_trip(&command);
         }
@@ -304,7 +308,7 @@ mod tests {
                 capabilities: Capabilities::sample(),
             },
             TransferReply::Added { id: TransferId(9) },
-            TransferReply::Done,
+            TransferReply::Done {},
             TransferReply::Connections { connections: 2 },
             TransferReply::Snapshot {
                 transfers: vec![snapshot()],
@@ -316,6 +320,47 @@ mod tests {
             snapshot: snapshot(),
         });
         round_trip(&TransferEvent::Removed { id: TransferId(1) });
+    }
+
+    /// Adds `"extra": 1` to the object at `pointer` and checks that `T` refuses the result.
+    fn refuses_an_extra_field<T: Serialize + DeserializeOwned>(value: &T, pointer: &str) {
+        let mut json = serde_json::to_value(value).unwrap();
+        json.pointer_mut(pointer)
+            .and_then(serde_json::Value::as_object_mut)
+            .unwrap_or_else(|| panic!("no object at {pointer:?}"))
+            .insert("extra".to_owned(), 1.into());
+        assert!(
+            serde_json::from_value::<T>(json.clone()).is_err(),
+            "accepted {json}"
+        );
+    }
+
+    #[test]
+    fn the_wire_forms_refuse_unknown_fields() {
+        let add = TransferCommand::Add { spec: spec() };
+        for pointer in [
+            "",
+            "/spec",
+            "/spec/headers/0",
+            "/spec/checksum",
+            "/spec/limits",
+        ] {
+            refuses_an_extra_field(&add, pointer);
+        }
+        refuses_an_extra_field(&TransferCommand::Snapshot {}, "");
+        refuses_an_extra_field(&TransferCommand::Pause { id: TransferId(1) }, "");
+        refuses_an_extra_field(&TransferReply::Done {}, "");
+        let capabilities = TransferReply::Capabilities {
+            capabilities: Capabilities::sample(),
+        };
+        refuses_an_extra_field(&capabilities, "/capabilities");
+        let changed = TransferEvent::Changed {
+            snapshot: snapshot(),
+        };
+        for pointer in ["", "/snapshot", "/snapshot/progress", "/snapshot/error"] {
+            refuses_an_extra_field(&changed, pointer);
+        }
+        refuses_an_extra_field(&TransferEvent::Removed { id: TransferId(1) }, "");
     }
 
     #[test]
@@ -407,7 +452,7 @@ mod tests {
         };
         assert_eq!(
             dispatch(&mut engine, TransferCommand::Pause { id }),
-            Ok(TransferReply::Done)
+            Ok(TransferReply::Done {})
         );
         assert_eq!(
             dispatch(
@@ -425,7 +470,7 @@ mod tests {
             dispatch(&mut engine, TransferCommand::Resume { id: TransferId(99) }),
             Err(ErrorCode::NotFound)
         );
-        match dispatch(&mut engine, TransferCommand::Snapshot).unwrap() {
+        match dispatch(&mut engine, TransferCommand::Snapshot {}).unwrap() {
             TransferReply::Snapshot { transfers } => {
                 assert_eq!(transfers.len(), 1);
                 assert_eq!(transfers[0].status, DownloadStatus::Paused);
