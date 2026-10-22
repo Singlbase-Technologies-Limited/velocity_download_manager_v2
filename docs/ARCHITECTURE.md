@@ -87,7 +87,7 @@ Status reaches the UI as events. The status vocabulary is Queued, Connecting, Do
 
 Everything that crosses a boundary is untrusted and validated on arrival: URLs, file names, server responses, browser messages and engine messages.
 
-**Identity:** V2's data directory, IPC names and registrations are separate from V1's (#27). The current values are in [DEVELOPMENT.md](DEVELOPMENT.md#running-beside-the-original-velocity-download-manager).
+**Identity and data folders:** `branding.json` is the single source of V2's identity. The data folder (`%APPDATA%\dev.velocity.downloadmanager.v2` on Windows today), the single-instance key and the IPC pipe name all derive from the identifier, so nothing is shared with V1. Details and the side-by-side check: [COEXISTENCE.md](COEXISTENCE.md).
 
 ## Open decisions
 

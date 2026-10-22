@@ -3,16 +3,11 @@
 //! The application identity and the engine-neutral domain types shared with the UI
 //! (`domain`, docs/CONTRACTS.md).
 
+pub mod branding;
 pub mod domain;
+pub mod paths;
 
 use serde::Serialize;
-
-/// Product name shown in the window title and About screen.
-///
-/// V2 replaces V1 under the name "Velocity Download Manager" (PO decision, #11).
-/// Development builds add "(dev)" so they can be told apart from an installed V1;
-/// release naming is settled with packaging (#81).
-pub const PRODUCT_NAME: &str = "Velocity Download Manager (dev)";
 
 /// Version of the command contract between the UI and the native side (docs/CONTRACTS.md).
 /// Raise it whenever a command or a shared type changes incompatibly; the UI refuses to start
@@ -31,7 +26,9 @@ pub struct AppInfo {
 /// Returns the application's identity.
 pub fn app_info() -> AppInfo {
     AppInfo {
-        name: PRODUCT_NAME,
+        // V2 replaces V1 under the name "Velocity Download Manager" (#11); development builds
+        // add "(dev)" (branding.json, ADR-0003).
+        name: branding::branding().product_name.as_str(),
         version: env!("CARGO_PKG_VERSION"),
         command_api_version: COMMAND_API_VERSION,
     }

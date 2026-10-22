@@ -97,7 +97,7 @@ V2 will replace V1 under the same product name, Velocity Download Manager (PO de
 | Bundle identifier | `com.velocity.downloadmanager` | `dev.velocity.downloadmanager.v2` (release builds will use `com.velocity.downloadmanager.v2`; [ADR-0003](decisions/0003-v2-app-identity.md)) |
 | Dev server port | 1420 | 1430 |
 
-The bundle identifier, not the name, keeps the apps apart: it decides the data directory and the single-instance lock. Tests in `src-tauri/src/lib.rs` fail if V2's identifier or dev port ever matches V1's. V2 keeps its own identity after release too ([ADR-0003](decisions/0003-v2-app-identity.md)): the installer offers to remove V1 (#81), and importing V1 data is a separate decision (#24).
+The bundle identifier, not the name, keeps the apps apart: it decides the data directory and the single-instance lock. Tests in `velocity-core` and `src-tauri` fail if V2's identifier, data folder, pipe name, native host name or dev port ever matches V1's. The identity lives in `branding.json`; [COEXISTENCE.md](COEXISTENCE.md) has the details. V2 keeps its own identity after release too ([ADR-0003](decisions/0003-v2-app-identity.md)): the installer offers to remove V1 (#81), and importing V1 data is a separate decision (#24).
 
 ## Build times
 
