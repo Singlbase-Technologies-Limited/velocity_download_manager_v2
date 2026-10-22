@@ -5,7 +5,9 @@
 
 pub mod branding;
 pub mod domain;
+pub mod manager;
 pub mod paths;
+pub mod transfer;
 
 use serde::Serialize;
 

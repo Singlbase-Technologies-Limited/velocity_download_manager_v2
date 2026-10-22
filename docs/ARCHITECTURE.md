@@ -32,8 +32,8 @@ V2 is a Tauri 2 desktop app with a React UI and a Rust core. It downloads files 
 |---|---|---|---|---|
 | UI | `src/` | React and TypeScript. It talks to Rust only through typed commands and events, and validates every native response before use | Shows the app name and version; checks the contract version (`src/contract.ts`) | #29, #59 to #61, #63 |
 | Desktop shell | `src-tauri/` | Tauri 2 app: thin typed commands that delegate to the core, the window, the tray, notifications, the single instance and the browser bridge | One command, `app_info` | #27, #29 |
-| Core | `crates/velocity-core/` | Everything that doesn't need a window: domain models, the download manager and queue, input validation, naming, categories, settings, history and SQLite persistence | `app_info()` and the product name | #25, #26, #30 to #32, #50, #58 |
-| `DirectTransfer` contract | `crates/velocity-core/` (ADR-0002) | The engine-neutral boundary for direct downloads: commands, events, statuses, errors and capabilities. The manager never sees libcurl types | — | #36 |
+| Core | `crates/velocity-core/` | Everything that doesn't need a window: domain models, the download manager and queue, input validation, naming, categories, settings, history and SQLite persistence | `app_info()`, the domain types (#25), identity and data paths (#27), and the manager's first slice (#36) | #25, #26, #30 to #32, #50, #58 |
+| `DirectTransfer` contract | `crates/velocity-core/` (ADR-0002) | The engine-neutral boundary for direct downloads: commands, events, statuses, errors and capabilities. The manager never sees libcurl types. Details: [ENGINE_CONTRACT.md](ENGINE_CONTRACT.md) | The trait, its wire commands, a test-only fake engine, and the manager's first slice (`manager.rs`) | #36 |
 | Transfer engine | `crates/velocity-transfer/` (ADR-0002) | The range probe, leased segmentation, durable checkpoints, changed-object detection, integrity, retries, connection budgets and speed limits | — | #37, #41 to #49 |
 | libcurl layer | `crates/velocity-curl/` (ADR-0002) | The only crate that touches libcurl: FFI and the `Multi` loop on its own thread. libcurl 8.23.0 or later, with a build identity record; obtained as [ADR-0004](decisions/0004-libcurl-build-path.md) decides | — | #35, #37 |
 | Engine process | pending #38 | The engine runs either in the app process or as a supervised child process speaking a versioned protocol over stdio | — | #38, #39 |
@@ -75,7 +75,7 @@ This is the target flow. The details are designed and tested in the issues named
 5. **Checkpoint.** Progress becomes durable only after the data is flushed to disk, so a crash resumes from trusted coverage (#43). Every range request carries the strong validator in `If-Range`, so a file that changed on the server is never mixed with the old one (#45).
 6. **Complete.** The engine verifies coverage, length and, when a trusted hash exists, the whole-file hash. It flushes the file, then renames it without replacing an existing file. The status says "Verified" only when a hash was checked (#46).
 
-Status reaches the UI as events. The status vocabulary is Queued, Connecting, Downloading, Retrying, Stalled, Paused, Verifying, Completed, Failed and Cancelled (#25).
+Status reaches the UI as events. The status vocabulary for direct downloads is Queued, Connecting, Downloading, Retrying, Stalled, Paused, Verifying, Completed, Failed and Removed; a cancelled download ends as Removed (#25, #36).
 
 ## Processes and boundaries
 

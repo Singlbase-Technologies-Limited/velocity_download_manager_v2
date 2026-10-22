@@ -1,0 +1,436 @@
+//! The `DirectTransfer` contract between the manager and a direct-download engine (#36,
+//! docs/ENGINE_CONTRACT.md).
+//!
+//! Direct downloads only: HTTP, FTP, SFTP and Metalink. Torrent operations (trackers, peers, file
+//! priorities, seeding, magnet metadata) are never part of this contract (research report section
+//! 4.2). Every value that crosses it is owned and serialisable, so the same contract works with an
+//! engine in the app's process and with a client for an engine in a child process (#38, #39).
+
+#[cfg(test)]
+pub(crate) mod fake;
+
+use crate::domain::{Capabilities, DownloadStatus, ErrorCode, Progress, TransferError};
+use serde::{Deserialize, Serialize};
+use std::fmt;
+use std::path::PathBuf;
+use std::sync::mpsc::Receiver;
+
+/// Version of this contract. Raise it whenever a command, reply, event or type here changes
+/// incompatibly; an engine in a child process reports the version it speaks (#39).
+pub const TRANSFER_CONTRACT_VERSION: u32 = 1;
+
+/// An engine's id for one transfer. Assigned by the engine, never reused, and never shown as the
+/// app's download id.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct TransferId(pub u64);
+
+/// Refers to credentials the app keeps in memory (#70). Only the handle crosses the contract; the
+/// user name and password never do, so they can't reach a checkpoint, a log or a message.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct CredentialHandle(pub u64);
+
+/// A custom request header. Its value may be a secret (a cookie, a token), so `Debug` never
+/// prints it.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Header {
+    pub name: String,
+    pub value: String,
+}
+
+impl fmt::Debug for Header {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Header")
+            .field("name", &self.name)
+            .field("value", &"<redacted>")
+            .finish()
+    }
+}
+
+/// Hash algorithms a trusted checksum can use (Metalink and user-entered hashes).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum HashAlgorithm {
+    Md5,
+    Sha1,
+    Sha256,
+    Sha512,
+}
+
+/// A whole-file hash to verify before the download is marked Completed (#46).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Checksum {
+    pub algorithm: HashAlgorithm,
+    /// Lowercase hexadecimal digest.
+    pub hex: String,
+}
+
+/// Per-transfer limits. `None` means no limit.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Limits {
+    pub max_download_bps: Option<u64>,
+}
+
+/// Everything an engine needs to start one direct transfer. The manager builds it from a
+/// validated download record; the engine still treats it as untrusted input.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TransferSpec {
+    /// The source and any mirrors, primary first, with credentials removed. Never empty.
+    pub urls: Vec<String>,
+    /// The final file path. The engine writes to a part file beside it and renames it only after
+    /// verification (#43, #46).
+    pub destination: PathBuf,
+    pub credentials: Option<CredentialHandle>,
+    pub headers: Vec<Header>,
+    pub checksum: Option<Checksum>,
+    pub limits: Limits,
+    /// Requested connections; the engine may apply fewer (see [`DirectTransfer::set_connections`]).
+    pub max_connections: u32,
+}
+
+/// The state of one transfer as its engine reports it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TransferSnapshot {
+    pub id: TransferId,
+    pub status: DownloadStatus,
+    /// `completed_bytes` counts accepted bytes only (research report section 5.1).
+    pub progress: Progress,
+    /// Bytes received but not accepted: revoked leases, overruns, rejected responses.
+    pub wasted_bytes: u64,
+    pub error: Option<TransferError>,
+}
+
+/// Something that happened to a transfer, pushed by the engine.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "camelCase")]
+pub enum TransferEvent {
+    /// The transfer's status, progress or error changed.
+    Changed { snapshot: TransferSnapshot },
+    /// The engine forgot the transfer after [`DirectTransfer::remove`].
+    Removed { id: TransferId },
+}
+
+/// A direct-download engine, in the app's process or behind a client for a child process.
+///
+/// Commands fail with an [`ErrorCode`]: `NotFound` for an unknown id, `InvalidState` when the
+/// transfer's status doesn't allow the command, `EngineUnavailable` when the engine can't be
+/// reached. Transfer failures are not command failures: they arrive as events with a
+/// [`TransferError`].
+pub trait DirectTransfer: Send {
+    /// What this engine really supports.
+    fn capabilities(&self) -> Capabilities;
+    /// Starts a transfer, which begins as Queued.
+    fn add(&mut self, spec: TransferSpec) -> Result<TransferId, ErrorCode>;
+    /// Pauses an active transfer and keeps its progress.
+    fn pause(&mut self, id: TransferId) -> Result<(), ErrorCode>;
+    /// Continues a paused transfer from its durable progress.
+    fn resume(&mut self, id: TransferId) -> Result<(), ErrorCode>;
+    /// Stops an unfinished transfer and discards its part file; it ends as Removed. The
+    /// destination file is never touched.
+    fn cancel(&mut self, id: TransferId) -> Result<(), ErrorCode>;
+    /// Forgets a finished transfer (Completed, Failed or Removed) and its checkpoint. Files are
+    /// kept.
+    fn remove(&mut self, id: TransferId) -> Result<(), ErrorCode>;
+    fn set_limits(&mut self, id: TransferId, limits: Limits) -> Result<(), ErrorCode>;
+    /// Requests a connection count and returns the count the engine applied, which is at least 1
+    /// and at most `capabilities().max_connections_per_host`.
+    fn set_connections(&mut self, id: TransferId, connections: u32) -> Result<u32, ErrorCode>;
+    /// The current state of every transfer the engine knows.
+    fn snapshot(&self) -> Result<Vec<TransferSnapshot>, ErrorCode>;
+    /// A new receiver for this engine's events. Each receiver gets every event from the moment
+    /// it subscribed.
+    fn subscribe(&mut self) -> Receiver<TransferEvent>;
+}
+
+/// One command, in the form that crosses a process boundary (#39).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "command", rename_all = "camelCase")]
+pub enum TransferCommand {
+    Capabilities,
+    Add { spec: TransferSpec },
+    Pause { id: TransferId },
+    Resume { id: TransferId },
+    Cancel { id: TransferId },
+    Remove { id: TransferId },
+    SetLimits { id: TransferId, limits: Limits },
+    SetConnections { id: TransferId, connections: u32 },
+    Snapshot,
+}
+
+/// The successful reply to a [`TransferCommand`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "reply", rename_all = "camelCase")]
+pub enum TransferReply {
+    Capabilities { capabilities: Capabilities },
+    Added { id: TransferId },
+    Done,
+    Connections { connections: u32 },
+    Snapshot { transfers: Vec<TransferSnapshot> },
+}
+
+/// Runs one command against an engine. A child-process engine runs this on each message it
+/// receives; the exhaustive match keeps the wire commands and the trait in step.
+pub fn dispatch(
+    engine: &mut dyn DirectTransfer,
+    command: TransferCommand,
+) -> Result<TransferReply, ErrorCode> {
+    Ok(match command {
+        TransferCommand::Capabilities => TransferReply::Capabilities {
+            capabilities: engine.capabilities(),
+        },
+        TransferCommand::Add { spec } => TransferReply::Added {
+            id: engine.add(spec)?,
+        },
+        TransferCommand::Pause { id } => {
+            engine.pause(id)?;
+            TransferReply::Done
+        }
+        TransferCommand::Resume { id } => {
+            engine.resume(id)?;
+            TransferReply::Done
+        }
+        TransferCommand::Cancel { id } => {
+            engine.cancel(id)?;
+            TransferReply::Done
+        }
+        TransferCommand::Remove { id } => {
+            engine.remove(id)?;
+            TransferReply::Done
+        }
+        TransferCommand::SetLimits { id, limits } => {
+            engine.set_limits(id, limits)?;
+            TransferReply::Done
+        }
+        TransferCommand::SetConnections { id, connections } => TransferReply::Connections {
+            connections: engine.set_connections(id, connections)?,
+        },
+        TransferCommand::Snapshot => TransferReply::Snapshot {
+            transfers: engine.snapshot()?,
+        },
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::fake::FakeTransfer;
+    use super::*;
+    use crate::domain::FailureClass;
+    use serde::de::DeserializeOwned;
+
+    pub(crate) fn spec() -> TransferSpec {
+        TransferSpec {
+            urls: vec!["https://example.com/a.zip".to_owned()],
+            destination: PathBuf::from("downloads/a.zip"),
+            credentials: Some(CredentialHandle(7)),
+            headers: vec![Header {
+                name: "Cookie".to_owned(),
+                value: "session=secret-value".to_owned(),
+            }],
+            checksum: Some(Checksum {
+                algorithm: HashAlgorithm::Sha256,
+                hex: "ab".repeat(32),
+            }),
+            limits: Limits {
+                max_download_bps: Some(1_000_000),
+            },
+            max_connections: 4,
+        }
+    }
+
+    fn snapshot() -> TransferSnapshot {
+        TransferSnapshot {
+            id: TransferId(1),
+            status: DownloadStatus::Failed,
+            progress: Progress {
+                completed_bytes: 10,
+                total_bytes: Some(20),
+                download_speed_bps: 0,
+                upload_speed_bps: 0,
+                connections: 0,
+            },
+            wasted_bytes: 3,
+            error: Some(TransferError::new(
+                FailureClass::Permanent,
+                Some(404),
+                "Not found",
+            )),
+        }
+    }
+
+    /// Owned, sendable and serialisable: what a value needs to cross a process boundary.
+    fn assert_wire<T: Serialize + DeserializeOwned + Send + 'static>() {}
+
+    fn round_trip<T: Serialize + DeserializeOwned + PartialEq + fmt::Debug>(value: &T) {
+        let json = serde_json::to_string(value).unwrap();
+        let back: T = serde_json::from_str(&json).unwrap();
+        assert_eq!(&back, value, "{json}");
+    }
+
+    #[test]
+    fn every_command_reply_and_event_can_cross_a_process_boundary() {
+        assert_wire::<TransferCommand>();
+        assert_wire::<TransferReply>();
+        assert_wire::<TransferEvent>();
+        assert_wire::<TransferSpec>();
+        assert_wire::<TransferSnapshot>();
+
+        for command in [
+            TransferCommand::Capabilities,
+            TransferCommand::Add { spec: spec() },
+            TransferCommand::Pause { id: TransferId(1) },
+            TransferCommand::Resume { id: TransferId(1) },
+            TransferCommand::Cancel { id: TransferId(1) },
+            TransferCommand::Remove { id: TransferId(1) },
+            TransferCommand::SetLimits {
+                id: TransferId(1),
+                limits: Limits::default(),
+            },
+            TransferCommand::SetConnections {
+                id: TransferId(1),
+                connections: 8,
+            },
+            TransferCommand::Snapshot,
+        ] {
+            round_trip(&command);
+        }
+        for reply in [
+            TransferReply::Capabilities {
+                capabilities: Capabilities::sample(),
+            },
+            TransferReply::Added { id: TransferId(9) },
+            TransferReply::Done,
+            TransferReply::Connections { connections: 2 },
+            TransferReply::Snapshot {
+                transfers: vec![snapshot()],
+            },
+        ] {
+            round_trip(&reply);
+        }
+        round_trip(&TransferEvent::Changed {
+            snapshot: snapshot(),
+        });
+        round_trip(&TransferEvent::Removed { id: TransferId(1) });
+    }
+
+    #[test]
+    fn the_contract_is_object_safe_and_sendable() {
+        fn assert_send<T: Send>() {}
+        assert_send::<Box<dyn DirectTransfer>>();
+        let _engine: Box<dyn DirectTransfer> = Box::new(FakeTransfer::new());
+    }
+
+    #[test]
+    fn wire_names_are_camel_case_and_engine_neutral() {
+        let json = serde_json::to_string(&TransferCommand::SetConnections {
+            id: TransferId(3),
+            connections: 2,
+        })
+        .unwrap();
+        assert_eq!(
+            json,
+            r#"{"command":"setConnections","id":3,"connections":2}"#
+        );
+        let spec_json = serde_json::to_string(&spec()).unwrap().to_lowercase();
+        assert!(!spec_json.contains("aria2") && !spec_json.contains("gid"));
+    }
+
+    #[test]
+    fn credentials_cross_only_as_a_handle() {
+        let json = serde_json::to_value(spec()).unwrap();
+        assert_eq!(json["credentials"], 7);
+    }
+
+    #[test]
+    fn debug_output_never_shows_header_values() {
+        let shown = format!("{:?}", spec());
+        assert!(!shown.contains("secret-value"), "{shown}");
+        assert!(shown.contains("Cookie"));
+    }
+
+    #[test]
+    fn limits_and_connections_reach_the_engine_within_its_capabilities() {
+        let mut engine = FakeTransfer::new();
+        let control = engine.control();
+        let id = engine.add(spec()).unwrap();
+        assert_eq!(control.spec(id).credentials, Some(CredentialHandle(7)));
+
+        let limits = Limits {
+            max_download_bps: None,
+        };
+        engine.set_limits(id, limits).unwrap();
+        assert_eq!(control.limits(id), limits);
+
+        assert_eq!(engine.set_connections(id, 0), Ok(1));
+        assert_eq!(control.spec(id).max_connections, 1);
+        assert_eq!(
+            engine.set_connections(TransferId(99), 2),
+            Err(ErrorCode::NotFound)
+        );
+    }
+
+    #[test]
+    fn every_subscriber_gets_every_later_event() {
+        let mut engine = FakeTransfer::new();
+        let (a, b) = (engine.subscribe(), engine.subscribe());
+        let id = engine.add(spec()).unwrap();
+        engine.cancel(id).unwrap();
+        engine.remove(id).unwrap();
+        for rx in [a, b] {
+            let events: Vec<_> = rx.try_iter().collect();
+            assert_eq!(events.len(), 3, "{events:?}");
+            assert_eq!(events[2], TransferEvent::Removed { id });
+        }
+    }
+
+    #[test]
+    fn remove_is_only_for_finished_transfers() {
+        let mut engine = FakeTransfer::new();
+        let id = engine.add(spec()).unwrap();
+        assert_eq!(engine.remove(id), Err(ErrorCode::InvalidState));
+        engine.cancel(id).unwrap();
+        assert_eq!(engine.remove(id), Ok(()));
+        assert_eq!(engine.snapshot(), Ok(Vec::new()));
+    }
+
+    #[test]
+    fn dispatch_runs_each_command_against_the_engine() {
+        let mut engine = FakeTransfer::new();
+        let id = match dispatch(&mut engine, TransferCommand::Add { spec: spec() }).unwrap() {
+            TransferReply::Added { id } => id,
+            other => panic!("{other:?}"),
+        };
+        assert_eq!(
+            dispatch(&mut engine, TransferCommand::Pause { id }),
+            Ok(TransferReply::Done)
+        );
+        assert_eq!(
+            dispatch(
+                &mut engine,
+                TransferCommand::SetConnections {
+                    id,
+                    connections: 1000
+                }
+            ),
+            Ok(TransferReply::Connections {
+                connections: Capabilities::sample().max_connections_per_host
+            })
+        );
+        assert_eq!(
+            dispatch(&mut engine, TransferCommand::Resume { id: TransferId(99) }),
+            Err(ErrorCode::NotFound)
+        );
+        match dispatch(&mut engine, TransferCommand::Snapshot).unwrap() {
+            TransferReply::Snapshot { transfers } => {
+                assert_eq!(transfers.len(), 1);
+                assert_eq!(transfers[0].status, DownloadStatus::Paused);
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+}
