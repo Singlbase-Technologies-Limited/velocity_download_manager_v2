@@ -186,12 +186,34 @@ describe('selectJobs (CI, #13)', () => {
 
   it('selects nothing for an empty change, with reasons', () => {
     const s = selectJobs([], workspace);
-    expect(Object.values(s.jobs).map((j) => j.run)).toEqual([false, false, false]);
+    expect(Object.values(s.jobs).map((j) => j.run)).toEqual([false, false, false, false]);
     expect(s.jobs.rust.reason).toMatch(/no changed paths/i);
   });
 
   it('names the path that forced everything', () => {
     expect(selectJobs(['.github/workflows/pr.yml'], workspace).jobs.frontend.reason).toContain('.github/workflows/pr.yml');
+  });
+
+  // The native builds (#35) take minutes, and on Windows bill at twice the Linux rate, so they run
+  // for their own inputs, CI changes and unknown paths, not for every shared file.
+  it.each([
+    ['the native build scripts', ['scripts/native/build.mjs'], true],
+    ['the native lock file', ['scripts/native/deps.lock'], true],
+    ['a native lock file inside a crate', ['crates/velocity-core/deps.lock'], true],
+    ['a workflow file', ['.github/workflows/pr.yml'], true],
+    ['an unknown path', ['tools/new-thing.sh'], true],
+    ['Cargo.lock', ['Cargo.lock'], false],
+    ['pnpm-lock.yaml', ['pnpm-lock.yaml'], false],
+    ['another check script', ['scripts/checks-lib.mjs'], false],
+    ['a crate', ['crates/velocity-core/src/lib.rs'], false],
+    ['docs only', ['docs/CI.md'], false],
+  ])('runs the native builds for %s: %s', (_name, paths, run) => {
+    expect(selectJobs(paths, workspace).jobs.native.run).toBe(run);
+  });
+
+  it('says why the native builds run or are skipped', () => {
+    expect(selectJobs(['scripts/native/deps.lock', 'docs/CI.md'], workspace).jobs.native.reason).toBe('native build inputs changed: scripts/native/deps.lock');
+    expect(selectJobs(['crates/velocity-core/src/lib.rs'], workspace).jobs.native.reason).toBe('no native build input changed');
   });
 });
 

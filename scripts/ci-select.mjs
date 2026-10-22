@@ -2,7 +2,7 @@
 // CI job selection (#13, docs/CI.md): `node scripts/ci-select.mjs --base <ref>`.
 // Decides which pull-request jobs run, with the same rules as `pnpm check:pr`
 // (scripts/checks-lib.mjs). In GitHub Actions it writes the decision to $GITHUB_OUTPUT
-// (rust, frontend, docs: "true"/"false"; rust_packages: space-separated) and a table of every
+// (rust, frontend, docs, native: "true"/"false"; rust_packages: space-separated) and a table of every
 // job, run or skipped, with its reason to $GITHUB_STEP_SUMMARY. Elsewhere it prints both.
 // It needs git history back to the merge base (actions/checkout with fetch-depth: 0) and cargo.
 import { appendFileSync } from 'node:fs';
@@ -32,6 +32,7 @@ const outputs = {
   rust: String(selection.jobs.rust.run),
   frontend: String(selection.jobs.frontend.run),
   docs: String(selection.jobs.docs.run),
+  native: String(selection.jobs.native.run),
   rust_packages: selection.rustPackages.join(' '),
 };
 const summary = `${jobSummaryMarkdown(selection)}\nBase: \`${base}\`, merge base \`${changed.mergeBase.slice(0, 12)}\`.\n`;

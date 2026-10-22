@@ -25,6 +25,10 @@ export const SELECT_ALL_PREFIXES = ['scripts/', '.cargo/', '.github/'];
  * #35): they change what every native build links, so they select everything even inside a crate.
  */
 export const NATIVE_LOCK_FILE = /(^|\/)([^/]+\.lock|vcpkg\.json|vcpkg-configuration\.json)$/;
+/** The native library builds (#35): their scripts, pins and keys. */
+export const NATIVE_PREFIXES = ['scripts/native/'];
+/** Lockfiles that match NATIVE_LOCK_FILE but pin Rust or npm packages, not native libraries. */
+const PACKAGE_LOCK_FILES = ['Cargo.lock', 'pnpm-lock.yaml'];
 /** Frontend: TypeScript types, ESLint and Vitest. */
 export const FRONTEND_FILES = ['index.html', 'tsconfig.json', 'vite.config.ts', 'eslint.config.js'];
 export const FRONTEND_PREFIXES = ['src/', 'public/'];
@@ -93,7 +97,8 @@ export function selectChecks(changedPaths, workspace) {
  * it runs or is skipped, so the run summary can show both. Built on `selectChecks`, so local
  * `check:pr` and CI can't disagree.
  * @returns {{all: boolean, rustPackages: string[], reasons: string[],
- *   jobs: {rust: {run: boolean, reason: string}, frontend: {run: boolean, reason: string}, docs: {run: boolean, reason: string}}}}
+ *   jobs: {rust: {run: boolean, reason: string}, frontend: {run: boolean, reason: string}, docs: {run: boolean, reason: string},
+ *     native: {run: boolean, reason: string}}}}
  */
 export function selectJobs(changedPaths, workspace) {
   const s = selectChecks(changedPaths, workspace);
@@ -102,6 +107,16 @@ export function selectJobs(changedPaths, workspace) {
   const allReason = `everything selected by ${forcing.join(', ')}`;
   const job = (run, runReason, skipReason) => ({ run, reason: !paths.length ? 'no changed paths' : s.all ? allReason : run ? runReason : skipReason });
   const docsPaths = s.reasons.filter((r) => r.endsWith('documentation, no code checks')).map((r) => r.slice(0, r.indexOf(':')));
+  // The native builds take minutes (Windows bills double), so a shared file doesn't select them:
+  // only their own inputs, CI files and paths no rule knows.
+  const unknown = new Set(s.reasons.filter((r) => r.endsWith('no rule for this path, selects everything')).map((r) => r.slice(0, r.indexOf(':'))));
+  const nativePaths = paths.filter(
+    (p) =>
+      NATIVE_PREFIXES.some((d) => p.startsWith(d)) ||
+      p.startsWith('.github/') ||
+      unknown.has(p) ||
+      (NATIVE_LOCK_FILE.test(p) && !PACKAGE_LOCK_FILES.includes(p.slice(p.lastIndexOf('/') + 1))),
+  );
   return {
     all: s.all,
     rustPackages: s.rustPackages,
@@ -110,6 +125,10 @@ export function selectJobs(changedPaths, workspace) {
       rust: job(s.rustPackages.length > 0, `crates changed: ${s.rustPackages.join(', ')}`, 'no Rust crate changed'),
       frontend: job(s.frontend, 'frontend files changed', 'no frontend file changed'),
       docs: job(s.docs, `documentation changed: ${docsPaths.join(', ')}`, 'no documentation changed'),
+      native: {
+        run: nativePaths.length > 0,
+        reason: !paths.length ? 'no changed paths' : nativePaths.length ? `native build inputs changed: ${nativePaths.join(', ')}` : 'no native build input changed',
+      },
     },
   };
 }
