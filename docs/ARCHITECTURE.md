@@ -94,8 +94,5 @@ These decision issues shape the architecture. Until each is decided and recorded
 | #38 | Engine in the app process, or a supervised child process? | Process model, IPC protocol (#39), packaging |
 | #52 | SFTP through libssh2 in libcurl, or russh | SFTP (#53), dependencies |
 | #44 | Resume when the server gives no reliable validator | Checkpoint and resume rules |
-| #56 | Proxy support | Settings, security |
-| #68 | Browser links to loopback or private networks | Validation, browser bridge |
-| #11, #24 | Final identifiers, and whether anything is imported from V1 | Identity, installer (#81) |
 
 The research these questions draw on is in [docs/research/](research/README.md). The terms used here are defined in the [glossary](GLOSSARY.md).

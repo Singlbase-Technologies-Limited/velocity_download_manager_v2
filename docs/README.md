@@ -37,6 +37,9 @@ Every document in `docs/` is listed here. A new document is added to this map in
 | [decisions/0003-v2-app-identity.md](decisions/0003-v2-app-identity.md) | Read ADR-0003: V2's own identifiers (app ID, native host, extension IDs) |
 | [decisions/0004-libcurl-build-path.md](decisions/0004-libcurl-build-path.md) | Read ADR-0004: how libcurl is obtained for the prototype and for releases |
 | [decisions/0005-v1-features-without-aria2.md](decisions/0005-v1-features-without-aria2.md) | Read ADR-0005: profiles, disk settings, Metalink, engine restart and other aria2-era features in V2 |
+| [decisions/0006-browser-links-to-local-networks.md](decisions/0006-browser-links-to-local-networks.md) | Read ADR-0006: browser links to your PC or local network need confirmation |
+| [decisions/0007-no-v1-import-at-first.md](decisions/0007-no-v1-import-at-first.md) | Read ADR-0007: no import from V1 in the first releases |
+| [decisions/0008-proxy-support.md](decisions/0008-proxy-support.md) | Read ADR-0008: full proxy settings in the first release |
 | [research/README.md](research/README.md) | See the research index; research is input, not decisions |
 | [research/2026-10-21-libcurl-engine-research-r2.md](research/2026-10-21-libcurl-engine-research-r2.md) | Read the libcurl download-engine research report, revision 2 |
 
