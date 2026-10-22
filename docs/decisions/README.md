@@ -15,6 +15,8 @@ An architecture decision record (ADR) states one decision, why it was taken and 
 | [0007](0007-no-v1-import-at-first.md) | The first V2 releases don't import anything from V1 | Accepted | 2026-10-22 |
 | [0008](0008-proxy-support.md) | V2 has full proxy settings in its first release | Accepted | 2026-10-22 |
 | [0009](0009-no-aria2-benchmark-gate.md) | Build the engine first; no aria2 benchmark comparison for now | Accepted | 2026-10-22 |
+| [0010](0010-resume-without-validator.md) | Without a validator, resume after a length check and show "not verified" | Accepted | 2026-10-22 |
+| [0011](0011-sftp-libssh2.md) | SFTP uses libssh2 through libcurl | Accepted | 2026-10-22 |
 
 Decisions still open are tracked as GitHub issues titled `decision: …`, for example #38 (in-process or child process). [ARCHITECTURE.md](../ARCHITECTURE.md#open-decisions) lists the ones that shape the architecture.
 

@@ -37,8 +37,7 @@ From the research report, section 8.2. Versions are proposals until #35 records 
 | zlib | Zlib | Notice (good practice) |
 | TLS: Schannel (Windows) | Operating-system component, not redistributed | None |
 | TLS: OpenSSL 3.x (Linux, macOS; optional on Windows) | Apache-2.0 | Licence text and the NOTICE file |
-| SFTP option A: libssh2 | BSD-3-Clause | Notice |
-| SFTP option B: russh, russh-sftp | Apache-2.0 (the crypto closure isn't checked yet) | Notice; review the closure when #52 decides |
+| SFTP: libssh2 (chosen, [ADR-0011](decisions/0011-sftp-libssh2.md); added with #53) | BSD-3-Clause | Notice |
 | libtorrent-rasterbar 2.0.x (#62) | BSD-3-Clause | Notice |
 | Boost (libtorrent's dependency) | BSL-1.0 | Notice |
 

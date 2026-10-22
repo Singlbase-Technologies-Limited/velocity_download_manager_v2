@@ -96,7 +96,7 @@ These decision issues shape the architecture. Until each is decided and recorded
 | Issue | Question | What depends on it |
 |---|---|---|
 | #38 | Engine in the app process, or a supervised child process? | Process model, IPC protocol (#39), packaging |
-| #52 | SFTP through libssh2 in libcurl, or russh | SFTP (#53), dependencies |
-| #44 | Resume when the server gives no reliable validator | Checkpoint and resume rules |
+
+Decided since: SFTP uses libssh2 through libcurl ([ADR-0011](decisions/0011-sftp-libssh2.md)); without a validator, a download resumes after a length check and shows "not verified" ([ADR-0010](decisions/0010-resume-without-validator.md)).
 
 The research these questions draw on is in [docs/research/](research/README.md). The terms used here are defined in the [glossary](GLOSSARY.md).
