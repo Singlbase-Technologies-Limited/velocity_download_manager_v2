@@ -17,7 +17,8 @@ use std::sync::mpsc::Receiver;
 
 /// Version of this contract. Raise it whenever a command, reply, event or type here changes
 /// incompatibly; an engine in a child process reports the version it speaks (#39).
-pub const TRANSFER_CONTRACT_VERSION: u32 = 1;
+/// Version 2 (#43) added checkpoints: [`TransferSpec::resume`] and [`TransferEvent::Checkpoint`].
+pub const TRANSFER_CONTRACT_VERSION: u32 = 2;
 
 /// An engine's id for one transfer. Assigned by the engine, never reused, and never shown as the
 /// app's download id.
@@ -91,6 +92,58 @@ pub struct TransferSpec {
     pub limits: Limits,
     /// Requested connections; the engine may apply fewer (see [`DirectTransfer::set_connections`]).
     pub max_connections: u32,
+    /// How to treat what an earlier attempt left on disk (#43). `None` for a new download.
+    pub resume: Option<Resume>,
+}
+
+/// The format of [`Checkpoint`]. A checkpoint in another format isn't used.
+pub const CHECKPOINT_FORMAT: u32 = 1;
+
+/// How far a direct download got durably: what an engine needs to resume it (#43). It holds no
+/// credential and no URL query, so no token can reach the database through it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct Checkpoint {
+    /// [`CHECKPOINT_FORMAT`] when it was written.
+    pub format: u32,
+    /// The source as [`Checkpoint::source_of`] gives it: scheme, host and path only.
+    pub source: String,
+    /// The file's total size. A resumed answer with another total means another file.
+    pub total: u64,
+    /// The validators the first answer gave, recorded for #45: an ETag and a Last-Modified date.
+    pub etag: Option<String>,
+    pub last_modified: Option<String>,
+    /// The byte ranges synced to disk, as half-open `[start, end)` pairs, sorted and disjoint.
+    /// Only these are trusted after a crash.
+    pub durable: Vec<(u64, u64)>,
+}
+
+impl Checkpoint {
+    /// `url` without its login, query and fragment: `https://user:pass@host/a.zip?token=x` is
+    /// `https://host/a.zip`. Enough to tell a resumed source from another; never a secret.
+    pub fn source_of(url: &str) -> String {
+        let (without, _) = crate::database::without_login(url);
+        match without.find(['?', '#']) {
+            Some(cut) => without[..cut].to_owned(),
+            None => without,
+        }
+    }
+}
+
+/// How a transfer starts relative to what an earlier attempt left on disk (#43).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(
+    tag = "from",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
+pub enum Resume {
+    /// Continue from this checkpoint. The part file is the download's own.
+    Checkpoint { checkpoint: Checkpoint },
+    /// The part file is the download's own but has no usable checkpoint: discard it and start
+    /// over.
+    DiscardPartFile {},
 }
 
 /// The state of one transfer as its engine reports it.
@@ -114,6 +167,12 @@ pub enum TransferEvent {
     Changed { snapshot: TransferSnapshot },
     /// The engine forgot the transfer after [`DirectTransfer::remove`].
     Removed { id: TransferId },
+    /// The transfer's part file was synced and these bytes are durable. The app saves it, and
+    /// hands it back in [`TransferSpec::resume`] to continue after a crash (#43).
+    Checkpoint {
+        id: TransferId,
+        checkpoint: Checkpoint,
+    },
 }
 
 /// A direct-download engine, in the app's process or behind a client for a child process.
@@ -244,6 +303,20 @@ mod tests {
                 max_download_bps: Some(1_000_000),
             },
             max_connections: 4,
+            resume: Some(Resume::Checkpoint {
+                checkpoint: checkpoint(),
+            }),
+        }
+    }
+
+    pub(crate) fn checkpoint() -> Checkpoint {
+        Checkpoint {
+            format: CHECKPOINT_FORMAT,
+            source: "https://example.com/a.zip".to_owned(),
+            total: 1000,
+            etag: Some("\"v1\"".to_owned()),
+            last_modified: None,
+            durable: vec![(0, 400), (600, 800)],
         }
     }
 
@@ -361,6 +434,57 @@ mod tests {
             refuses_an_extra_field(&changed, pointer);
         }
         refuses_an_extra_field(&TransferEvent::Removed { id: TransferId(1) }, "");
+        let checkpoint = TransferEvent::Checkpoint {
+            id: TransferId(1),
+            checkpoint: checkpoint(),
+        };
+        for pointer in ["", "/checkpoint"] {
+            refuses_an_extra_field(&checkpoint, pointer);
+        }
+        for pointer in ["/spec/resume", "/spec/resume/checkpoint"] {
+            refuses_an_extra_field(&add, pointer);
+        }
+        let discard = TransferCommand::Add {
+            spec: TransferSpec {
+                resume: Some(Resume::DiscardPartFile {}),
+                ..spec()
+            },
+        };
+        refuses_an_extra_field(&discard, "/spec/resume");
+    }
+
+    #[test]
+    fn checkpoints_and_resumes_cross_a_process_boundary() {
+        let event = TransferEvent::Checkpoint {
+            id: TransferId(3),
+            checkpoint: checkpoint(),
+        };
+        round_trip(&event);
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(json.contains(r#""durable":[[0,400],[600,800]]"#), "{json}");
+        round_trip(&Resume::DiscardPartFile {});
+        assert_eq!(
+            serde_json::to_string(&Resume::DiscardPartFile {}).unwrap(),
+            r#"{"from":"discardPartFile"}"#
+        );
+    }
+
+    #[test]
+    fn a_checkpoint_source_keeps_no_login_query_or_fragment() {
+        for (url, source) in [
+            (
+                "https://alice:pw@example.com:8443/a/b.zip?token=SECRET#part",
+                "https://example.com:8443/a/b.zip",
+            ),
+            ("https://example.com/a.zip", "https://example.com/a.zip"),
+            (
+                "ftp://anon@ftp.example.org/pub/x",
+                "ftp://ftp.example.org/pub/x",
+            ),
+            ("https://example.com?q=1", "https://example.com"),
+        ] {
+            assert_eq!(Checkpoint::source_of(url), source, "{url}");
+        }
     }
 
     #[test]

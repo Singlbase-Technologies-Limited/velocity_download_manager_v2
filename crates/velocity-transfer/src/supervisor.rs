@@ -233,6 +233,8 @@ impl Shared {
             TransferEvent::Removed { id } => {
                 state.current.remove(id);
             }
+            // Passed on for the app to save (#43); it changes no state here.
+            TransferEvent::Checkpoint { .. } => {}
         }
         state.emit(event);
     }

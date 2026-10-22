@@ -5,6 +5,7 @@
 pub mod download;
 pub mod engine;
 pub mod engine_log;
+pub mod files;
 pub mod probe;
 pub mod protocol;
 pub mod scheduler;

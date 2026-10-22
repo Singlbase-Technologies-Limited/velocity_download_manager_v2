@@ -4214,12 +4214,14 @@ version = "0.1.0"
 name = "velocity-transfer"
 version = "0.1.0"
 dependencies = [
+ "libc",
  "proptest",
  "serde",
  "serde_json",
  "velocity-core",
  "velocity-curl",
  "velocity-test-http",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

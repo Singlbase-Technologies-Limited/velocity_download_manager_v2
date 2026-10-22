@@ -179,6 +179,9 @@ impl Manager {
                 }
                 true
             }
+            // A checkpoint changes nothing the UI shows. Saving it in the database, to resume
+            // after a crash, comes with the manager's persistence (#58).
+            TransferEvent::Checkpoint { .. } => false,
         }
     }
 }
@@ -202,6 +205,7 @@ mod tests {
             checksum: None,
             limits: Limits::default(),
             max_connections: 4,
+            resume: None,
         }
     }
 

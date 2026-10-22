@@ -55,6 +55,7 @@ fn spec(url: String, destination: PathBuf) -> TransferSpec {
         checksum: None,
         limits: Limits::default(),
         max_connections: 2,
+        resume: None,
     }
 }
 
