@@ -57,6 +57,10 @@ const healthy = {
   webview2: '155.0.4283.62',
   webkitgtk: null,
   xcode: null,
+  gpg: 'gpg (GnuPG) 2.4.4',
+  cmake: 'cmake version 3.31.6-msvc6',
+  make: 'GNU Make 4.3',
+  perl: 'This is perl 5, version 38',
 };
 const requirements = { node: '^22.13.0 || ^24.0.0 || >=26.0.0', pnpm: '12.14.0' };
 const failed = (findings) => findings.filter((f) => !f.ok).map((f) => f.name);
@@ -104,6 +108,33 @@ describe('evaluate', () => {
     expect(failed(findings)).toEqual(['WebKitGTK 4.1 development files']);
     expect(findings.find((f) => !f.ok).fix).toContain('libwebkit2gtk-4.1-dev');
     expect(failed(evaluate({ ...healthy, platform: 'linux', webkitgtk: '2.48.0' }, requirements))).toEqual([]);
+  });
+
+  // The native libraries (#35, docs/BUILDING_NATIVE.md): every Rust build links them.
+  it('reports a missing gpg, which checks the native source signatures', () => {
+    const findings = evaluate({ ...healthy, gpg: null }, requirements);
+    expect(failed(findings)).toEqual(['GnuPG (native source signatures)']);
+    expect(findings.find((f) => !f.ok).fix).toContain('Git for Windows');
+    const linux = evaluate({ ...healthy, platform: 'linux', webkitgtk: '2.48.0', gpg: null }, requirements);
+    expect(linux.find((f) => !f.ok).fix).toContain('gnupg');
+  });
+
+  it('reports a missing CMake on Windows', () => {
+    const findings = evaluate({ ...healthy, cmake: null }, requirements);
+    expect(failed(findings)).toEqual(['CMake (native build)']);
+    expect(findings.find((f) => !f.ok).fix).toContain('C++ CMake tools for Windows');
+  });
+
+  it('reports missing make or perl on Linux, which build OpenSSL and curl', () => {
+    const findings = evaluate({ ...healthy, platform: 'linux', webkitgtk: '2.48.0', perl: null }, requirements);
+    expect(failed(findings)).toEqual(['make and perl (native build)']);
+    expect(findings.find((f) => !f.ok).detail).toContain('perl not found');
+    expect(findings.find((f) => !f.ok).fix).toContain('build-essential perl');
+  });
+
+  it('has no native build checks on macOS, where no native build is established', () => {
+    const names = evaluate({ ...healthy, platform: 'darwin', xcode: '/Library/Developer/CommandLineTools', gpg: null, cmake: null }, requirements).map((f) => f.name);
+    expect(names.filter((n) => /native/.test(n))).toEqual([]);
   });
 
   it('checks the Xcode Command Line Tools on macOS', () => {

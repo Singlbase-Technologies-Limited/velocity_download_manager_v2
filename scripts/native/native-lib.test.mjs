@@ -2,6 +2,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import {
   LIBCURL_FLOOR,
+  checkArtifacts,
   checkBuildInfo,
   checkDownload,
   checkLinked,
@@ -286,5 +287,28 @@ describe('the committed lock file', () => {
   });
   it('has the pinned key of every library whose signature it verifies', () => {
     for (const e of lock.filter((l) => l.signature.status === 'verified')) expect(existsSync(new URL(`keys/${e.name}.asc`, dir))).toBe(true);
+  });
+});
+
+describe('checkArtifacts', () => {
+  const info = { artifacts: [{ path: 'lib/libcurl.a', sha256: 'a'.repeat(64) }, { path: 'bin/curl', sha256: 'b'.repeat(64) }] };
+  it('accepts artefacts that still have their recorded SHA-256', () => {
+    const hashes = { 'lib/libcurl.a': 'a'.repeat(64), 'bin/curl': 'b'.repeat(64) };
+    expect(checkArtifacts(info, (p) => hashes[p])).toEqual([]);
+  });
+  it('reports an artefact that changed after the build', () => {
+    const hashes = { 'lib/libcurl.a': 'c'.repeat(64), 'bin/curl': 'b'.repeat(64) };
+    expect(checkArtifacts(info, (p) => hashes[p])).toEqual(['lib/libcurl.a changed after the build: its SHA-256 differs from build-info.json']);
+  });
+  it('reports a missing artefact', () => {
+    expect(checkArtifacts(info, (p) => (p === 'bin/curl' ? 'b'.repeat(64) : null))).toEqual(['lib/libcurl.a is missing']);
+  });
+  it('refuses an artefact path that leaves the build folder', () => {
+    const escaping = { artifacts: [{ path: '../../../etc/passwd', sha256: 'a'.repeat(64) }] };
+    expect(checkArtifacts(escaping, () => 'a'.repeat(64))).toEqual(['../../../etc/passwd is not a path inside the build folder']);
+  });
+  it('refuses a Windows-style path that leaves the build folder', () => {
+    const escaping = { artifacts: [{ path: 'lib\\..\\..\\secret.lib', sha256: 'a'.repeat(64) }] };
+    expect(checkArtifacts(escaping, () => 'a'.repeat(64))).toEqual(['lib\\..\\..\\secret.lib is not a path inside the build folder']);
   });
 });

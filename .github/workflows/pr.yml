@@ -101,6 +101,15 @@ jobs:
           # toolchain does that without downloading the pinned one.
           if [ "$RUST" != true ]; then export RUSTUP_TOOLCHAIN=stable; fi
           node scripts/check-pr.mjs --base "$BASE_SHA"
+      # check:pr builds the native libraries before any Rust check (#35), so this job is also the
+      # Linux native build; its record is the evidence.
+      - name: Upload build-info.json
+        if: ${{ !cancelled() && hashFiles('target/native/x86_64-unknown-linux-gnu/build-info.json') != '' }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: build-info-linux
+          path: target/native/x86_64-unknown-linux-gnu/build-info.json
+          retention-days: 7
       - name: Write the job report
         if: ${{ !cancelled() && steps.checkout.outcome == 'success' }}
         env:
@@ -114,54 +123,13 @@ jobs:
           path: ci-reports/report-code.json
           retention-days: 7
 
-  # Native library builds (#35, docs/BUILDING_NATIVE.md): only when their inputs, CI files or an
-  # unknown path change (scripts/checks-lib.mjs). Each verifies every source's SHA-256 and signature,
-  # builds, checks `curl -V` against the lock file, and uploads build-info.json as evidence.
-  native-linux:
-    name: Native build (Linux)
-    needs: select
-    if: ${{ !cancelled() && needs.select.outputs.native == 'true' }}
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    env:
-      CI_REPORT_PATH: ${{ github.workspace }}/../ci-checks.json
-    steps:
-      - id: checkout
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - id: node
-        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
-        with:
-          node-version: 24.12.0
-      - id: toolchain
-        name: Install the pinned Rust toolchain
-        run: rustup toolchain install "$(sed -n 's/^channel = "\(.*\)"/\1/p' rust-toolchain.toml)" --profile minimal
-      - id: build
-        name: Native build (native:build)
-        run: node scripts/native/build.mjs
-      - name: Upload build-info.json
-        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: build-info-linux
-          path: target/native/x86_64-unknown-linux-gnu/build-info.json
-          retention-days: 7
-      - name: Write the job report
-        if: ${{ !cancelled() && steps.checkout.outcome == 'success' }}
-        env:
-          STEPS: ${{ toJSON(steps) }}
-        run: node scripts/ci-report.mjs job --job native-linux --infra checkout,node,toolchain --step-check "build=Native build (Linux)"
-      - name: Upload the job report
-        if: ${{ !cancelled() && steps.checkout.outcome == 'success' }}
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: report-native-linux
-          path: ci-reports/report-native-linux.json
-          retention-days: 7
-
+  # The Windows native build and the libcurl layer's tests (#35, docs/BUILDING_NATIVE.md): only
+  # when the native inputs, CI files or an unknown path change (scripts/checks-lib.mjs). It verifies
+  # every source's SHA-256 and signature, builds, checks `curl -V` against the lock file, uploads
+  # build-info.json, then links velocity-curl and runs its tests, including the start check. Linux
+  # gets the same from the code job, whose check:pr runs the native build first.
   native-windows:
-    name: Native build (Windows)
+    name: Native build and libcurl tests (Windows)
     needs: select
     if: ${{ !cancelled() && needs.select.outputs.native == 'true' }}
     runs-on: windows-latest
@@ -193,11 +161,17 @@ jobs:
           name: build-info-windows
           path: target/native/x86_64-pc-windows-msvc/build-info.json
           retention-days: 7
+      - id: curl-tests
+        name: libcurl layer tests (cargo test -p velocity-curl)
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        env:
+          CARGO_INCREMENTAL: 0
+        run: cargo test -p velocity-curl --no-fail-fast
       - name: Write the job report
         if: ${{ !cancelled() && steps.checkout.outcome == 'success' }}
         env:
           STEPS: ${{ toJSON(steps) }}
-        run: node scripts/ci-report.mjs job --job native-windows --infra checkout,node,toolchain --step-check "build=Native build (Windows)"
+        run: node scripts/ci-report.mjs job --job native-windows --infra checkout,node,toolchain --step-check "build=Native build (Windows)" --step-check "curl-tests=libcurl layer tests (Windows)"
       - name: Upload the job report
         if: ${{ !cancelled() && steps.checkout.outcome == 'success' }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -208,7 +182,7 @@ jobs:
 
   ci-required:
     name: ci-required
-    needs: [select, code, native-linux, native-windows]
+    needs: [select, code, native-windows]
     # Not `always()`: that also runs in a run cancelled because a newer push superseded it, and
     # reports a failure there (seen on demo PR #107). `!cancelled()` still runs after failures and
     # skips, so a real failure is always reported.
@@ -242,8 +216,7 @@ jobs:
           node scripts/ci-report.mjs summary --reports ci-reports --jobs
           '[{"id":"select","name":"Job selection","mandatory":true},
           {"id":"code","name":"Code checks","mandatory":true,"selectedBy":"select","selectedOutput":"code"},
-          {"id":"native-linux","name":"Native build (Linux)","mandatory":true,"selectedBy":"select","selectedOutput":"native"},
-          {"id":"native-windows","name":"Native build (Windows)","mandatory":true,"selectedBy":"select","selectedOutput":"native"}]'
+          {"id":"native-windows","name":"Native build and libcurl tests (Windows)","mandatory":true,"selectedBy":"select","selectedOutput":"native"}]'
       - name: Upload ci-diagnostics
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2

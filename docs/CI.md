@@ -35,7 +35,7 @@ Selection extends the rules `pnpm check:pr` already uses, in [`scripts/checks-li
 - **Crates:** a change inside a crate selects that crate and every crate that depends on it.
 - **Frontend:** frontend paths select `tsc`, ESLint and Vitest.
 - **Docs only:** `docs/` and root `*.md` select only the docs job (`pnpm check:links`: relative links and heading anchors).
-- **Native builds (#35):** the two native build jobs run only for their own inputs (`scripts/native/`, and native lock files other than `Cargo.lock` and `pnpm-lock.yaml`), for `.github/`, and for paths no rule knows. Other shared files, such as `Cargo.lock` or another check script, don't select them: the builds take minutes, and Windows minutes bill double ([BUILDING_NATIVE.md](BUILDING_NATIVE.md)).
+- **Native builds (#35):** the Windows native job runs only for the native inputs (`scripts/native/`, `crates/velocity-curl/`, `.cargo/`, and native lock files other than `Cargo.lock` and `pnpm-lock.yaml`), for `.github/`, and for paths no rule knows. On Linux, the `code` job builds the native libraries itself before its Rust checks. Other shared files, such as `Cargo.lock` or another check script, don't select them: the builds take minutes, and Windows minutes bill double ([BUILDING_NATIVE.md](BUILDING_NATIVE.md)).
 - **Windows-relevant paths (tier 2):**
   - every Rust crate, `src-tauri/`, `Cargo.lock`, `rust-toolchain.toml`;
   - `scripts/`, since the check runner has Windows-specific code paths;
@@ -54,9 +54,9 @@ The PR tier is implemented in [`.github/workflows/pr.yml`](../.github/workflows/
 | Job | Runs when | What it does |
 |---|---|---|
 | `select` | Always | `node scripts/ci-select.mjs --base <PR base>` writes `rust`, `frontend`, `docs` and `native` flags to its outputs. It adds a table to the **run summary** with every job, *runs* or *skipped*, the reason for each, and the reason for each changed path. When docs are selected, the same job runs `node scripts/check-links.mjs` as a step |
-| `code` | Rust or frontend selected | `pnpm check:pr`, the same command as locally. Tauri system packages and the pinned toolchain are installed only when Rust is selected |
-| `native-linux`, `native-windows` | Native build inputs, CI files or unknown paths changed | `node scripts/native/build.mjs` on `ubuntu-latest` and `windows-latest`: verifies every source, builds, checks `curl -V` against the lock file, and uploads `build-info.json` as the `build-info-linux` or `build-info-windows` artifact (7 days). No cache yet |
-| `ci-required` | Unless the run was cancelled (`if: ${{ !cancelled() }}`) | Passes only if `select` succeeded and `code` and both native builds each succeeded or were skipped by the selection. It writes its own table to the run summary. A run superseded by a newer push is cancelled whole and reports nothing; `always()` would report a false failure there |
+| `code` | Rust or frontend selected | `pnpm check:pr`, the same command as locally. Tauri system packages and the pinned toolchain are installed only when Rust is selected. With Rust, `check:pr` builds the native libraries first (reused from the `target/` cache that `main` saves), and the job uploads `build-info-linux` |
+| `native-windows` | Native inputs, CI files or unknown paths changed | On `windows-latest`: `node scripts/native/build.mjs` (verifies every source, builds, checks `curl -V` against the lock file), uploads `build-info-windows` (7 days), then `cargo test -p velocity-curl`, which links the build and runs the start check. No cache |
+| `ci-required` | Unless the run was cancelled (`if: ${{ !cancelled() }}`) | Passes only if `select` succeeded, and `code` and `native-windows` each succeeded or were skipped by the selection. It writes its own table to the run summary. A run superseded by a newer push is cancelled whole and reports nothing; `always()` would report a false failure there |
 
 **Why so few jobs.** GitHub bills every job's time **rounded up to a whole minute** ([runner pricing](https://docs.github.com/en/billing/reference/actions-runner-pricing)), and every job repeats checkout and setup. So Rust and frontend share the `code` job, and the one-second docs check runs inside `select`. A docs-only PR then costs 2 billed minutes (`select` and `ci-required`), and a code PR costs the `code` job plus 2.
 

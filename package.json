@@ -26,7 +26,8 @@
     "check:full": "node scripts/check-full.mjs",
     "check:links": "node scripts/check-links.mjs",
     "native:fetch": "node scripts/native/fetch.mjs",
-    "native:build": "node scripts/native/build.mjs"
+    "native:build": "node scripts/native/build.mjs",
+    "native:verify": "node scripts/native/verify.mjs"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.12.4",

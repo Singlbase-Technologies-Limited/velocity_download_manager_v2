@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/velocity-core", "src-tauri"]
+members = ["crates/velocity-core", "crates/velocity-curl", "src-tauri"]
 
 [workspace.package]
 version = "0.1.0"
@@ -13,6 +13,10 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 # Per-OS data directory (#27, PO-approved 2026-10-22); also used by Tauri itself.
 dirs = "7.0.0"
+# libcurl's C API, for crates/velocity-curl only (PO-approved on #35, 2026-10-22). Its bundled
+# build never runs: .cargo/config.toml overrides it, and velocity-curl links the Velocity-built
+# libcurl (docs/BUILDING_NATIVE.md). No default features, so it pulls in no openssl-sys.
+curl-sys = { version = "=0.4.91", default-features = false }
 
 # Development builds: optimise dependencies once so the app runs at a usable
 # speed, while workspace crates stay unoptimised for fast incremental rebuilds.

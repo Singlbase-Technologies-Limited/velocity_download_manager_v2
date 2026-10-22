@@ -25,8 +25,11 @@ export const SELECT_ALL_PREFIXES = ['scripts/', '.cargo/', '.github/'];
  * #35): they change what every native build links, so they select everything even inside a crate.
  */
 export const NATIVE_LOCK_FILE = /(^|\/)([^/]+\.lock|vcpkg\.json|vcpkg-configuration\.json)$/;
-/** The native library builds (#35): their scripts, pins and keys. */
-export const NATIVE_PREFIXES = ['scripts/native/'];
+/**
+ * The native library builds (#35): their scripts, pins and keys, the crate that links them, and
+ * the Cargo overrides that make it link them.
+ */
+export const NATIVE_PREFIXES = ['scripts/native/', 'crates/velocity-curl/', '.cargo/'];
 /** Lockfiles that match NATIVE_LOCK_FILE but pin Rust or npm packages, not native libraries. */
 const PACKAGE_LOCK_FILES = ['Cargo.lock', 'pnpm-lock.yaml'];
 /** Frontend: TypeScript types, ESLint and Vitest. */
@@ -157,6 +160,12 @@ export function workspaceFromMetadata(metadata) {
 const pkgArgs = (pkgs) => pkgs.flatMap((p) => ['-p', p]);
 
 /**
+ * Every Rust build links the Velocity-built libcurl (#35, docs/BUILDING_NATIVE.md), so this runs
+ * before any Rust check. It reuses a finished build in about a second.
+ */
+export const NATIVE_BUILD_COMMAND = { id: 'native-build', name: 'Native libraries (native:build)', tool: 'node', args: ['scripts/native/build.mjs'] };
+
+/**
  * The L1 checks for a selection. `tool` is resolved to an executable by the runner.
  * @returns {{id: string, name: string, tool: string, args: string[]}[]}
  */
@@ -165,6 +174,7 @@ export function checkCommands(selection) {
   const rust = selection.all ? ['--workspace'] : pkgArgs(selection.rustPackages);
   if (selection.all || selection.rustPackages.length > 0) {
     cmds.push(
+      NATIVE_BUILD_COMMAND,
       { id: 'rust-fmt', name: 'Rust formatting (cargo fmt --check)', tool: 'cargo', args: ['fmt', '--all', '--', '--check'] },
       {
         id: 'rust-clippy',
@@ -204,7 +214,7 @@ export function focusedCommands(argv, workspace) {
   const valid = [...workspace.crates.map((c) => c.name), ...Object.keys(FRONTEND_AREAS)];
   if (!area) throw new Error(`Name an area to test: ${valid.join(', ')}`);
   if (workspace.crates.some((c) => c.name === area)) {
-    return [{ id: 'rust-test', tool: 'cargo', args: ['test', '-p', area, ...extra], name: `cargo test -p ${area}` }];
+    return [NATIVE_BUILD_COMMAND, { id: 'rust-test', tool: 'cargo', args: ['test', '-p', area, ...extra], name: `cargo test -p ${area}` }];
   }
   const dir = FRONTEND_AREAS[area];
   if (dir) return [{ id: 'vitest', tool: 'vitest', args: ['run', dir, ...extra], name: `vitest run ${dir}` }];

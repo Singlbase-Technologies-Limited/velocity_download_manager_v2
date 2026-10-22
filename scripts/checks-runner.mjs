@@ -19,6 +19,7 @@ const nodeBin = (pkgPath) => [process.execPath, join(root, 'node_modules', pkgPa
 
 const tools = {
   cargo: () => [cargo],
+  node: () => [process.execPath],
   tsc: () => nodeBin('typescript/bin/tsc'),
   eslint: () => nodeBin('eslint/bin/eslint.js'),
   vitest: () => nodeBin('vitest/vitest.mjs'),
