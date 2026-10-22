@@ -1,0 +1,122 @@
+# Building the native libraries
+
+V2's direct-download engine uses libcurl ([ADR-0001](decisions/0001-v2-direction.md)). Release builds link a libcurl that V2 builds itself, from verified sources ([ADR-0004](decisions/0004-libcurl-build-path.md)), so the shipped version can be proven. This page covers how that build works, how to run it, and how to update a pin. The approval and pinning rules are in [DEPENDENCIES.md](DEPENDENCIES.md#native-libraries).
+
+## What gets built
+
+| Target | Libraries, in build order | TLS | Build system |
+|---|---|---|---|
+| Windows x64 (`x86_64-pc-windows-msvc`) | zlib, nghttp2, curl | Schannel (the operating system's) | CMake with the Visual Studio generator |
+| Linux x64 (`x86_64-unknown-linux-gnu`) | zlib, nghttp2, OpenSSL, curl | A static OpenSSL, on the 3.5 long-term line | Each project's own `configure` script |
+| macOS | **Not established** (#83) | — | — |
+
+The versions, sources and signing keys are in [`scripts/native/deps.lock`](../scripts/native/deps.lock). Every library is built static, so nothing from the build host's own libcurl is linked or bundled ([DEPENDENCIES.md](DEPENDENCIES.md#distribution-packages)).
+
+**libcurl keeps only what V2 uses.** The build disables DICT, FILE, Gopher, IMAP, IPFS, LDAP and LDAPS, MQTT, POP3, RTSP, SMTP, Telnet, TFTP, WebSockets and the `.netrc` parser. Libraries V2 doesn't use stay out too: libpsl, libidn2, Brotli, zstd, libssh2, libssh, librtmp and GSS-API. A protocol that isn't compiled in can't be reached by any URL or redirect. The engine's own allowlists (#67) still apply on top. SFTP comes later, once its backend is decided (#52, #53).
+
+## Running it
+
+```sh
+pnpm native:fetch   # download and verify the sources only
+pnpm native:build   # fetch, build, check and write build-info.json
+```
+
+Both work on the Rust host target. The output goes to `target/native/` (ignored by git):
+
+| Path | What it holds |
+|---|---|
+| `target/native/sources/` | The downloaded archives and their `.asc` signatures |
+| `target/native/<target>/prefix/` | The built static libraries (`lib/`), headers (`include/`) and the curl tool (`bin/`) |
+| `target/native/<target>/build-info.json` | The [build identity record](#build-infojson) |
+
+**Work folder:** Linux compiles in `target/native/<target>/build/`. Windows compiles in a new temporary folder (`%TEMP%\v2n-…`), because MSVC fails under a deep checkout path: a clean clone 140 characters deep hit its 260-character limit (C1083, "Cannot open compiler generated file"). Both folders are deleted after the build, whether it passed or failed.
+
+**Reuse:** a finished build is reused while the lock file and the scripts in `scripts/native/` are unchanged, and while every recorded artefact still has its recorded SHA-256. `node scripts/native/build.mjs --force` rebuilds anyway.
+
+**Measured times** (cold, 2026-10-22):
+
+| Platform | Machine | Time |
+|---|---|---|
+| Windows 11 | 16 logical CPUs, VS Build Tools 2022 (MSVC 19.44, CMake 3.31.6) | 150 s |
+| Linux, Ubuntu 24.04 in WSL2 | 2 vCPUs, gcc 13.3.0, GNU Make 4.3 | 302 s |
+
+### Prerequisites
+
+| Platform | Needs | Notes |
+|---|---|---|
+| Windows | Visual Studio 2022 (or Build Tools) with "Desktop development with C++"; gpg | CMake comes with Visual Studio. gpg comes with Git for Windows (`C:\Program Files\Git\usr\bin\gpg.exe`), which the fetch script finds without it being on `PATH` |
+| Linux | A C compiler, `make`, `perl` (for OpenSSL), `tar` with xz support, gpg | On Debian or Ubuntu: `sudo apt install build-essential perl xz-utils gnupg` |
+| Both | Node.js and Rust, as for the rest of V2 ([DEVELOPMENT.md](DEVELOPMENT.md#prerequisites)) | `rustc -vV` gives the host target |
+
+## How each source is proven
+
+[`scripts/native/fetch.mjs`](../scripts/native/fetch.mjs) does this for every library the target needs, before anything is unpacked:
+
+1. **Download** the archive over HTTPS from the URL in the lock file, into a `.part` file that is renamed only when complete.
+2. **Hash:** compare the archive's SHA-256 with the lock file. On a mismatch, the file is deleted and the build stops.
+3. **Signature:** download the detached `<url>.asc` and check it with gpg in a new, empty gpg home that holds **only** that library's key (`scripts/native/keys/<name>.asc`). It passes only when gpg reports exactly one valid signature whose **primary** key is the fingerprint in the lock file. A bad signature, a different key, an expired or revoked key, or two signatures stop the build.
+
+The rules are in [`native-lib.mjs`](../scripts/native/native-lib.mjs), with unit tests beside it.
+
+## Checking what was linked
+
+After the build, [`build.mjs`](../scripts/native/build.mjs) runs the curl tool it just built (`curl -V`) and checks what is actually linked:
+
+- **libcurl** is the version the lock file pins, and at least the **version floor, 8.23.0** (research report section 8.1).
+- **nghttp2 and zlib** are the pinned versions.
+- **TLS** is Schannel on Windows, and the pinned OpenSSL on Linux.
+- **Protocols:** `http`, `https`, `ftp` and `ftps` are present, and nothing else is (SFTP is allowed once enabled).
+- **Features:** `HTTP2`, `SSL` and `libz` are present.
+
+Any mismatch fails the build, and no `build-info.json` is written.
+
+Real output of both builds (2026-10-22):
+
+```text
+curl 8.23.0 (Windows) libcurl/8.23.0 Schannel zlib/1.3.2 nghttp2/1.70.0
+Release-Date: 2026-10-14
+Protocols: ftp ftps http https
+Features: alt-svc AsynchDNS HSTS HTTP2 HTTPS-proxy IPv6 Kerberos Largefile libz SPNEGO SSL SSPI threadsafe UnixSockets
+
+curl 8.23.0 (x86_64-pc-linux-gnu) libcurl/8.23.0 OpenSSL/3.5.9 zlib/1.3.2 nghttp2/1.70.0
+Release-Date: 2026-10-14
+Protocols: ftp ftps http https
+Features: alt-svc AsynchDNS HSTS HTTP2 HTTPS-proxy IPv6 Largefile libz SSL threadsafe UnixSockets
+```
+
+On Linux, the built curl tool links only the C library dynamically (`ldd`: `linux-vdso`, `libc.so.6`, `ld-linux-x86-64`). A manual check on both builds fetched `https://curl.se/` over HTTP/2 with a verified certificate, and refused `https://expired.badssl.com/` (Windows: `SEC_E_CERT_EXPIRED`; Linux: OpenSSL verify result 10, "certificate has expired"). That was a one-off check against the public internet, not a test; TLS behaviour is tested in #69.
+
+The Rust side, the `velocity-curl` crate, will repeat these checks at run time through `curl_version_info`, and refuse to start the engine below the floor. That is the second part of #35.
+
+## build-info.json
+
+One record per build, schema 1. It is written only after every check passes. `checkBuildInfo` in `native-lib.mjs` checks a record against the lock file. A missing or incomplete record is a release blocker ([DEPENDENCIES.md](DEPENDENCIES.md#release-blockers-related-to-provenance)); packaging starts enforcing it in the second part of #35.
+
+| Field | Content |
+|---|---|
+| `schema` | `1` |
+| `target` | The Rust target triple |
+| `v2` | The V2 commit and whether the working tree had uncommitted changes (`dirty`) |
+| `toolchains` | `rustc -V`, the Node.js version, and the C compiler; also CMake (Windows) or `make` (Linux) |
+| `cacheKey` | A SHA-256 over the target, the lock file and the build scripts |
+| `libraries` | For each library: name, version, source URL, source SHA-256, signature result, licence, and the exact configure or CMake options |
+| `linked` | The parsed `curl -V`: libcurl version, TLS backend, the other linked libraries, protocols and features |
+| `artifacts` | The SHA-256 of every built static library and of the curl tool |
+
+## Updating a pin
+
+Each change to `deps.lock` is its own reviewed PR. A libcurl floor bump also needs the floor changed in `native-lib.mjs` (`LIBCURL_FLOOR`) and in the docs that state it.
+
+1. **Check the advisories first:** curl's [vulnerability table](https://curl.se/docs/vulnerabilities.html) and the advisories for nghttp2, zlib and OpenSSL (#75).
+2. **Download** the new archive and its `.asc` from the project's official release location.
+3. **Verify the signature** with the key in `scripts/native/keys/`. If the project signs with a new key, get it from the project's own published source and record that source in the lock file's header.
+4. **Update the line:** version, URL, SHA-256 and fingerprint. The parser refuses a source file name that doesn't match `<name>-<version>.`.
+5. **Run `pnpm native:build`** on Windows and Linux. CI runs both native jobs for the PR, because the lock file changed ([CI.md](CI.md#selecting-jobs)).
+6. **Record it:** the approval in [DEPENDENCIES.md](DEPENDENCIES.md#approved-direct-dependencies), and the measured times above if they changed.
+
+## Known limitations
+
+- **Linux trust store:** the Linux build looks for CA certificates at `/etc/ssl/certs/ca-certificates.crt` and `/etc/ssl/certs`, where Debian, Ubuntu and Arch keep them. Fedora and openSUSE keep them elsewhere. How each TLS backend finds and checks certificates is tested in #69.
+- **No IDN in libcurl:** libcurl doesn't convert international domain names (libidn2 is LGPL, and WinIDN would exist on Windows only). How V2 handles them is part of URL validation in #67.
+- **Not linked into V2 yet:** this build is used by the `velocity-curl` crate in the second part of #35. Until then, nothing in the app links it.
+- **macOS:** not established (#83). Recorded as NOT RUN.

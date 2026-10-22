@@ -10,7 +10,7 @@ The rule in [AGENTS.md](../AGENTS.md#engineering) is short: **a new crate, npm p
 |---|---|---|
 | Rust crates | `tauri`, `serde`; later `curl`, `curl-sys` | `Cargo.toml` (direct) and the committed `Cargo.lock` (everything) |
 | npm packages, installed with pnpm | `react`, `@tauri-apps/api`, `vite`, `vitest` | `package.json` (direct) and the committed `pnpm-lock.yaml`; CI uses `pnpm install --frozen-lockfile` |
-| Native libraries, linked or bundled | libcurl, nghttp2, zlib, a TLS library, possibly libssh2, libtorrent, Boost, OpenSSL | A native lock file (below), created with the first native library (#35) |
+| Native libraries, linked or bundled | libcurl, nghttp2, zlib, a TLS library, possibly libssh2, libtorrent, Boost, OpenSSL | The native lock file [`scripts/native/deps.lock`](../scripts/native/deps.lock) (below; #35) |
 | Toolchains | Rust 1.99.1, Node.js 24.12.0, pnpm 12.14.0 | `rust-toolchain.toml`, `packageManager` in `package.json`, and the Node version in the workflows |
 | GitHub Actions | `actions/checkout`, `actions/cache` | A full commit SHA in the workflows ([CI.md](CI.md#permissions-and-supply-chain)) |
 | Services and background processes | none today | — |
@@ -58,31 +58,36 @@ The rule in [AGENTS.md](../AGENTS.md#engineering) is short: **a new crate, npm p
 
 ### Lock file
 
-Every native library V2 builds or bundles has one line in a native lock file. The file is created with the first native library, libcurl in #35, and its path is chosen there. The format follows V1's `scripts/aria2/deps.lock` and adds the signature status and licence:
+Every native library V2 builds or bundles has one line in the native lock file, [`scripts/native/deps.lock`](../scripts/native/deps.lock) (#35). The format follows V1's `scripts/aria2/deps.lock` and adds the signature status and licence. Two lines from it:
 
 ```text
 # name  version  source-url  sha256  signature  licence
-curl    8.23.0   https://curl.se/download/curl-8.23.0.tar.xz  <sha256>  verified:<key fingerprint>  curl
-nghttp2 1.68.1   https://github.com/nghttp2/nghttp2/releases/download/v1.68.1/nghttp2-1.68.1.tar.xz  <sha256>  unverifiable:<reason>  MIT
+zlib    1.3.2   https://github.com/madler/zlib/releases/download/v1.3.2/zlib-1.3.2.tar.xz  d7a0654783a4da529d1bb793b7ad9c3318020af77667bcae35f95d0e42a792f3  verified:5ED46A6721D365587791E2AA783FCD8E58BCAFBA  Zlib
+curl    8.23.0  https://curl.se/download/curl-8.23.0.tar.xz  8dadd7d2536a314f982ad05a651b713f426bf7d02cc2c76cffb9796f2218e6c5  verified:27EDEAF22F3ABCEB50DB9A125CC908FDB71E12C2  curl
 ```
 
 - **One line per library,** with a comment header saying when and how the hashes were computed.
 - **`sha256`** is computed from the downloaded file. The build refuses to continue if a download doesn't match.
 - **`signature`** is `verified:<fingerprint>`, `unverifiable:<reason>`, or `none-published`. An unverifiable signature is recorded honestly, never assumed fine.
-- **Licence** is an SPDX identifier, as in the table above.
+  - For `verified`, the fingerprint is the signer's **primary** key, and that project's published release-signing key is committed as `scripts/native/keys/<name>.asc`. The lock file's header says where each key came from.
+  - The build checks the detached `<source-url>.asc` with gpg against that one key only, and refuses a signature from any other key, an expired or revoked key, or a file with more than one signature.
+- **Licence** is an SPDX identifier from the permissive class in the table above. A line with any other licence is refused until the PO records an exception.
+- **Enforced by** `scripts/native/native-lib.mjs` (unit tested), which `pnpm native:fetch` and `pnpm native:build` use ([BUILDING_NATIVE.md](BUILDING_NATIVE.md)).
 
 ### Build identity record
 
-Each release build writes `build-info.json` next to its artefacts (#35, #84). For every native library it records:
+Each native build writes `target/native/<target>/build-info.json` (#35), and release packaging copies it next to its artefacts (#84). The fields are listed in [BUILDING_NATIVE.md](BUILDING_NATIVE.md#build-infojson). For every native library it records:
 
-- the source SHA-256 and the upstream tag or commit;
+- the source URL, SHA-256 and signature result (the release archive identifies the upstream release);
 - the configure or CMake options;
 - the TLS backend and the versions of every linked library (nghttp2, zlib, libssh2…);
-- the checksum of the built binary;
+- the SHA-256 of every built library and of the curl tool;
 - the Rust and Node toolchain versions;
 - the V2 commit.
 
-At runtime the engine also reports what it actually linked (`curl_version_info`: version, TLS backend, protocols, features), and refuses to start below the version floor (libcurl 8.23.0, research report section 8.1; #35).
+The build also runs its own curl tool (`curl -V`), records what was actually linked, and fails unless it matches the lock file: libcurl at or above the version floor (8.23.0, research report section 8.1), the pinned nghttp2, zlib and TLS backend, the required protocols and features, and no protocol V2 doesn't use.
+
+At runtime the engine will also report what it linked (`curl_version_info`: version, TLS backend, protocols, features), and refuse to start below the floor. That check comes with the `velocity-curl` crate, the second part of #35.
 
 ### Distribution packages
 
@@ -114,6 +119,7 @@ The register of direct dependencies and how each was approved. Transitive depend
 | `@tauri-apps/api` 2 | npm | Apache-2.0 OR MIT | Typed calls into the shell | PO, #2 (PR #92) |
 | `dirs` 7.0.0 | Rust | MIT OR Apache-2.0 | Per-OS data folder for the core and the native host (docs/COEXISTENCE.md); already in the tree through Tauri | PO, #27 (2026-10-22) |
 | `tauri-plugin-single-instance` =2.5.2 | Rust | Apache-2.0 OR MIT | A second launch focuses the running window | PO, #27 (2026-10-22; 2.5.2 chosen over 2.5.4, released 2026-10-14) |
+| curl 8.23.0, nghttp2 1.70.0, zlib 1.3.2; OpenSSL 3.5.9 on Linux | Native libraries, static ([BUILDING_NATIVE.md](BUILDING_NATIVE.md)) | curl, MIT, Zlib, Apache-2.0 | The direct-download engine's transport: HTTP/2, TLS (Schannel on Windows, OpenSSL on Linux), compression | PO, #35 (2026-10-22; OpenSSL's 3.5 long-term line chosen over 4.0) |
 | `zod` 4.6.5 (exact) | npm | MIT | Strict validation of every native response (docs/CONTRACTS.md) | PO, #25 (2026-10-22; 4.6.5 chosen over 4.6.7, released 2026-10-12) |
 | `@tauri-apps/cli`, `vite`, `@vitejs/plugin-react`, `typescript`, `@types/*`, `eslint`, `@eslint/js`, `typescript-eslint`, `eslint-plugin-react-hooks`, `eslint-plugin-react-refresh`, `globals`, `vitest` | npm (development only) | MIT, Apache-2.0 or BSD (not shipped) | Build, types, lint, tests | PO, #2 (PR #92) |
 | Rust 1.99.1, Node.js 24.12.0, pnpm 12.14.0 | Toolchains | MIT/Apache-2.0 (Rust), MIT | Building | PO, #2 (PR #92; pnpm chosen by the PO) |
