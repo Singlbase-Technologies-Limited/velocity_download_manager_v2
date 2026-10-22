@@ -182,6 +182,64 @@ fn a_slow_reader_bounds_the_buffered_bytes() {
 }
 
 #[test]
+fn a_fetch_stops_cleanly_at_its_limit() {
+    // A range split (#42, report section 5.2): the old request stops at the new boundary, and
+    // that is a completed range, not an error.
+    let (s, data) = serve("a.bin", 300_000, ServerOptions::default());
+    let l = start_loop(LoopOptions::default());
+    let f = l.fetch(FetchRequest::get(s.url("a.bin")), accept_all);
+    f.stop_at(1234);
+    let o = collect(&f, None);
+    assert_eq!(o.done, Ok(()));
+    assert_eq!(
+        o.data,
+        data[..1234].to_vec(),
+        "exactly the bytes up to the limit"
+    );
+}
+
+#[test]
+fn a_limit_lowered_while_the_fetch_runs_stops_it_there() {
+    let (s, data) = serve(
+        "a.bin",
+        4_000_000,
+        ServerOptions {
+            throttle_bytes_per_sec: Some(1_000_000),
+            ..ServerOptions::default()
+        },
+    );
+    let l = start_loop(LoopOptions::default());
+    let f = l.fetch(FetchRequest::get(s.url("a.bin")), accept_all);
+    let mut received = Vec::new();
+    loop {
+        match f.next_event(WAIT).expect("an event") {
+            FetchEvent::Data(chunk) => {
+                received.extend_from_slice(&chunk);
+                break;
+            }
+            FetchEvent::Done(d) => panic!("finished before the limit was set: {d:?}"),
+            FetchEvent::Head(_) => {}
+        }
+    }
+    let limit = received.len() as u64 + 100_000;
+    f.stop_at(limit);
+    let started = Instant::now();
+    let o = collect(&f, None);
+    received.extend_from_slice(&o.data);
+    assert_eq!(o.done, Ok(()));
+    assert_eq!(received.len() as u64, limit);
+    assert!(
+        received == data[..limit as usize],
+        "the bytes are the file's"
+    );
+    assert!(
+        started.elapsed() < Duration::from_secs(2),
+        "it stopped at the limit instead of running to the end ({:?})",
+        started.elapsed()
+    );
+}
+
+#[test]
 fn a_cancelled_fetch_ends_and_the_loop_keeps_working() {
     let (s, data) = serve(
         "a.bin",

@@ -23,6 +23,7 @@ use velocity_core::transfer::{
 use velocity_curl::{CurlLoop, Libcurl, LoopOptions};
 
 use crate::download::{download_with, Control, DownloadError, DownloadOptions};
+use crate::scheduler::Sizes;
 
 /// The most connections one transfer may use. A starting value for #47 to tune, not a requirement.
 pub const MAX_CONNECTIONS: u32 = 8;
@@ -328,6 +329,7 @@ fn run(
     let options = DownloadOptions {
         connections,
         probe_bytes: PROBE_BYTES,
+        leases: Sizes::DEFAULT,
     };
     let result = download_with(&shared.curl, url, &destination, options, control);
     update(shared, id, |s| {

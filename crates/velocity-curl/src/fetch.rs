@@ -15,7 +15,7 @@
 
 use std::collections::HashMap;
 use std::ffi::CString;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::sync::Arc;
 use std::thread::{self, JoinHandle};
@@ -134,11 +134,23 @@ impl std::fmt::Display for LoopError {
 impl std::error::Error for LoopError {}
 
 /// State a fetch shares between the loop's callbacks and its reader.
-#[derive(Default)]
 struct Flow {
     buffered: AtomicUsize,
     peak: AtomicUsize,
     paused: AtomicBool,
+    /// The most body bytes the transfer may deliver ([`Fetch::stop_at`]).
+    limit: AtomicU64,
+}
+
+impl Default for Flow {
+    fn default() -> Self {
+        Flow {
+            buffered: AtomicUsize::new(0),
+            peak: AtomicUsize::new(0),
+            paused: AtomicBool::new(false),
+            limit: AtomicU64::new(u64::MAX),
+        }
+    }
 }
 
 enum Command {
@@ -197,6 +209,8 @@ impl CurlLoop {
             lines: Vec::new(),
             accepted: false,
             abort: None,
+            delivered: 0,
+            stopped_at_limit: false,
         };
         let fetch = Fetch {
             token,
@@ -271,6 +285,18 @@ impl Fetch {
         self.send(Command::Cancel(self.token));
     }
 
+    /// Stops the transfer once it has delivered `body_bytes` body bytes; it then ends with
+    /// `Done(Ok)`. The limit may be lowered while the fetch runs, for example when its range is
+    /// split (#42); bytes already delivered are not taken back.
+    pub fn stop_at(&self, body_bytes: u64) {
+        self.limit().stop_at(body_bytes);
+    }
+
+    /// A handle that sets [`Fetch::stop_at`] from another thread than the one reading the fetch.
+    pub fn limit(&self) -> FetchLimit {
+        FetchLimit(Arc::clone(&self.flow))
+    }
+
     /// The most body bytes this fetch held for its reader at one time.
     pub fn peak_buffered_bytes(&self) -> usize {
         self.flow.peak.load(Ordering::Acquire)
@@ -280,6 +306,19 @@ impl Fetch {
         if self.commands.send(command).is_ok() {
             let _ = self.waker.wakeup();
         }
+    }
+}
+
+/// Lowers a fetch's body limit ([`Fetch::stop_at`]); it may be kept by another thread than the
+/// fetch's reader.
+#[derive(Clone)]
+pub struct FetchLimit(Arc<Flow>);
+
+impl FetchLimit {
+    /// See [`Fetch::stop_at`].
+    pub fn stop_at(&self, body_bytes: u64) {
+        // Only ever lowered. A transfer paused for a slow reader sees it when it next writes.
+        self.0.limit.fetch_min(body_bytes, Ordering::AcqRel);
     }
 }
 
@@ -303,6 +342,10 @@ struct Collector {
     lines: Vec<String>,
     accepted: bool,
     abort: Option<String>,
+    /// Body bytes delivered so far.
+    delivered: u64,
+    /// The transfer was stopped at its limit: it ends as completed, not as an error.
+    stopped_at_limit: bool,
 }
 
 impl Handler for Collector {
@@ -344,15 +387,29 @@ impl Handler for Collector {
             // A body without an accepted head (for example an FTP response): nothing to gate.
             self.accepted = true;
         }
+        // Up to the limit, which another thread may have lowered since the last write.
+        let room = self
+            .flow
+            .limit
+            .load(Ordering::Acquire)
+            .saturating_sub(self.delivered);
+        let take = data.len().min(usize::try_from(room).unwrap_or(usize::MAX));
         let buffered = self.flow.buffered.load(Ordering::Acquire);
-        if buffered > 0 && buffered + data.len() > self.cap {
+        if take > 0 && buffered > 0 && buffered + take > self.cap {
             self.flow.paused.store(true, Ordering::Release);
             return Err(WriteError::Pause);
         }
-        let now = self.flow.buffered.fetch_add(data.len(), Ordering::AcqRel) + data.len();
-        self.flow.peak.fetch_max(now, Ordering::AcqRel);
-        let _ = self.events.send(FetchEvent::Data(data.to_vec()));
-        Ok(data.len())
+        if take > 0 {
+            let now = self.flow.buffered.fetch_add(take, Ordering::AcqRel) + take;
+            self.flow.peak.fetch_max(now, Ordering::AcqRel);
+            let _ = self.events.send(FetchEvent::Data(data[..take].to_vec()));
+            self.delivered += take as u64;
+        }
+        if take < data.len() {
+            // A short count makes libcurl stop the transfer (CURLE_WRITE_ERROR).
+            self.stopped_at_limit = true;
+        }
+        Ok(take)
     }
 }
 
@@ -491,6 +548,8 @@ fn run_loop(inbox: Receiver<Command>, waker_tx: Sender<MultiWaker>) {
             if let Some(handle) = active.remove(&token) {
                 let outcome = match result {
                     Ok(()) => Ok(()),
+                    // Stopped at its limit: the range it was asked for is complete.
+                    Err(_) if handle.get_ref().stopped_at_limit => Ok(()),
                     Err(e) => match &handle.get_ref().abort {
                         Some(reason) => Err(FetchError::Aborted(reason.clone())),
                         None => Err(curl_error(&e)),

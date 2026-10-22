@@ -51,6 +51,9 @@ pub struct ServerOptions {
     pub range_mode: RangeMode,
     /// Limits every connection to this many body bytes per second.
     pub throttle_bytes_per_sec: Option<u64>,
+    /// Limits only the first response to a range after byte 0 to this many body bytes per second,
+    /// so that one connection is slower than the others (a range split, #42).
+    pub throttle_first_later_range: Option<u64>,
     /// Paths answered with `302 Found` and this `Location`, for example to test that a redirect
     /// to a protocol outside the engine's allowlist is refused.
     pub redirects: Vec<(String, String)>,
@@ -68,6 +71,8 @@ pub struct Counters {
     pub ranges: Vec<Option<String>>,
     /// Responses that carried a limited misbehaviour, such as [`RangeMode::MalformedLaterRanges`].
     pub faults: u32,
+    /// Whether the response that [`ServerOptions::throttle_first_later_range`] slows was sent.
+    pub slowed: bool,
 }
 
 /// A running server on 127.0.0.1 and a free port. It stops when dropped.
@@ -371,7 +376,15 @@ fn serve_connection(
             );
             return;
         }
-        if !head && write_body(&mut out, body, options.throttle_bytes_per_sec, counters).is_err() {
+        let mut rate = options.throttle_bytes_per_sec;
+        if let (Some(slow), Some((start, _))) = (options.throttle_first_later_range, range) {
+            let mut c = counters.lock().unwrap();
+            if start > 0 && !c.slowed {
+                c.slowed = true;
+                rate = Some(slow);
+            }
+        }
+        if !head && write_body(&mut out, body, rate, counters).is_err() {
             return;
         }
         if close {
