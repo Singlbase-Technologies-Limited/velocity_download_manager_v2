@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/velocity-core", "crates/velocity-curl", "src-tauri"]
+members = ["crates/velocity-core", "crates/velocity-curl", "crates/velocity-test-http", "src-tauri"]
 
 [workspace.package]
 version = "0.1.0"
@@ -17,9 +17,22 @@ dirs = "7.0.0"
 # build never runs: .cargo/config.toml overrides it, and velocity-curl links the Velocity-built
 # libcurl (docs/BUILDING_NATIVE.md). No default features, so it pulls in no openssl-sys.
 curl-sys = { version = "=0.4.91", default-features = false }
+# libcurl's safe Rust API (Multi, Easy2), for crates/velocity-curl only (PO-approved on #37,
+# 2026-10-22). No default features: no openssl-sys. `poll_7_68_0` declares curl_multi_poll and
+# curl_multi_wakeup (libcurl 7.68+; ours is 8.23.0). Pinned below to a reviewed commit (ADR-0004).
+curl = { version = "0.4.51", default-features = false, features = ["poll_7_68_0"] }
 
 # Development builds: optimise dependencies once so the app runs at a usable
 # speed, while workspace crates stay unoptimised for fast incremental rebuilds.
+# The engine prototype's curl: the reviewed curl-rust commit with the fix for a crash when a Multi
+# is dropped with transfers attached (curl-rust #645, after 0.4.51). Review: issue #37. curl-sys is
+# pinned to the same commit because the git curl depends on its own curl-sys (two packages may not
+# both link libcurl); its files are identical to the crates.io 0.4.91 there, and its build script is
+# still overridden (.cargo/config.toml). Switch back to crates.io once a release includes #645.
+[patch.crates-io]
+curl = { git = "https://github.com/alexcrichton/curl-rust", rev = "2fb602bb1d3a34ded4548cbe8a7c7202b1ab4ba2" }
+curl-sys = { git = "https://github.com/alexcrichton/curl-rust", rev = "2fb602bb1d3a34ded4548cbe8a7c7202b1ab4ba2" }
+
 [profile.dev.package."*"]
 opt-level = 1
 debug = false

@@ -93,7 +93,7 @@ From most numerous and fastest to fewest and slowest. Each layer proves what the
 
 | Fixture | Fault switches (research report section 5.4) | Used by | Built in |
 |---|---|---|---|
-| HTTP/1.1 range server | Range ignored (`200`), `200` for a non-zero range, short `206`, malformed `Content-Range`, unknown total (`*/`), connection resets, throttling per connection and per IP | Probe, scheduler, retries | **#41**, extended by #42 and #48 |
+| HTTP/1.1 range server (`crates/velocity-test-http`, standard library only) | **Built:** ranges honoured, Range ignored (`200`), `200` for a non-zero range, malformed `Content-Range`, throttling per connection, configured redirects, and counters for connections, GETs, HEADs, body bytes and `Range` headers. **To add:** short `206`, unknown total (`*/`), connection resets, throttling per IP | Probe, scheduler, retries | **#37** (first modes), extended by #41, #42 and #48 |
 | Changed-object modes | New strong ETag mid-download, ETag dropped, weak ETag only, Last-Modified only, content changed with the ETag kept | Validators, resume | **#45** |
 | Throttle and politeness modes | `429` and `503` with `Retry-After`, a slow but healthy 20 KiB/s stream, a frozen socket | Retries, stall detection, limits | **#48**, #49 |
 | Encoding modes | Unrequested `gzip`, `Content-Encoding` changing between responses | Range safety | **#41** |
