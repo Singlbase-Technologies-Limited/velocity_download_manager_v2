@@ -10,6 +10,7 @@
 //! - every received byte is either written or counted as wasted;
 //! - the file is renamed into place only after its coverage is complete and synced to disk.
 
+use std::collections::HashMap;
 use std::fs::{self, File, OpenOptions};
 use std::io;
 use std::path::{Path, PathBuf};
@@ -20,12 +21,15 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use velocity_core::domain::{FailureClass, TransferError};
-use velocity_curl::{CurlLoop, Fetch, FetchError, FetchEvent, FetchRequest, Gate, ResponseHead};
+use velocity_curl::{
+    CurlLoop, Fetch, FetchError, FetchEvent, FetchLimit, FetchRequest, Gate, ResponseHead,
+};
 
 use crate::probe::{
     check_continuation, check_segment, classify_probe, is_multipart, Continuation, ProbeOutcome,
     SegmentRejection,
 };
+use crate::scheduler::{Assignment, Coverage, Lease, LeaseId, Scheduler, Sizes};
 
 /// How long a fetch may stay silent before the prototype gives up on it. #48 replaces this with
 /// stall detection.
@@ -81,6 +85,8 @@ pub struct DownloadOptions {
     pub connections: u32,
     /// The probe's size (the report's hypothesis S = 4 MiB; a starting value for #47 to tune).
     pub probe_bytes: u64,
+    /// Lease and split sizes for the range scheduler (#42); [`Sizes::DEFAULT`] outside tests.
+    pub leases: Sizes,
 }
 
 /// How the file was fetched.
@@ -112,6 +118,8 @@ pub struct DownloadReport {
     pub written_bytes: u64,
     /// Bytes received but not written (already covered, or past a segment's end).
     pub wasted_bytes: u64,
+    /// Leases cut from a live one, whose old request then stopped at the new boundary.
+    pub splits: u32,
 }
 
 #[derive(Debug)]
@@ -178,6 +186,7 @@ pub fn download_with(
 
     let probe_end = options.probe_bytes.max(1) - 1;
     let mut fetches = 1;
+    let mut splits = 0;
     let request = FetchRequest::range(url.to_owned(), 0, Some(probe_end));
     let (outcome, cursor) = match probe(lp, request, probe_end, &mut guard, control)? {
         Probed::Outcome(outcome, cursor) => (outcome, cursor),
@@ -218,21 +227,19 @@ pub fn download_with(
             fetches += n;
             (mode, total)
         }
-        ProbeOutcome::RangesOk {
-            received_end,
-            total,
-        } => {
+        ProbeOutcome::RangesOk { total, .. } => {
             let connections = options.connections.max(1);
-            let (n, mode) = fetch_ranges(
+            let (n, s, mode) = fetch_ranges(
                 lp,
                 url,
-                received_end + 1,
                 total,
                 connections,
+                options.leases,
                 &mut guard,
                 control,
             )?;
             fetches += n;
+            splits = s;
             (mode, total)
         }
     };
@@ -244,6 +251,7 @@ pub fn download_with(
         fetches,
         written_bytes: written,
         wasted_bytes: wasted,
+        splits,
     })
 }
 
@@ -252,25 +260,6 @@ fn part_path(destination: &Path) -> PathBuf {
     let mut p = destination.as_os_str().to_owned();
     p.push(".vdmpart");
     PathBuf::from(p)
-}
-
-/// Splits `start..total` into at most `n` contiguous segments, as inclusive `(first, last)` pairs.
-fn split(start: u64, total: u64, n: u32) -> Vec<(u64, u64)> {
-    let remaining = total.saturating_sub(start);
-    if remaining == 0 {
-        return Vec::new();
-    }
-    let n = u64::from(n).min(remaining);
-    let base = remaining / n;
-    let extra = remaining % n;
-    let mut out = Vec::new();
-    let mut a = start;
-    for i in 0..n {
-        let len = base + u64::from(i < extra);
-        out.push((a, a + len - 1));
-        a += len;
-    }
-    out
 }
 
 /// What the probe found.
@@ -344,159 +333,203 @@ fn probe(
     Ok(Probed::Outcome(outcome, cursor))
 }
 
-/// Fetches `start..total` as parallel segments. A segment that ends short has its remainder
-/// requested again. A `200` for a range, or a second anomaly, fetches the rest as one stream that
-/// writes only the missing bytes (report section 5.1, steps 4, 6 and 7). Returns the fetches made
-/// and the mode.
+/// The request one lease is fetched with.
+struct Active {
+    /// Where the request's range starts, and where its next byte lands.
+    start: u64,
+    position: u64,
+    /// The header callback's verdict: the last byte its answer gives, or why it was refused.
+    verdict: SegmentVerdict,
+    /// Lowers where the request stops, when its lease is split.
+    limit: FetchLimit,
+    /// The answer ran past its own `Content-Range` (counted once).
+    overran: bool,
+}
+
+type SegmentVerdict = Arc<Mutex<Option<Result<u64, SegmentRejection>>>>;
+
+/// The last byte the verdict's accepted answer gives.
+fn answered_end(verdict: &SegmentVerdict) -> Option<u64> {
+    match verdict.lock().expect("the segment verdict lock").as_ref() {
+        Some(Ok(end)) => Some(*end),
+        _ => None,
+    }
+}
+
+/// Starts the request for `lease`, `Range: bytes=start-(end−1)`, checked in the header callback.
+fn request(
+    lp: &CurlLoop,
+    url: &str,
+    total: u64,
+    lease: Lease,
+    tx: mpsc::SyncSender<(LeaseId, FetchEvent)>,
+) -> Active {
+    let verdict: SegmentVerdict = Arc::new(Mutex::new(None));
+    let v = Arc::clone(&verdict);
+    let (a, b) = (lease.start, lease.end - 1);
+    let fetch = lp.fetch(
+        FetchRequest::range(url.to_owned(), a, Some(b)),
+        move |head: &ResponseHead| {
+            let result = check_segment(head, a, b, total);
+            let gate = match &result {
+                Ok(_) => Gate::Accept,
+                Err(SegmentRejection::RangesIgnored) => {
+                    Gate::Abort("a 200 for a range after byte 0".to_owned())
+                }
+                Err(SegmentRejection::Invalid(e) | SegmentRejection::Anomaly(e)) => {
+                    Gate::Abort(e.message.clone())
+                }
+            };
+            *v.lock().expect("the segment verdict lock") = Some(result);
+            gate
+        },
+    );
+    let limit = fetch.limit();
+    forward(fetch, lease.id, tx);
+    Active {
+        start: a,
+        position: a,
+        verdict,
+        limit,
+        overran: false,
+    }
+}
+
+/// Fetches `0..total` around what the probe covered, with the range scheduler (#42, report
+/// section 5.2):
+///
+/// - each free connection takes a lease, an equal share of the unassigned bytes;
+/// - with nothing unassigned, a free connection splits the largest remainder, and the old request
+///   stops at the new boundary;
+/// - a short or cut-off answer gives the rest of its lease back, to be leased again under a new id;
+/// - a `200` for a range, or a second anomaly, fetches the rest as one stream that writes only the
+///   missing bytes (report section 5.1, steps 4, 6 and 7).
+///
+/// Returns the fetches made, the splits and the mode.
 fn fetch_ranges(
     lp: &CurlLoop,
     url: &str,
-    start: u64,
     total: u64,
     connections: u32,
+    sizes: Sizes,
     part: &mut PartFile,
     control: &Control,
-) -> Result<(u32, Mode), DownloadError> {
-    let mut fetches = 0;
-    let mut anomalies = 0;
-    let mut segments = split(start, total, connections);
-    loop {
-        fetches += segments.len() as u32;
-        let before = part.written;
-        let round = fetch_segments(lp, url, total, &segments, part, control)?;
-        anomalies += round.anomalies;
-        let gaps = part.coverage.gaps(0, total);
-        if gaps.is_empty() {
-            return Ok((fetches, Mode::Ranges));
-        }
-        // Every round must make progress; one that delivered nothing is an anomaly of its own.
-        if part.written == before && round.anomalies == 0 {
-            anomalies += 1;
-        }
-        if round.ranges_ignored || anomalies >= MAX_ANOMALIES {
-            fetches += 1;
-            stream_gaps(lp, url, Some(total), part, control)?;
-            return Ok((fetches, Mode::RangesLost));
-        }
-        // The missing parts, at most one per connection; the rest wait for the next round.
-        segments = gaps
-            .into_iter()
-            .take(connections as usize)
-            .map(|(a, b)| (a, b - 1))
-            .collect();
-    }
-}
-
-/// What one round of segments found, besides the bytes it wrote.
-#[derive(Default)]
-struct Round {
-    /// A segment got a `200`: the server stopped honouring ranges.
-    ranges_ignored: bool,
-    /// Answers that contradicted their request, overran it, or ended before it did.
-    anomalies: u32,
-}
-
-/// Runs every segment at once. A segment's bytes are accepted only up to the end its own answer
-/// gave; anything past it is dropped and counted as wasted.
-fn fetch_segments(
-    lp: &CurlLoop,
-    url: &str,
-    total: u64,
-    segments: &[(u64, u64)],
-    part: &mut PartFile,
-    control: &Control,
-) -> Result<Round, DownloadError> {
+) -> Result<(u32, u32, Mode), DownloadError> {
+    let mut sched = Scheduler::new(total, &part.coverage, sizes);
     // Bounded, so a slow writer stops the forwarders, which stops libcurl: an unbounded channel
     // here once queued a whole file in memory (#38).
-    let (tx, rx) = mpsc::sync_channel(QUEUED_PER_SEGMENT * segments.len());
-    let mut verdicts = Vec::new();
-    for (index, &(a, b)) in segments.iter().enumerate() {
-        let verdict = Arc::new(Mutex::new(None));
-        verdicts.push(Arc::clone(&verdict));
-        let fetch = lp.fetch(
-            FetchRequest::range(url.to_owned(), a, Some(b)),
-            move |head: &ResponseHead| {
-                let result = check_segment(head, a, b, total);
-                let gate = match &result {
-                    Ok(_) => Gate::Accept,
-                    Err(SegmentRejection::RangesIgnored) => {
-                        Gate::Abort("a 200 for a range after byte 0".to_owned())
-                    }
-                    Err(SegmentRejection::Invalid(e) | SegmentRejection::Anomaly(e)) => {
-                        Gate::Abort(e.message.clone())
-                    }
-                };
-                *verdict.lock().expect("the segment verdict lock") = Some(result);
-                gate
-            },
-        );
-        forward(fetch, index, tx.clone());
-    }
-    drop(tx);
-    let answered_end = |index: usize| -> u64 {
-        match verdicts[index]
-            .lock()
-            .expect("the segment verdict lock")
-            .as_ref()
-        {
-            Some(Ok(end)) => *end,
-            _ => segments[index].1,
-        }
-    };
-    let mut cursors: Vec<u64> = segments.iter().map(|&(a, _)| a).collect();
-    let mut overran = vec![false; segments.len()];
-    let mut round = Round::default();
-    let mut failure = None;
+    let (tx, rx) = mpsc::sync_channel(QUEUED_PER_SEGMENT * connections as usize);
+    let mut active: HashMap<LeaseId, Active> = HashMap::new();
+    let (mut fetches, mut splits, mut anomalies) = (0u32, 0u32, 0u32);
+    let mut ranges_ignored = false;
+    let mut failure: Option<TransferError> = None;
     loop {
+        // Fill the free connections, unless ranges stopped working for this download.
+        while failure.is_none()
+            && !ranges_ignored
+            && anomalies < MAX_ANOMALIES
+            && (active.len() as u32) < connections
+        {
+            let idle = connections - active.len() as u32;
+            let lease = match sched.assign(idle) {
+                Some(Assignment::Fresh(lease)) => lease,
+                Some(Assignment::Split { new, shrunk }) => {
+                    // The old request stops at its lease's new end.
+                    if let (Some(old), Some(lease)) = (active.get(&shrunk), sched.lease(shrunk)) {
+                        old.limit.stop_at(lease.end - old.start);
+                    }
+                    splits += 1;
+                    new
+                }
+                None => break,
+            };
+            fetches += 1;
+            active.insert(lease.id, request(lp, url, total, lease, tx.clone()));
+        }
+        if active.is_empty() {
+            break;
+        }
         if control.is_cancelled() {
             // Dropping `rx` ends the forwarders, and dropping their fetches cancels them.
             return Err(DownloadError::Cancelled);
         }
-        let (index, event) = match rx.recv_timeout(CANCEL_CHECK) {
+        let (id, event) = match rx.recv_timeout(CANCEL_CHECK) {
             Ok(e) => e,
             Err(RecvTimeoutError::Timeout) => continue,
             Err(RecvTimeoutError::Disconnected) => break,
         };
         match event {
-            FetchEvent::Head(_) => {}
+            FetchEvent::Head(_) => {
+                if active
+                    .get(&id)
+                    .is_some_and(|a| answered_end(&a.verdict).is_some())
+                {
+                    sched.start(id);
+                }
+            }
             FetchEvent::Data(chunk) => {
-                let limit = Some(answered_end(index) + 1);
-                let excess = part.accept(&mut cursors[index], limit, &chunk)?;
-                if excess > 0 && !overran[index] {
-                    overran[index] = true;
-                    round.anomalies += 1;
+                let Some(a) = active.get_mut(&id) else {
+                    continue;
+                };
+                let offset = a.position;
+                a.position += chunk.len() as u64;
+                let accepted =
+                    sched.accept(id, offset, &chunk, |at, bytes| part.write_owned(at, bytes))?;
+                part.wasted += accepted.wasted;
+                // Bytes past the end its own Content-Range gave: the server overran its answer.
+                let overran = answered_end(&a.verdict).is_some_and(|end| a.position > end + 1);
+                if overran && !a.overran {
+                    a.overran = true;
+                    anomalies += 1;
                 }
                 control.report(part.written, Some(total));
             }
             FetchEvent::Done(result) => {
-                let verdict = verdicts[index]
-                    .lock()
-                    .expect("the segment verdict lock")
-                    .take();
+                let Some(a) = active.remove(&id) else {
+                    continue;
+                };
+                let verdict = a.verdict.lock().expect("the segment verdict lock").take();
+                let unfinished = sched.lease(id).is_some_and(|l| l.cursor < l.end);
                 match (verdict, result) {
-                    (Some(Err(SegmentRejection::RangesIgnored)), _) => round.ranges_ignored = true,
-                    (Some(Err(SegmentRejection::Anomaly(_))), _) => round.anomalies += 1,
+                    (Some(Err(SegmentRejection::RangesIgnored)), _) => ranges_ignored = true,
+                    (Some(Err(SegmentRejection::Anomaly(_))), _) => anomalies += 1,
                     (Some(Err(SegmentRejection::Invalid(t))), _) => failure = failure.or(Some(t)),
-                    // Accepted, then cut off: the rest of it is requested again.
-                    (Some(Ok(_)), Err(_)) => round.anomalies += 1,
-                    // Complete, but shorter than its own Content-Range (a chunked body that
-                    // ended early).
+                    // Accepted, then cut off: the rest of the lease is leased again.
+                    (Some(Ok(_)), Err(_)) => anomalies += 1,
+                    // Complete by its own account, but it stopped before the end its Content-Range
+                    // gave (a chunked body that ended early). One stopped at its lease's end, or a
+                    // shorter but honest 206, is not an anomaly.
                     (Some(Ok(end)), Ok(())) => {
-                        if cursors[index] <= end {
-                            round.anomalies += 1;
+                        if unfinished && a.position <= end {
+                            anomalies += 1;
                         }
                     }
                     // Never answered: the connection itself failed. Retries are #48.
                     (None, Err(e)) => failure = failure.or(Some(fetch_failure(e))),
                     (None, Ok(())) => {}
                 }
+                sched.ended(id);
             }
         }
     }
     if let Some(e) = failure {
         return Err(e.into());
     }
-    Ok(round)
+    if sched.is_complete() {
+        return Ok((fetches, splits, Mode::Ranges));
+    }
+    if ranges_ignored || anomalies >= MAX_ANOMALIES {
+        stream_gaps(lp, url, Some(total), part, control)?;
+        return Ok((fetches + 1, splits, Mode::RangesLost));
+    }
+    // C, the live leases and the unassigned bytes always make up the file, so with no lease left
+    // and nothing to assign, the file is covered. Reaching this is a bug.
+    Err(TransferError::new(
+        FailureClass::Transient,
+        None,
+        "the range scheduler stopped before the file was covered",
+    )
+    .into())
 }
 
 /// Fetches the rest of a file whose total the server doesn't give: one open range at a time from
@@ -634,8 +667,8 @@ fn stream_gaps(
     Ok(offset)
 }
 
-/// Moves a fetch's events to `tx`, tagged with `index`, on its own thread.
-fn forward(fetch: Fetch, index: usize, tx: mpsc::SyncSender<(usize, FetchEvent)>) {
+/// Moves a fetch's events to `tx`, tagged with `tag`, on its own thread.
+fn forward<T: Copy + Send + 'static>(fetch: Fetch, tag: T, tx: mpsc::SyncSender<(T, FetchEvent)>) {
     thread::spawn(move || loop {
         let event = fetch
             .next_event(SILENCE_LIMIT)
@@ -644,7 +677,7 @@ fn forward(fetch: Fetch, index: usize, tx: mpsc::SyncSender<(usize, FetchEvent)>
                 message: format!("no data for {} s", SILENCE_LIMIT.as_secs()),
             })));
         let done = matches!(event, FetchEvent::Done(_));
-        if tx.send((index, event)).is_err() || done {
+        if tx.send((tag, event)).is_err() || done {
             // Dropping an unfinished Fetch cancels it.
             return;
         }
@@ -705,54 +738,6 @@ fn io_error(what: &str, path: &Path, e: &io::Error) -> DownloadError {
     DownloadError::Io(format!("couldn't {what} {}: {e}", path.display()))
 }
 
-/// Which byte ranges are written, as sorted, merged, half-open intervals.
-#[derive(Default)]
-struct Coverage(Vec<(u64, u64)>);
-
-impl Coverage {
-    fn insert(&mut self, a: u64, b: u64) {
-        if a >= b {
-            return;
-        }
-        self.0.push((a, b));
-        self.0.sort_unstable();
-        let mut merged: Vec<(u64, u64)> = Vec::with_capacity(self.0.len());
-        for &(s, e) in &self.0 {
-            match merged.last_mut() {
-                Some(last) if s <= last.1 => last.1 = last.1.max(e),
-                _ => merged.push((s, e)),
-            }
-        }
-        self.0 = merged;
-    }
-
-    fn covers(&self, a: u64, b: u64) -> bool {
-        a >= b || self.0.iter().any(|&(s, e)| s <= a && b <= e)
-    }
-
-    /// The parts of `a..b` not yet covered.
-    fn gaps(&self, a: u64, b: u64) -> Vec<(u64, u64)> {
-        let mut out = Vec::new();
-        let mut at = a;
-        for &(s, e) in &self.0 {
-            if e <= at || s >= b {
-                continue;
-            }
-            if s > at {
-                out.push((at, s.min(b)));
-            }
-            at = at.max(e);
-            if at >= b {
-                break;
-            }
-        }
-        if at < b {
-            out.push((at, b));
-        }
-        out
-    }
-}
-
 /// The part file this download owns: removed on drop unless it was finished.
 struct PartFile {
     path: PathBuf,
@@ -782,6 +767,20 @@ impl PartFile {
         self.wasted += excess;
         *cursor += take;
         Ok(excess)
+    }
+
+    /// Writes bytes the range scheduler accepted at `offset`. They count as covered once the write
+    /// returns.
+    fn write_owned(&mut self, offset: u64, bytes: &[u8]) -> Result<(), DownloadError> {
+        write_at(
+            self.file.as_ref().expect("the part file is open"),
+            bytes,
+            offset,
+        )
+        .map_err(|e| io_error("write to", &self.path, &e))?;
+        self.coverage.insert(offset, offset + bytes.len() as u64);
+        self.written += bytes.len() as u64;
+        Ok(())
     }
 
     /// Writes the parts of `chunk` (which starts at `offset`) that aren't covered yet.
@@ -864,38 +863,4 @@ fn write_at(file: &File, mut buf: &[u8], mut offset: u64) -> io::Result<()> {
 fn write_at(file: &File, buf: &[u8], offset: u64) -> io::Result<()> {
     use std::os::unix::fs::FileExt;
     file.write_all_at(buf, offset)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn splits_the_rest_into_contiguous_segments() {
-        assert_eq!(
-            split(100, 1000, 3),
-            vec![(100, 399), (400, 699), (700, 999)]
-        );
-        assert_eq!(split(0, 10, 3), vec![(0, 3), (4, 6), (7, 9)]);
-        assert_eq!(
-            split(998, 1000, 8),
-            vec![(998, 998), (999, 999)],
-            "never more segments than bytes"
-        );
-        assert_eq!(split(1000, 1000, 4), vec![]);
-    }
-
-    #[test]
-    fn coverage_merges_and_finds_gaps() {
-        let mut c = Coverage::default();
-        c.insert(10, 20);
-        c.insert(30, 40);
-        c.insert(20, 25);
-        assert_eq!(c.0, vec![(10, 25), (30, 40)]);
-        assert_eq!(c.gaps(0, 50), vec![(0, 10), (25, 30), (40, 50)]);
-        assert_eq!(c.gaps(12, 22), vec![]);
-        assert!(c.covers(10, 25) && !c.covers(10, 26));
-        c.insert(0, 50);
-        assert!(c.covers(0, 50));
-    }
 }

@@ -12,6 +12,7 @@ use velocity_test_http::{seeded_bytes, RangeMode, ServerOptions, TestServer};
 use velocity_transfer::download::{
     download, download_with, Control, DownloadError, DownloadOptions, Mode,
 };
+use velocity_transfer::scheduler::Sizes;
 
 struct Dir(PathBuf);
 
@@ -64,6 +65,7 @@ fn part_of(dest: &Path) -> PathBuf {
 const OPTIONS: DownloadOptions = DownloadOptions {
     connections: 4,
     probe_bytes: 64 * 1024,
+    leases: Sizes::DEFAULT,
 };
 
 #[test]
@@ -383,12 +385,54 @@ fn one_connection_downloads_in_order() {
         &dest,
         DownloadOptions {
             connections: 1,
-            probe_bytes: 64 * 1024,
+            ..OPTIONS
         },
     )
     .expect("the download succeeds");
     assert!(std::fs::read(&dest).unwrap() == data);
     assert_eq!(report.fetches, 2, "the probe, then the rest as one segment");
+}
+
+#[test]
+fn a_split_stops_the_old_request_at_the_new_boundary() {
+    // Report 5.2: a free connection takes half of the largest remaining range, and the old
+    // request stops at the boundary (over HTTP/1.1 its connection closes); it never writes past
+    // it. The first range after the probe is slowed, so the other connection finishes early and
+    // splits it.
+    const LEN: usize = 1_000_000;
+    let data = seeded_bytes(LEN, 42);
+    let server = TestServer::start(
+        vec![("f.bin".into(), data.clone())],
+        ServerOptions {
+            throttle_first_later_range: Some(300_000),
+            ..ServerOptions::default()
+        },
+    );
+    let dir = Dir::new("split");
+    let dest = dir.file("out.bin");
+    let options = DownloadOptions {
+        connections: 2,
+        probe_bytes: 64 * 1024,
+        leases: Sizes {
+            max_lease: 4 << 20,
+            min_split: 32 << 10,
+            align: 4 << 10,
+        },
+    };
+    let report = download(&curl_loop(), &server.url("f.bin"), &dest, options)
+        .expect("the download succeeds");
+    assert!(std::fs::read(&dest).unwrap() == data);
+    assert_eq!(report.mode, Mode::Ranges);
+    assert!(report.splits >= 1, "{report:?}");
+    assert_eq!(report.written_bytes, LEN as u64, "each byte written once");
+    // Had the old request run on past the boundary, the server would have sent the second half of
+    // its range twice: about 230 KB more.
+    let sent = server.counters().body_bytes_sent;
+    assert!(
+        sent < LEN as u64 + (64 << 10),
+        "the server sent {sent} bytes for a {LEN}-byte file: the old request didn't stop"
+    );
+    assert!(report.wasted_bytes <= sent - LEN as u64, "{report:?}");
 }
 
 #[test]

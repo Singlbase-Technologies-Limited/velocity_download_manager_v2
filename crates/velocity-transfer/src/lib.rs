@@ -7,5 +7,6 @@ pub mod engine;
 pub mod engine_log;
 pub mod probe;
 pub mod protocol;
+pub mod scheduler;
 pub mod stdio;
 pub mod supervisor;

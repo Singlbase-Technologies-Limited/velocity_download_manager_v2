@@ -14,6 +14,7 @@ use std::time::Instant;
 use velocity_curl::{CurlLoop, Libcurl, LoopOptions};
 use velocity_transfer::download::{download_with, Control, DownloadOptions};
 use velocity_transfer::engine::{MAX_CONNECTIONS, PROBE_BYTES};
+use velocity_transfer::scheduler::Sizes;
 use velocity_transfer::stdio;
 
 const USAGE: &str = "usage:
@@ -43,6 +44,7 @@ fn parse_get(args: &[String]) -> Result<(String, PathBuf, DownloadOptions), Stri
     let mut options = DownloadOptions {
         connections: 4,
         probe_bytes: PROBE_BYTES,
+        leases: Sizes::DEFAULT,
     };
     let mut rest = args.iter();
     while let Some(arg) = rest.next() {
