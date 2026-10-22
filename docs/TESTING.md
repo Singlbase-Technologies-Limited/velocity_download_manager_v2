@@ -78,7 +78,7 @@ From most numerous and fastest to fewest and slowest. Each layer proves what the
 | **Native host and browser** | Message validation in the host; the real extension, host and app in real Chromium and Firefox | Host: Rust tests with a fake desktop IPC server. Browser: an end-to-end harness (a browser driver needs approval) | L2 (host), L4 (browser) | #64, #65 |
 | **Security** | TLS certificate rules per backend, redirect and credential rules, secret-leak scans, filesystem attacks, fuzzed parsers | Fixture suites plus `cargo-fuzz` targets (needs approval) | L2, plus L4 for fuzzing | #67, #69–#73 |
 | **End-to-end and platform** | The packaged app installed on Windows, Linux and macOS; install and upgrade beside V1 | Installer tests, real machines | L4 and L5 | #81–#83 |
-| **Benchmarks** | Speed and resources against the best valid aria2 configuration, with every guardrail met (research report section 7) | Benchmark harness v2; the Windows Job Object runner | L4 | #20, #21 |
+| **Benchmarks** | V2's own speed, resource use and reliability, measured once the engine and app exist. No aria2 comparison for now ([ADR-0009](decisions/0009-no-aria2-benchmark-gate.md)) | To be designed then | L4 | #77 |
 
 ## Fixture policy
 
@@ -107,7 +107,7 @@ From most numerous and fastest to fewest and slowest. Each layer proves what the
 | BitTorrent tracker and peers | Local tracker, libtorrent seeders and leechers; DHT, LPD and peer exchange off | Torrents | **#62** |
 | Fake desktop IPC and browser harness | Malformed messages, the app unavailable, wrong caller | Native host, extension | **#65**, #64 |
 | Disk and crash faults | Disk full (quota), permission denied, `kill -9` at random points | Recovery | **#74**, #43 |
-| Benchmark server | Byte and request counters, every throttle mode, h2 and TLS, kill and resume | Benchmarks | **#20** |
+| Benchmark server | Byte and request counters, throttle modes, h2 and TLS, kill and resume | V2's own benchmarks, later (ADR-0009) | #77 |
 
 ## How the engine is tested
 

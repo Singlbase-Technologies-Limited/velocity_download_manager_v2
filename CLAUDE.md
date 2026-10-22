@@ -44,7 +44,7 @@ The skills in the table below hold the details of each step.
 | [`/prepare-pr <N>`](.claude/skills/prepare-pr/SKILL.md) | You only | The pre-PR checklist and description draft; it stops before pushing |
 | [`/ci-triage [run or PR]`](.claude/skills/ci-triage/SKILL.md) | You or Claude | Read a failed run's `ci-diagnostics.json`, group the failures by cause, and propose one fix plan (read-only) |
 
-Skills for benchmarks (#20) and release candidates (#17, #84) come with those issues, once the procedures they wrap exist.
+Skills for release candidates (#17, #84) and for benchmarks (later, ADR-0009) come once the procedures they wrap exist.
 
 ## Path-scoped rules
 

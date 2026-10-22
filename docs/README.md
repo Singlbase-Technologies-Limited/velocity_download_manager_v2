@@ -45,6 +45,7 @@ Every document in `docs/` is listed here. A new document is added to this map in
 | [decisions/0006-browser-links-to-local-networks.md](decisions/0006-browser-links-to-local-networks.md) | Read ADR-0006: browser links to your PC or local network need confirmation |
 | [decisions/0007-no-v1-import-at-first.md](decisions/0007-no-v1-import-at-first.md) | Read ADR-0007: no import from V1 in the first releases |
 | [decisions/0008-proxy-support.md](decisions/0008-proxy-support.md) | Read ADR-0008: full proxy settings in the first release |
+| [decisions/0009-no-aria2-benchmark-gate.md](decisions/0009-no-aria2-benchmark-gate.md) | Read ADR-0009: build the engine first, with no aria2 benchmark comparison for now |
 | [research/README.md](research/README.md) | See the research index; research is input, not decisions |
 | [research/2026-10-21-libcurl-engine-research-r2.md](research/2026-10-21-libcurl-engine-research-r2.md) | Read the libcurl download-engine research report, revision 2 |
 

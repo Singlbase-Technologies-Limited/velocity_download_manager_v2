@@ -148,7 +148,7 @@ Every run completes every check that can still run, and reports all failures in 
 | Run | When | Content | Platforms |
 |---|---|---|---|
 | Weekly full | Mondays 03:00 UTC, only if `main` changed since the last run | `check:full`, all L2 suites | Linux, Windows |
-| Fuzzing, stress, extended benchmarks | Weekly, staggered, once the suites exist (#73, #77, #20) | Time-boxed per target, with a fixed seed recorded | Linux |
+| Fuzzing, stress, extended benchmarks | Weekly, staggered, once the suites exist (#73, #77) | Time-boxed per target, with a fixed seed recorded | Linux |
 | macOS | `workflow_dispatch` only | `check:full` | macOS (#83) |
 
 macOS minutes cost about 10 times Linux ($0.062 against $0.006 a minute), so macOS never runs on a schedule or per change until it's an established platform and the quota allows it.
