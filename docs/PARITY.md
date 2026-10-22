@@ -227,7 +227,19 @@ These behaviours run behind the scenes, so they're easy to drop without anyone n
 | Torrent engine columns (v2 info hash, engine) | [0003_torrent_engines.sql:3](https://github.com/Singlbase-Technologies-Limited/velocity-download-manager/blob/e9d717a8b96ef8fa21ebba40f5965ae9fc6d42e7/crates/velocity-core/migrations/0003_torrent_engines.sql#L3) | **none in V1**: V2 adds one | V2 schema: `engine` holds V2 engines only; unknown values become unavailable | #26 |
 | Settings JSON migration on load (older settings get defaults) | [settings.rs:11](https://github.com/Singlbase-Technologies-Limited/velocity-download-manager/blob/e9d717a8b96ef8fa21ebba40f5965ae9fc6d42e7/crates/velocity-core/src/database/settings.rs#L11) | `database/settings.rs` tests: `settings_with_the_combined_torrent_switch_are_migrated_on_load`, `older_settings_without_layout_load_with_layout_defaults` | Reimplement for V2 settings versions | #30, #26 |
 | Backup before migrating (`VACUUM INTO`); refuse a newer schema unmodified | [mod.rs:7](https://github.com/Singlbase-Technologies-Limited/velocity-download-manager/blob/e9d717a8b96ef8fa21ebba40f5965ae9fc6d42e7/crates/velocity-core/src/database/mod.rs#L7) | **none in V1**: V2 adds one | Reimplement | #26 |
-| Importing anything from a V1 installation | — | — | Separate decision | #24 |
+| Importing anything from a V1 installation | — | — | **Decided (ADR-0007):** no import in the first releases; revisit after parity | #85 |
+
+## V2 additions (not V1 features)
+
+Behaviours V2 adds by PO decision. They aren't parity rows, because V1 didn't have them, but they're first-release scope.
+
+| Addition | Decision | V2 issue |
+|---|---|---|
+| SFTP downloads with strict host-key checks | [ADR-0001](decisions/0001-v2-direction.md) (HTTP, HTTPS, FTP and SFTP required) | #52, #53 |
+| Proxy settings (HTTP, HTTPS, SOCKS) with passwords in the OS keychain; ambient proxy variables ignored | [ADR-0008](decisions/0008-proxy-support.md) | #30, #40, #70 |
+| Confirmation for browser links to loopback or private addresses | [ADR-0006](decisions/0006-browser-links-to-local-networks.md) | #67, #65 |
+| Changed-object detection, validator-checked resume and atomic no-clobber completion | [ADR-0001](decisions/0001-v2-direction.md), research report section 5 | #43, #45, #46 |
+
 
 ## Decided in #23
 
