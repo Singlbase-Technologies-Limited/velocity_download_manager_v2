@@ -40,14 +40,20 @@ fn run() -> Result<(), String> {
         }
     }
     let offset = gib << 30;
-    println!("dir={} offset_gib={gib} chunk_mib=1 runs={runs}", dir.display());
+    println!(
+        "dir={} offset_gib={gib} chunk_mib=1 runs={runs}",
+        dir.display()
+    );
     for run in 0..runs {
         for (name, prealloc, at) in [
             ("no_prealloc", false, offset),
             ("set_len", true, offset),
             ("at_zero", false, 0),
         ] {
-            let path = dir.join(format!("v2-high-offset-{}-{run}-{name}.bin", std::process::id()));
+            let path = dir.join(format!(
+                "v2-high-offset-{}-{run}-{name}.bin",
+                std::process::id()
+            ));
             let ms = measure(&path, prealloc, at, offset + CHUNK as u64);
             let _ = fs::remove_file(&path);
             println!("run {run} {name}: {}", ms?);
