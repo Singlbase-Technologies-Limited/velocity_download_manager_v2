@@ -4,6 +4,7 @@
 //! (`domain`, docs/CONTRACTS.md).
 
 pub mod branding;
+pub mod database;
 pub mod domain;
 pub mod manager;
 pub mod paths;

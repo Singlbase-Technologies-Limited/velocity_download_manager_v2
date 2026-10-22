@@ -13,6 +13,11 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 # Per-OS data directory (#27, PO-approved 2026-10-22); also used by Tauri itself.
 dirs = "7.0.0"
+# SQLite for the app database (PO-approved on #26, 2026-10-23). `bundled` compiles the SQLite 3.53.2
+# source that ships inside libsqlite3-sys 0.38.2, the same on every platform (docs/DEPENDENCIES.md).
+rusqlite = { version = "=0.40.2", features = ["bundled"] }
+# Numbered migrations for the app database (PO-approved on #26, 2026-10-23). No default features.
+rusqlite_migration = { version = "=2.6.0", default-features = false }
 # Property tests for the range scheduler, test-only (PO-approved on #42, 2026-10-23). 1.11.0 over
 # 1.12.0, released 2026-10-10. Without default features: no fork or timeout support.
 proptest = { version = "=1.11.0", default-features = false, features = ["std"] }
