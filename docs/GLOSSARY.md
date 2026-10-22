@@ -11,6 +11,7 @@ Terms used across V2's documents, issues and code, in alphabetical order. Where 
 | **Changed object** | A file that changed on the server during a download, detected through its validator, its total length or its encoding. The old bytes are discarded and the download restarts once (report §5.3; #45) |
 | **Checkpoint** | The durable record of a transfer's progress: the format version, a URL fingerprint, the total length, the validator, the encoding and the durable coverage. It is written atomically after an fsync (report §5.2; #43) |
 | **Coverage (C)** | The disjoint byte intervals of a file that were written to disk by the lease that owned them (report §5.2) |
+| **Credential handle** | An opaque number that refers to credentials the app keeps in memory. Only the handle crosses the `DirectTransfer` contract, never the secret (#36, #70) |
 | **`DirectTransfer`** | The engine-neutral contract between the manager and the direct-download engine: add, pause, resume, cancel, remove, limits, connections, snapshots and events (report §4.2; #36) |
 | **Durable coverage (D)** | The part of coverage that was fsynced and then recorded in a checkpoint. After a crash, only D is trusted (report §5.2) |
 | **Engine** | The component that performs transfers. V2 has its own transfer engine for direct downloads, and libtorrent for BitTorrent. V2 contains no aria2 ([ADR-0001](decisions/0001-v2-direction.md)) |
