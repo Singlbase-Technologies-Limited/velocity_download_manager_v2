@@ -32,6 +32,20 @@ function windowsMsvc() {
   return Boolean(out);
 }
 
+/** gpg on PATH, or the copy Git for Windows ships (scripts/native/fetch.mjs looks in the same places). */
+function gpg() {
+  return probe('gpg', ['--version']) ?? (platform === 'win32' ? probe('C:\\Program Files\\Git\\usr\\bin\\gpg.exe', ['--version']) : null);
+}
+
+/** cmake on PATH, or the copy Visual Studio installs (scripts/native/build.mjs uses either). */
+function windowsCmake() {
+  const onPath = probe('cmake', ['--version']);
+  if (onPath) return onPath;
+  const vswhere = join(process.env['ProgramFiles(x86)'] ?? 'C:\\Program Files (x86)', 'Microsoft Visual Studio', 'Installer', 'vswhere.exe');
+  const vs =existsSync(vswhere) ? probe(vswhere, ['-latest', '-products', '*', '-property', 'installationPath']) : null;
+  return vs ? probe(join(vs, 'Common7', 'IDE', 'CommonExtensions', 'Microsoft', 'CMake', 'CMake', 'bin', 'cmake.exe'), ['--version']) : null;
+}
+
 function windowsWebView2() {
   const key = '{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}';
   for (const hive of [`HKLM\\SOFTWARE\\WOW6432Node\\Microsoft\\EdgeUpdate\\Clients\\${key}`, `HKCU\\Software\\Microsoft\\EdgeUpdate\\Clients\\${key}`]) {
@@ -62,6 +76,11 @@ const findings = evaluate(
     webview2: platform === 'win32' ? windowsWebView2() : null,
     webkitgtk: platform === 'linux' ? probe('pkg-config', ['--modversion', 'webkit2gtk-4.1']) : null,
     xcode: platform === 'darwin' ? probe('xcode-select', ['-p']) : null,
+    gpg: platform === 'darwin' ? null : gpg(),
+    cmake: platform === 'win32' ? windowsCmake() : null,
+    make: platform === 'linux' ? probe('make', ['--version']) : null,
+    // `perl --version` starts with a blank line, which `probe` would read as no output.
+    perl: platform === 'linux' ? probe('perl', ['-e', 'print $^V']) : null,
   },
   { node: pkg.engines.node, pnpm: pinned.version },
 );

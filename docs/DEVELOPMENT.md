@@ -84,7 +84,8 @@ Then install Node.js and pnpm.
 | `pnpm test`, `pnpm test:watch` | Frontend and script unit tests (Vitest), once or in watch mode |
 | `pnpm rust:test` | Rust unit tests |
 | `pnpm typecheck`, `pnpm lint` | TypeScript and ESLint on their own |
-| `pnpm native:build` | Build libcurl and the other native libraries from verified sources, and write `build-info.json`. The first run takes about 2.5 min on Windows and 5 min on Linux; later runs reuse it. Not needed by the app yet ([BUILDING_NATIVE.md](BUILDING_NATIVE.md)) |
+| `pnpm native:build` | Build libcurl and the other native libraries from verified sources, and write `build-info.json`. The first run takes about 2.5 min on Windows and 5 min on Linux; later runs reuse it in about a second. Every Rust build links it, so `check:fast`, `check:pr` and `test:focused` run it first ([BUILDING_NATIVE.md](BUILDING_NATIVE.md)) |
+| `pnpm native:verify` | Check that `build-info.json` and every built library still match the lock file; `pnpm tauri build` runs it first |
 
 Run `pnpm check:fast` before every pull request. [TESTING.md](TESTING.md) describes each level, how `check:pr` picks checks, and the build settings that keep feedback fast.
 

@@ -98,7 +98,37 @@ export function evaluate(probe, requirements) {
       detail: probe.webkitgtk ? `webkit2gtk-4.1 ${probe.webkitgtk}` : 'pkg-config cannot find webkit2gtk-4.1',
       fix: 'Debian/Ubuntu: `sudo apt update && sudo apt install libwebkit2gtk-4.1-dev build-essential curl wget file libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev` (other distributions: https://v2.tauri.app/start/prerequisites/#linux).',
     });
-  } else if (probe.platform === 'darwin') {
+  }
+  // The native libraries every Rust build links (#35, docs/BUILDING_NATIVE.md). macOS has no
+  // native build yet (#83), so nothing is checked there.
+  if (probe.platform === 'win32' || probe.platform === 'linux') {
+    findings.push({
+      name: 'GnuPG (native source signatures)',
+      ok: Boolean(probe.gpg),
+      detail: probe.gpg ?? 'gpg not found',
+      fix:
+        probe.platform === 'win32'
+          ? 'gpg comes with Git for Windows (C:\\Program Files\\Git\\usr\\bin\\gpg.exe); install or repair Git for Windows: https://git-scm.com/download/win'
+          : 'Debian/Ubuntu: `sudo apt install gnupg`.',
+    });
+  }
+  if (probe.platform === 'win32') {
+    findings.push({
+      name: 'CMake (native build)',
+      ok: Boolean(probe.cmake),
+      detail: probe.cmake ?? 'cmake not found on PATH or in Visual Studio',
+      fix: 'Add the "C++ CMake tools for Windows" component in the Visual Studio Installer (part of "Desktop development with C++").',
+    });
+  } else if (probe.platform === 'linux') {
+    const missing = [!probe.make && 'make', !probe.perl && 'perl'].filter(Boolean);
+    findings.push({
+      name: 'make and perl (native build)',
+      ok: missing.length === 0,
+      detail: missing.length ? `${missing.join(' and ')} not found` : `${probe.make}; perl found`,
+      fix: 'Debian/Ubuntu: `sudo apt install build-essential perl xz-utils`.',
+    });
+  }
+  if (probe.platform === 'darwin') {
     findings.push({
       name: 'Xcode Command Line Tools',
       ok: Boolean(probe.xcode),

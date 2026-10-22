@@ -1,0 +1,13 @@
+[package]
+name = "velocity-curl"
+description = "The libcurl layer of Velocity Download Manager V2: the only crate that calls libcurl (ADR-0002)"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+curl-sys.workspace = true
+
+[build-dependencies]
+serde_json.workspace = true

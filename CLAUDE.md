@@ -48,7 +48,7 @@ When you read or edit a matching file, Claude Code loads the rule for that area.
 | Rule | Applies to |
 |---|---|
 | [rust-native.md](.claude/rules/rust-native.md) | Rust in `crates/` and `src-tauri/` |
-| [transfer-engine.md](.claude/rules/transfer-engine.md) | The direct-download engine and the libcurl layer (`crates/velocity-transfer`, `crates/velocity-curl`; created by #36 or #37) |
+| [transfer-engine.md](.claude/rules/transfer-engine.md) | The direct-download engine and the libcurl layer (`crates/velocity-transfer`, created by #37; `crates/velocity-curl`, created by #35) |
 | [persistence.md](.claude/rules/persistence.md) | Database, migrations and checkpoints |
 | [frontend.md](.claude/rules/frontend.md) | `src/` |
 | [browser-integration.md](.claude/rules/browser-integration.md) | The browser extension and native host (paths pending #64, #65) |

@@ -87,7 +87,7 @@ Each native build writes `target/native/<target>/build-info.json` (#35), and rel
 
 The build also runs its own curl tool (`curl -V`), records what was actually linked, and fails unless it matches the lock file: libcurl at or above the version floor (8.23.0, research report section 8.1), the pinned nghttp2, zlib and TLS backend, the required protocols and features, and no protocol V2 doesn't use.
 
-At runtime the engine will also report what it linked (`curl_version_info`: version, TLS backend, protocols, features), and refuse to start below the floor. That check comes with the `velocity-curl` crate, the second part of #35.
+At run time, `velocity-curl` reads what is actually linked (`curl_version_info`: version, TLS backend, protocols, features), and refuses to start libcurl when it fails the same checks ([BUILDING_NATIVE.md](BUILDING_NATIVE.md#checking-at-run-time)). `pnpm native:verify` enforces items 3 to 5 of the release blockers below, and `pnpm tauri build` runs it first.
 
 ### Distribution packages
 
@@ -120,6 +120,7 @@ The register of direct dependencies and how each was approved. Transitive depend
 | `dirs` 7.0.0 | Rust | MIT OR Apache-2.0 | Per-OS data folder for the core and the native host (docs/COEXISTENCE.md); already in the tree through Tauri | PO, #27 (2026-10-22) |
 | `tauri-plugin-single-instance` =2.5.2 | Rust | Apache-2.0 OR MIT | A second launch focuses the running window | PO, #27 (2026-10-22; 2.5.2 chosen over 2.5.4, released 2026-10-14) |
 | curl 8.23.0, nghttp2 1.70.0, zlib 1.3.2; OpenSSL 3.5.9 on Linux | Native libraries, static ([BUILDING_NATIVE.md](BUILDING_NATIVE.md)) | curl, MIT, Zlib, Apache-2.0 | The direct-download engine's transport: HTTP/2, TLS (Schannel on Windows, OpenSSL on Linux), compression | PO, #35 (2026-10-22; OpenSSL's 3.5 long-term line chosen over 4.0) |
+| `curl-sys` =0.4.91 (no default features) | Rust | MIT | libcurl's C API, for `crates/velocity-curl` only. Its bundled curl 8.22.0 is never built: `.cargo/config.toml` overrides its build script, and `velocity-curl` links the Velocity-built libcurl. It brings `libz-sys` (MIT OR Apache-2.0, build script overridden too) and `vcpkg` (MIT/Apache-2.0, never run) | PO, #35 (2026-10-22) |
 | `zod` 4.6.5 (exact) | npm | MIT | Strict validation of every native response (docs/CONTRACTS.md) | PO, #25 (2026-10-22; 4.6.5 chosen over 4.6.7, released 2026-10-12) |
 | `@tauri-apps/cli`, `vite`, `@vitejs/plugin-react`, `typescript`, `@types/*`, `eslint`, `@eslint/js`, `typescript-eslint`, `eslint-plugin-react-hooks`, `eslint-plugin-react-refresh`, `globals`, `vitest` | npm (development only) | MIT, Apache-2.0 or BSD (not shipped) | Build, types, lint, tests | PO, #2 (PR #92) |
 | Rust 1.99.1, Node.js 24.12.0, pnpm 12.14.0 | Toolchains | MIT/Apache-2.0 (Rust), MIT | Building | PO, #2 (PR #92; pnpm chosen by the PO) |

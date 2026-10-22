@@ -1,0 +1,16 @@
+# Native libraries (#35, docs/BUILDING_NATIVE.md). V2 links the libcurl it builds itself from
+# verified sources (`pnpm native:build`), never a bundled or system copy (ADR-0004).
+
+[env]
+# Where `pnpm native:build` puts its output, as an absolute path for build scripts. An existing
+# VELOCITY_NATIVE_DIR in the environment wins, for a build kept elsewhere.
+VELOCITY_NATIVE_DIR = { value = "target/native", relative = true }
+
+# Build-script overrides (https://doc.rust-lang.org/cargo/reference/build-scripts.html#overriding-build-scripts):
+# `curl-sys` (links = "curl") and `libz-sys` (links = "z") don't run their own build scripts, so
+# they never compile curl 8.22.0 or zlib from their bundled sources, or pick up a system library.
+# crates/velocity-curl/build.rs links the Velocity-built libraries instead.
+[target.x86_64-pc-windows-msvc.curl]
+[target.x86_64-pc-windows-msvc.z]
+[target.x86_64-unknown-linux-gnu.curl]
+[target.x86_64-unknown-linux-gnu.z]

@@ -19,6 +19,7 @@ The versions, sources and signing keys are in [`scripts/native/deps.lock`](../sc
 ```sh
 pnpm native:fetch   # download and verify the sources only
 pnpm native:build   # fetch, build, check and write build-info.json
+pnpm native:verify  # the release blocker: the record and every artefact still match
 ```
 
 Both work on the Rust host target. The output goes to `target/native/` (ignored by git):
@@ -86,11 +87,31 @@ Features: alt-svc AsynchDNS HSTS HTTP2 HTTPS-proxy IPv6 Largefile libz SSL threa
 
 On Linux, the built curl tool links only the C library dynamically (`ldd`: `linux-vdso`, `libc.so.6`, `ld-linux-x86-64`). A manual check on both builds fetched `https://curl.se/` over HTTP/2 with a verified certificate, and refused `https://expired.badssl.com/` (Windows: `SEC_E_CERT_EXPIRED`; Linux: OpenSSL verify result 10, "certificate has expired"). That was a one-off check against the public internet, not a test; TLS behaviour is tested in #69.
 
-The Rust side, the `velocity-curl` crate, will repeat these checks at run time through `curl_version_info`, and refuse to start the engine below the floor. That is the second part of #35.
+## Linking into Rust
+
+`crates/velocity-curl` is the only crate that calls libcurl ([ADR-0002](decisions/0002-engine-crate-layout.md)). It links this build, never `curl-sys`'s bundled curl 8.22.0 or a system libcurl:
+
+- **Overrides:** [`.cargo/config.toml`](../.cargo/config.toml) overrides the build scripts of `curl-sys` (`links = "curl"`) and `libz-sys` (`links = "z"`), so neither compiles a bundled copy nor looks for a system one ([build-script overrides](https://doc.rust-lang.org/cargo/reference/build-scripts.html#overriding-build-scripts)). `curl-sys` has no default features, so it pulls in no `openssl-sys`.
+- **Linking:** `crates/velocity-curl/build.rs` reads `build-info.json` and links the static libraries in `target/native/<target>/prefix/lib`, plus the system libraries they need (Windows: `ws2_32`, `crypt32`, `secur32`, `bcrypt`, `advapi32`, `iphlpapi`, `user32`; Linux: `pthread`, `dl`).
+- **Refusal:** the build stops with a message naming `pnpm native:build` when the record is missing, is for another target, records a libcurl below the floor, or lists an artefact that is gone.
+- **Location:** `.cargo/config.toml` sets `VELOCITY_NATIVE_DIR` to `target/native` as an absolute path. A `VELOCITY_NATIVE_DIR` already in the environment wins, for a build kept elsewhere.
+- **Checks build it first:** `pnpm check:fast`, `check:pr` and `test:focused -- <crate>` run `native:build` before any Rust check. Plain `cargo` doesn't, and stops with the refusal message instead.
+
+## Checking at run time
+
+`velocity_curl::Libcurl::start()` is the only way to get a libcurl handle. It initialises libcurl once per process, reads `curl_version_info`, and returns `StartError::Incompatible` unless the linked libcurl passes the same checks as the build: version 8.23.0 or later, the platform's TLS backend (Schannel or OpenSSL), the required protocols and features, and no other protocol. The error lists every problem and names the fix:
+
+```text
+the transfer engine can't start: libcurl 8.22.0 is linked, but V2 needs 8.23.0 or newer. Rebuild the native libraries with `pnpm native:build` (docs/BUILDING_NATIVE.md)
+```
+
+The engine (#37) obtains libcurl only through `start()`, and maps a `StartError` to the `ENGINE_INCOMPATIBLE` error code for the UI. The tests: `crates/velocity-curl/src/capabilities.rs` (the check, against stand-in values), `src/runtime.rs` (`start` refuses a stand-in 8.22.0), and `tests/linked_libcurl.rs` (the real linked libcurl starts and reports exactly `ftp ftps http https`).
 
 ## build-info.json
 
-One record per build, schema 1. It is written only after every check passes. `checkBuildInfo` in `native-lib.mjs` checks a record against the lock file. A missing or incomplete record is a release blocker ([DEPENDENCIES.md](DEPENDENCIES.md#release-blockers-related-to-provenance)); packaging starts enforcing it in the second part of #35.
+One record per build, schema 1. It is written only after every check passes. `checkBuildInfo` in `native-lib.mjs` checks a record against the lock file. A missing or incomplete record is a release blocker ([DEPENDENCIES.md](DEPENDENCIES.md#release-blockers-related-to-provenance)).
+
+**`pnpm native:verify`** enforces it. It fails unless the host target's record passes `checkBuildInfo`, and every artefact it lists still has its recorded SHA-256, so a library replaced after the build is caught. `pnpm tauri build` runs it first (`beforeBuildCommand` in `src-tauri/tauri.conf.json`), so no package is built without a complete record.
 
 | Field | Content |
 |---|---|
@@ -118,5 +139,5 @@ Each change to `deps.lock` is its own reviewed PR. A libcurl floor bump also nee
 
 - **Linux trust store:** the Linux build looks for CA certificates at `/etc/ssl/certs/ca-certificates.crt` and `/etc/ssl/certs`, where Debian, Ubuntu and Arch keep them. Fedora and openSUSE keep them elsewhere. How each TLS backend finds and checks certificates is tested in #69.
 - **No IDN in libcurl:** libcurl doesn't convert international domain names (libidn2 is LGPL, and WinIDN would exist on Windows only). How V2 handles them is part of URL validation in #67.
-- **Not linked into V2 yet:** this build is used by the `velocity-curl` crate in the second part of #35. Until then, nothing in the app links it.
+- **Not in the app yet:** only `velocity-curl` links this build. The desktop app starts using it with the engine prototype (#37).
 - **macOS:** not established (#83). Recorded as NOT RUN.

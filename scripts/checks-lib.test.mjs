@@ -100,6 +100,7 @@ describe('checkCommands', () => {
 
   it('runs every L1 check when everything is selected', () => {
     expect(ids({ all: true, frontend: false, rustPackages: [] })).toEqual([
+      'native-build',
       'rust-fmt',
       'rust-clippy',
       'rust-test',
@@ -111,13 +112,24 @@ describe('checkCommands', () => {
 
   it('limits clippy and tests to the selected packages', () => {
     const cmds = checkCommands({ all: false, frontend: false, rustPackages: ['velocity-core'] });
-    expect(cmds.map((c) => c.id)).toEqual(['rust-fmt', 'rust-clippy', 'rust-test']);
+    expect(cmds.map((c) => c.id)).toEqual(['native-build', 'rust-fmt', 'rust-clippy', 'rust-test']);
     expect(cmds.find((c) => c.id === 'rust-test')?.args).toEqual(['test', '-p', 'velocity-core', '--no-fail-fast']);
   });
 
   it('keeps clippy going past a crate that fails to compile, so every crate reports (#91)', () => {
     const clippy = checkCommands({ all: true, frontend: false, rustPackages: [] }).find((c) => c.id === 'rust-clippy');
     expect(clippy?.args.slice(0, clippy.args.indexOf('--'))).toContain('--keep-going');
+  });
+
+  // Every Rust build links the Velocity-built libcurl (#35), so the native build (reused in about a
+  // second when up to date) runs before any Rust check.
+  it('builds the native libraries before the Rust checks', () => {
+    expect(checkCommands({ all: false, frontend: false, rustPackages: ['velocity-curl'] })[0]).toEqual({
+      id: 'native-build',
+      name: 'Native libraries (native:build)',
+      tool: 'node',
+      args: ['scripts/native/build.mjs'],
+    });
   });
 
   it('runs no Rust checks for a frontend-only selection', () => {
@@ -132,12 +144,13 @@ describe('checkCommands', () => {
 describe('focusedCommands', () => {
   it('runs one crate with its tests and passes extra arguments to cargo test', () => {
     expect(focusedCommands(['velocity-core', 'range_probe'], workspace)).toEqual([
+      { id: 'native-build', name: 'Native libraries (native:build)', tool: 'node', args: ['scripts/native/build.mjs'] },
       { id: 'rust-test', tool: 'cargo', args: ['test', '-p', 'velocity-core', 'range_probe'], name: 'cargo test -p velocity-core' },
     ]);
   });
 
   it('accepts a leading -- from the package manager', () => {
-    expect(focusedCommands(['--', 'velocity-core'], workspace)[0]?.args).toEqual(['test', '-p', 'velocity-core']);
+    expect(focusedCommands(['--', 'velocity-core'], workspace).at(-1)?.args).toEqual(['test', '-p', 'velocity-core']);
   });
 
   it('runs the frontend or script tests with Vitest', () => {
@@ -194,12 +207,17 @@ describe('selectJobs (CI, #13)', () => {
     expect(selectJobs(['.github/workflows/pr.yml'], workspace).jobs.frontend.reason).toContain('.github/workflows/pr.yml');
   });
 
+  // With the libcurl layer as a workspace crate, as in this repository since #35.
+  const withCurl = { crates: [...workspace.crates, { name: 'velocity-curl', dir: 'crates/velocity-curl', deps: [] }] };
+
   // The native builds (#35) take minutes, and on Windows bill at twice the Linux rate, so they run
   // for their own inputs, CI changes and unknown paths, not for every shared file.
   it.each([
     ['the native build scripts', ['scripts/native/build.mjs'], true],
     ['the native lock file', ['scripts/native/deps.lock'], true],
     ['a native lock file inside a crate', ['crates/velocity-core/deps.lock'], true],
+    ['the libcurl layer, which links the native build', ['crates/velocity-curl/build.rs'], true],
+    ['the Cargo link overrides', ['.cargo/config.toml'], true],
     ['a workflow file', ['.github/workflows/pr.yml'], true],
     ['an unknown path', ['tools/new-thing.sh'], true],
     ['Cargo.lock', ['Cargo.lock'], false],
@@ -208,7 +226,7 @@ describe('selectJobs (CI, #13)', () => {
     ['a crate', ['crates/velocity-core/src/lib.rs'], false],
     ['docs only', ['docs/CI.md'], false],
   ])('runs the native builds for %s: %s', (_name, paths, run) => {
-    expect(selectJobs(paths, workspace).jobs.native.run).toBe(run);
+    expect(selectJobs(paths, withCurl).jobs.native.run).toBe(run);
   });
 
   it('says why the native builds run or are skipped', () => {

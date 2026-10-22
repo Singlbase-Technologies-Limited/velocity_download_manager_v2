@@ -253,3 +253,23 @@ export function checkBuildInfo(info, lock) {
   else problems.push(...checkLinked(info.target, lock, info.linked));
   return problems;
 }
+
+/**
+ * Checks that every artefact build-info.json records still has its recorded SHA-256, so a library
+ * replaced after the build is caught. `hashOf(path)` returns the SHA-256 of a path relative to the
+ * build's prefix folder, or null when the file is missing.
+ */
+export function checkArtifacts(info, hashOf) {
+  const problems = [];
+  for (const a of info.artifacts ?? []) {
+    const parts = String(a.path).split(/[\/]/);
+    if (!a.path || a.path.startsWith('/') || /^[A-Za-z]:/.test(a.path) || parts.includes('..')) {
+      problems.push(`${a.path} is not a path inside the build folder`);
+      continue;
+    }
+    const actual = hashOf(a.path);
+    if (actual === null || actual === undefined) problems.push(`${a.path} is missing`);
+    else if (actual !== a.sha256) problems.push(`${a.path} changed after the build: its SHA-256 differs from build-info.json`);
+  }
+  return problems;
+}
