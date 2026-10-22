@@ -15,7 +15,7 @@
 import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { availableParallelism } from 'node:os';
-import { dirname, join, relative, resolve } from 'node:path';
+import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { checkBuildInfo, checkLinked, createBuildInfo, parseCurlVersion } from './native-lib.mjs';
@@ -47,7 +47,8 @@ const firstLine = (s) => s.split(/\r?\n/)[0].trim();
 /** Deletes a directory only when it lies inside target/native, the folder this build owns. */
 function cleanOwnedDir(dir) {
   const rel = relative(NATIVE_DIR, resolve(dir));
-  if (!rel || rel.startsWith('..') || resolve(dir) === resolve(NATIVE_DIR)) throw new Error(`refusing to delete ${dir}: it is outside ${NATIVE_DIR}`);
+  // `relative` returns an absolute path when `dir` is on another Windows drive.
+  if (!rel || rel.startsWith('..') || isAbsolute(rel)) throw new Error(`refusing to delete ${dir}: it is outside ${NATIVE_DIR}`);
   rmSync(dir, { recursive: true, force: true });
   mkdirSync(dir, { recursive: true });
 }

@@ -141,7 +141,7 @@ describe('librariesFor', () => {
   });
 });
 
-// `curl -V` output in the shape the Windows and Linux builds print (docs/BUILDING_NATIVE.md).
+// Real `curl -V` output of the Windows and Linux builds on 2026-10-22 (docs/BUILDING_NATIVE.md).
 const WINDOWS_CURL_V = [
   'curl 8.23.0 (Windows) libcurl/8.23.0 Schannel zlib/1.3.2 nghttp2/1.70.0',
   'Release-Date: 2026-10-14',
@@ -153,7 +153,7 @@ const LINUX_CURL_V = [
   'curl 8.23.0 (x86_64-pc-linux-gnu) libcurl/8.23.0 OpenSSL/3.5.9 zlib/1.3.2 nghttp2/1.70.0',
   'Release-Date: 2026-10-14',
   'Protocols: ftp ftps http https',
-  'Features: alt-svc AsynchDNS HSTS HTTP2 HTTPS-proxy IPv6 Largefile libz NTLM SSL threadsafe TLS-SRP UnixSockets',
+  'Features: alt-svc AsynchDNS HSTS HTTP2 HTTPS-proxy IPv6 Largefile libz SSL threadsafe UnixSockets',
   '',
 ].join('\n');
 
@@ -164,7 +164,7 @@ describe('parseCurlVersion', () => {
       tls: 'OpenSSL/3.5.9',
       libraries: { zlib: '1.3.2', nghttp2: '1.70.0' },
       protocols: ['ftp', 'ftps', 'http', 'https'],
-      features: ['alt-svc', 'AsynchDNS', 'HSTS', 'HTTP2', 'HTTPS-proxy', 'IPv6', 'Largefile', 'libz', 'NTLM', 'SSL', 'threadsafe', 'TLS-SRP', 'UnixSockets'],
+      features: ['alt-svc', 'AsynchDNS', 'HSTS', 'HTTP2', 'HTTPS-proxy', 'IPv6', 'Largefile', 'libz', 'SSL', 'threadsafe', 'UnixSockets'],
     });
   });
   it('reads a TLS backend that has no version, such as Schannel', () => {

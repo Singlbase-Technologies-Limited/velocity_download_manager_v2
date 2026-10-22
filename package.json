@@ -24,7 +24,9 @@
     "check:fast": "node scripts/check-fast.mjs",
     "check:pr": "node scripts/check-pr.mjs",
     "check:full": "node scripts/check-full.mjs",
-    "check:links": "node scripts/check-links.mjs"
+    "check:links": "node scripts/check-links.mjs",
+    "native:fetch": "node scripts/native/fetch.mjs",
+    "native:build": "node scripts/native/build.mjs"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.12.4",
