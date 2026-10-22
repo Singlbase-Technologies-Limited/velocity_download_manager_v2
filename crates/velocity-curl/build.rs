@@ -48,13 +48,15 @@ fn main() {
 /// The static libraries from the native build, in link order, and the system libraries they need.
 fn libraries(target: &str) -> (&'static [&'static str], &'static [&'static str]) {
     match target {
-        // Schannel, SSPI and the Windows socket and crypto APIs that libcurl calls.
+        // The system libraries are the `Libs.private` curl's own build writes into libcurl.pc.
         "x86_64-pc-windows-msvc" => (
             &["libcurl", "nghttp2", "zs"],
             &[
-                "ws2_32", "crypt32", "secur32", "bcrypt", "advapi32", "iphlpapi", "user32",
+                "bcrypt", "advapi32", "crypt32", "secur32", "ws2_32", "iphlpapi",
             ],
         ),
+        // libcurl.pc lists no system libraries here. A static OpenSSL still needs libpthread and
+        // libdl on glibc before 2.34, which keeps them out of libc; later glibc ignores them.
         "x86_64-unknown-linux-gnu" => (
             &["curl", "nghttp2", "ssl", "crypto", "z"],
             &["pthread", "dl"],
