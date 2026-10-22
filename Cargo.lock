@@ -4050,6 +4050,17 @@ name = "velocity-test-http"
 version = "0.1.0"
 
 [[package]]
+name = "velocity-transfer"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "velocity-core",
+ "velocity-curl",
+ "velocity-test-http",
+]
+
+[[package]]
 name = "version-compare"
 version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
