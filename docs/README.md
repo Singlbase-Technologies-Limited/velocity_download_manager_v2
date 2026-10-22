@@ -13,6 +13,7 @@ Every document in `docs/` is listed here. A new document is added to this map in
 | [GLOSSARY.md](GLOSSARY.md) | Look up a term (lease, coverage, validator, checkpoint, capability and more) |
 | [COEXISTENCE.md](COEXISTENCE.md) | See how V2 stays separate from V1: identity, data folder, single instance, IPC names |
 | [ENGINE_CONTRACT.md](ENGINE_CONTRACT.md) | Change how the manager talks to a direct-download engine: the `DirectTransfer` commands, events, secrets and wire forms |
+| [ENGINE_INTERNALS.md](ENGINE_INTERNALS.md) | Change how the engine fetches a file: the probe, later segments, anomalies and wasted bytes |
 | [ENGINE_PROTOCOL.md](ENGINE_PROTOCOL.md) | Change how the app and the engine's child process talk: framing, versions, limits, the supervisor and its restarts |
 | [CONTRACTS.md](CONTRACTS.md) | Change a type shared by the UI and Rust: the domain types, contract fixtures and the contract version |
 | [CONVENTIONS.md](CONVENTIONS.md) | Name Rust and TypeScript code, files, tests, commands, events and error codes |

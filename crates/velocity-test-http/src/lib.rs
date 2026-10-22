@@ -24,6 +24,25 @@ pub enum RangeMode {
     /// Honours a range that starts at byte 0, but answers any other range with the whole file as
     /// `200`: the case the engine must abort before writing a byte (report section 5.1, step 4).
     FullBodyForNonZeroStart,
+    /// Honours ranges, but never says the total: `Content-Range: bytes a-b/*`.
+    UnknownTotal,
+    /// Sends at most this many bytes for any range, with a `Content-Range` that says so: RFC 9110
+    /// §14.2 lets a server send fewer bytes than asked.
+    ShortRanges(u64),
+    /// Answers any range with a `multipart/byteranges` `206`, and a request without `Range` with
+    /// the whole file.
+    Multipart,
+    /// A malformed `Content-Range` on the first `n` responses to ranges after byte 0.
+    MalformedLaterRanges(u32),
+    /// On the first `count` responses to ranges after byte 0, closes the connection after `after`
+    /// body bytes, although `Content-Length` promised the whole range.
+    CutLaterBodies { count: u32, after: u64 },
+    /// On the first `count` responses to ranges after byte 0, sends the `206` chunked, with
+    /// `extra` bytes past the end its `Content-Range` gives.
+    OverrunLaterRanges { count: u32, extra: u64 },
+    /// Answers every request with this status and an empty body (`Retry-After: 1` with 429 and
+    /// 503).
+    Status(u16),
 }
 
 /// What the server does, beyond serving its files.
@@ -47,6 +66,8 @@ pub struct Counters {
     pub body_bytes_sent: u64,
     /// The `Range` header of each GET, in arrival order (`None` without one).
     pub ranges: Vec<Option<String>>,
+    /// Responses that carried a limited misbehaviour, such as [`RangeMode::MalformedLaterRanges`].
+    pub faults: u32,
 }
 
 /// A running server on 127.0.0.1 and a free port. It stops when dropped.
@@ -252,10 +273,34 @@ fn serve_connection(
         let total = data.len() as u64;
         let range = req.header("Range").and_then(parse_range);
         let mode = options.range_mode;
+        if let RangeMode::Status(code) = mode {
+            let retry = if matches!(code, 429 | 503) {
+                "Retry-After: 1\r\n"
+            } else {
+                ""
+            };
+            let _ = out.write_all(
+                format!("HTTP/1.1 {code} Status\r\nContent-Length: 0\r\n{retry}\r\n").as_bytes(),
+            );
+            if close {
+                return;
+            }
+            continue;
+        }
         let accept_ranges = if mode == RangeMode::Ignore {
             ""
         } else {
             "Accept-Ranges: bytes\r\n"
+        };
+        // The limited misbehaviours apply only to ranges after byte 0, so the probe stays honest.
+        let fault = match (mode, range) {
+            (
+                RangeMode::MalformedLaterRanges(n)
+                | RangeMode::CutLaterBodies { count: n, .. }
+                | RangeMode::OverrunLaterRanges { count: n, .. },
+                Some((start, _)),
+            ) if start > 0 => take_fault(counters, n),
+            _ => false,
         };
 
         // (status line, extra headers, body slice)
@@ -270,11 +315,22 @@ fn serve_connection(
                 &[][..],
             ),
             (_, Some((start, end))) => {
-                let last = end.unwrap_or(total - 1).min(total - 1);
-                let content_range = if mode == RangeMode::MalformedContentRange {
-                    format!("Content-Range: bytes {start}-oops/{total}\r\n")
-                } else {
-                    format!("Content-Range: bytes {start}-{last}/{total}\r\n")
+                let mut last = end.unwrap_or(total - 1).min(total - 1);
+                if let RangeMode::ShortRanges(max) = mode {
+                    last = last.min(start + max.max(1) - 1);
+                }
+                let content_range = match mode {
+                    RangeMode::MalformedContentRange => {
+                        format!("Content-Range: bytes {start}-oops/{total}\r\n")
+                    }
+                    RangeMode::MalformedLaterRanges(_) if fault => {
+                        format!("Content-Range: bytes {start}-oops/{total}\r\n")
+                    }
+                    RangeMode::UnknownTotal => format!("Content-Range: bytes {start}-{last}/*\r\n"),
+                    RangeMode::Multipart => {
+                        "Content-Type: multipart/byteranges; boundary=v2test\r\n".to_owned()
+                    }
+                    _ => format!("Content-Range: bytes {start}-{last}/{total}\r\n"),
                 };
                 (
                     "206 Partial Content",
@@ -283,11 +339,36 @@ fn serve_connection(
                 )
             }
         };
+        if let (RangeMode::OverrunLaterRanges { extra: over, .. }, true) = (mode, fault) {
+            let header = format!(
+                "HTTP/1.1 {status}\r\nTransfer-Encoding: chunked\r\n{accept_ranges}{extra}\r\n"
+            );
+            if out.write_all(header.as_bytes()).is_err() {
+                return;
+            }
+            let mut payload = body.to_vec();
+            payload.resize(body.len() + over as usize, 0);
+            if head || write_chunked(&mut out, &payload, counters).is_err() {
+                return;
+            }
+            continue;
+        }
         let header = format!(
             "HTTP/1.1 {status}\r\nContent-Length: {}\r\n{accept_ranges}{extra}\r\n",
             body.len()
         );
         if out.write_all(header.as_bytes()).is_err() {
+            return;
+        }
+        if let (RangeMode::CutLaterBodies { after, .. }, true) = (mode, fault) {
+            // Send part of the body, then drop the connection.
+            let cut = (after as usize).min(body.len());
+            let _ = write_body(
+                &mut out,
+                &body[..cut],
+                options.throttle_bytes_per_sec,
+                counters,
+            );
             return;
         }
         if !head && write_body(&mut out, body, options.throttle_bytes_per_sec, counters).is_err() {
@@ -297,6 +378,33 @@ fn serve_connection(
             return;
         }
     }
+}
+
+/// Counts one more faulty response, if fewer than `limit` were sent so far.
+fn take_fault(counters: &Mutex<Counters>, limit: u32) -> bool {
+    let mut c = counters.lock().unwrap();
+    if c.faults < limit {
+        c.faults += 1;
+        true
+    } else {
+        false
+    }
+}
+
+/// Writes `body` with chunked transfer coding, in 16 KiB chunks.
+fn write_chunked(
+    out: &mut TcpStream,
+    body: &[u8],
+    counters: &Mutex<Counters>,
+) -> std::io::Result<()> {
+    for chunk in body.chunks(16 * 1024) {
+        counters.lock().unwrap().body_bytes_sent += chunk.len() as u64;
+        out.write_all(format!("{:x}\r\n", chunk.len()).as_bytes())?;
+        out.write_all(chunk)?;
+        out.write_all(b"\r\n")?;
+    }
+    out.write_all(b"0\r\n\r\n")?;
+    out.flush()
 }
 
 /// Writes `body` in 16 KiB chunks, pacing them to `rate` bytes per second when set.

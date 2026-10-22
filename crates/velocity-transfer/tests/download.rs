@@ -155,6 +155,169 @@ fn a_200_for_a_later_range_is_never_written_and_the_rest_comes_as_one_stream() {
     assert_eq!(report.wasted_bytes, 64 * 1024);
 }
 
+/// Whether every GET the server saw asked for a range: no whole file was fetched.
+fn every_get_was_a_range(s: &TestServer) -> bool {
+    s.counters().ranges.iter().all(Option::is_some)
+}
+
+#[test]
+fn a_206_without_a_total_continues_as_one_sequential_range() {
+    // Report 5.1: `206` with `bytes 0-b/*` → keep the probe's bytes, continue sequentially.
+    let (s, data) = serve(1_000_000, RangeMode::UnknownTotal);
+    let dir = Dir::new("unknown-total");
+    let dest = dir.file("out.bin");
+    let report =
+        download(&curl_loop(), &s.url("f.bin"), &dest, OPTIONS).expect("the download succeeds");
+    assert!(std::fs::read(&dest).unwrap() == data);
+    assert_eq!(report.mode, Mode::SequentialRanges);
+    assert_eq!(
+        (report.total, report.written_bytes, report.wasted_bytes),
+        (1_000_000, 1_000_000, 0)
+    );
+    assert!(every_get_was_a_range(&s), "{:?}", s.counters().ranges);
+    // The probe, the rest as one open range, and the 416 that confirms the end.
+    assert!(s.counters().gets <= 3, "{:?}", s.counters().ranges);
+}
+
+#[test]
+fn a_shorter_206_has_only_its_remainder_requested_again() {
+    // Report 5.4: fewer bytes than requested in a 206 → the remainder is requested again.
+    let (s, data) = serve(1_000_000, RangeMode::ShortRanges(100_000));
+    let dir = Dir::new("short");
+    let dest = dir.file("out.bin");
+    let report =
+        download(&curl_loop(), &s.url("f.bin"), &dest, OPTIONS).expect("the download succeeds");
+    assert!(std::fs::read(&dest).unwrap() == data);
+    assert_eq!(report.mode, Mode::Ranges);
+    assert_eq!((report.written_bytes, report.wasted_bytes), (1_000_000, 0));
+    assert!(
+        every_get_was_a_range(&s),
+        "never the whole file again: {:?}",
+        s.counters().ranges
+    );
+}
+
+#[test]
+fn a_multipart_answer_to_the_probe_is_retried_once_without_a_range() {
+    // Report 5.1: a multipart answer to one range → abort before writing, retry once without
+    // Range as a single stream.
+    let (s, data) = serve(500_000, RangeMode::Multipart);
+    let dir = Dir::new("multipart");
+    let dest = dir.file("out.bin");
+    let report =
+        download(&curl_loop(), &s.url("f.bin"), &dest, OPTIONS).expect("the download succeeds");
+    assert!(std::fs::read(&dest).unwrap() == data);
+    assert_eq!(report.mode, Mode::SingleStream);
+    let ranges = s.counters().ranges;
+    assert_eq!(ranges.len(), 2, "{ranges:?}");
+    assert!(ranges[0].is_some() && ranges[1].is_none(), "{ranges:?}");
+    assert_eq!((report.written_bytes, report.wasted_bytes), (500_000, 0));
+}
+
+#[test]
+fn one_malformed_later_segment_is_requested_again() {
+    // Report 5.4: malformed Content-Range → segment rejected, retried, file correct.
+    let (s, data) = serve(1_000_000, RangeMode::MalformedLaterRanges(1));
+    let dir = Dir::new("malformed-once");
+    let dest = dir.file("out.bin");
+    let report =
+        download(&curl_loop(), &s.url("f.bin"), &dest, OPTIONS).expect("the download recovers");
+    assert!(std::fs::read(&dest).unwrap() == data);
+    assert_eq!(s.counters().faults, 1);
+    assert_eq!(report.mode, Mode::Ranges);
+    assert_eq!(report.written_bytes, 1_000_000);
+    assert!(every_get_was_a_range(&s), "{:?}", s.counters().ranges);
+}
+
+#[test]
+fn a_second_anomaly_falls_back_to_one_stream_for_the_missing_bytes() {
+    // Report 5.1, step 7: two anomalies on one download → a single stream for the rest.
+    let (s, data) = serve(1_000_000, RangeMode::MalformedLaterRanges(u32::MAX));
+    let dir = Dir::new("malformed-always");
+    let dest = dir.file("out.bin");
+    let report =
+        download(&curl_loop(), &s.url("f.bin"), &dest, OPTIONS).expect("the download recovers");
+    assert!(std::fs::read(&dest).unwrap() == data);
+    assert_eq!(report.mode, Mode::RangesLost);
+    assert_eq!(report.written_bytes, 1_000_000, "each byte written once");
+    assert_eq!(
+        s.counters().ranges.last(),
+        Some(&None),
+        "the last GET is the single stream"
+    );
+}
+
+#[test]
+fn a_segment_cut_short_has_its_remainder_requested_again() {
+    // Report 5.1, step 6: a body that ends before its range does → the rest is requested again.
+    let (s, data) = serve(
+        1_000_000,
+        RangeMode::CutLaterBodies {
+            count: 1,
+            after: 50_000,
+        },
+    );
+    let dir = Dir::new("cut");
+    let dest = dir.file("out.bin");
+    let report =
+        download(&curl_loop(), &s.url("f.bin"), &dest, OPTIONS).expect("the download recovers");
+    assert!(std::fs::read(&dest).unwrap() == data);
+    assert_eq!(s.counters().faults, 1);
+    assert_eq!(report.mode, Mode::Ranges);
+    assert_eq!(report.written_bytes, 1_000_000);
+    assert!(every_get_was_a_range(&s), "{:?}", s.counters().ranges);
+}
+
+#[test]
+fn bytes_past_a_segments_end_are_dropped_and_counted_as_wasted() {
+    // Report 5.1, step 6: a chunked 206 that runs past its range → the excess is dropped and
+    // counted.
+    let (s, data) = serve(
+        1_000_000,
+        RangeMode::OverrunLaterRanges {
+            count: 1,
+            extra: 10_000,
+        },
+    );
+    let dir = Dir::new("overrun");
+    let dest = dir.file("out.bin");
+    let report =
+        download(&curl_loop(), &s.url("f.bin"), &dest, OPTIONS).expect("the download succeeds");
+    assert!(std::fs::read(&dest).unwrap() == data);
+    assert_eq!(s.counters().faults, 1);
+    assert_eq!(report.mode, Mode::Ranges);
+    assert_eq!(
+        (report.written_bytes, report.wasted_bytes),
+        (1_000_000, 10_000)
+    );
+}
+
+#[test]
+fn error_statuses_from_the_probe_are_classified_and_leave_nothing_behind() {
+    // Report 5.1: 401/407 → credentials needed, no retry; 429/503 → throttled (the wait is #48);
+    // other 5xx → transient.
+    for (status, class) in [
+        (401, FailureClass::Permanent),
+        (407, FailureClass::Permanent),
+        (429, FailureClass::Throttled),
+        (503, FailureClass::Throttled),
+        (500, FailureClass::Transient),
+    ] {
+        let (s, _) = serve(10_000, RangeMode::Status(status));
+        let dir = Dir::new(&format!("status-{status}"));
+        let dest = dir.file("out.bin");
+        match download(&curl_loop(), &s.url("f.bin"), &dest, OPTIONS) {
+            Err(DownloadError::Transfer(e)) => {
+                assert_eq!((e.class, e.http_status), (class, Some(status)), "{status}");
+                assert_eq!(e.retryable, class != FailureClass::Permanent, "{status}");
+            }
+            other => panic!("{status}: expected a refused probe, got {other:?}"),
+        }
+        assert_eq!(s.counters().gets, 1, "{status}: no retry here");
+        assert!(!dest.exists() && !part_of(&dest).exists(), "{status}");
+    }
+}
+
 #[test]
 fn an_empty_file_completes_with_zero_bytes() {
     let (s, _) = serve(0, RangeMode::Honour);

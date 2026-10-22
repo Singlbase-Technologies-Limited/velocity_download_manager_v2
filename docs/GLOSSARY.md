@@ -5,6 +5,7 @@ Terms used across V2's documents, issues and code, in alphabetical order. Where 
 | Term | Meaning |
 |---|---|
 | **ADR** | Architecture decision record: one numbered, accepted decision with its context and consequences. See [decisions/](decisions/README.md) |
+| **Anomaly** | An answer that contradicts its request: a wrong or malformed `Content-Range`, a length that disagrees with it, a multipart body, or a body that stops short of or runs past its range. The first is retried; a second on the same download ends ranges for it ([ENGINE_INTERNALS.md](ENGINE_INTERNALS.md); report §5.1; #41) |
 | **Back-pressure** | Pausing a transfer while the bounded disk-write queue is full, so a slow disk slows the network instead of growing memory (report §5.2; #49) |
 | **Budget** | The connection allowance per download, per host and globally, which the scheduler shares fairly between downloads (#47) |
 | **Build identity record** | `build-info.json`: what one native build contains and how it was made: each library's source, SHA-256, signature result and build options, what `curl -V` reports as linked, the artefact checksums, the toolchains and the V2 commit (#35; [BUILDING_NATIVE.md](BUILDING_NATIVE.md#build-infojson)) |
@@ -26,7 +27,8 @@ Terms used across V2's documents, issues and code, in alphabetical order. Where 
 | **Part file** | The file being downloaded, before it is verified and renamed (`.vdmpart` in the report; the final name is set in #43) |
 | **PO** | The Product Owner, who decides scope, architecture, dependencies, licensing, security, repository settings, merges and releases |
 | **Probe** | The first request of a download: a bounded range request whose bytes are kept. Its response decides between ranges, sequential ranges and a single stream, without a wasted full transfer. V2 doesn't use HEAD as proof of range support (report §5.1; #41) |
-| **Ranges lost** | The state when a server that accepted ranges stops honouring them. The download continues as one stream from the first uncovered byte (report §5.1) |
+| **Ranges lost** | The state when a server that accepted ranges stops honouring them: a `200` for a later range, or a second *anomaly*. The rest comes as one stream that writes only the bytes not yet covered (report §5.1; #41) |
+| **Sequential ranges** | A server that honours ranges but gives no total (`bytes 0-b/*`). The rest is fetched as one open range at a time, without parallel segments, until a `416` marks the end (report §5.1; #41) |
 | **Sidecar** | A helper program shipped with the app and started by it, such as the child-process engine ([ADR-0012](decisions/0012-engine-child-process.md)) |
 | **Single stream** | Downloading over one connection from byte 0, used when the server ignores ranges (report §5.1) |
 | **Split (work-stealing)** | Halving the largest remaining lease so a free worker can take the second half. The old request stops at the new boundary (report §5.2; #42) |

@@ -24,8 +24,72 @@ pub enum ProbeOutcome {
 pub enum SegmentRejection {
     /// A `200` for a range that doesn't start at 0: the server stopped honouring ranges.
     RangesIgnored,
-    /// Anything else that isn't exactly the requested bytes.
+    /// The answer contradicts the request (a wrong or malformed `Content-Range`, a length that
+    /// disagrees with it, a multipart body, an unrequested encoding). Worth one more request; a
+    /// second anomaly on the same download ends ranges for it (report section 5.1, step 7).
+    Anomaly(TransferError),
+    /// An error status, or a different total, which means a different object (#45). Not retried
+    /// here; retries are #48.
     Invalid(TransferError),
+}
+
+/// What a request for the rest of a file of unknown size, `Range: bytes=start-`, returned.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Continuation {
+    /// A `206` from `start` to `end`; the total, if the server gave it.
+    More { end: u64, total: Option<u64> },
+    /// A `416`: there is nothing at `start`, so the file ends there.
+    End,
+}
+
+/// Classifies the answer to `Range: bytes=start-` after a probe that gave no total.
+pub fn check_continuation(
+    head: &ResponseHead,
+    start: u64,
+) -> Result<Continuation, SegmentRejection> {
+    status_error(head).map_err(SegmentRejection::Invalid)?;
+    if head.status == 416 {
+        // Only a 416 that agrees the file ends at `start` (or says nothing) ends it.
+        return match head.header("content-range").map(str::trim) {
+            None => Ok(Continuation::End),
+            Some(cr) if cr == format!("bytes */{start}") => Ok(Continuation::End),
+            Some(cr) => Err(SegmentRejection::Anomaly(dishonest(
+                head,
+                &format!("a 416 with Content-Range {cr} for a request from byte {start}"),
+            ))),
+        };
+    }
+    identity_encoding(head).map_err(SegmentRejection::Anomaly)?;
+    match head.status {
+        200 => Err(SegmentRejection::RangesIgnored),
+        206 => {
+            let (got_start, end, total) = content_range(head).map_err(SegmentRejection::Anomaly)?;
+            if got_start != start || total.is_some_and(|t| end >= t) {
+                return Err(SegmentRejection::Anomaly(dishonest(
+                    head,
+                    &format!(
+                        "Content-Range {got_start}-{end} doesn't answer a request from {start}"
+                    ),
+                )));
+            }
+            check_length(head, got_start, end).map_err(SegmentRejection::Anomaly)?;
+            Ok(Continuation::More { end, total })
+        }
+        status => Err(SegmentRejection::Invalid(TransferError::new(
+            FailureClass::Permanent,
+            Some(status),
+            &format!("unexpected HTTP status {status} for a range"),
+        ))),
+    }
+}
+
+/// Whether the answer is `multipart/byteranges`, which a single range should never get.
+pub fn is_multipart(head: &ResponseHead) -> bool {
+    head.header("content-type").is_some_and(|t| {
+        t.trim_start()
+            .to_ascii_lowercase()
+            .starts_with("multipart/byteranges")
+    })
 }
 
 /// Classifies the probe's final response to `Range: bytes=0-requested_end`.
@@ -86,7 +150,7 @@ pub fn check_segment(
     total: u64,
 ) -> Result<u64, SegmentRejection> {
     status_error(head).map_err(SegmentRejection::Invalid)?;
-    identity_encoding(head).map_err(SegmentRejection::Invalid)?;
+    identity_encoding(head).map_err(SegmentRejection::Anomaly)?;
     if head.status == 200 {
         return Err(SegmentRejection::RangesIgnored);
     }
@@ -97,9 +161,9 @@ pub fn check_segment(
             &format!("unexpected HTTP status {} for a range", head.status),
         )));
     }
-    let (got_start, got_end, got_total) = content_range(head).map_err(SegmentRejection::Invalid)?;
+    let (got_start, got_end, got_total) = content_range(head).map_err(SegmentRejection::Anomaly)?;
     if got_start != start || got_end > end || got_end < got_start {
-        return Err(SegmentRejection::Invalid(dishonest(
+        return Err(SegmentRejection::Anomaly(dishonest(
             head,
             &format!("Content-Range {got_start}-{got_end} doesn't answer the range {start}-{end}"),
         )));
@@ -112,7 +176,7 @@ pub fn check_segment(
             &format!("the file's total changed from {total} to {got_total:?}"),
         )));
     }
-    check_length(head, got_start, got_end).map_err(SegmentRejection::Invalid)?;
+    check_length(head, got_start, got_end).map_err(SegmentRejection::Anomaly)?;
     Ok(got_end)
 }
 
@@ -147,11 +211,7 @@ fn identity_encoding(head: &ResponseHead) -> Result<(), TransferError> {
             ))
         }
     }
-    if head.header("content-type").is_some_and(|t| {
-        t.trim_start()
-            .to_ascii_lowercase()
-            .starts_with("multipart/byteranges")
-    }) {
+    if is_multipart(head) {
         return Err(dishonest(
             head,
             "a multipart/byteranges answer to a single range",
@@ -418,11 +478,11 @@ mod tests {
     }
 
     #[test]
-    fn refuses_a_later_segment_that_doesnt_match() {
+    fn a_later_segment_that_contradicts_its_request_is_an_anomaly() {
+        // Report 5.1, step 7: worth one more try; a second anomaly ends ranges for the download.
         for (cr, cl) in [
             ("bytes 0-999/5000", "1000"),     // wrong start
             ("bytes 1000-2999/5000", "2000"), // past the end asked for
-            ("bytes 1000-1999/6000", "1000"), // a different total: the object changed
             ("bytes 1000-x/5000", "1000"),
             ("bytes 1000-1999/5000", "999"),
         ] {
@@ -433,10 +493,33 @@ mod tests {
                 5000,
             );
             assert!(
-                matches!(r, Err(SegmentRejection::Invalid(_))),
+                matches!(r, Err(SegmentRejection::Anomaly(_))),
                 "{cr}: {r:?}"
             );
         }
+        let multipart = head(206, &[("Content-Type", "multipart/byteranges; boundary=x")]);
+        assert!(matches!(
+            check_segment(&multipart, 1000, 1999, 5000),
+            Err(SegmentRejection::Anomaly(_))
+        ));
+    }
+
+    #[test]
+    fn a_later_segment_with_an_error_or_another_total_fails() {
+        // A different total means a different object (report section 5.3, #45): not retried here.
+        let r = check_segment(
+            &head(
+                206,
+                &[
+                    ("Content-Range", "bytes 1000-1999/6000"),
+                    ("Content-Length", "1000"),
+                ],
+            ),
+            1000,
+            1999,
+            5000,
+        );
+        assert!(matches!(r, Err(SegmentRejection::Invalid(_))), "{r:?}");
         let r = check_segment(&head(404, &[]), 1000, 1999, 5000);
         assert!(
             matches!(
@@ -448,5 +531,63 @@ mod tests {
             ),
             "{r:?}"
         );
+    }
+
+    #[test]
+    fn a_continuation_without_a_total_goes_on_until_a_416() {
+        let more = head(206, &[("Content-Range", "bytes 1000-4999/*")]);
+        assert_eq!(
+            check_continuation(&more, 1000),
+            Ok(Continuation::More {
+                end: 4999,
+                total: None
+            })
+        );
+        let known = head(206, &[("Content-Range", "bytes 1000-4999/5000")]);
+        assert_eq!(
+            check_continuation(&known, 1000),
+            Ok(Continuation::More {
+                end: 4999,
+                total: Some(5000)
+            })
+        );
+        // Past the last byte: the file ends where the request started.
+        for h in [
+            head(416, &[("Content-Range", "bytes */1000")]),
+            head(416, &[]),
+        ] {
+            assert_eq!(check_continuation(&h, 1000), Ok(Continuation::End));
+        }
+    }
+
+    #[test]
+    fn a_continuation_that_doesnt_answer_its_start_is_refused() {
+        assert!(matches!(
+            check_continuation(&head(206, &[("Content-Range", "bytes 0-999/*")]), 1000),
+            Err(SegmentRejection::Anomaly(_))
+        ));
+        // A 416 that says the file is longer than where the request started contradicts itself.
+        assert!(matches!(
+            check_continuation(&head(416, &[("Content-Range", "bytes */9000")]), 1000),
+            Err(SegmentRejection::Anomaly(_))
+        ));
+        assert_eq!(
+            check_continuation(&head(200, &[]), 1000),
+            Err(SegmentRejection::RangesIgnored)
+        );
+        assert!(matches!(
+            check_continuation(&head(503, &[]), 1000),
+            Err(SegmentRejection::Invalid(_))
+        ));
+    }
+
+    #[test]
+    fn a_multipart_answer_is_recognised_as_one() {
+        let h = head(206, &[("Content-Type", "Multipart/ByteRanges; boundary=x")]);
+        assert!(is_multipart(&h));
+        assert!(!is_multipart(&head(
+            206,
+            &[("Content-Type", "application/zip")]
+        )));
     }
 }
