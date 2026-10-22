@@ -1,5 +1,6 @@
 # Shared job setup for the CI workflows (docs/CI.md): Node, and when Rust is needed the Tauri system
-# packages, the pinned toolchain and the restored dependency cache, then the JavaScript dependencies.
+# packages (Linux only; Windows runners have what Tauri needs), the pinned toolchain and the
+# restored dependency cache (one per OS), then the JavaScript dependencies.
 # The cache is only restored here. Workflows on `main` save it (see main.yml), so pull requests
 # never fill the 10 GB cache with per-branch copies.
 name: Set up a V2 CI job
@@ -26,7 +27,7 @@ runs:
         node-version: 24.12.0
 
     - name: Install Tauri system packages
-      if: inputs.rust == 'true'
+      if: inputs.rust == 'true' && runner.os == 'Linux'
       shell: bash
       run: |
         sudo apt-get update

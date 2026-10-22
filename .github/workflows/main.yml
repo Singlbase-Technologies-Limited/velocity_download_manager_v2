@@ -1,11 +1,28 @@
-# Checks on `main` after each merge (the Linux part of tier 2 in docs/CI.md; #16 adds Windows).
-# This is also the only workflow that saves the Rust dependency cache, which pull requests restore,
-# so it must run every L1 check and build everything the PR tier builds.
+# Checks on `main` after each merge (tier 2 in docs/CI.md, #14 and #16). The `select` job decides,
+# from what the merge changed (scripts/ci-select.mjs, the same rules as pull requests), whether the
+# Linux and Windows checks run; a docs-only merge runs neither. This is also the only workflow that
+# saves the Rust dependency caches (one per OS), which pull requests restore. A red run opens the
+# tracking issue "main is failing", and the next green run closes it (scripts/ci-main-status.mjs).
+#
+# Failure collection (#91, docs/CI_DIAGNOSTICS.md): every job runs to completion and writes a
+# report; `summary` combines them into one table and the `ci-diagnostics` artifact.
 name: Main checks
 
 on:
   push:
     branches: [main]
+  # Manual runs, for example on a branch to try a change to this workflow. Without a base they
+  # check everything. A tracking title is for test runs only: on main the title is fixed.
+  workflow_dispatch:
+    inputs:
+      base:
+        description: Compare with this commit (empty checks everything)
+        required: false
+        default: ''
+      tracking-title:
+        description: 'Test runs only: open a tracking issue with this title if the run is red'
+        required: false
+        default: ''
 
 permissions:
   contents: read
@@ -16,10 +33,149 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  select:
+    name: Select jobs
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      CI_REPORT_PATH: ${{ github.workspace }}/../ci-checks.json
+    outputs:
+      code: ${{ steps.select.outputs.rust == 'true' || steps.select.outputs.frontend == 'true' }}
+      rust: ${{ steps.select.outputs.rust }}
+      windows: ${{ steps.select.outputs.windows }}
+      base: ${{ steps.select.outputs.base }}
+    steps:
+      - id: checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - id: node
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24.12.0
+      - id: select
+        name: Decide which jobs run
+        env:
+          BEFORE: ${{ github.event.before }}
+          INPUT_BASE: ${{ inputs.base }}
+          # `cargo metadata --no-deps` only reads manifests; the runner's stable toolchain is enough.
+          RUSTUP_TOOLCHAIN: stable
+        run: |
+          if [ "$GITHUB_EVENT_NAME" = push ]; then base="$BEFORE"; else base="$INPUT_BASE"; fi
+          # The commit main was at before this push. Missing or all zeros: nothing to compare with.
+          if [ -z "$base" ] || [ -z "${base//0/}" ]; then
+            base=""
+            node scripts/ci-select.mjs --all
+          else
+            node scripts/ci-select.mjs --base "$base"
+          fi
+          echo "base=$base" >> "$GITHUB_OUTPUT"
+      # Both take about a second, so they run on every merge, here (each job costs a billed minute).
+      - id: links
+        name: Docs (check:links)
+        if: ${{ !cancelled() && steps.node.outcome == 'success' }}
+        run: node scripts/check-links.mjs
+      - id: guidance
+        name: Agent guidance (check:guidance)
+        if: ${{ !cancelled() && steps.node.outcome == 'success' }}
+        run: node scripts/check-guidance.mjs
+      - name: Write the job report
+        if: ${{ !cancelled() && steps.checkout.outcome == 'success' }}
+        env:
+          STEPS: ${{ toJSON(steps) }}
+        run: node scripts/ci-report.mjs job --job select --infra checkout,node --step-check "select=Job selection"
+      - name: Upload the job report
+        if: ${{ !cancelled() && steps.checkout.outcome == 'success' }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: report-select
+          path: ci-reports/report-select.json
+          retention-days: 14
+
   linux:
-    name: Linux checks (check:fast)
+    name: Linux checks
+    needs: select
+    if: ${{ !cancelled() && needs.select.outputs.code == 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 45
+    env:
+      CARGO_INCREMENTAL: 0
+      CI_REPORT_PATH: ${{ github.workspace }}/../ci-checks.json
+    steps:
+      - id: checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - id: setup
+        uses: ./.github/actions/setup
+        with:
+          rust: ${{ needs.select.outputs.rust }}
+      - id: checks
+        name: Run the selected checks
+        env:
+          BASE: ${{ needs.select.outputs.base }}
+          RUST: ${{ needs.select.outputs.rust }}
+        run: |
+          if [ "$RUST" != true ]; then export RUSTUP_TOOLCHAIN=stable; fi
+          # check:pr runs what the merge needs, including the native build before any Rust check.
+          if [ -n "$BASE" ]; then node scripts/check-pr.mjs --base "$BASE"; else node scripts/check-fast.mjs; fi
+      - name: Upload build-info.json
+        if: ${{ !cancelled() && hashFiles('target/native/x86_64-unknown-linux-gnu/build-info.json') != '' }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: build-info-linux
+          path: target/native/x86_64-unknown-linux-gnu/build-info.json
+          retention-days: 14
+      - name: Write the job report
+        if: ${{ !cancelled() && steps.checkout.outcome == 'success' }}
+        env:
+          STEPS: ${{ toJSON(steps) }}
+        run: node scripts/ci-report.mjs job --job linux --infra checkout,setup --step-check "checks=Linux checks"
+      - name: Upload the job report
+        if: ${{ !cancelled() && steps.checkout.outcome == 'success' }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: report-linux
+          path: ci-reports/report-linux.json
+          retention-days: 14
+
+      # Save only after a green run with Rust, and only when this key isn't cached yet (keys are
+      # immutable). Workspace crates are removed first: they rebuild in seconds, and caching them
+      # only adds size. What stays is the compiled dependencies and target/native.
+      - name: Keep only dependency artefacts
+        if: needs.select.outputs.rust == 'true' && steps.setup.outputs.rust-cache-hit != 'true'
+        run: |
+          for d in target/debug target/release; do
+            [ -d "$d" ] || continue
+            find "$d/deps" "$d/build" "$d/.fingerprint" -maxdepth 1 -name '*velocity*' -exec rm -rf {} + 2>/dev/null || true
+            rm -rf "$d/incremental"
+            find "$d" -maxdepth 1 -type f -delete
+          done
+          du -sh target ~/.cargo/registry 2>/dev/null || true
+      - name: Save the Rust dependency cache
+        if: needs.select.outputs.rust == 'true' && steps.setup.outputs.rust-cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          key: ${{ steps.setup.outputs.rust-cache-key }}
+          path: |
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+
+  # Windows (#16): every L1 check, when the merge touched Windows-relevant paths (docs/CI.md,
+  # "Selecting jobs"). It needs nothing from the Linux job, so a Linux-only failure doesn't stop it.
+  windows:
+    name: Windows checks (check:fast)
+    needs: select
+    if: ${{ !cancelled() && needs.select.outputs.windows == 'true' }}
+    runs-on: windows-latest
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: bash
     env:
       CARGO_INCREMENTAL: 0
       CI_REPORT_PATH: ${{ github.workspace }}/../ci-checks.json
@@ -35,39 +191,25 @@ jobs:
       - id: checks
         name: All L1 checks
         run: node scripts/check-fast.mjs
-      # Runs even when an L1 check failed, so one run reports everything (#91).
-      - id: links
-        name: Docs (check:links)
-        if: ${{ !cancelled() && steps.setup.outcome == 'success' }}
-        run: node scripts/check-links.mjs
-      - id: guidance
-        name: Agent guidance (check:guidance)
-        if: ${{ !cancelled() && steps.setup.outcome == 'success' }}
-        run: node scripts/check-guidance.mjs
-
-      # Failure collection (#91, docs/CI_DIAGNOSTICS.md). This workflow has one job, so the report
-      # and the summary run here instead of in an extra job (each job costs a billed minute).
+      - name: Upload build-info.json
+        if: ${{ !cancelled() && hashFiles('target/native/x86_64-pc-windows-msvc/build-info.json') != '' }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: build-info-windows
+          path: target/native/x86_64-pc-windows-msvc/build-info.json
+          retention-days: 14
       - name: Write the job report
         if: ${{ !cancelled() && steps.checkout.outcome == 'success' }}
         env:
           STEPS: ${{ toJSON(steps) }}
-        run: node scripts/ci-report.mjs job --job linux --infra checkout,setup --step-check "checks=L1 checks"
-      - name: Summarise
-        if: ${{ !cancelled() && steps.checkout.outcome == 'success' }}
-        env:
-          NEEDS: '{"linux":{"result":"${{ job.status }}"}}'
-        run: node scripts/ci-report.mjs summary --reports ci-reports --jobs '[{"id":"linux","name":"Linux checks","mandatory":true}]'
-      - name: Upload ci-diagnostics
+        run: node scripts/ci-report.mjs job --job windows --infra checkout,setup --step-check "checks=Windows checks"
+      - name: Upload the job report
         if: ${{ !cancelled() && steps.checkout.outcome == 'success' }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: ci-diagnostics
-          path: ci-diagnostics.json
+          name: report-windows
+          path: ci-reports/report-windows.json
           retention-days: 14
-
-      # Save only after a full green run and only when this key isn't cached yet (keys are
-      # immutable). Workspace crates are removed first: they rebuild in seconds, and caching them
-      # only adds size. What stays is the compiled dependencies, measured at about 365 MiB compressed.
       - name: Keep only dependency artefacts
         if: steps.setup.outputs.rust-cache-hit != 'true'
         run: |
@@ -88,3 +230,55 @@ jobs:
             ~/.cargo/registry/cache/
             ~/.cargo/git/db/
             target/
+
+  summary:
+    name: Summary
+    needs: [select, linux, windows]
+    # Not `always()`: a cancelled run reports nothing rather than a false failure (#91).
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: read
+      # Only this job, and only for the tracking issue (PO decision on #16, 2026-10-22).
+      issues: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          sparse-checkout: scripts
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24.12.0
+      - name: Download the job reports
+        continue-on-error: true
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: report-*
+          path: ci-reports
+          merge-multiple: true
+      - id: combine
+        name: Combine the results
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+        run: >-
+          node scripts/ci-report.mjs summary --reports ci-reports --jobs
+          '[{"id":"select","name":"Job selection","mandatory":true},
+          {"id":"linux","name":"Linux checks","mandatory":true,"selectedBy":"select","selectedOutput":"code"},
+          {"id":"windows","name":"Windows checks","mandatory":true,"selectedBy":"select","selectedOutput":"windows"}]'
+      - name: Upload ci-diagnostics
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ci-diagnostics
+          path: ci-diagnostics.json
+          retention-days: 14
+      # Opens, comments on or closes the tracking issue (docs/CI.md, "When main breaks"). On main the
+      # title is fixed; a manual test run on a branch uses its own title, so main's issue is untouched.
+      - name: Track a red main
+        if: ${{ !cancelled() && ((github.event_name == 'push' && github.ref == 'refs/heads/main') || inputs.tracking-title != '') }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TITLE: ${{ github.event_name == 'push' && 'main is failing' || inputs.tracking-title }}
+        run: node scripts/ci-main-status.mjs --report ci-diagnostics.json --title "$TITLE"
