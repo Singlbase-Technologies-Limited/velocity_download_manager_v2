@@ -19,7 +19,7 @@ V2 is a Tauri 2 desktop app with a React UI and a Rust core. It downloads files 
                                           │                               │
                                           ▼                               ▼
                   Transfer engine: probe, leases, checkpoints,       libtorrent
-                  integrity, retries, limits (process model #38)   (BitTorrent v1, v2,
+                  integrity, retries, limits (child, ADR-0012)     (BitTorrent v1, v2,
                                           │                         hybrid, magnets)
                                           ▼                               │
                   libcurl layer: the only code that calls libcurl         │
@@ -36,7 +36,7 @@ V2 is a Tauri 2 desktop app with a React UI and a Rust core. It downloads files 
 | `DirectTransfer` contract | `crates/velocity-core/` (ADR-0002) | The engine-neutral boundary for direct downloads: commands, events, statuses, errors and capabilities. The manager never sees libcurl types. Details: [ENGINE_CONTRACT.md](ENGINE_CONTRACT.md) | The trait, its wire commands, a test-only fake engine, and the manager's first slice (`manager.rs`) | #36 |
 | Transfer engine | `crates/velocity-transfer/` (ADR-0002) | The range probe, leased segmentation, durable checkpoints, changed-object detection, integrity, retries, connection budgets and speed limits | The #37 prototype: the probe as the first segment (report section 5.1, classified before any byte is written), static parallel segments, a `.vdmpart` part file with positioned writes and byte coverage, a single-stream fallback that writes only missing bytes, and a finish that never replaces an existing file. `InProcessEngine` implements the contract over it, refusing what it can't do yet as `Unsupported`; `velocity-transfer get` runs one download by hand. No retries, checkpoints or validators yet. Results: [engine-prototype-results.md](research/engine-prototype-results.md) | #37, #41 to #49 |
 | libcurl layer | `crates/velocity-curl/` (ADR-0002) | The only crate that touches libcurl: FFI and the `Multi` loop on its own thread. libcurl 8.23.0 or later, with a build identity record; obtained as [ADR-0004](decisions/0004-libcurl-build-path.md) decides | Links the Velocity-built libcurl ([BUILDING_NATIVE.md](BUILDING_NATIVE.md)); `Libcurl::start()` refuses a libcurl that fails the capability check. `CurlLoop` runs every transfer on one `Multi` thread: a gate sees the final response head before any body byte, a slow reader pauses its transfer instead of growing a buffer, and the protocol and redirect allowlists, an explicitly empty proxy and no `Accept-Encoding` are set on every fetch | #35, #37 |
-| Engine process | pending #38 | The engine runs either in the app process or as a supervised child process speaking a versioned protocol over stdio | The #37 prototype has both: `velocity-transfer serve` behind JSON lines on stdin and stdout, and the `ChildProcessEngine` client; the same contract tests pass in both modes. No supervision or restart yet | #38, #39 |
+| Engine process | `velocity-transfer serve`, a child process ([ADR-0012](decisions/0012-engine-child-process.md)) | The engine runs as a child process the app starts and supervises, speaking a versioned protocol over stdio | The #37 prototype has both: `velocity-transfer serve` behind JSON lines on stdin and stdout, and the `ChildProcessEngine` client; the same contract tests pass in both modes. No supervision or restart yet | #38, #39 |
 | Torrent bridge | to be created | A narrow Rust bridge to libtorrent | — | #62 |
 | Native host | to be created | A short-lived process started by the browser. It validates messages and forwards them to the app over local IPC | — | #65 |
 | Browser extension | to be created | Offers browser downloads to V2 and falls back to the browser on any failure | — | #64 |
@@ -82,7 +82,7 @@ Status reaches the UI as events. The status vocabulary for direct downloads is Q
 | Process | Started by | Talks to |
 |---|---|---|
 | Desktop app | The user | The UI through typed commands and events, and the native host through local IPC (#65) |
-| Transfer engine | The app, if #38 chooses a child process | The app over inherited stdin and stdout pipes: no listening socket, no port, no shared secret (#39) |
+| Transfer engine | The app, which starts it as a child process ([ADR-0012](decisions/0012-engine-child-process.md)) | The app over inherited stdin and stdout pipes: no listening socket, no port, no shared secret (#39) |
 | Native host | The browser, through native messaging | The app over local IPC that accepts only local clients |
 
 Everything that crosses a boundary is untrusted and validated on arrival: URLs, file names, server responses, browser messages and engine messages.
@@ -93,10 +93,8 @@ Everything that crosses a boundary is untrusted and validated on arrival: URLs, 
 
 These decision issues shape the architecture. Until each is decided and recorded as an ADR, the parts that depend on it are marked pending above.
 
-| Issue | Question | What depends on it |
-|---|---|---|
-| #38 | Engine in the app process, or a supervised child process? | Process model, IPC protocol (#39), packaging |
+None is open now.
 
-Decided since: SFTP uses libssh2 through libcurl ([ADR-0011](decisions/0011-sftp-libssh2.md)); without a validator, a download resumes after a length check and shows "not verified" ([ADR-0010](decisions/0010-resume-without-validator.md)).
+Decided since: the engine runs as a supervised child process ([ADR-0012](decisions/0012-engine-child-process.md)); SFTP uses libssh2 through libcurl ([ADR-0011](decisions/0011-sftp-libssh2.md)); without a validator, a download resumes after a length check and shows "not verified" ([ADR-0010](decisions/0010-resume-without-validator.md)).
 
 The research these questions draw on is in [docs/research/](research/README.md). The terms used here are defined in the [glossary](GLOSSARY.md).

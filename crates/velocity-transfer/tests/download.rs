@@ -2,11 +2,16 @@
 //! files. Each fixture row of research report section 5.4 that the prototype covers has a test.
 
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
+use std::time::Duration;
 
 use velocity_core::domain::FailureClass;
 use velocity_curl::{CurlLoop, Libcurl, LoopOptions};
 use velocity_test_http::{seeded_bytes, RangeMode, ServerOptions, TestServer};
-use velocity_transfer::download::{download, DownloadError, DownloadOptions, Mode};
+use velocity_transfer::download::{
+    download, download_with, Control, DownloadError, DownloadOptions, Mode,
+};
 
 struct Dir(PathBuf);
 
@@ -221,4 +226,40 @@ fn one_connection_downloads_in_order() {
     .expect("the download succeeds");
     assert!(std::fs::read(&dest).unwrap() == data);
     assert_eq!(report.fetches, 2, "the probe, then the rest as one segment");
+}
+
+#[test]
+fn a_slow_writer_holds_back_the_network_instead_of_queueing_the_file() {
+    // Rule (transfer-engine.md, "Memory"): buffers and queues are bounded. The progress callback
+    // runs on the writer's thread, so pausing it once makes the writer slow; the server must not
+    // get more than a bounded amount ahead of the bytes written (#38 found the file queued whole).
+    const LEN: usize = 128 << 20;
+    const PAUSE_AT: u64 = 8 << 20;
+    let data = seeded_bytes(LEN, 22);
+    let server = Arc::new(TestServer::start(
+        vec![("f.bin".into(), data.clone())],
+        ServerOptions::default(),
+    ));
+    let ahead = Arc::new(AtomicU64::new(0));
+    let (s, a) = (Arc::clone(&server), Arc::clone(&ahead));
+    let paused = std::sync::atomic::AtomicBool::new(false);
+    let control = Control::with_progress(move |written, _| {
+        if written >= PAUSE_AT && !paused.swap(true, Ordering::Relaxed) {
+            std::thread::sleep(Duration::from_secs(2));
+            a.store(s.counters().body_bytes_sent - written, Ordering::Relaxed);
+        }
+    });
+    let dir = Dir::new("slow-writer");
+    let dest = dir.file("out.bin");
+    download_with(&curl_loop(), &server.url("f.bin"), &dest, OPTIONS, &control)
+        .expect("the download succeeds");
+    assert!(std::fs::read(&dest).unwrap() == data);
+    let ahead = ahead.load(Ordering::Relaxed);
+    // Four connections, each with libcurl's 1 MiB buffer, a small queue and the sockets' own
+    // buffers: far below the 120 MiB still to come when the writer paused.
+    assert!(
+        ahead < 32 << 20,
+        "the server got {} MiB ahead of the writer",
+        ahead >> 20
+    );
 }

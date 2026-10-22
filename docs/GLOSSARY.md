@@ -27,11 +27,11 @@ Terms used across V2's documents, issues and code, in alphabetical order. Where 
 | **PO** | The Product Owner, who decides scope, architecture, dependencies, licensing, security, repository settings, merges and releases |
 | **Probe** | The first request of a download: a bounded range request whose bytes are kept. Its response decides between ranges, sequential ranges and a single stream, without a wasted full transfer. V2 doesn't use HEAD as proof of range support (report §5.1; #41) |
 | **Ranges lost** | The state when a server that accepted ranges stops honouring them. The download continues as one stream from the first uncovered byte (report §5.1) |
-| **Sidecar** | A helper program shipped with the app and started by it, such as a child-process engine (pending #38) |
+| **Sidecar** | A helper program shipped with the app and started by it, such as the child-process engine ([ADR-0012](decisions/0012-engine-child-process.md)) |
 | **Single stream** | Downloading over one connection from byte 0, used when the server ignores ranges (report §5.1) |
 | **Split (work-stealing)** | Halving the largest remaining lease so a free worker can take the second half. The old request stops at the new boundary (report §5.2; #42) |
 | **Strong validator** | An ETag without the `W/` prefix, or a Last-Modified date that RFC 9110 §8.8.2.2 treats as strong. Only a strong validator may be sent in `If-Range` (report §5.3; #45) |
-| **Transfer engine** | V2's own direct-download engine: probe, leases, checkpoints, integrity, retries and limits, over the libcurl layer, in `crates/velocity-transfer` (ADR-0002; process model pending #38) |
+| **Transfer engine** | V2's own direct-download engine: probe, leases, checkpoints, integrity, retries and limits, over the libcurl layer, in `crates/velocity-transfer` (ADR-0002), run as a child process (ADR-0012) |
 | **V1** | The original Velocity Download Manager (`Singlbase-Technologies-Limited/velocity-download-manager`). A reference for features and benchmarks only. Never modified from V2 work |
 | **V2** | This application. It replaces V1 under the name Velocity Download Manager, and runs beside it during development (#11) |
 | **Validator** | A response header that identifies one version of a file, either an ETag or Last-Modified. It is used to detect a changed object between requests (report §5.3). See also *strong validator* |

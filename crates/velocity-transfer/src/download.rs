@@ -28,6 +28,9 @@ use crate::probe::{check_segment, classify_probe, ProbeOutcome, SegmentRejection
 const SILENCE_LIMIT: Duration = Duration::from_secs(60);
 /// How often a waiting download checks whether it was cancelled.
 const CANCEL_CHECK: Duration = Duration::from_millis(100);
+/// How many fetch events each segment may have waiting for the writer. Each holds at most the
+/// libcurl layer's per-fetch buffer (1 MiB by default), so this bounds the queue's memory.
+const QUEUED_PER_SEGMENT: usize = 2;
 
 /// Called with the bytes written so far and the total, once known.
 type ProgressFn = Box<dyn Fn(u64, Option<u64>) + Send + Sync>;
@@ -290,7 +293,9 @@ fn fetch_segments(
     part: &mut PartFile,
     control: &Control,
 ) -> Result<bool, DownloadError> {
-    let (tx, rx) = mpsc::channel();
+    // Bounded, so a slow writer stops the forwarders, which stops libcurl: an unbounded channel
+    // here once queued a whole file in memory (#38).
+    let (tx, rx) = mpsc::sync_channel(QUEUED_PER_SEGMENT * segments.len());
     let mut rejections = Vec::new();
     for (index, &(a, b)) in segments.iter().enumerate() {
         let rejection = Arc::new(Mutex::new(None));
@@ -389,7 +394,7 @@ fn stream_gaps(
 }
 
 /// Moves a fetch's events to `tx`, tagged with `index`, on its own thread.
-fn forward(fetch: Fetch, index: usize, tx: mpsc::Sender<(usize, FetchEvent)>) {
+fn forward(fetch: Fetch, index: usize, tx: mpsc::SyncSender<(usize, FetchEvent)>) {
     thread::spawn(move || loop {
         let event = fetch
             .next_event(SILENCE_LIMIT)
