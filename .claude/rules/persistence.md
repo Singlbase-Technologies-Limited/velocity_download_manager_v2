@@ -1,6 +1,4 @@
 ---
-# pending: "crates/*/src/database/**/*" (#26)
-# pending: "crates/*/migrations/**/*" (#26)
 # pending: "crates/*/src/**/checkpoint*.rs" (#43)
 paths:
   - "crates/*/src/database/**/*"
