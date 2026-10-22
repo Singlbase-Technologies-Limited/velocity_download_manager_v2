@@ -262,7 +262,7 @@ export function checkBuildInfo(info, lock) {
 export function checkArtifacts(info, hashOf) {
   const problems = [];
   for (const a of info.artifacts ?? []) {
-    const parts = String(a.path).split(/[\/]/);
+    const parts = String(a.path).split(/[\\/]/);
     if (!a.path || a.path.startsWith('/') || /^[A-Za-z]:/.test(a.path) || parts.includes('..')) {
       problems.push(`${a.path} is not a path inside the build folder`);
       continue;

@@ -307,4 +307,8 @@ describe('checkArtifacts', () => {
     const escaping = { artifacts: [{ path: '../../../etc/passwd', sha256: 'a'.repeat(64) }] };
     expect(checkArtifacts(escaping, () => 'a'.repeat(64))).toEqual(['../../../etc/passwd is not a path inside the build folder']);
   });
+  it('refuses a Windows-style path that leaves the build folder', () => {
+    const escaping = { artifacts: [{ path: 'lib\\..\\..\\secret.lib', sha256: 'a'.repeat(64) }] };
+    expect(checkArtifacts(escaping, () => 'a'.repeat(64))).toEqual(['lib\\..\\..\\secret.lib is not a path inside the build folder']);
+  });
 });
