@@ -19,4 +19,4 @@ The design is in [docs/ARCHITECTURE.md](../../docs/ARCHITECTURE.md) and section 
 - **Completion:** a download is Completed only after coverage, length and, when a trusted hash exists, the whole-file hash are proven. The file is then renamed without replacing an existing one. "Verified" is shown only when a hash was checked (#46).
 - **Memory:** buffers and queues are bounded. When the writer queue is full, the transfer pauses; nothing grows without limit (#49).
 - **Starting values:** values the report calls hypotheses (segment sizes, ramp-up thresholds, timeouts) are named constants with a comment pointing to the measurement that set them. They are never presented as requirements.
-- **Performance claims:** a speed or resource claim needs a run of the benchmark harness (#20) with its results attached.
+- **Performance claims:** a speed or resource claim needs a measured run with its results attached. There's no benchmark harness yet, and no aria2 comparison ([ADR-0009](../../docs/decisions/0009-no-aria2-benchmark-gate.md)), so until V2's own benchmarks exist (#77), make no such claim.
