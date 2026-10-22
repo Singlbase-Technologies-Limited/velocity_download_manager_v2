@@ -293,9 +293,15 @@ fn write_body(
                 thread::sleep(wait);
             }
         }
-        out.write_all(chunk)?;
-        sent += chunk.len() as u64;
+        // Counted before the write, so a client that has read these bytes always sees them
+        // counted; counting after let a test read the counter first (#38). A failed write takes
+        // its chunk back out.
         counters.lock().unwrap().body_bytes_sent += chunk.len() as u64;
+        if let Err(e) = out.write_all(chunk) {
+            counters.lock().unwrap().body_bytes_sent -= chunk.len() as u64;
+            return Err(e);
+        }
+        sent += chunk.len() as u64;
     }
     out.flush()
 }
