@@ -1,7 +1,8 @@
-//! The prototype downloader (#37): one file over HTTP(S), with a probe that is also the first
-//! segment, static parallel segments when ranges work, and a finish that never replaces an existing
-//! file. What it doesn't do yet is the rest of R5: retries (#48), checkpoints and resume (#43),
-//! validators (#45), whole-file hashes (#46) and adaptive connections (#47).
+//! The downloader (#37, #41): one file over HTTP(S), with a probe that is also the first segment
+//! and decides between ranges, sequential ranges and one stream (docs/ENGINE_INTERNALS.md), static
+//! parallel segments when ranges work, and a finish that never replaces an existing file. What it
+//! doesn't do yet is the rest of R5: the lease scheduler (#42), retries (#48), checkpoints and
+//! resume (#43), validators (#45), whole-file hashes (#46) and adaptive connections (#47).
 //!
 //! The byte rules (`.claude/rules/transfer-engine.md`, research report sections 5.1 and 5.2):
 //! - a byte is accepted only from the segment that owns it, at its own offset, once;
@@ -21,7 +22,10 @@ use std::time::{Duration, Instant};
 use velocity_core::domain::{FailureClass, TransferError};
 use velocity_curl::{CurlLoop, Fetch, FetchError, FetchEvent, FetchRequest, Gate, ResponseHead};
 
-use crate::probe::{check_segment, classify_probe, ProbeOutcome, SegmentRejection};
+use crate::probe::{
+    check_continuation, check_segment, classify_probe, is_multipart, Continuation, ProbeOutcome,
+    SegmentRejection,
+};
 
 /// How long a fetch may stay silent before the prototype gives up on it. #48 replaces this with
 /// stall detection.
@@ -31,6 +35,9 @@ const CANCEL_CHECK: Duration = Duration::from_millis(100);
 /// How many fetch events each segment may have waiting for the writer. Each holds at most the
 /// libcurl layer's per-fetch buffer (1 MiB by default), so this bounds the queue's memory.
 const QUEUED_PER_SEGMENT: usize = 2;
+/// Anomalous answers a download tolerates before ranges stop for it, and the rest comes as one
+/// stream (report section 5.1, step 7: "two consecutive anomalies").
+const MAX_ANOMALIES: u32 = 2;
 
 /// Called with the bytes written so far and the total, once known.
 type ProgressFn = Box<dyn Fn(u64, Option<u64>) + Send + Sync>;
@@ -81,9 +88,13 @@ pub struct DownloadOptions {
 pub enum Mode {
     /// Ranges worked: the probe plus parallel segments.
     Ranges,
-    /// Ranges worked for the probe, then a later range came back as `200`: the rest was fetched as
-    /// one stream, writing only the missing bytes.
+    /// Ranges worked for the probe, then stopped: a later range came back as `200`, or the server
+    /// sent two anomalous answers. The rest was fetched as one stream, writing only the missing
+    /// bytes.
     RangesLost,
+    /// The server honours ranges but gives no total (`bytes 0-b/*`): the rest was fetched as one
+    /// open range after the probe, with no parallel segments.
+    SequentialRanges,
     /// The server ignored the probe's range: the probe's response was the whole file.
     SingleStream,
     /// A `416` for an empty file.
@@ -166,55 +177,28 @@ pub fn download_with(
     };
 
     let probe_end = options.probe_bytes.max(1) - 1;
-    let probe_verdict = Arc::new(Mutex::new(None));
-    let verdict = Arc::clone(&probe_verdict);
-    let probe = lp.fetch(
-        FetchRequest::range(url.to_owned(), 0, Some(probe_end)),
-        move |head: &ResponseHead| {
-            let result = classify_probe(head, probe_end);
-            let gate = match &result {
-                Ok(_) => Gate::Accept,
-                Err(e) => Gate::Abort(e.message.clone()),
-            };
-            *verdict.lock().expect("the probe verdict lock") = Some(result);
-            gate
-        },
-    );
-    // The probe's bytes start at 0; how far they may go depends on its outcome, decided before the
-    // first byte (the gate ran in the header callback).
-    let mut cursor = 0u64;
-    let probe_done = drain(&probe, control, |chunk| {
-        let (limit, total) = match probe_verdict
-            .lock()
-            .expect("the probe verdict lock")
-            .as_ref()
-        {
-            Some(Ok(ProbeOutcome::RangesOk {
-                received_end,
-                total,
-            })) => (Some(received_end + 1), Some(*total)),
-            Some(Ok(ProbeOutcome::SequentialRanges { received_end })) => {
-                (Some(received_end + 1), None)
+    let mut fetches = 1;
+    let request = FetchRequest::range(url.to_owned(), 0, Some(probe_end));
+    let (outcome, cursor) = match probe(lp, request, probe_end, &mut guard, control)? {
+        Probed::Outcome(outcome, cursor) => (outcome, cursor),
+        // Report 5.1: a multipart answer to one range is retried once without Range.
+        Probed::Multipart => {
+            fetches += 1;
+            let request = FetchRequest::get(url.to_owned());
+            match probe(lp, request, probe_end, &mut guard, control)? {
+                Probed::Outcome(outcome, cursor) => (outcome, cursor),
+                Probed::Multipart => {
+                    return Err(TransferError::new(
+                        FailureClass::Permanent,
+                        Some(206),
+                        "the server answered multipart/byteranges even without a Range",
+                    )
+                    .into())
+                }
             }
-            Some(Ok(ProbeOutcome::SingleStream { length })) => (None, *length),
-            _ => (None, None),
-        };
-        guard.accept(&mut cursor, limit, chunk)?;
-        control.report(guard.written, total);
-        Ok(())
-    })?;
-    let outcome = match probe_verdict.lock().expect("the probe verdict lock").take() {
-        Some(Ok(o)) => o,
-        Some(Err(e)) => return Err(e.into()),
-        None => {
-            return Err(fetch_failure(probe_done.err().unwrap_or(FetchError::LoopStopped)).into())
         }
     };
-    if let Err(e) = probe_done {
-        return Err(fetch_failure(e).into());
-    }
 
-    let mut fetches = 1;
     let (mode, total) = match outcome {
         ProbeOutcome::Empty => (Mode::Empty, 0),
         ProbeOutcome::SingleStream { length } => {
@@ -228,23 +212,28 @@ pub fn download_with(
             }
             (Mode::SingleStream, cursor)
         }
-        ProbeOutcome::SequentialRanges { .. } => {
-            return Err(TransferError::new(FailureClass::Permanent, Some(206), "the server doesn't give the file's total size; the prototype can't continue such a download yet (#41)").into());
+        ProbeOutcome::SequentialRanges { received_end } => {
+            let (n, total, mode) =
+                fetch_sequential(lp, url, received_end + 1, &mut guard, control)?;
+            fetches += n;
+            (mode, total)
         }
         ProbeOutcome::RangesOk {
             received_end,
             total,
         } => {
-            let segments = split(received_end + 1, total, options.connections.max(1));
-            fetches += segments.len() as u32;
-            let lost = fetch_segments(lp, url, total, &segments, &mut guard, control)?;
-            if lost {
-                fetches += 1;
-                stream_gaps(lp, url, total, &mut guard, control)?;
-                (Mode::RangesLost, total)
-            } else {
-                (Mode::Ranges, total)
-            }
+            let connections = options.connections.max(1);
+            let (n, mode) = fetch_ranges(
+                lp,
+                url,
+                received_end + 1,
+                total,
+                connections,
+                &mut guard,
+                control,
+            )?;
+            fetches += n;
+            (mode, total)
         }
     };
     let (written, wasted) = (guard.written, guard.wasted);
@@ -284,7 +273,131 @@ fn split(start: u64, total: u64, n: u32) -> Vec<(u64, u64)> {
     out
 }
 
-/// Runs every segment at once. Returns whether any segment found that ranges were lost (a `200`).
+/// What the probe found.
+enum Probed {
+    /// Its outcome, and how far its bytes reached.
+    Outcome(ProbeOutcome, u64),
+    /// A `multipart/byteranges` answer, aborted before any byte was written.
+    Multipart,
+}
+
+/// Runs the probe, or its retry without `Range`, and writes the bytes it may keep. The outcome is
+/// decided in the header callback, before the first byte.
+fn probe(
+    lp: &CurlLoop,
+    request: FetchRequest,
+    probe_end: u64,
+    part: &mut PartFile,
+    control: &Control,
+) -> Result<Probed, DownloadError> {
+    let probe_verdict = Arc::new(Mutex::new(None));
+    let multipart = Arc::new(AtomicBool::new(false));
+    let (verdict, saw_multipart) = (Arc::clone(&probe_verdict), Arc::clone(&multipart));
+    let fetch = lp.fetch(request, move |head: &ResponseHead| {
+        if is_multipart(head) {
+            saw_multipart.store(true, Ordering::Release);
+            return Gate::Abort("a multipart/byteranges answer to one range".to_owned());
+        }
+        let result = classify_probe(head, probe_end);
+        let gate = match &result {
+            Ok(_) => Gate::Accept,
+            Err(e) => Gate::Abort(e.message.clone()),
+        };
+        *verdict.lock().expect("the probe verdict lock") = Some(result);
+        gate
+    });
+    // The probe's bytes start at 0; how far they may go depends on its outcome.
+    let mut cursor = 0u64;
+    let probe_done = drain(&fetch, control, |chunk| {
+        let (limit, total) = match probe_verdict
+            .lock()
+            .expect("the probe verdict lock")
+            .as_ref()
+        {
+            Some(Ok(ProbeOutcome::RangesOk {
+                received_end,
+                total,
+            })) => (Some(received_end + 1), Some(*total)),
+            Some(Ok(ProbeOutcome::SequentialRanges { received_end })) => {
+                (Some(received_end + 1), None)
+            }
+            Some(Ok(ProbeOutcome::SingleStream { length })) => (None, *length),
+            _ => (None, None),
+        };
+        part.accept(&mut cursor, limit, chunk)?;
+        control.report(part.written, total);
+        Ok(())
+    })?;
+    if multipart.load(Ordering::Acquire) {
+        return Ok(Probed::Multipart);
+    }
+    let outcome = match probe_verdict.lock().expect("the probe verdict lock").take() {
+        Some(Ok(o)) => o,
+        Some(Err(e)) => return Err(e.into()),
+        None => {
+            return Err(fetch_failure(probe_done.err().unwrap_or(FetchError::LoopStopped)).into())
+        }
+    };
+    if let Err(e) = probe_done {
+        return Err(fetch_failure(e).into());
+    }
+    Ok(Probed::Outcome(outcome, cursor))
+}
+
+/// Fetches `start..total` as parallel segments. A segment that ends short has its remainder
+/// requested again. A `200` for a range, or a second anomaly, fetches the rest as one stream that
+/// writes only the missing bytes (report section 5.1, steps 4, 6 and 7). Returns the fetches made
+/// and the mode.
+fn fetch_ranges(
+    lp: &CurlLoop,
+    url: &str,
+    start: u64,
+    total: u64,
+    connections: u32,
+    part: &mut PartFile,
+    control: &Control,
+) -> Result<(u32, Mode), DownloadError> {
+    let mut fetches = 0;
+    let mut anomalies = 0;
+    let mut segments = split(start, total, connections);
+    loop {
+        fetches += segments.len() as u32;
+        let before = part.written;
+        let round = fetch_segments(lp, url, total, &segments, part, control)?;
+        anomalies += round.anomalies;
+        let gaps = part.coverage.gaps(0, total);
+        if gaps.is_empty() {
+            return Ok((fetches, Mode::Ranges));
+        }
+        // Every round must make progress; one that delivered nothing is an anomaly of its own.
+        if part.written == before && round.anomalies == 0 {
+            anomalies += 1;
+        }
+        if round.ranges_ignored || anomalies >= MAX_ANOMALIES {
+            fetches += 1;
+            stream_gaps(lp, url, Some(total), part, control)?;
+            return Ok((fetches, Mode::RangesLost));
+        }
+        // The missing parts, at most one per connection; the rest wait for the next round.
+        segments = gaps
+            .into_iter()
+            .take(connections as usize)
+            .map(|(a, b)| (a, b - 1))
+            .collect();
+    }
+}
+
+/// What one round of segments found, besides the bytes it wrote.
+#[derive(Default)]
+struct Round {
+    /// A segment got a `200`: the server stopped honouring ranges.
+    ranges_ignored: bool,
+    /// Answers that contradicted their request, overran it, or ended before it did.
+    anomalies: u32,
+}
+
+/// Runs every segment at once. A segment's bytes are accepted only up to the end its own answer
+/// gave; anything past it is dropped and counted as wasted.
 fn fetch_segments(
     lp: &CurlLoop,
     url: &str,
@@ -292,34 +405,47 @@ fn fetch_segments(
     segments: &[(u64, u64)],
     part: &mut PartFile,
     control: &Control,
-) -> Result<bool, DownloadError> {
+) -> Result<Round, DownloadError> {
     // Bounded, so a slow writer stops the forwarders, which stops libcurl: an unbounded channel
     // here once queued a whole file in memory (#38).
     let (tx, rx) = mpsc::sync_channel(QUEUED_PER_SEGMENT * segments.len());
-    let mut rejections = Vec::new();
+    let mut verdicts = Vec::new();
     for (index, &(a, b)) in segments.iter().enumerate() {
-        let rejection = Arc::new(Mutex::new(None));
-        rejections.push(Arc::clone(&rejection));
+        let verdict = Arc::new(Mutex::new(None));
+        verdicts.push(Arc::clone(&verdict));
         let fetch = lp.fetch(
             FetchRequest::range(url.to_owned(), a, Some(b)),
-            move |head: &ResponseHead| match check_segment(head, a, b, total) {
-                Ok(_) => Gate::Accept,
-                Err(r) => {
-                    let reason = match &r {
-                        SegmentRejection::RangesIgnored => {
-                            "a 200 for a range after byte 0".to_owned()
-                        }
-                        SegmentRejection::Invalid(e) => e.message.clone(),
-                    };
-                    *rejection.lock().expect("the segment rejection lock") = Some(r);
-                    Gate::Abort(reason)
-                }
+            move |head: &ResponseHead| {
+                let result = check_segment(head, a, b, total);
+                let gate = match &result {
+                    Ok(_) => Gate::Accept,
+                    Err(SegmentRejection::RangesIgnored) => {
+                        Gate::Abort("a 200 for a range after byte 0".to_owned())
+                    }
+                    Err(SegmentRejection::Invalid(e) | SegmentRejection::Anomaly(e)) => {
+                        Gate::Abort(e.message.clone())
+                    }
+                };
+                *verdict.lock().expect("the segment verdict lock") = Some(result);
+                gate
             },
         );
         forward(fetch, index, tx.clone());
     }
     drop(tx);
+    let answered_end = |index: usize| -> u64 {
+        match verdicts[index]
+            .lock()
+            .expect("the segment verdict lock")
+            .as_ref()
+        {
+            Some(Ok(end)) => *end,
+            _ => segments[index].1,
+        }
+    };
     let mut cursors: Vec<u64> = segments.iter().map(|&(a, _)| a).collect();
+    let mut overran = vec![false; segments.len()];
+    let mut round = Round::default();
     let mut failure = None;
     loop {
         if control.is_cancelled() {
@@ -334,20 +460,35 @@ fn fetch_segments(
         match event {
             FetchEvent::Head(_) => {}
             FetchEvent::Data(chunk) => {
-                let limit = Some(segments[index].1 + 1);
-                part.accept(&mut cursors[index], limit, &chunk)?;
+                let limit = Some(answered_end(index) + 1);
+                let excess = part.accept(&mut cursors[index], limit, &chunk)?;
+                if excess > 0 && !overran[index] {
+                    overran[index] = true;
+                    round.anomalies += 1;
+                }
                 control.report(part.written, Some(total));
             }
-            FetchEvent::Done(Ok(())) => {}
-            FetchEvent::Done(Err(e)) => {
-                let rejected = rejections[index]
+            FetchEvent::Done(result) => {
+                let verdict = verdicts[index]
                     .lock()
-                    .expect("the segment rejection lock")
+                    .expect("the segment verdict lock")
                     .take();
-                match rejected {
-                    Some(SegmentRejection::RangesIgnored) => {}
-                    Some(SegmentRejection::Invalid(t)) => failure = failure.or(Some(t)),
-                    None => failure = failure.or(Some(fetch_failure(e))),
+                match (verdict, result) {
+                    (Some(Err(SegmentRejection::RangesIgnored)), _) => round.ranges_ignored = true,
+                    (Some(Err(SegmentRejection::Anomaly(_))), _) => round.anomalies += 1,
+                    (Some(Err(SegmentRejection::Invalid(t))), _) => failure = failure.or(Some(t)),
+                    // Accepted, then cut off: the rest of it is requested again.
+                    (Some(Ok(_)), Err(_)) => round.anomalies += 1,
+                    // Complete, but shorter than its own Content-Range (a chunked body that
+                    // ended early).
+                    (Some(Ok(end)), Ok(())) => {
+                        if cursors[index] <= end {
+                            round.anomalies += 1;
+                        }
+                    }
+                    // Never answered: the connection itself failed. Retries are #48.
+                    (None, Err(e)) => failure = failure.or(Some(fetch_failure(e))),
+                    (None, Ok(())) => {}
                 }
             }
         }
@@ -355,42 +496,142 @@ fn fetch_segments(
     if let Some(e) = failure {
         return Err(e.into());
     }
-    // A segment may also end short (a 206 with fewer bytes than asked for).
-    Ok(!part.coverage.covers(0, total))
+    Ok(round)
 }
 
-/// Fetches the whole file as one stream and writes only the bytes not yet covered.
+/// Fetches the rest of a file whose total the server doesn't give: one open range at a time from
+/// the first missing byte, until a `416` says the file ends there. Returns the fetches made, the
+/// file's length and the mode.
+fn fetch_sequential(
+    lp: &CurlLoop,
+    url: &str,
+    start: u64,
+    part: &mut PartFile,
+    control: &Control,
+) -> Result<(u32, u64, Mode), DownloadError> {
+    let mut fetches = 0;
+    let mut anomalies = 0;
+    let mut cursor = start;
+    loop {
+        fetches += 1;
+        let from = cursor;
+        let verdict = Arc::new(Mutex::new(None));
+        let v = Arc::clone(&verdict);
+        let fetch = lp.fetch(
+            FetchRequest::range(url.to_owned(), from, None),
+            move |head: &ResponseHead| {
+                let result = check_continuation(head, from);
+                let gate = match &result {
+                    Ok(_) => Gate::Accept,
+                    Err(SegmentRejection::RangesIgnored) => {
+                        Gate::Abort("a 200 for a range after byte 0".to_owned())
+                    }
+                    Err(SegmentRejection::Invalid(e) | SegmentRejection::Anomaly(e)) => {
+                        Gate::Abort(e.message.clone())
+                    }
+                };
+                *v.lock().expect("the continuation verdict lock") = Some(result);
+                gate
+            },
+        );
+        let before = part.written;
+        let mut overran = false;
+        let done = drain(&fetch, control, |chunk| {
+            let limit = match verdict
+                .lock()
+                .expect("the continuation verdict lock")
+                .as_ref()
+            {
+                Some(Ok(Continuation::More { end, .. })) => end + 1,
+                _ => from,
+            };
+            overran |= part.accept(&mut cursor, Some(limit), chunk)? > 0;
+            control.report(part.written, None);
+            Ok(())
+        })?;
+        let result = verdict
+            .lock()
+            .expect("the continuation verdict lock")
+            .take();
+        match result {
+            Some(Ok(Continuation::End)) => return Ok((fetches, cursor, Mode::SequentialRanges)),
+            Some(Ok(Continuation::More { end, total })) => {
+                if total == Some(cursor) {
+                    return Ok((fetches, cursor, Mode::SequentialRanges));
+                }
+                if done.is_err() || cursor <= end || overran {
+                    anomalies += 1;
+                }
+            }
+            Some(Err(SegmentRejection::RangesIgnored)) => {
+                fetches += 1;
+                let length = stream_gaps(lp, url, None, part, control)?;
+                return Ok((fetches, length, Mode::RangesLost));
+            }
+            Some(Err(SegmentRejection::Anomaly(_))) => anomalies += 1,
+            Some(Err(SegmentRejection::Invalid(t))) => return Err(t.into()),
+            None => return Err(fetch_failure(done.err().unwrap_or(FetchError::LoopStopped)).into()),
+        }
+        if part.written == before {
+            anomalies += 1;
+        }
+        if anomalies >= MAX_ANOMALIES {
+            fetches += 1;
+            let length = stream_gaps(lp, url, None, part, control)?;
+            return Ok((fetches, length, Mode::RangesLost));
+        }
+    }
+}
+
+/// Fetches the whole file as one stream and writes only the bytes not yet covered. With a known
+/// `total`, the stream must be that long. Returns the stream's length.
 fn stream_gaps(
     lp: &CurlLoop,
     url: &str,
-    total: u64,
+    total: Option<u64>,
     part: &mut PartFile,
     control: &Control,
-) -> Result<(), DownloadError> {
+) -> Result<u64, DownloadError> {
     let refusal = Arc::new(Mutex::new(None));
     let r = Arc::clone(&refusal);
-    let fetch = lp.fetch(FetchRequest::get(url.to_owned()), move |head: &ResponseHead| {
-        let length = head.header("content-length").and_then(|v| v.trim().parse::<u64>().ok());
-        if head.status == 200 && length == Some(total) && head.header("content-encoding").is_none_or(|e| e.trim() == "identity") {
-            Gate::Accept
-        } else {
-            let e = TransferError::new(FailureClass::Permanent, Some(head.status), &format!("the single stream isn't the same {total}-byte file (status {}, length {length:?})", head.status));
-            let msg = e.message.clone();
-            *r.lock().expect("the refusal lock") = Some(e);
-            Gate::Abort(msg)
-        }
-    });
+    let fetch = lp.fetch(
+        FetchRequest::get(url.to_owned()),
+        move |head: &ResponseHead| {
+            let length = head
+                .header("content-length")
+                .and_then(|v| v.trim().parse::<u64>().ok());
+            let identity = head
+                .header("content-encoding")
+                .is_none_or(|e| e.trim() == "identity");
+            if head.status == 200 && identity && (total.is_none() || length == total) {
+                Gate::Accept
+            } else {
+                let e = TransferError::new(
+                    FailureClass::Permanent,
+                    Some(head.status),
+                    &format!(
+                        "the single stream isn't the same file (status {}, length {length:?}, expected {total:?})",
+                        head.status
+                    ),
+                );
+                let msg = e.message.clone();
+                *r.lock().expect("the refusal lock") = Some(e);
+                Gate::Abort(msg)
+            }
+        },
+    );
     let mut offset = 0u64;
     let done = drain(&fetch, control, |chunk| {
         part.accept_gaps(offset, chunk)?;
         offset += chunk.len() as u64;
-        control.report(part.written, Some(total));
+        control.report(part.written, total);
         Ok(())
     })?;
     if let Some(e) = refusal.lock().expect("the refusal lock").take() {
         return Err(e.into());
     }
-    done.map_err(|e| DownloadError::Transfer(fetch_failure(e)))
+    done.map_err(|e| DownloadError::Transfer(fetch_failure(e)))?;
+    Ok(offset)
 }
 
 /// Moves a fetch's events to `tx`, tagged with `index`, on its own thread.
@@ -524,22 +765,23 @@ struct PartFile {
 
 impl PartFile {
     /// Writes `chunk` at `*cursor`, up to the exclusive `limit`, and advances the cursor. Bytes past
-    /// the limit, or already covered, are counted as wasted.
+    /// the limit, or already covered, are counted as wasted. Returns how many were past the limit.
     fn accept(
         &mut self,
         cursor: &mut u64,
         limit: Option<u64>,
         chunk: &[u8],
-    ) -> Result<(), DownloadError> {
+    ) -> Result<u64, DownloadError> {
         let start = *cursor;
         let mut take = chunk.len() as u64;
         if let Some(limit) = limit {
             take = take.min(limit.saturating_sub(start));
         }
         self.accept_gaps(start, &chunk[..take as usize])?;
-        self.wasted += chunk.len() as u64 - take;
+        let excess = chunk.len() as u64 - take;
+        self.wasted += excess;
         *cursor += take;
-        Ok(())
+        Ok(excess)
     }
 
     /// Writes the parts of `chunk` (which starts at `offset`) that aren't covered yet.
