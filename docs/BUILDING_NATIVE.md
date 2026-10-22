@@ -29,6 +29,8 @@ Both work on the Rust host target. The output goes to `target/native/` (ignored 
 | `target/native/<target>/prefix/` | The built static libraries (`lib/`), headers (`include/`) and the curl tool (`bin/`) |
 | `target/native/<target>/build-info.json` | The [build identity record](#build-infojson) |
 
+**Work folder:** Linux compiles in `target/native/<target>/build/`. Windows compiles in a new temporary folder (`%TEMP%\v2n-…`), because MSVC fails under a deep checkout path: a clean clone 140 characters deep hit its 260-character limit (C1083, "Cannot open compiler generated file"). Both folders are deleted after the build, whether it passed or failed.
+
 **Reuse:** a finished build is reused while the lock file and the scripts in `scripts/native/` are unchanged, and while every recorded artefact still has its recorded SHA-256. `node scripts/native/build.mjs --force` rebuilds anyway.
 
 **Measured times** (cold, 2026-10-22):

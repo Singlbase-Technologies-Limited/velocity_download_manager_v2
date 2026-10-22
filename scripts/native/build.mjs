@@ -13,8 +13,8 @@
 // and its artefacts still match their recorded SHA-256; --force rebuilds anyway. Every command
 // runs with an argument list, never through a shell.
 import { createHash } from 'node:crypto';
-import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
-import { availableParallelism } from 'node:os';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { availableParallelism, tmpdir } from 'node:os';
 import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
@@ -256,11 +256,22 @@ async function main() {
     console.log(`native build for ${target} is up to date: ${join(outDir, 'build-info.json')}`);
     return;
   }
-  const work = join(outDir, 'build');
-  cleanOwnedDir(work);
+  // On Windows, compiling under a deep checkout breaks MSVC's 260-character path limit (C1083
+  // "Cannot open compiler generated file", seen in a clean clone 140 characters deep), so the
+  // sources are built in a short temporary folder this run creates and always deletes.
+  const windows = target === 'x86_64-pc-windows-msvc';
+  const work = windows ? mkdtempSync(join(tmpdir(), 'v2n-')) : join(outDir, 'build');
+  if (!windows) cleanOwnedDir(work);
   cleanOwnedDir(prefix);
   rmSync(join(outDir, 'build-info.json'), { force: true });
+  try {
+    buildAndRecord({ target, lock, files, signatures, work, prefix, outDir, key });
+  } finally {
+    rmSync(work, { recursive: true, force: true });
+  }
+}
 
+function buildAndRecord({ target, lock, files, signatures, work, prefix, outDir, key }) {
   let built;
   if (target === 'x86_64-pc-windows-msvc') built = buildWindows(files, work, prefix);
   else if (target === 'x86_64-unknown-linux-gnu') built = buildLinux(files, work, prefix);
@@ -284,7 +295,6 @@ async function main() {
   const infoProblems = checkBuildInfo(info, lock);
   if (infoProblems.length) throw new Error(`build-info.json is incomplete:\n- ${infoProblems.join('\n- ')}`);
   writeFileSync(join(outDir, 'build-info.json'), `${JSON.stringify(info, null, 2)}\n`);
-  rmSync(work, { recursive: true, force: true });
   console.log(`native build for ${target} finished: ${join(outDir, 'build-info.json')}`);
   console.log(`libcurl ${linked.libcurl}, ${linked.tls}, ${Object.entries(linked.libraries).map(([n, v]) => `${n} ${v}`).join(', ')}`);
 }
