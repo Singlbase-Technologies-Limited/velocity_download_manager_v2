@@ -1,5 +1,6 @@
 ---
-# Decided in ADR-0002 (#33). crates/velocity-curl was created by #35; crates/velocity-transfer comes with #37.
+# Decided in ADR-0002 (#33).
+# pending: "crates/velocity-transfer/**/*" (#37)
 paths:
   - "crates/velocity-transfer/**/*"
   - "crates/velocity-curl/**/*"

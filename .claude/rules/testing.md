@@ -1,5 +1,5 @@
 ---
-# Integration-test directories under crates/ and src-tauri/ are created by the first issue that needs them (#15).
+# pending: "src-tauri/tests/**/*" (#58)
 paths:
   - "**/*.test.{ts,tsx,mjs}"
   - "crates/*/tests/**/*"

@@ -28,6 +28,7 @@ Every document in `docs/` is listed here. A new document is added to this map in
 | [BUILDING_NATIVE.md](BUILDING_NATIVE.md) | Build the native libraries (libcurl, nghttp2, zlib, OpenSSL) from verified sources, read `build-info.json`, and update a pin |
 | [CI.md](CI.md) | See what CI runs on each event, how jobs are selected, cached and secured, and the monthly cost model |
 | [CI_DIAGNOSTICS.md](CI_DIAGNOSTICS.md) | Read a failed CI run: the statuses, the `ci-diagnostics` report, INFRA versus FAIL, and the re-run policy |
+| [AGENT_GUIDANCE.md](AGENT_GUIDANCE.md) | See how AGENTS.md, CLAUDE.md, rules and skills are organised, what `pnpm check:guidance` checks, and the monthly prompt audit |
 | [AI_AGENT_ACCOUNT.md](AI_AGENT_ACCOUNT.md) | Find out which GitHub account an AI agent uses, and how to check it |
 
 ## Decisions and research

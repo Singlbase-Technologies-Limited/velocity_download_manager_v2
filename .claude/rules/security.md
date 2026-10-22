@@ -1,5 +1,5 @@
 ---
-# browser-extension/ is created in #64.
+# pending: "browser-extension/**/*" (#64)
 paths:
   - "crates/**/*"
   - "src-tauri/**/*"
