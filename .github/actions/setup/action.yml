@@ -37,7 +37,7 @@ runs:
       run: |
         packages=(libwebkit2gtk-4.1-dev build-essential file libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev)
         install() {
-          sudo timeout 90 apt-get update && sudo timeout 300 apt-get install -y --no-install-recommends "${packages[@]}"
+          sudo timeout 90 apt-get update && sudo timeout 180 apt-get install -y --no-install-recommends "${packages[@]}"
         }
         if ! install; then
           echo "::warning title=Ubuntu mirror::apt-get failed or stalled on the runner's first mirror; retrying without azure.archive.ubuntu.com (#135)"
