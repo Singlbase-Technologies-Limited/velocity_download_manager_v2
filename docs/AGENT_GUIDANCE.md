@@ -61,6 +61,6 @@ Claude Code's `/doctor prompt-audit` reads the guidance for problems no structur
 
 | Date | Claude Code | Result | Issue |
 |---|---|---|---|
-| 2026-10-22 | 2.1.308 | No old-model patterns. 4 out-of-date statements and 2 wording conflicts in skills, rules and CLAUDE.md. The rule comments it flagged were replaced by pending notes in #88; the rest is in the issue | #130 |
+| 2026-10-22 | 2.1.308 | No old-model patterns. 4 out-of-date statements and 2 wording conflicts in skills, rules and CLAUDE.md. The rule comments it flagged were replaced by pending notes in #88, and #130 fixed the other four (finding 6 kept, PO decision) | #130 |
 
 In `claude -p`, the audit couldn't read `~/.claude/` or the bundled audit checklist (no permission prompt in that mode), so the user-level files were not audited.
