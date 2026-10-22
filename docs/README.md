@@ -11,6 +11,7 @@ Every document in `docs/` is listed here. A new document is added to this map in
 | [PARITY.md](PARITY.md) | See every V1 feature (commands, settings, views, engine behaviours, extension, persistence) with its V1 code and tests, V2 disposition and V2 issue |
 | [ARCHITECTURE.md](ARCHITECTURE.md) | Understand the components, who owns which state, and the open architecture decisions |
 | [GLOSSARY.md](GLOSSARY.md) | Look up a term (lease, coverage, validator, checkpoint, capability and more) |
+| [COEXISTENCE.md](COEXISTENCE.md) | See how V2 stays separate from V1: identity, data folder, single instance, IPC names |
 | [CONTRACTS.md](CONTRACTS.md) | Change a type shared by the UI and Rust: the domain types, contract fixtures and the contract version |
 | [CONVENTIONS.md](CONVENTIONS.md) | Name Rust and TypeScript code, files, tests, commands, events and error codes |
 

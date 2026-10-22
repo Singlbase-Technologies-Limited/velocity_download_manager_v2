@@ -11,6 +11,8 @@ rust-version = "1.90"
 [workspace.dependencies]
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+# Per-OS data directory (#27, PO-approved 2026-10-22); also used by Tauri itself.
+dirs = "7.0.0"
 
 # Development builds: optimise dependencies once so the app runs at a usable
 # speed, while workspace crates stay unoptimised for fast incremental rebuilds.

@@ -15,6 +15,8 @@ tauri-build = { version = "2", features = [] }
 
 [dependencies]
 tauri = { version = "2", features = [] }
+# Pinned exactly: 2.5.2 approved by the PO on 2026-10-22 (#27).
+tauri-plugin-single-instance = "=2.5.2"
 serde.workspace = true
 serde_json.workspace = true
 velocity-core = { path = "../crates/velocity-core" }

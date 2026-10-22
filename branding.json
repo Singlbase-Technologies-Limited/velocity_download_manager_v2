@@ -1,0 +1,10 @@
+{
+  "productName": "Velocity Download Manager (dev)",
+  "releaseProductName": "Velocity Download Manager",
+  "identifier": "dev.velocity.downloadmanager.v2",
+  "releaseIdentifier": "com.velocity.downloadmanager.v2",
+  "nativeHostName": "dev.velocity.download_manager_v2",
+  "releaseNativeHostName": "com.velocity.download_manager_v2",
+  "firefoxExtensionId": "velocity-download-manager-v2@velocity.local",
+  "chromeExtensionIds": []
+}
