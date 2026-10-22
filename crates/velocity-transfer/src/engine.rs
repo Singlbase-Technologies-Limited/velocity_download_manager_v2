@@ -22,7 +22,7 @@ use velocity_core::transfer::{
 };
 use velocity_curl::{CurlLoop, Libcurl, LoopOptions};
 
-use crate::download::{download_with, Control, DownloadError, DownloadOptions};
+use crate::download::{download_with, Cadence, Control, DownloadError, DownloadOptions};
 use crate::scheduler::Sizes;
 
 /// The most connections one transfer may use. A starting value for #47 to tune, not a requirement.
@@ -330,6 +330,7 @@ fn run(
         connections,
         probe_bytes: PROBE_BYTES,
         leases: Sizes::DEFAULT,
+        checkpoints: Cadence::DEFAULT,
     };
     let result = download_with(&shared.curl, url, &destination, options, control);
     update(shared, id, |s| {
@@ -343,7 +344,8 @@ fn run(
                 s.wasted_bytes = report.wasted_bytes;
             }
             Err(DownloadError::Cancelled) => s.status = DownloadStatus::Removed,
-            Err(DownloadError::Transfer(e)) => {
+            Err(DownloadError::Paused) => s.status = DownloadStatus::Paused,
+            Err(DownloadError::Transfer(e) | DownloadError::Changed(e)) => {
                 s.status = DownloadStatus::Failed;
                 s.error = Some(e);
             }

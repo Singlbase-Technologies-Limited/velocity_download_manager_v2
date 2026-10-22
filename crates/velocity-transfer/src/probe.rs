@@ -28,8 +28,11 @@ pub enum SegmentRejection {
     /// disagrees with it, a multipart body, an unrequested encoding). Worth one more request; a
     /// second anomaly on the same download ends ranges for it (report section 5.1, step 7).
     Anomaly(TransferError),
-    /// An error status, or a different total, which means a different object (#45). Not retried
-    /// here; retries are #48.
+    /// A different total, or a `416` for a range inside the old total: the file on the server
+    /// isn't the one this download started (report section 5.3). Its old bytes are never mixed with
+    /// new ones; a resumed download starts over (#43), and validators extend this in #45.
+    Changed(TransferError),
+    /// An error status. Not retried here; retries are #48.
     Invalid(TransferError),
 }
 
@@ -154,6 +157,13 @@ pub fn check_segment(
     if head.status == 200 {
         return Err(SegmentRejection::RangesIgnored);
     }
+    if head.status == 416 {
+        return Err(SegmentRejection::Changed(TransferError::new(
+            FailureClass::Permanent,
+            Some(416),
+            &format!("bytes {start}-{end} are no longer in the file: it is shorter than {total}"),
+        )));
+    }
     if head.status != 206 {
         return Err(SegmentRejection::Invalid(TransferError::new(
             FailureClass::Permanent,
@@ -170,7 +180,7 @@ pub fn check_segment(
     }
     if got_total != Some(total) {
         // A different total means a different object (report section 5.3, #45).
-        return Err(SegmentRejection::Invalid(TransferError::new(
+        return Err(SegmentRejection::Changed(TransferError::new(
             FailureClass::Permanent,
             Some(206),
             &format!("the file's total changed from {total} to {got_total:?}"),
@@ -505,8 +515,9 @@ mod tests {
     }
 
     #[test]
-    fn a_later_segment_with_an_error_or_another_total_fails() {
-        // A different total means a different object (report section 5.3, #45): not retried here.
+    fn a_later_segment_with_another_total_or_an_error_fails() {
+        // A different total means a different object (report section 5.3): `Changed`, which a
+        // resumed download answers by starting over (#43). An error status is `Invalid`.
         let r = check_segment(
             &head(
                 206,
@@ -519,7 +530,17 @@ mod tests {
             1999,
             5000,
         );
-        assert!(matches!(r, Err(SegmentRejection::Invalid(_))), "{r:?}");
+        assert!(matches!(r, Err(SegmentRejection::Changed(_))), "{r:?}");
+        let shorter = check_segment(
+            &head(416, &[("Content-Range", "bytes */1200")]),
+            1000,
+            1999,
+            5000,
+        );
+        assert!(
+            matches!(shorter, Err(SegmentRejection::Changed(_))),
+            "{shorter:?}"
+        );
         let r = check_segment(&head(404, &[]), 1000, 1999, 5000);
         assert!(
             matches!(
