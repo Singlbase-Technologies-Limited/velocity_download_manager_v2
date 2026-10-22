@@ -2,10 +2,15 @@
 //! builds itself from verified sources (build.rs, docs/BUILDING_NATIVE.md).
 
 mod capabilities;
+mod fetch;
 mod runtime;
 
 pub use capabilities::{
     check, IncompatibleCurl, LinkedCurl, Problem, ALLOWED_PROTOCOLS, EXPECTED_TLS, LIBCURL_FLOOR,
     REQUIRED_FEATURES, REQUIRED_PROTOCOLS,
+};
+pub use fetch::{
+    CurlLoop, Fetch, FetchError, FetchEvent, FetchRequest, Gate, LoopError, LoopOptions,
+    ResponseHead,
 };
 pub use runtime::{Libcurl, StartError};

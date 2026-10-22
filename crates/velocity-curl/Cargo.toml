@@ -7,7 +7,11 @@ publish.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+curl.workspace = true
 curl-sys.workspace = true
+
+[dev-dependencies]
+velocity-test-http = { path = "../velocity-test-http" }
 
 [build-dependencies]
 serde_json.workspace = true
