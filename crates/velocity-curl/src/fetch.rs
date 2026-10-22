@@ -91,8 +91,9 @@ pub enum FetchError {
     Aborted(String),
     /// The caller cancelled the fetch.
     Cancelled,
-    /// libcurl reported an error (`CURLcode` and its description).
-    Curl { code: i32, message: String },
+    /// libcurl reported an error (`CURLcode` and its description). The code is an `i64` because
+    /// `CURLcode` is `u32` on Linux and `i32` on Windows; `i64` holds either without a cast.
+    Curl { code: i64, message: String },
     /// The loop stopped before the fetch finished.
     LoopStopped,
 }
@@ -407,7 +408,7 @@ fn set_string(
 
 fn curl_error(e: &curl::Error) -> FetchError {
     FetchError::Curl {
-        code: e.code(),
+        code: i64::from(e.code()),
         message: e.description().to_owned(),
     }
 }
@@ -436,12 +437,12 @@ fn run_loop(inbox: Receiver<Command>, waker_tx: Sender<MultiWaker>) {
                     let events = easy.get_ref().events.clone();
                     let started = multi
                         .add2(*easy)
-                        .map_err(|e| (e.code(), e.to_string()))
+                        .map_err(|e| (i64::from(e.code()), e.to_string()))
                         .and_then(|mut handle| {
                             handle
                                 .set_token(token)
                                 .map(|()| handle)
-                                .map_err(|e| (e.code(), e.to_string()))
+                                .map_err(|e| (i64::from(e.code()), e.to_string()))
                         });
                     match started {
                         Ok(handle) => {
@@ -516,7 +517,7 @@ fn finish(multi: &Multi, handle: Easy2Handle<Collector>, outcome: Result<(), Fet
     let outcome = match multi.remove2(handle) {
         Ok(_) => outcome,
         Err(e) => outcome.and(Err(FetchError::Curl {
-            code: e.code(),
+            code: i64::from(e.code()),
             message: format!("the transfer couldn't be removed: {e}"),
         })),
     };
