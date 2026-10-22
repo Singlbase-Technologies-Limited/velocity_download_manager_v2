@@ -192,6 +192,11 @@ impl ChildProcessEngine {
         Ok(engine)
     }
 
+    /// The child's operating-system process id, for supervision (#39) and measurements (#38).
+    pub fn process_id(&self) -> u32 {
+        self.child.id()
+    }
+
     fn request(&self, command: TransferCommand) -> Result<TransferReply, ErrorCode> {
         let stdin = self.stdin.as_ref().ok_or(ErrorCode::EngineUnavailable)?;
         let seq = self.next_seq.fetch_add(1, Ordering::Relaxed) + 1;
