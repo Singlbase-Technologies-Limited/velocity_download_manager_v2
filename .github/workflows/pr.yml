@@ -93,6 +93,9 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
+      # DEMO for #135, never merged: the Azure Ubuntu mirror never answers, as if it stalled.
+      - name: DEMO make azure.archive.ubuntu.com unreachable
+        run: echo "10.255.255.1 azure.archive.ubuntu.com" | sudo tee -a /etc/hosts
       - id: setup
         uses: ./.github/actions/setup
         with:
