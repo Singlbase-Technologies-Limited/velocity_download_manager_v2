@@ -70,11 +70,13 @@ function windowsTools() {
   const vswhere = join(process.env['ProgramFiles(x86)'] ?? 'C:\\Program Files (x86)', 'Microsoft Visual Studio', 'Installer', 'vswhere.exe');
   if (!existsSync(vswhere)) throw new Error('Visual Studio was not found (no vswhere.exe). Install Visual Studio 2022 Build Tools with "Desktop development with C++"');
   const vs = firstLine(output(vswhere, ['-latest', '-products', '*', '-requires', 'Microsoft.VisualStudio.Component.VC.Tools.x86.x64', '-property', 'installationPath']));
-  const major = firstLine(output(vswhere, ['-latest', '-products', '*', '-requires', 'Microsoft.VisualStudio.Component.VC.Tools.x86.x64', '-property', 'catalog_productLineVersion']));
+  const major = firstLine(output(vswhere, ['-latest', '-products', '*', '-requires', 'Microsoft.VisualStudio.Component.VC.Tools.x86.x64', '-property', 'installationVersion'])).split('.')[0];
   if (!vs) throw new Error('Visual Studio has no C++ toolset. Add "Desktop development with C++" in the Visual Studio Installer');
-  const generators = { 2022: 'Visual Studio 17 2022', 2026: 'Visual Studio 18 2026' };
+  // Keyed by the installation's major version: vswhere reports 17 for VS 2022 and 18 for VS 2026
+  // (the windows-latest runner), while its product-line name differs between the two.
+  const generators = { 17: 'Visual Studio 17 2022', 18: 'Visual Studio 18 2026' };
   const generator = generators[major];
-  if (!generator) throw new Error(`Visual Studio ${major} has no known CMake generator here (known: ${Object.keys(generators).join(', ')})`);
+  if (!generator) throw new Error(`Visual Studio ${major} has no known CMake generator here (known majors: ${Object.keys(generators).join(', ')})`);
   let cmake = 'cmake';
   if (spawnSync(cmake, ['--version'], { stdio: 'ignore' }).status !== 0) {
     cmake = join(vs, 'Common7', 'IDE', 'CommonExtensions', 'Microsoft', 'CMake', 'CMake', 'bin', 'cmake.exe');
