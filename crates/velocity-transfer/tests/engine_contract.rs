@@ -265,6 +265,33 @@ fn refuses_bad_commands_with_their_codes() {
 }
 
 #[test]
+fn a_child_whose_parent_goes_away_cancels_and_cleans_up() {
+    let server = TestServer::start(
+        vec![("big.bin".into(), seeded_bytes(4_000_000, 34))],
+        ServerOptions {
+            throttle_bytes_per_sec: Some(300_000),
+            ..ServerOptions::default()
+        },
+    );
+    let dir = Dir::new("orphan");
+    let dest = dir.0.join("out.bin");
+    let mut engine = ChildProcessEngine::spawn(Path::new(env!("CARGO_BIN_EXE_velocity-transfer")))
+        .expect("the child engine starts");
+    let events = engine.subscribe();
+    let id = engine
+        .add(spec(server.url("big.bin"), dest.clone()))
+        .expect("add");
+    wait_for(&events, id, |s| s == DownloadStatus::Downloading);
+    assert!(part_of(&dest).exists(), "the download is under way");
+    // Dropping the client closes the child's stdin and waits for it to exit.
+    drop(engine);
+    assert!(
+        !dest.exists() && !part_of(&dest).exists(),
+        "the child removed its part file before exiting"
+    );
+}
+
+#[test]
 fn pause_is_unsupported_until_checkpoints_exist() {
     let data = seeded_bytes(4_000_000, 33);
     let server = TestServer::start(

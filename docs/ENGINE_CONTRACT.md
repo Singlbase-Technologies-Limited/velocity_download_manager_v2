@@ -36,7 +36,9 @@ A direct engine reports only these statuses: Queued, Connecting, Downloading, Re
 
 ## Across a process boundary
 
-The engine may run in the app's process or in a child process (#38). Every value in the contract is owned and serialisable, and the trait has no callbacks, references or lifetimes, so a client for a child-process engine can implement it too. `TransferCommand` and `TransferReply` are the wire forms of the commands. `dispatch(engine, command)` runs one command against any engine; a child process runs it on each message it receives. The framing, versioning and supervision are #39.
+The engine may run in the app's process or in a child process (#38). Every value in the contract is owned and serialisable, and the trait has no callbacks, references or lifetimes, so a client for a child-process engine can implement it too. `TransferCommand` and `TransferReply` are the wire forms of the commands. `dispatch(engine, command)` runs one command against any engine; a child process runs it on each message it receives.
+
+The #37 prototype's framing is JSON lines over the child's stdin and stdout, in [`crates/velocity-transfer/src/stdio.rs`](../crates/velocity-transfer/src/stdio.rs): the child writes `{"type":"ready","protocol":1}`, the parent sends `{"type":"request","seq":N,"command":{…}}`, and the child answers `{"type":"reply","seq":N,"result":{"Ok":{…}}}` or `{"result":{"Err":"NOT_FOUND"}}`, and pushes `{"type":"event","event":{…}}`. The production framing, versioning and supervision are #39.
 
 Wire names are camelCase and tagged, for example:
 
