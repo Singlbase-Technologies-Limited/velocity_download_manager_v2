@@ -38,7 +38,9 @@ A direct engine reports only these statuses: Queued, Connecting, Downloading, Re
 
 In production the engine runs in a child process ([ADR-0012](decisions/0012-engine-child-process.md)); tests and the CLI also run it in the app's process. Every value in the contract is owned and serialisable, and the trait has no callbacks, references or lifetimes, so a client for a child-process engine can implement it too. `TransferCommand` and `TransferReply` are the wire forms of the commands. `dispatch(engine, command)` runs one command against any engine; a child process runs it on each message it receives.
 
-The #37 prototype's framing is JSON lines over the child's stdin and stdout, in [`crates/velocity-transfer/src/stdio.rs`](../crates/velocity-transfer/src/stdio.rs): the child writes `{"type":"ready","protocol":1}`, the parent sends `{"type":"request","seq":N,"command":{…}}`, and the child answers `{"type":"reply","seq":N,"result":{"Ok":{…}}}` or `{"result":{"Err":"NOT_FOUND"}}`, and pushes `{"type":"event","event":{…}}`. The production framing, versioning and supervision are #39.
+How these wire forms cross the child's stdin and stdout is described in [ENGINE_PROTOCOL.md](ENGINE_PROTOCOL.md): the framing, the version handshake, the size limit and the supervisor (#39).
+
+Every wire form refuses a field it doesn't know, at every level. Commands and replies without data are struct variants with no fields, such as `TransferCommand::Snapshot {}`, because serde ignores extra fields on a unit variant of a tagged enum. Their JSON is unchanged: `{"command":"snapshot"}`.
 
 Wire names are camelCase and tagged, for example:
 

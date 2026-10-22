@@ -114,6 +114,29 @@ impl Drop for TestServer {
     }
 }
 
+/// Kills a process the way a crash ends it, without warning: `kill -9` on Linux, `taskkill /F` on
+/// Windows. Returns once the kill command has finished. For crash tests and measurements (#38, #39).
+pub fn kill_process(pid: u32) -> Result<(), String> {
+    let mut command = if cfg!(windows) {
+        let mut c = std::process::Command::new("taskkill");
+        c.args(["/F", "/PID", &pid.to_string()]);
+        c
+    } else {
+        let mut c = std::process::Command::new("kill");
+        c.args(["-9", &pid.to_string()]);
+        c
+    };
+    let status = command
+        .stdout(std::process::Stdio::null())
+        .status()
+        .map_err(|e| e.to_string())?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(format!("{command:?} failed"))
+    }
+}
+
 /// `len` deterministic pseudo-random bytes (xorshift64*), different for each seed.
 pub fn seeded_bytes(len: usize, seed: u64) -> Vec<u8> {
     let mut x = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1;
