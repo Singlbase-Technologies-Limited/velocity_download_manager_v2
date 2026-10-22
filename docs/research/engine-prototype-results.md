@@ -50,7 +50,7 @@ Timings were printed but are single runs over a home connection, so they are not
 
 ## Findings
 
-- **The design holds.** Using the first segment as the probe costs no extra request, and the gate in the header callback rejects a bad response before any byte is written. Back-pressure keeps memory bounded per fetch, as the tests that track the buffer's peak show.
+- **The design holds.** Using the first segment as the probe costs no extra request, and the gate in the header callback rejects a bad response before any byte is written. Back-pressure keeps memory bounded per fetch, as the tests that track the buffer's peak show. **Correction (#38):** the queue between the segment fetches and the writer was unbounded, so with a slow writer a whole file could queue in memory. It is bounded now, with a regression test ([engine-mode-costs.md](engine-mode-costs.md#findings)).
 - **The curl crate pin works as ADR-0004 expected.** Because `Multi` isn't `Send` at the pinned commit, it's created on its loop thread; nothing else needed changing.
 - **A portability trap:** `CURLcode` is a `u32` on Linux and an `i32` on Windows. Error codes are carried as `i64`. Linux CI caught it.
 - **The contract fits a process boundary unchanged.** The child-process client reuses `TransferCommand`, `TransferReply`, `TransferEvent` and `dispatch` as they are; the framing adds only a sequence number and a `ready` line. The same tests pass in both modes.
@@ -69,4 +69,4 @@ Both modes work, and the contract keeps the choice open. What each costs, from t
 - **In-process:** nothing extra to build or ship. A native fault in libcurl or the TLS library ends the whole app.
 - **Child process:** about 350 lines for the framing, the client and their tests, and a second binary to package and sign. A crash ends only the engine, but restarting and resuming needs #39 and #43 first.
 
-The research report recommends the child process unless it costs too much. That cost is the part not yet measured.
+The research report recommends the child process unless it costs too much. That cost was measured afterwards: [engine-mode-costs.md](engine-mode-costs.md).

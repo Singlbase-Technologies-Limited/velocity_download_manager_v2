@@ -51,5 +51,6 @@ Every document in `docs/` is listed here. A new document is added to this map in
 | [research/README.md](research/README.md) | See the research index; research is input, not decisions |
 | [research/2026-10-21-libcurl-engine-research-r2.md](research/2026-10-21-libcurl-engine-research-r2.md) | Read the libcurl download-engine research report, revision 2 |
 | [research/engine-prototype-results.md](research/engine-prototype-results.md) | Read what the engine prototype (#37) showed, in both modes, as evidence for #38 |
+| [research/engine-mode-costs.md](research/engine-mode-costs.md) | Read what running the engine as a child process costs, measured for #38 |
 
 `images/` holds screenshots that the pages above embed.
