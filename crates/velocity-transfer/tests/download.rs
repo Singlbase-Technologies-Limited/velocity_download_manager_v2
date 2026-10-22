@@ -231,8 +231,13 @@ fn one_connection_downloads_in_order() {
 #[test]
 fn a_slow_writer_holds_back_the_network_instead_of_queueing_the_file() {
     // Rule (transfer-engine.md, "Memory"): buffers and queues are bounded. The progress callback
-    // runs on the writer's thread, so pausing it once makes the writer slow; the server must not
-    // get more than a bounded amount ahead of the bytes written (#38 found the file queued whole).
+    // runs on the writer's thread, so pausing it once makes the writer slow. While it is paused,
+    // the server must stop sending once the engine's bounded buffers and the sockets' own buffers
+    // are full (#38 found the file queued whole, so the server sent all of it during the pause).
+    //
+    // The test checks that the server stops, not how far ahead it got: the sockets' buffers
+    // belong to the kernel, and their size depends on the system. Linux grows each one up to
+    // `tcp_rmem` and `tcp_wmem` (6 and 4 MiB on WSL2), so four connections can hold about 40 MiB.
     const LEN: usize = 128 << 20;
     const PAUSE_AT: u64 = 8 << 20;
     let data = seeded_bytes(LEN, 22);
@@ -240,13 +245,16 @@ fn a_slow_writer_holds_back_the_network_instead_of_queueing_the_file() {
         vec![("f.bin".into(), data.clone())],
         ServerOptions::default(),
     ));
-    let ahead = Arc::new(AtomicU64::new(0));
-    let (s, a) = (Arc::clone(&server), Arc::clone(&ahead));
+    // The server's byte count after 1 s and after 2 s of the pause.
+    let sent = Arc::new([AtomicU64::new(0), AtomicU64::new(0)]);
+    let (s, counts) = (Arc::clone(&server), Arc::clone(&sent));
     let paused = std::sync::atomic::AtomicBool::new(false);
     let control = Control::with_progress(move |written, _| {
         if written >= PAUSE_AT && !paused.swap(true, Ordering::Relaxed) {
-            std::thread::sleep(Duration::from_secs(2));
-            a.store(s.counters().body_bytes_sent - written, Ordering::Relaxed);
+            for count in counts.iter() {
+                std::thread::sleep(Duration::from_secs(1));
+                count.store(s.counters().body_bytes_sent, Ordering::Relaxed);
+            }
         }
     });
     let dir = Dir::new("slow-writer");
@@ -254,12 +262,16 @@ fn a_slow_writer_holds_back_the_network_instead_of_queueing_the_file() {
     download_with(&curl_loop(), &server.url("f.bin"), &dest, OPTIONS, &control)
         .expect("the download succeeds");
     assert!(std::fs::read(&dest).unwrap() == data);
-    let ahead = ahead.load(Ordering::Relaxed);
-    // Four connections, each with libcurl's 1 MiB buffer, a small queue and the sockets' own
-    // buffers: far below the 120 MiB still to come when the writer paused.
+    let [first, second] = [0, 1].map(|i| sent[i].load(Ordering::Relaxed));
     assert!(
-        ahead < 32 << 20,
-        "the server got {} MiB ahead of the writer",
-        ahead >> 20
+        second < LEN as u64,
+        "the server sent the whole file while the writer was paused"
+    );
+    // Once every buffer is full, nothing more is sent until the writer takes some bytes.
+    assert!(
+        second - first < 1 << 20,
+        "the server sent {} KiB more between 1 s and 2 s of the pause ({} MiB in all)",
+        (second - first) >> 10,
+        second >> 20
     );
 }
