@@ -12,10 +12,11 @@
 use std::fs::{self, File, OpenOptions};
 use std::io;
 use std::path::{Path, PathBuf};
-use std::sync::mpsc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::{self, RecvTimeoutError};
 use std::sync::{Arc, Mutex};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use velocity_core::domain::{FailureClass, TransferError};
 use velocity_curl::{CurlLoop, Fetch, FetchError, FetchEvent, FetchRequest, Gate, ResponseHead};
@@ -25,6 +26,43 @@ use crate::probe::{check_segment, classify_probe, ProbeOutcome, SegmentRejection
 /// How long a fetch may stay silent before the prototype gives up on it. #48 replaces this with
 /// stall detection.
 const SILENCE_LIMIT: Duration = Duration::from_secs(60);
+/// How often a waiting download checks whether it was cancelled.
+const CANCEL_CHECK: Duration = Duration::from_millis(100);
+
+/// Called with the bytes written so far and the total, once known.
+type ProgressFn = Box<dyn Fn(u64, Option<u64>) + Send + Sync>;
+
+/// Lets a caller follow and stop a running download (the engine, #37).
+#[derive(Default)]
+pub struct Control {
+    cancelled: AtomicBool,
+    progress: Option<ProgressFn>,
+}
+
+impl Control {
+    /// `progress` is called with the bytes written so far and the total, once known.
+    pub fn with_progress(progress: impl Fn(u64, Option<u64>) + Send + Sync + 'static) -> Self {
+        Control {
+            cancelled: AtomicBool::new(false),
+            progress: Some(Box::new(progress)),
+        }
+    }
+
+    /// Stops the download; it ends with [`DownloadError::Cancelled`] and removes its part file.
+    pub fn cancel(&self) {
+        self.cancelled.store(true, Ordering::Release);
+    }
+
+    pub fn is_cancelled(&self) -> bool {
+        self.cancelled.load(Ordering::Acquire)
+    }
+
+    fn report(&self, written: u64, total: Option<u64>) {
+        if let Some(p) = &self.progress {
+            p(written, total);
+        }
+    }
+}
 
 #[derive(Clone, Copy, Debug)]
 pub struct DownloadOptions {
@@ -70,6 +108,8 @@ pub enum DownloadError {
     FileExists,
     /// A local file operation failed.
     Io(String),
+    /// [`Control::cancel`] stopped it.
+    Cancelled,
 }
 
 impl From<TransferError> for DownloadError {
@@ -84,6 +124,17 @@ pub fn download(
     url: &str,
     destination: &Path,
     options: DownloadOptions,
+) -> Result<DownloadReport, DownloadError> {
+    download_with(lp, url, destination, options, &Control::default())
+}
+
+/// [`download`], followed and stoppable through `control`.
+pub fn download_with(
+    lp: &CurlLoop,
+    url: &str,
+    destination: &Path,
+    options: DownloadOptions,
+    control: &Control,
 ) -> Result<DownloadReport, DownloadError> {
     // symlink_metadata doesn't follow a link: a dangling link at the destination still counts.
     if fs::symlink_metadata(destination).is_ok() {
@@ -129,19 +180,25 @@ pub fn download(
     // The probe's bytes start at 0; how far they may go depends on its outcome, decided before the
     // first byte (the gate ran in the header callback).
     let mut cursor = 0u64;
-    let probe_done = drain(&probe, |chunk| {
-        let limit = match probe_verdict
+    let probe_done = drain(&probe, control, |chunk| {
+        let (limit, total) = match probe_verdict
             .lock()
             .expect("the probe verdict lock")
             .as_ref()
         {
-            Some(Ok(
-                ProbeOutcome::RangesOk { received_end, .. }
-                | ProbeOutcome::SequentialRanges { received_end },
-            )) => Some(received_end + 1),
-            _ => None,
+            Some(Ok(ProbeOutcome::RangesOk {
+                received_end,
+                total,
+            })) => (Some(received_end + 1), Some(*total)),
+            Some(Ok(ProbeOutcome::SequentialRanges { received_end })) => {
+                (Some(received_end + 1), None)
+            }
+            Some(Ok(ProbeOutcome::SingleStream { length })) => (None, *length),
+            _ => (None, None),
         };
-        guard.accept(&mut cursor, limit, chunk)
+        guard.accept(&mut cursor, limit, chunk)?;
+        control.report(guard.written, total);
+        Ok(())
     })?;
     let outcome = match probe_verdict.lock().expect("the probe verdict lock").take() {
         Some(Ok(o)) => o,
@@ -177,10 +234,10 @@ pub fn download(
         } => {
             let segments = split(received_end + 1, total, options.connections.max(1));
             fetches += segments.len() as u32;
-            let lost = fetch_segments(lp, url, total, &segments, &mut guard)?;
+            let lost = fetch_segments(lp, url, total, &segments, &mut guard, control)?;
             if lost {
                 fetches += 1;
-                stream_gaps(lp, url, total, &mut guard)?;
+                stream_gaps(lp, url, total, &mut guard, control)?;
                 (Mode::RangesLost, total)
             } else {
                 (Mode::Ranges, total)
@@ -231,6 +288,7 @@ fn fetch_segments(
     total: u64,
     segments: &[(u64, u64)],
     part: &mut PartFile,
+    control: &Control,
 ) -> Result<bool, DownloadError> {
     let (tx, rx) = mpsc::channel();
     let mut rejections = Vec::new();
@@ -258,12 +316,22 @@ fn fetch_segments(
     drop(tx);
     let mut cursors: Vec<u64> = segments.iter().map(|&(a, _)| a).collect();
     let mut failure = None;
-    for (index, event) in rx {
+    loop {
+        if control.is_cancelled() {
+            // Dropping `rx` ends the forwarders, and dropping their fetches cancels them.
+            return Err(DownloadError::Cancelled);
+        }
+        let (index, event) = match rx.recv_timeout(CANCEL_CHECK) {
+            Ok(e) => e,
+            Err(RecvTimeoutError::Timeout) => continue,
+            Err(RecvTimeoutError::Disconnected) => break,
+        };
         match event {
             FetchEvent::Head(_) => {}
             FetchEvent::Data(chunk) => {
                 let limit = Some(segments[index].1 + 1);
                 part.accept(&mut cursors[index], limit, &chunk)?;
+                control.report(part.written, Some(total));
             }
             FetchEvent::Done(Ok(())) => {}
             FetchEvent::Done(Err(e)) => {
@@ -292,6 +360,7 @@ fn stream_gaps(
     url: &str,
     total: u64,
     part: &mut PartFile,
+    control: &Control,
 ) -> Result<(), DownloadError> {
     let refusal = Arc::new(Mutex::new(None));
     let r = Arc::clone(&refusal);
@@ -307,9 +376,10 @@ fn stream_gaps(
         }
     });
     let mut offset = 0u64;
-    let done = drain(&fetch, |chunk| {
+    let done = drain(&fetch, control, |chunk| {
         part.accept_gaps(offset, chunk)?;
         offset += chunk.len() as u64;
+        control.report(part.written, Some(total));
         Ok(())
     })?;
     if let Some(e) = refusal.lock().expect("the refusal lock").take() {
@@ -335,19 +405,30 @@ fn forward(fetch: Fetch, index: usize, tx: mpsc::Sender<(usize, FetchEvent)>) {
     });
 }
 
-/// Reads one fetch to its end, handing each body chunk to `on_data`.
+/// Reads one fetch to its end, handing each body chunk to `on_data`. Checks for cancellation
+/// while it waits.
 fn drain(
     fetch: &Fetch,
+    control: &Control,
     mut on_data: impl FnMut(&[u8]) -> Result<(), DownloadError>,
 ) -> Result<Result<(), FetchError>, DownloadError> {
+    let mut last = Instant::now();
     loop {
-        let Some(event) = fetch.next_event(SILENCE_LIMIT) else {
+        if control.is_cancelled() {
+            fetch.cancel();
+            return Err(DownloadError::Cancelled);
+        }
+        let Some(event) = fetch.next_event(CANCEL_CHECK) else {
+            if last.elapsed() < SILENCE_LIMIT {
+                continue;
+            }
             fetch.cancel();
             return Ok(Err(FetchError::Curl {
                 code: -1,
                 message: format!("no data for {} s", SILENCE_LIMIT.as_secs()),
             }));
         };
+        last = Instant::now();
         match event {
             FetchEvent::Head(_) => {}
             FetchEvent::Data(chunk) => on_data(&chunk)?,

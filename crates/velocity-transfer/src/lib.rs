@@ -3,4 +3,6 @@
 //! (`.claude/rules/transfer-engine.md`). The engine prototype of #37.
 
 pub mod download;
+pub mod engine;
 pub mod probe;
+pub mod stdio;
