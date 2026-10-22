@@ -1,0 +1,16 @@
+[
+  "queued",
+  "connecting",
+  "downloading",
+  "paused",
+  "verifying",
+  "retrying",
+  "stalled",
+  "completed",
+  "failed",
+  "removed",
+  "fetchingMetadata",
+  "choosingFiles",
+  "seeding",
+  "unknown"
+]

@@ -112,6 +112,7 @@ The register of direct dependencies and how each was approved. Transitive depend
 | `serde` 1, `serde_json` 1 | Rust | MIT OR Apache-2.0 | Serialisation for commands and config tests | PO, #2 (PR #92) |
 | `react` 19, `react-dom` 19 | npm | MIT | UI | PO, #2 (PR #92) |
 | `@tauri-apps/api` 2 | npm | Apache-2.0 OR MIT | Typed calls into the shell | PO, #2 (PR #92) |
+| `zod` 4.6.5 (exact) | npm | MIT | Strict validation of every native response (docs/CONTRACTS.md) | PO, #25 (2026-10-22; 4.6.5 chosen over 4.6.7, released 2026-10-12) |
 | `@tauri-apps/cli`, `vite`, `@vitejs/plugin-react`, `typescript`, `@types/*`, `eslint`, `@eslint/js`, `typescript-eslint`, `eslint-plugin-react-hooks`, `eslint-plugin-react-refresh`, `globals`, `vitest` | npm (development only) | MIT, Apache-2.0 or BSD (not shipped) | Build, types, lint, tests | PO, #2 (PR #92) |
 | Rust 1.99.1, Node.js 24.12.0, pnpm 12.14.0 | Toolchains | MIT/Apache-2.0 (Rust), MIT | Building | PO, #2 (PR #92; pnpm chosen by the PO) |
 | `actions/checkout`, `actions/setup-node`, `actions/cache`, `actions/upload-artifact`, `actions/download-artifact` | GitHub Actions (GitHub's own) | MIT | CI | PO, #12 and the CI PRs (#104, #105, #110) |

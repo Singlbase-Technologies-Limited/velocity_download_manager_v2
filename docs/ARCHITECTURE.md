@@ -30,7 +30,7 @@ V2 is a Tauri 2 desktop app with a React UI and a Rust core. It downloads files 
 
 | Component | Path | Responsibility | Today | Built in |
 |---|---|---|---|---|
-| UI | `src/` | React and TypeScript. It talks to Rust only through typed commands and events, and validates every native response before use | Shows the app name and version (`src/appInfo.ts`) | #29, #59 to #61, #63 |
+| UI | `src/` | React and TypeScript. It talks to Rust only through typed commands and events, and validates every native response before use | Shows the app name and version; checks the contract version (`src/contract.ts`) | #29, #59 to #61, #63 |
 | Desktop shell | `src-tauri/` | Tauri 2 app: thin typed commands that delegate to the core, the window, the tray, notifications, the single instance and the browser bridge | One command, `app_info` | #27, #29 |
 | Core | `crates/velocity-core/` | Everything that doesn't need a window: domain models, the download manager and queue, input validation, naming, categories, settings, history and SQLite persistence | `app_info()` and the product name | #25, #26, #30 to #32, #50, #58 |
 | `DirectTransfer` contract | `crates/velocity-core/` (ADR-0002) | The engine-neutral boundary for direct downloads: commands, events, statuses, errors and capabilities. The manager never sees libcurl types | — | #36 |
@@ -59,6 +59,10 @@ Each piece of state has one owner. Other components ask the owner instead of kee
 | **libtorrent** | The torrent session: peers, pieces and resume data. The manager owns torrent records and seeding policies (#62) |
 | **The user's file system** | Finished files, written atomically: download to a part file, verify, then rename without replacing anything (#43, #72) |
 | **Memory only** | Credentials, cookies and custom headers. Never written to the database, logs, checkpoints or process arguments (#70, #71) |
+
+## Contracts
+
+The UI and the native side share engine-neutral types: download records, statuses, progress, `TransferError`, capabilities and error codes. They're defined once in Rust (`crates/velocity-core/src/domain.rs`) and validated in the UI by strict schemas (`src/contract.ts`). Contract fixtures generated from Rust keep the two in step, and `COMMAND_API_VERSION` stops a mismatched UI from starting. Details: [CONTRACTS.md](CONTRACTS.md).
 
 ## A direct download, start to finish
 

@@ -119,7 +119,7 @@ From most numerous and fastest to fewest and slowest. Each layer proves what the
 ## How the frontend is tested
 
 - **Only the native boundary is mocked:** the UI is rendered against a fake backend built on Tauri's own `mockIPC`. Components, hooks and state are real.
-- **Contract fixtures:** the shapes the Rust side sends (settings, statuses, errors) are generated from Rust and checked in both languages (#25), so the fake backend can't drift from the real one.
+- **Contract fixtures:** the shapes the Rust side sends are generated from Rust into `tests/fixtures/contract/` and validated by the UI's strict schemas, so neither side can drift ([CONTRACTS.md](CONTRACTS.md)).
 - **What the user sees:** tests check text, roles and actions, not component internals.
 
 ## Reporting results per platform

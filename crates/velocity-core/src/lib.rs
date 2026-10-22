@@ -1,7 +1,9 @@
 //! Core domain logic for Velocity Download Manager V2.
 //!
-//! At this bootstrap stage the crate only exposes the application's name and
-//! version, which the desktop shell shows.
+//! The application identity and the engine-neutral domain types shared with the UI
+//! (`domain`, docs/CONTRACTS.md).
+
+pub mod domain;
 
 use serde::Serialize;
 
@@ -12,11 +14,18 @@ use serde::Serialize;
 /// release naming is settled with packaging (#81).
 pub const PRODUCT_NAME: &str = "Velocity Download Manager (dev)";
 
-/// Name and version of the running application.
+/// Version of the command contract between the UI and the native side (docs/CONTRACTS.md).
+/// Raise it whenever a command or a shared type changes incompatibly; the UI refuses to start
+/// against a native side with a different version (`COMMAND_API_VERSION` in `src/contract.ts`).
+pub const COMMAND_API_VERSION: u32 = 1;
+
+/// Name, version and contract version of the running application.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct AppInfo {
     pub name: &'static str,
     pub version: &'static str,
+    pub command_api_version: u32,
 }
 
 /// Returns the application's identity.
@@ -24,12 +33,19 @@ pub fn app_info() -> AppInfo {
     AppInfo {
         name: PRODUCT_NAME,
         version: env!("CARGO_PKG_VERSION"),
+        command_api_version: COMMAND_API_VERSION,
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn app_info_reports_the_command_api_version_in_camel_case() {
+        let json = serde_json::to_value(app_info()).unwrap();
+        assert_eq!(json["commandApiVersion"], COMMAND_API_VERSION);
+    }
 
     #[test]
     fn app_info_reports_the_crate_version() {

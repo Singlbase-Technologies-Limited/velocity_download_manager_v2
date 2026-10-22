@@ -1,0 +1,24 @@
+{
+  "categoryId": "archives",
+  "completedAtMs": null,
+  "createdAtMs": 1792600000000,
+  "directory": "/home/user/Downloads",
+  "error": {
+    "class": "throttled",
+    "httpStatus": 503,
+    "message": "Service unavailable",
+    "retryable": true
+  },
+  "fileName": "archive.zip",
+  "id": "d-0001",
+  "kind": "http",
+  "progress": {
+    "completedBytes": 1048576,
+    "connections": 0,
+    "downloadSpeedBps": 0,
+    "totalBytes": 4194304,
+    "uploadSpeedBps": 0
+  },
+  "sourceUrl": "https://example.com/files/archive.zip",
+  "status": "retrying"
+}

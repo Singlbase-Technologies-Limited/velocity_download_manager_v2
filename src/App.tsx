@@ -1,6 +1,7 @@
 import { invoke } from '@tauri-apps/api/core';
 import { useEffect, useState } from 'react';
-import { parseAppInfo, windowHeading, type AppInfo } from './appInfo';
+import { windowHeading } from './appInfo';
+import { parseAppInfo, type AppInfo } from './contract';
 
 export function App() {
   const [info, setInfo] = useState<AppInfo | null>(null);
@@ -20,7 +21,7 @@ export function App() {
     <main className="shell">
       <h1>{info ? windowHeading(info) : 'Velocity Download Manager (dev)'}</h1>
       {error ? (
-        <p role="alert">Could not reach the native shell: {error}</p>
+        <p role="alert">Velocity couldn&apos;t start: {error}</p>
       ) : (
         <p>Development shell. Features arrive through the issues on the project board.</p>
       )}
