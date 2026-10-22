@@ -29,9 +29,27 @@ runs:
     - name: Install Tauri system packages
       if: inputs.rust == 'true' && runner.os == 'Linux'
       shell: bash
+      # A stalled first mirror (azure.archive.ubuntu.com) hung this step until it was cancelled, three
+      # times on 2026-10-22 (#135). Each attempt is bounded: a healthy update takes about 6 s and the
+      # install about 45 s (demo PR #137). On a failure or stall the Azure mirror is dropped from the
+      # runner's mirror list, so apt uses archive.ubuntu.com (priority 2 in /etc/apt/apt-mirrors.txt,
+      # written by the runner image), and the install is retried once. If that fails too, the step
+      # fails as INFRA within minutes.
       run: |
-        sudo apt-get update
-        sudo apt-get install -y --no-install-recommends libwebkit2gtk-4.1-dev build-essential file libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev
+        packages=(libwebkit2gtk-4.1-dev build-essential file libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev)
+        install() {
+          sudo timeout 90 apt-get update && sudo timeout 180 apt-get install -y --no-install-recommends "${packages[@]}"
+        }
+        if ! install; then
+          echo "::warning title=Ubuntu mirror::apt-get failed or stalled on the runner's first mirror; retrying without azure.archive.ubuntu.com (#135)"
+          if [ -f /etc/apt/apt-mirrors.txt ]; then
+            sudo sed -i '/azure\.archive\.ubuntu\.com/d' /etc/apt/apt-mirrors.txt
+            cat /etc/apt/apt-mirrors.txt
+          fi
+          # A killed attempt can leave dpkg half-configured; finish that before retrying.
+          sudo dpkg --configure -a
+          install
+        fi
 
     - name: Install the pinned Rust toolchain
       if: inputs.rust == 'true'
