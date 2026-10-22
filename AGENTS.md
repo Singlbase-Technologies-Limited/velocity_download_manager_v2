@@ -63,6 +63,7 @@ The components and who owns what state are in [docs/ARCHITECTURE.md](docs/ARCHIT
 
 The full procedure is in [docs/DEVELOPMENT_WORKFLOW.md](docs/DEVELOPMENT_WORKFLOW.md), and what reviewers check is in [docs/REVIEWING.md](docs/REVIEWING.md). The rules:
 
+- **Follow the roadmap:** epic #1 lists every issue by phase, and the milestones R1 to R10 set the order. Take the next issue from the earliest milestone that has open, unblocked work, and confirm the choice with the PO.
 - **Issues and branches:**
   - Every change starts from a GitHub issue.
   - Branch from the latest `main` as `<type>/<issue>-<slug>`, for example `feat/41-range-probe`.
@@ -70,7 +71,7 @@ The full procedure is in [docs/DEVELOPMENT_WORKFLOW.md](docs/DEVELOPMENT_WORKFLO
 - **Never push to `main` directly.** Open a pull request into `main`. Never force-push or rewrite shared history, and check for uncommitted work before switching branches.
 - **The PO decides merges.** The PO merges, or approves one specific PR, for example with "I approve the PR", for the agent to squash-merge. Branches are deleted after merge.
 - **Closing keywords:** write `closes #N` or `fixes #N` only when merging should close that issue. Otherwise write "Part of #N".
-- **Keep the issue and its project board item current.**
+- **Keep the issue, its project board item and epic #1 current.** After a merge, tick the issue's box in #1; GitHub doesn't tick it.
 
 ## GitHub account for AI agents
 
@@ -93,6 +94,7 @@ pnpm check:fast                # L1 checks: fmt, clippy, cargo test, tsc, ESLint
 pnpm check:pr                  # L3: the checks this branch's changes need
 pnpm check:full                # L4 locally: L1 + production web build + Rust release build
 pnpm check:links               # relative links and anchors in all Markdown files
+pnpm native:build              # build libcurl and its libraries from verified sources (docs/BUILDING_NATIVE.md)
 ```
 
 Run `pnpm check:fast` before opening a pull request. Use pnpm only; `package.json` pins its version. The levels and selection rules are in [docs/TESTING.md](docs/TESTING.md).

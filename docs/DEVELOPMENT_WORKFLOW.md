@@ -8,6 +8,7 @@ Each rule below is marked as **GitHub-documented** (with a link to the source) o
 
 - **`main` is the only long-lived branch, and it is always releasable.** *Project judgment* (PO decision, 2026-10-21). The model is [GitHub flow](https://docs.github.com/en/get-started/using-github/github-flow): branch from the default branch, open a pull request, review it, merge it, delete the branch (*GitHub-documented*).
 - **Every change starts from an issue.** *Project judgment.* No issue, no branch.
+- **Work follows the roadmap.** *Project judgment* (PO decision, 2026-10-22). Epic #1 lists every issue by phase (A to H), and the milestones R1 to R10 set the order of work. The next issue comes from the earliest milestone that still has open, unblocked work. An agent proposes it and the PO confirms it, or picks another.
 - **The Product Owner decides merges, releases and repository settings.** *Project judgment.* Agents and contributors prepare work. They never merge their own pull requests, tag releases or change settings without the PO's explicit go-ahead.
 
 ## Branches
@@ -40,6 +41,7 @@ Each rule below is marked as **GitHub-documented** (with a link to the source) o
 - **Squash merge only.** Each PR becomes one commit on `main`. Squash merges are fast-forward, so `main` keeps a linear history ([merge methods](https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/configuring-pull-request-merges/about-merge-methods-on-github), *GitHub-documented*). Merge commits and rebase merging are disabled in the repository settings.
 - **Only the Product Owner decides merges.** The PO merges, or approves one specific PR for the agent to merge, for example with "I approve the PR". The agent then squash-merges that PR alone with `gh pr merge <N> --squash --delete-branch`. Approval of one PR never carries over to another. *Project judgment* (PO decision, 2026-10-21).
 - **No server-side protection yet.** This private repository is on GitHub Free, where rulesets and protected branches are unavailable (the API returned HTTP 403 on 2026-10-21; [plans](https://docs.github.com/en/get-started/learning-about-github/githubs-plans)). The PO deferred protection (#89). Until then, nobody pushes to `main` directly. For the agent, deny rules in `.claude/settings.json` block `git push` to `main`, force pushes and `git reset --hard`, and merges, releases and tag pushes prompt the PO (#4). These rules match command text only, so they are a safety net, not a security boundary.
+- **After the merge:** update local `main` (`git switch main && git pull --ff-only`), check that the issue is closed (or still open, for "Part of #N" work) and that its board item shows the right status, then tick the issue's box in epic #1. GitHub updates the epic's sub-issue progress bar by itself, but never ticks the checkboxes in its description. *Project judgment* (PO decision, 2026-10-22).
 - **If `main` breaks:** fix forward with a `fix/` PR, or revert the offending squash commit through a PR, within one working day. *Project judgment.*
 
 ## Releases
