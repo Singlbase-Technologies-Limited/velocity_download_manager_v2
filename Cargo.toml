@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/velocity-core", "crates/velocity-curl", "crates/velocity-test-http", "crates/velocity-transfer", "src-tauri"]
+members = ["crates/velocity-core", "crates/velocity-curl", "crates/velocity-test-http", "crates/velocity-transfer", "crates/velocity-transfer-h2c", "src-tauri"]
 
 [workspace.package]
 version = "0.1.0"

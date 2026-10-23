@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { checkCommands, focusedCommands, jobSummaryMarkdown, selectChecks, selectJobs, workspaceFromMetadata } from './checks-lib.mjs';
+import { checkCommands, focusedCommands, FULL_EXTRA_COMMANDS, jobSummaryMarkdown, selectChecks, selectJobs, workspaceFromMetadata } from './checks-lib.mjs';
 
 // Mirrors this repository: the desktop shell depends on the core crate.
 const workspace = {
@@ -271,5 +271,15 @@ describe('jobSummaryMarkdown (run summary, #13)', () => {
 
   it('escapes pipes in paths so the table stays intact', () => {
     expect(jobSummaryMarkdown(selectJobs(['weird|name.txt'], workspace))).toContain('weird\\|name.txt');
+  });
+});
+
+describe('FULL_EXTRA_COMMANDS', () => {
+  it('builds the engine examples for release too, so a test-only feature can never break them unseen (#46)', () => {
+    const args = (id) => FULL_EXTRA_COMMANDS.find((c) => c.id === id)?.args;
+    expect(args('rust-release')).toEqual(['build', '--workspace', '--release']);
+    // On their own: across the workspace, examples turn on every member's dev-dependency
+    // features, velocity-curl's own test-h2c included, which an optimised build refuses.
+    expect(args('rust-release-examples')).toEqual(['build', '--release', '-p', 'velocity-transfer', '--examples']);
   });
 });

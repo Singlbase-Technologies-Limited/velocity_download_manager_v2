@@ -430,7 +430,7 @@ What they show, and what they don't:
 - **SHA-1 and SHA-256 are faster than MD5 on this CPU,** which has SHA instructions that RustCrypto uses.
 - **Single runs vary:** the slowest of the three was up to 1.4 times the median.
 
-Run it with `cargo run --release --config profile.release.debug-assertions=true -p velocity-transfer --example hash_readback -- [dir] [--mib N] [--runs R] [--algorithms md5,sha1,sha256,sha512]`. The `--config` is needed because the examples build with the test-only `test-h2c` feature, which refuses an optimised build without debug assertions (#47).
+Run it with `cargo run --release -p velocity-transfer --example hash_readback -- [dir] [--mib N] [--runs R] [--algorithms md5,sha1,sha256,sha512]`. The numbers above were taken with `--config profile.release.debug-assertions=true`, which the examples needed until the HTTP/2 tests moved out of `velocity-transfer` (below); debug assertions don't touch the hashing code.
 
 ## Disk writes far into a new file (Windows)
 
@@ -517,7 +517,7 @@ Run it with `cargo run --release -p velocity-transfer --example high_offset_writ
   - after a piece is fetched again, the whole-file hash still matches.
 
   The unit tests in `integrity.rs` check the six algorithms against their standard test vectors, a frontier fed in reverse order, and the piece verifier. `tests/engine_contract.rs` checks checksums and piece hashes in both engine modes.
-- **HTTP/2 fixtures (#47):** `tests/http2.rs` runs against the cleartext HTTP/2 server: #41's probe fixtures, #42's split that resets only its stream, and the multiplex policy against a server throttling each TCP connection and one throttling each stream. They need the `test-h2c` feature, which only test builds have ([TESTING.md](TESTING.md#fixture-servers-v2-needs)).
+- **HTTP/2 fixtures (#47):** `crates/velocity-transfer-h2c/tests/http2.rs` runs against the cleartext HTTP/2 server: #41's probe fixtures, #42's split that resets only its stream, and the multiplex policy against a server throttling each TCP connection and one throttling each stream. They need the `test-h2c` feature, which only test builds have ([TESTING.md](TESTING.md#fixture-servers-v2-needs)). They live in a test-only crate of their own (#46): a dev-dependency's features reach every example of its crate, so while they were in `velocity-transfer`, none of its examples could be built for release.
 - **Unit tests:** the tests in `probe.rs`, `validator.rs`, `failure.rs`, `retry.rs`, `adaptive.rs`, `budget.rs`, the libcurl layer's `rate.rs`, `scheduler.rs`, `files.rs` and the libcurl layer's `tests/curl_loop.rs` (`FetchLimit`, the per-host cap) and `tests/http2.rs` cover each rule on its own.
 
 ## Not yet
