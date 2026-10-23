@@ -12,9 +12,11 @@
 
 mod checkpoints;
 mod downloads;
+mod queue;
 mod settings;
 
 pub use downloads::{without_login, Engine, NewDownload, Stored, StoredDownload, StoredOptions};
+pub use queue::QueueEntry;
 
 use std::fmt;
 use std::path::{Path, PathBuf};
@@ -28,6 +30,7 @@ use crate::domain::ErrorCode;
 const MIGRATIONS: &[M<'static>] = &[
     M::up(include_str!("../../migrations/0001_initial.sql")),
     M::up(include_str!("../../migrations/0002_checkpoints.sql")),
+    M::up(include_str!("../../migrations/0003_queue.sql")),
 ];
 
 /// The migrations this build applies.
@@ -361,7 +364,7 @@ mod tests {
     #[test]
     fn the_migrations_are_valid() {
         assert_eq!(migrations().validate(), Ok(()));
-        assert_eq!(latest_schema_version(), 2);
+        assert_eq!(latest_schema_version(), 3);
     }
 
     #[test]
@@ -479,10 +482,93 @@ mod tests {
             db.insert_download(&sample("d-0001")).unwrap();
         }
         let db = Database::open(&dir.db()).expect("upgrades");
-        assert_eq!(db.schema_version(), Ok(2));
+        // To the latest schema, 3 since #50.
+        assert_eq!(db.schema_version(), Ok(3));
         assert_eq!(db.downloads().unwrap()[0].id, "d-0001");
         db.save_checkpoint("d-0001", &checkpoint(), 5).unwrap();
         assert!(dir.names().iter().any(|n| n.contains(".bak-v1-")));
+    }
+
+    #[test]
+    fn schema_2_is_upgraded_with_its_downloads_and_gains_the_queue() {
+        // Migration 0003 (#50), from the previous schema with a record in it.
+        let dir = Dir::new("v2-to-v3");
+        {
+            let db = open_with(&dir.db(), &Migrations::from_slice(&MIGRATIONS[..2])).unwrap();
+            assert_eq!(db.schema_version(), Ok(2));
+            db.insert_download(&sample("d-0001")).unwrap();
+        }
+        let db = Database::open(&dir.db()).expect("upgrades");
+        assert_eq!(db.schema_version(), Ok(3));
+        assert_eq!(db.downloads().unwrap()[0].id, "d-0001");
+        let entry = QueueEntry {
+            id: "d-0001".to_owned(),
+            scheduled: true,
+        };
+        db.save_queue(std::slice::from_ref(&entry)).unwrap();
+        assert_eq!(db.queue(), Ok(vec![entry]));
+        assert!(dir.names().iter().any(|n| n.contains(".bak-v2-")));
+    }
+
+    #[test]
+    fn the_queue_comes_back_after_a_restart_with_a_paused_download_still_paused() {
+        let dir = Dir::new("queue-restart");
+        let entry = |id: &str, scheduled| QueueEntry {
+            id: id.to_owned(),
+            scheduled,
+        };
+        let order = vec![
+            entry("d-0003", false),
+            entry("d-0002", true),
+            entry("d-0001", false),
+        ];
+        {
+            let db = Database::open(&dir.db()).unwrap();
+            for id in ["d-0001", "d-0002", "d-0003"] {
+                let mut new = sample(id);
+                if id == "d-0002" {
+                    // Added paused (#50).
+                    new.status = DownloadStatus::Paused;
+                }
+                db.insert_download(&new).unwrap();
+            }
+            db.save_queue(&order).unwrap();
+        }
+        let db = Database::open(&dir.db()).unwrap();
+        assert_eq!(
+            db.queue(),
+            Ok(order),
+            "the same order, and scheduled where it was"
+        );
+        let paused = db
+            .downloads()
+            .unwrap()
+            .into_iter()
+            .find(|d| d.id == "d-0002")
+            .unwrap();
+        assert_eq!(paused.status, Stored::Known(DownloadStatus::Paused));
+    }
+
+    #[test]
+    fn a_saved_queue_replaces_the_last_and_names_only_known_downloads() {
+        let db = Database::open_in_memory().unwrap();
+        for id in ["d-0001", "d-0002"] {
+            db.insert_download(&sample(id)).unwrap();
+        }
+        let entry = |id: &str| QueueEntry {
+            id: id.to_owned(),
+            scheduled: false,
+        };
+        db.save_queue(&[entry("d-0001"), entry("d-0002")]).unwrap();
+        // d-0001 finished: it leaves the queue.
+        db.save_queue(&[entry("d-0002")]).unwrap();
+        assert_eq!(db.queue(), Ok(vec![entry("d-0002")]));
+        let e = db
+            .save_queue(&[entry("d-0002"), entry("d-9999")])
+            .err()
+            .unwrap();
+        assert_eq!(e.code, ErrorCode::NotFound, "{e}");
+        assert_eq!(db.queue(), Ok(vec![entry("d-0002")]), "nothing changed");
     }
 
     fn checkpoint() -> Checkpoint {

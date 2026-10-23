@@ -17,6 +17,7 @@
 //! the app starts is #58. Engine events are untrusted (AGENTS.md): events for unknown transfers
 //! are ignored, and a status a direct engine must never report becomes `Unknown`.
 
+use crate::database::QueueEntry;
 use crate::domain::{
     DownloadKind, DownloadRecord, DownloadStatus, ErrorCode, FailureClass, Progress, TransferError,
 };
@@ -360,6 +361,18 @@ impl Manager {
         }
         self.fill();
         applied
+    }
+
+    /// The unfinished downloads in queue order, as the database saves them
+    /// ([`crate::database::Database::save_queue`]).
+    pub fn queue(&self) -> Vec<QueueEntry> {
+        self.order
+            .iter()
+            .map(|id| QueueEntry {
+                id: id.clone(),
+                scheduled: self.downloads[id].scheduled,
+            })
+            .collect()
     }
 
     pub fn get(&self, id: &str) -> Option<&DownloadRecord> {
@@ -1015,6 +1028,41 @@ mod tests {
             assert_eq!(
                 control.spec(TransferId(2)).destination.file_name().unwrap(),
                 "c"
+            );
+        }
+
+        #[test]
+        fn the_queue_to_save_is_its_order_with_the_scheduled_flags() {
+            let (mut m, control) = queue_of(1);
+            let a = add(&mut m, "a");
+            let b = add(&mut m, "b");
+            let c = m
+                .add_with(
+                    DownloadKind::Http,
+                    named("c"),
+                    AddOptions {
+                        start_paused: false,
+                        scheduled: true,
+                    },
+                    T0,
+                )
+                .unwrap();
+            m.move_download(&c, MoveDirection::Top).unwrap();
+            let entry = |id: &String, scheduled| QueueEntry {
+                id: id.clone(),
+                scheduled,
+            };
+            // a runs, so it stays first: a move reorders only the waiting ones.
+            assert_eq!(
+                m.queue(),
+                [entry(&a, false), entry(&c, true), entry(&b, false)]
+            );
+            control.complete(TransferId(1));
+            m.pump(T0);
+            assert_eq!(
+                m.queue(),
+                [entry(&c, true), entry(&b, false)],
+                "a finished and left it"
             );
         }
 
