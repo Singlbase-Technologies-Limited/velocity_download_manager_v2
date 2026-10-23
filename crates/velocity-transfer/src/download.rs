@@ -560,7 +560,7 @@ fn repair_pieces(
 ) -> Result<Fetched, DownloadError> {
     let mut started_over = false;
     loop {
-        let bad = part.settle_pieces(fetched.total)?;
+        let bad = part.settle_pieces(fetched.total, control)?;
         let (Some(&first), Some(pieces)) = (bad.first(), part.pieces.as_ref()) else {
             return Ok(fetched);
         };
@@ -599,6 +599,20 @@ fn repair_pieces(
                 first, count,
             )));
         }
+    }
+}
+
+/// Whether a wait at completion goes on: neither a cancel nor a pause came (#46).
+fn going_on(control: &Control) -> bool {
+    !control.is_cancelled() && !control.is_paused()
+}
+
+/// How a download whose wait at completion stopped ends.
+fn stopped(control: &Control) -> DownloadError {
+    if control.is_cancelled() {
+        DownloadError::Cancelled
+    } else {
+        DownloadError::Paused
     }
 }
 
@@ -2135,7 +2149,12 @@ impl PartFile {
     }
 
     /// Once the file of `total` bytes is covered: the bad pieces, after every check is in.
-    fn settle_pieces(&mut self, total: u64) -> Result<Vec<usize>, DownloadError> {
+    /// A cancel or a pause while it waits ends the download.
+    fn settle_pieces(
+        &mut self,
+        total: u64,
+        control: &Control,
+    ) -> Result<Vec<usize>, DownloadError> {
         let Some(pieces) = &mut self.pieces else {
             return Ok(Vec::new());
         };
@@ -2146,8 +2165,9 @@ impl PartFile {
             )));
         }
         pieces
-            .settle(&self.coverage, total)
-            .map_err(|e| io_error("check a piece of", &self.path, &e))
+            .settle_while(&self.coverage, total, || going_on(control), CANCEL_CHECK)
+            .map_err(|e| io_error("check a piece of", &self.path, &e))?
+            .ok_or_else(|| stopped(control))
     }
 
     /// Takes a bad piece out of coverage, so it is fetched again. Its bytes from this attempt count
@@ -2294,9 +2314,13 @@ impl PartFile {
             }
             let (algorithm, frontier) = self.frontier.take().expect("the frontier started");
             control.show(DownloadStatus::Verifying);
-            let got = frontier
-                .finish(total)
-                .map_err(|e| io_error("hash", &self.path, &e))?;
+            let Some(got) = frontier.finish_while(total, || going_on(control), CANCEL_CHECK) else {
+                let stop = stopped(control);
+                // A pause keeps the part file to resume from; a cancel removes it.
+                self.keep = matches!(stop, DownloadError::Paused);
+                return Err(stop);
+            };
+            let got = got.map_err(|e| io_error("hash", &self.path, &e))?;
             if !got.eq_ignore_ascii_case(&checksum.hex) {
                 self.keep = true;
                 return Err(DownloadError::IntegrityFailed(failure::checksum_mismatch(

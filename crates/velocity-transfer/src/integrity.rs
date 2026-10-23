@@ -12,9 +12,10 @@
 use std::collections::VecDeque;
 use std::fs::File;
 use std::io;
-use std::sync::mpsc::{self, Receiver, Sender};
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread::{self, JoinHandle};
+use std::time::Duration;
 
 use sha2::Digest;
 use velocity_core::transfer::{HashAlgorithm, PieceHashes};
@@ -84,6 +85,8 @@ struct Goal {
     end: Option<u64>,
     /// The download stopped: the thread ends without a digest.
     stop: bool,
+    /// The thread has ended, with a digest or an error.
+    done: bool,
 }
 
 type Shared = Arc<(Mutex<Goal>, Condvar)>;
@@ -101,7 +104,13 @@ impl HashFrontier {
         let theirs = Arc::clone(&shared);
         let thread = thread::Builder::new()
             .name("velocity-hash".to_owned())
-            .spawn(move || hash(&file, Hasher::new(algorithm), &theirs))?;
+            .spawn(move || {
+                let result = hash(&file, Hasher::new(algorithm), &theirs);
+                let (goal, wake) = &*theirs;
+                goal.lock().expect("the frontier lock").done = true;
+                wake.notify_all();
+                result
+            })?;
         Ok(HashFrontier {
             shared,
             thread: Some(thread),
@@ -115,18 +124,53 @@ impl HashFrontier {
 
     /// The digest of the file's first `total` bytes, once they are all written. Waits for the
     /// thread to hash what it hasn't yet.
-    pub fn finish(mut self, total: u64) -> io::Result<String> {
+    pub fn finish(self, total: u64) -> io::Result<String> {
+        self.finish_while(total, || true, Duration::from_secs(1))
+            .expect("it waits until the thread ends")
+    }
+
+    /// [`HashFrontier::finish`], checking `go_on` every `every` while it waits. When `go_on` says
+    /// no, the thread stops after its current read, and there is no digest.
+    pub fn finish_while(
+        mut self,
+        total: u64,
+        go_on: impl Fn() -> bool,
+        every: Duration,
+    ) -> Option<io::Result<String>> {
         self.update(|g| g.end = Some(total));
         let thread = self.thread.take().expect("the frontier's thread runs");
-        thread
-            .join()
-            .map_err(|_| io::Error::other("the hashing thread panicked"))?
+        let stopped = {
+            let (goal, wake) = &*self.shared;
+            let mut g = goal.lock().expect("the frontier lock");
+            loop {
+                // A thread that panicked never says it is done; it has finished all the same.
+                if g.done || thread.is_finished() {
+                    break false;
+                }
+                if !go_on() {
+                    break true;
+                }
+                g = wake.wait_timeout(g, every).expect("the frontier lock").0;
+            }
+        };
+        if stopped {
+            // Dropping the frontier stops the thread and waits for it.
+            self.thread = Some(thread);
+            return None;
+        }
+        Some(
+            thread
+                .join()
+                .map_err(|_| io::Error::other("the hashing thread panicked"))
+                .and_then(|result| result),
+        )
     }
 
     fn update(&self, change: impl FnOnce(&mut Goal)) {
         let (goal, wake) = &*self.shared;
         change(&mut goal.lock().expect("the frontier lock"));
-        wake.notify_one();
+        // The thread and a caller of `finish_while` both wait on it.
+        wake.notify_all();
     }
 }
 
@@ -182,7 +226,8 @@ fn hash(file: &File, mut hasher: Hasher, shared: &Shared) -> io::Result<String> 
             Next::Read(target) => {
                 // One chunk at a time, so a stop is seen between chunks.
                 let end = target.min(hashed + READ_CHUNK as u64);
-                hash_range(file, &mut hasher, hashed, end, &mut buf)?;
+                // The goal's stop is checked before each chunk, above.
+                hash_range(file, &mut hasher, (hashed, end), &mut buf, || false)?;
                 hashed = end;
             }
         }
@@ -247,30 +292,39 @@ fn verify_pieces(
             }
         };
         let mut hasher = Hasher::new(algorithm);
-        let read = hash_range(file, &mut hasher, start, end, &mut buf);
-        let verdict = read.map(|()| hex.get(index) == Some(&hasher.finish_hex()));
+        // A piece can be large, so a stop is seen between its reads too.
+        let stop = || pieces.lock().expect("the piece queue lock").stop;
+        let verdict = match hash_range(file, &mut hasher, (start, end), &mut buf, stop) {
+            Ok(false) => return,
+            Ok(true) => Ok(hex.get(index) == Some(&hasher.finish_hex())),
+            Err(e) => Err(e),
+        };
         if tx.send((index, verdict)).is_err() {
             return;
         }
     }
 }
 
-/// Feeds bytes `[start, end)` of `file` to `hasher`, `buf.len()` at a time.
+/// Feeds bytes `[start, end)` of `file` to `hasher`, `buf.len()` at a time, unless `stopped`
+/// says so between reads. `false` when it stopped before the end.
 fn hash_range(
     file: &File,
     hasher: &mut Hasher,
-    start: u64,
-    end: u64,
+    (start, end): (u64, u64),
     buf: &mut [u8],
-) -> io::Result<()> {
+    stopped: impl Fn() -> bool,
+) -> io::Result<bool> {
     let mut at = start;
     while at < end {
+        if stopped() {
+            return Ok(false);
+        }
         let n = (end - at).min(buf.len() as u64) as usize;
         read_exact_at(file, &mut buf[..n], at)?;
         hasher.update(&buf[..n]);
         at += n as u64;
     }
-    Ok(())
+    Ok(true)
 }
 
 /// A piece's verdict: whether its bytes match its trusted hash.
@@ -324,8 +378,14 @@ impl PieceVerifier {
     }
 
     /// The next verdict, waiting for it. `None` if the thread has ended.
+    #[cfg(test)]
     pub(crate) fn next_verdict(&self) -> Option<PieceVerdict> {
         self.verdicts.recv().ok()
+    }
+
+    /// The next verdict, waiting for it at most `wait`.
+    fn next_verdict_within(&self, wait: Duration) -> Result<PieceVerdict, RecvTimeoutError> {
+        self.verdicts.recv_timeout(wait)
     }
 }
 
@@ -413,15 +473,27 @@ impl PieceCheck {
     }
 
     /// Waits for every verdict still to come, once the file of `total` bytes is covered, and
-    /// returns the bad pieces in order. Each counts as one more bad copy of its piece.
-    pub(crate) fn settle(&mut self, coverage: &Coverage, total: u64) -> io::Result<Vec<usize>> {
+    /// returns the bad pieces in order. Each counts as one more bad copy of its piece. It checks
+    /// `go_on` every `every` while it waits; when `go_on` says no, it stops waiting and returns
+    /// `None`, leaving the check unfinished, so the download ends.
+    pub(crate) fn settle_while(
+        &mut self,
+        coverage: &Coverage,
+        total: u64,
+        go_on: impl Fn() -> bool,
+        every: Duration,
+    ) -> io::Result<Option<Vec<usize>>> {
         self.offer(coverage, 0, total, Some(total));
         let mut bad = Vec::new();
         while self.pending > 0 {
-            let (index, verdict) = self
-                .verifier
-                .next_verdict()
-                .ok_or_else(|| io::Error::other("the piece verifier stopped"))?;
+            let (index, verdict) = match self.verifier.next_verdict_within(every) {
+                Ok(verdict) => verdict,
+                Err(RecvTimeoutError::Timeout) if go_on() => continue,
+                Err(RecvTimeoutError::Timeout) => return Ok(None),
+                Err(RecvTimeoutError::Disconnected) => {
+                    return Err(io::Error::other("the piece verifier stopped"))
+                }
+            };
             self.pending -= 1;
             if !verdict? {
                 self.bad[index] += 1;
@@ -429,7 +501,7 @@ impl PieceCheck {
             }
         }
         bad.sort_unstable();
-        Ok(bad)
+        Ok(Some(bad))
     }
 
     /// The bad copies seen of piece `index`.
@@ -472,6 +544,10 @@ mod tests {
         crate::files::create_part(path)
             .expect("a new part file")
             .file
+    }
+
+    fn digest_of(algorithm: HashAlgorithm, bytes: &[u8]) -> String {
+        digest(algorithm, bytes)
     }
 
     fn digest(algorithm: HashAlgorithm, bytes: &[u8]) -> String {
@@ -547,6 +623,65 @@ mod tests {
         assert_eq!(
             frontier.finish(0).expect("hashed"),
             "da39a3ee5e6b4b0d3255bfef95601890afd80709"
+        );
+    }
+
+    /// A part file of `len` bytes that reads back as zeros, without writing them: sparse where the
+    /// file system allows it.
+    fn sized_part(dir: &Dir, len: u64) -> File {
+        let file = part(&dir.0.join("f.vdmpart"));
+        file.set_len(len).unwrap();
+        file
+    }
+
+    /// 4 GiB: several seconds to read back and hash on any machine.
+    const LONG: u64 = 4 << 30;
+
+    #[test]
+    fn a_wait_for_the_digest_that_stops_ends_at_once_without_one() {
+        let dir = Dir::new("finish-stopped");
+        let frontier = HashFrontier::start(sized_part(&dir, LONG), HashAlgorithm::Sha256).unwrap();
+        let started = std::time::Instant::now();
+        let digest = frontier.finish_while(LONG, || false, Duration::from_millis(10));
+        assert!(digest.is_none(), "no digest after a stop");
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "stopped in {:?}",
+            started.elapsed()
+        );
+    }
+
+    #[test]
+    fn a_wait_that_goes_on_gets_the_digest() {
+        let dir = Dir::new("finish-goes-on");
+        let frontier = HashFrontier::start(sized_part(&dir, 1000), HashAlgorithm::Md5).unwrap();
+        let digest = frontier.finish_while(1000, || true, Duration::from_millis(10));
+        assert_eq!(
+            digest.expect("a digest").expect("hashed"),
+            digest_of(HashAlgorithm::Md5, &[0; 1000])
+        );
+    }
+
+    #[test]
+    fn a_wait_for_piece_verdicts_that_stops_ends_at_once() {
+        let dir = Dir::new("settle-stopped");
+        let hashes = PieceHashes {
+            algorithm: HashAlgorithm::Sha256,
+            length: LONG,
+            hex: vec!["0".repeat(64)],
+        };
+        let mut pieces = PieceCheck::start(sized_part(&dir, LONG), &hashes).unwrap();
+        let covered = Coverage::of(&[(0, LONG)]);
+        let started = std::time::Instant::now();
+        let verdicts = pieces
+            .settle_while(&covered, LONG, || false, Duration::from_millis(10))
+            .expect("no read error");
+        assert!(verdicts.is_none(), "no verdicts after a stop");
+        drop(pieces);
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "stopped in {:?}",
+            started.elapsed()
         );
     }
 
