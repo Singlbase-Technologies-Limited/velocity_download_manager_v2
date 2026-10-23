@@ -14,6 +14,7 @@ use std::time::Instant;
 use velocity_curl::{CurlLoop, Libcurl, LoopOptions};
 use velocity_transfer::download::{download_with, Cadence, Control, DownloadOptions};
 use velocity_transfer::engine::{MAX_CONNECTIONS, PROBE_BYTES};
+use velocity_transfer::retry::RetryPolicy;
 use velocity_transfer::scheduler::Sizes;
 use velocity_transfer::stdio;
 
@@ -46,6 +47,7 @@ fn parse_get(args: &[String]) -> Result<(String, PathBuf, DownloadOptions), Stri
         probe_bytes: PROBE_BYTES,
         leases: Sizes::DEFAULT,
         checkpoints: Cadence::DEFAULT,
+        retry: RetryPolicy::DEFAULT,
     };
     let mut rest = args.iter();
     while let Some(arg) = rest.next() {

@@ -28,6 +28,7 @@ use crate::download::{
     download_resumable, part_path, Cadence, Control, DownloadError, DownloadOptions,
 };
 use crate::files;
+use crate::retry::RetryPolicy;
 use crate::scheduler::Sizes;
 
 /// The most connections one transfer may use. A starting value for #47 to tune, not a requirement.
@@ -420,6 +421,7 @@ fn run(shared: &Shared, id: TransferId, job: &Job, resume: Option<&Resume>, cont
         probe_bytes: PROBE_BYTES,
         leases: Sizes::DEFAULT,
         checkpoints: Cadence::DEFAULT,
+        retry: RetryPolicy::DEFAULT,
     };
     let result = download_resumable(
         &shared.curl,

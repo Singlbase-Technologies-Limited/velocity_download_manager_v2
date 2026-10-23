@@ -14,6 +14,7 @@ use velocity_transfer::download::{
     download, download_resumable, download_with, Cadence, Control, DownloadError, DownloadOptions,
     Mode,
 };
+use velocity_transfer::retry::RetryPolicy;
 use velocity_transfer::scheduler::Sizes;
 
 struct Dir(PathBuf);
@@ -69,6 +70,18 @@ const OPTIONS: DownloadOptions = DownloadOptions {
     probe_bytes: 64 * 1024,
     leases: Sizes::DEFAULT,
     checkpoints: Cadence::DEFAULT,
+    retry: FAST_RETRY,
+};
+
+/// Short waits, so tests that meet a transient failure don't wait out the production policy.
+const FAST_RETRY: RetryPolicy = RetryPolicy {
+    first_wait: Duration::from_millis(20),
+    max_wait: Duration::from_millis(200),
+    throttled_wait: Duration::from_millis(100),
+    max_retry_after: Duration::from_millis(200),
+    stalled_after: Duration::from_secs(5),
+    reset_after: Duration::from_secs(10),
+    ..RetryPolicy::DEFAULT
 };
 
 #[test]
@@ -299,8 +312,9 @@ fn bytes_past_a_segments_end_are_dropped_and_counted_as_wasted() {
 
 #[test]
 fn error_statuses_from_the_probe_are_classified_and_leave_nothing_behind() {
-    // Report 5.1: 401/407 → credentials needed, no retry; 429/503 → throttled (the wait is #48);
-    // other 5xx → transient.
+    // Report 5.1: 401/407 → credentials needed, no retry; 429/503 → throttled; other 5xx →
+    // transient. Since #48 a retryable status is retried until the policy gives up; the server
+    // here never stops failing.
     for (status, class) in [
         (401, FailureClass::Permanent),
         (407, FailureClass::Permanent),
@@ -318,7 +332,12 @@ fn error_statuses_from_the_probe_are_classified_and_leave_nothing_behind() {
             }
             other => panic!("{status}: expected a refused probe, got {other:?}"),
         }
-        assert_eq!(s.counters().gets, 1, "{status}: no retry here");
+        let tries = if class == FailureClass::Permanent {
+            1
+        } else {
+            u64::from(FAST_RETRY.failures_in_a_row)
+        };
+        assert_eq!(s.counters().gets, tries, "{status}");
         assert!(!dest.exists() && !part_of(&dest).exists(), "{status}");
     }
 }
@@ -422,6 +441,7 @@ fn a_split_stops_the_old_request_at_the_new_boundary() {
             align: 4 << 10,
         },
         checkpoints: Cadence::DEFAULT,
+        retry: FAST_RETRY,
     };
     let report = download(&curl_loop(), &server.url("f.bin"), &dest, options)
         .expect("the download succeeds");

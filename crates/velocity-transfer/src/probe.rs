@@ -32,7 +32,8 @@ pub enum SegmentRejection {
     /// isn't the one this download started (report section 5.3). Its old bytes are never mixed with
     /// new ones; a resumed download starts over (#43), and validators extend this in #45.
     Changed(TransferError),
-    /// An error status. Not retried here; retries are #48.
+    /// An error status, or an answer that can't be used. The retry policy decides from its class
+    /// (#48).
     Invalid(TransferError),
 }
 
@@ -190,24 +191,12 @@ pub fn check_segment(
     Ok(got_end)
 }
 
-/// Error statuses, classified for retries (#48 refines them).
+/// Error statuses, classified with their messages (`failure::status_failure`, #48).
 fn status_error(head: &ResponseHead) -> Result<(), TransferError> {
-    let s = head.status;
-    let class = match s {
-        401 | 407 => {
-            return Err(TransferError::new(
-                FailureClass::Permanent,
-                Some(s),
-                "the server needs credentials",
-            ))
-        }
-        429 | 503 => FailureClass::Throttled,
-        416 => return Ok(()),
-        400..=499 => FailureClass::Permanent,
-        500..=599 => FailureClass::Transient,
-        _ => return Ok(()),
-    };
-    Err(TransferError::new(class, Some(s), &format!("HTTP {s}")))
+    match crate::failure::status_failure(head.status) {
+        Some(e) => Err(e),
+        None => Ok(()),
+    }
 }
 
 /// No `Accept-Encoding` is sent, so any encoding but identity isn't the file's own bytes.

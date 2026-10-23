@@ -5,9 +5,11 @@
 pub mod download;
 pub mod engine;
 pub mod engine_log;
+mod failure;
 pub mod files;
 pub mod probe;
 pub mod protocol;
+pub mod retry;
 pub mod scheduler;
 pub mod stdio;
 pub mod supervisor;

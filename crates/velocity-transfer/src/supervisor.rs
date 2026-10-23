@@ -60,10 +60,8 @@ impl Default for SupervisorOptions {
 impl SupervisorOptions {
     /// The wait before restart number `attempt` (from 1): doubling from the first backoff.
     fn backoff(&self, attempt: usize) -> Duration {
-        let doublings = attempt.saturating_sub(1).min(16) as u32;
-        self.first_backoff
-            .saturating_mul(1 << doublings)
-            .min(self.max_backoff)
+        let step = u32::try_from(attempt).unwrap_or(u32::MAX);
+        crate::retry::doubled(self.first_backoff, step).min(self.max_backoff)
     }
 }
 

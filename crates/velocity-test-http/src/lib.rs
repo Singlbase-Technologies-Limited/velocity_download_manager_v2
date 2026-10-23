@@ -57,6 +57,29 @@ pub struct ServerOptions {
     /// Paths answered with `302 Found` and this `Location`, for example to test that a redirect
     /// to a protocol outside the engine's allowlist is refused.
     pub redirects: Vec<(String, String)>,
+    /// Answers the first requests with an error status, before any other mode (#48).
+    pub first_statuses: Option<FirstStatuses>,
+    /// Closes the first this many connections after reading a request, without answering (#48).
+    pub drop_first: u32,
+    /// Freezes the first response to a range after byte 0: it sends `after` body bytes, then
+    /// nothing for `hold`, then closes the connection (#48).
+    pub freeze_later_range: Option<Freeze>,
+}
+
+/// The first `count` requests are answered with `status` and an empty body, with this
+/// `Retry-After` value if any.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FirstStatuses {
+    pub status: u16,
+    pub count: u32,
+    pub retry_after: Option<String>,
+}
+
+/// See [`ServerOptions::freeze_later_range`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Freeze {
+    pub after: u64,
+    pub hold: Duration,
 }
 
 /// What the server has seen and sent so far.
@@ -73,6 +96,14 @@ pub struct Counters {
     pub faults: u32,
     /// Whether the response that [`ServerOptions::throttle_first_later_range`] slows was sent.
     pub slowed: bool,
+    /// When each GET arrived, in order.
+    pub request_times: Vec<Instant>,
+    /// Requests answered by [`ServerOptions::first_statuses`].
+    pub first_statuses_sent: u32,
+    /// Connections closed by [`ServerOptions::drop_first`].
+    pub dropped: u32,
+    /// Whether the response that [`ServerOptions::freeze_later_range`] freezes was sent.
+    pub frozen: bool,
 }
 
 /// A running server on 127.0.0.1 and a free port. It stops when dropped.
@@ -253,11 +284,34 @@ fn serve_connection(
             } else {
                 c.gets += 1;
                 c.ranges.push(req.header("Range").map(str::to_owned));
+                c.request_times.push(Instant::now());
             }
         }
         let close = req
             .header("Connection")
             .is_some_and(|v| v.eq_ignore_ascii_case("close"));
+        if !head && take_count(counters, |c| &mut c.dropped, options.drop_first) {
+            // Close without a byte of answer: the client sees an empty reply.
+            return;
+        }
+        if let Some(first) = options.first_statuses.as_ref() {
+            if !head && take_count(counters, |c| &mut c.first_statuses_sent, first.count) {
+                let retry = first
+                    .retry_after
+                    .as_ref()
+                    .map(|v| format!("Retry-After: {v}\r\n"))
+                    .unwrap_or_default();
+                let code = first.status;
+                let _ = out.write_all(
+                    format!("HTTP/1.1 {code} Status\r\nContent-Length: 0\r\n{retry}\r\n")
+                        .as_bytes(),
+                );
+                if close {
+                    return;
+                }
+                continue;
+            }
+        }
         if let Some((_, location)) = options.redirects.iter().find(|(p, _)| *p == req.path) {
             let _ = out.write_all(
                 format!("HTTP/1.1 302 Found\r\nLocation: {location}\r\nContent-Length: 0\r\n\r\n")
@@ -376,6 +430,21 @@ fn serve_connection(
             );
             return;
         }
+        if let (Some(freeze), Some((start, _))) = (options.freeze_later_range, range) {
+            let first = {
+                let mut c = counters.lock().unwrap();
+                let first = start > 0 && !c.frozen;
+                c.frozen |= first;
+                first
+            };
+            if first {
+                let cut = (freeze.after as usize).min(body.len());
+                if write_body(&mut out, &body[..cut], None, counters).is_ok() {
+                    thread::sleep(freeze.hold);
+                }
+                return;
+            }
+        }
         let mut rate = options.throttle_bytes_per_sec;
         if let (Some(slow), Some((start, _))) = (options.throttle_first_later_range, range) {
             let mut c = counters.lock().unwrap();
@@ -390,6 +459,22 @@ fn serve_connection(
         if close {
             return;
         }
+    }
+}
+
+/// Counts one more of the first `limit` requests in the counter `field` picks, if there is room.
+fn take_count(
+    counters: &Mutex<Counters>,
+    field: impl Fn(&mut Counters) -> &mut u32,
+    limit: u32,
+) -> bool {
+    let mut c = counters.lock().unwrap();
+    let n = field(&mut c);
+    if *n < limit {
+        *n += 1;
+        true
+    } else {
+        false
     }
 }
 
