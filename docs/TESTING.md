@@ -93,12 +93,13 @@ From most numerous and fastest to fewest and slowest. Each layer proves what the
 
 | Fixture | Fault switches (research report section 5.4) | Used by | Built in |
 |---|---|---|---|
-| HTTP/1.1 range server (`crates/velocity-test-http`, standard library only) | **Built:** ranges honoured, Range ignored (`200`), `200` for a non-zero range, malformed `Content-Range`, short `206`, unknown total (`*/`), multipart, cut and overrunning bodies, throttling per connection, configured redirects, connections closed without an answer, and counters for connections, GETs, HEADs, body bytes, `Range` headers and request times. **To add:** throttling per IP | Probe, scheduler, retries | **#37** (first modes), extended by #41, #42 and #48 |
+| HTTP/1.1 range server (`crates/velocity-test-http`, standard library only) | **Built:** ranges honoured, Range ignored (`200`), `200` for a non-zero range, malformed `Content-Range`, short `206`, unknown total (`*/`), multipart, cut and overrunning bodies, throttling per connection and per IP (all connections together), configured redirects, connections closed without an answer, and counters for connections, GETs, HEADs, body bytes, `Range` headers, request times and responses sent at once | Probe, scheduler, retries, connections | **#37** (first modes), extended by #41, #42, #47 and #48 |
 | Changed-object modes | New strong ETag mid-download, ETag dropped, weak ETag only, Last-Modified only, content changed with the ETag kept | Validators, resume | **#45** |
 | Throttle and politeness modes | Speed limits (#49) need no server mode: the server sends as fast as asked, and the engine paces itself. **Built** (#48): `429` and `503` with `Retry-After` on the first requests, a slow but healthy 20 KiB/s stream, a frozen later range. `freeze_process` freezes a whole engine process for the supervisor's hang test | Retries, stall detection, limits | **#48**, #49 |
 | Encoding modes | Unrequested `gzip`, `Content-Encoding` changing between responses | Range safety | **#41** |
 | HTTPS with a test CA | Valid, expired, wrong host, wrong purpose (client-auth or code-signing only), untrusted CA; per TLS backend | TLS rules | **#69** |
-| HTTP/2 (TLS) | Throttling per TCP connection against per stream | Multiplexing policy | **#47** |
+| HTTP/2 over cleartext (`Http2Server` in `crates/velocity-test-http`, on `h2` and tokio) | **Built:** the HTTP/1.1 server's range modes as concurrent streams, throttling per stream or per TCP connection, a slowed first later range, and counters for TCP connections, streams and stream resets. libcurl reaches it with prior knowledge through the `test-h2c` feature of `velocity-curl`, which only test builds have: an optimised build with it doesn't compile (PO decision on #47) | Multiplexing policy, probe and split over HTTP/2 | **#47** |
+| HTTP/2 over TLS | ALPN negotiation against a local HTTPS server. Windows' Schannel refuses a test CA without a revocation source, so the fixture must serve one | TLS rules | **#69** |
 | Redirects across origins | Cross-host redirect with credentials and cookies, https→http, redirect to `file:` or `sftp:` | Credential and protocol rules | **#40**, #67, #70 |
 | FTP (passive, EPSV) and FTPS | Login, `SIZE`, `REST` resume, a missing file | FTP | **#51** |
 | SFTP (OpenSSH) | Unknown, changed and known host keys; resume after a cut | SFTP | **#53**: needs OpenSSH, a platform dependency needing approval. On Linux, a local `sshd`; on Windows, availability must be checked (Windows OpenSSH Server or WSL), otherwise NOT RUN |
@@ -140,7 +141,8 @@ Test tools are dependencies too. Each needs PO approval before it's added ([DEPE
 | A DOM-testing library for React | UI tests | #29 or #59 |
 | A browser driver (for example Playwright) | Browser end-to-end | #64 |
 | OpenSSH server | SFTP fixtures | #53 |
-| An HTTP/2 or TLS server for fixtures (Node's built-in `http2` and `tls` first) | h2 and TLS fixtures | #47, #69 |
+| `h2`, tokio, `http` and `bytes` (**approved**, test-only) | The HTTP/2 fixture server | #47 |
+| A TLS server for fixtures | TLS fixtures | #69 |
 
 Without approval, a hand-written seeded generator or a Node built-in module is the fallback.
 
