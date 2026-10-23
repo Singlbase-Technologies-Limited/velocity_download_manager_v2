@@ -588,6 +588,8 @@ fn run_loop(inbox: Receiver<Command>, waker_tx: Sender<MultiWaker>) {
         return;
     }
     let mut active: HashMap<usize, Easy2Handle<Collector>> = HashMap::new();
+    // Where the next round of resuming rate-paused transfers starts (#49).
+    let mut turn = 0usize;
     loop {
         // Commands first: with nothing running, wait for one instead of polling.
         let mut next = if active.is_empty() {
@@ -648,16 +650,27 @@ fn run_loop(inbox: Receiver<Command>, waker_tx: Sender<MultiWaker>) {
             continue;
         }
         // Transfers paused by a speed limit go on once all their limits have tokens again.
-        let mut rate_paused = false;
-        for handle in active.values() {
+        // Resuming one hands it the bytes libcurl kept at once, so whoever is resumed first takes
+        // a shared limit's tokens first: the order turns each round, so no transfer is always
+        // last.
+        let mut waiting: Vec<usize> = active
+            .iter()
+            .filter(|(_, h)| h.get_ref().flow.rate_paused.load(Ordering::Acquire))
+            .map(|(token, _)| *token)
+            .collect();
+        let rate_paused = !waiting.is_empty();
+        if rate_paused {
+            waiting.sort_unstable();
+            let start = turn % waiting.len();
+            waiting.rotate_left(start);
+            turn = turn.wrapping_add(1);
+        }
+        for token in waiting {
+            let handle = &active[&token];
             let collector = handle.get_ref();
-            if collector.flow.rate_paused.load(Ordering::Acquire) {
-                if rate::ready(&collector.limits) {
-                    collector.flow.rate_paused.store(false, Ordering::Release);
-                    let _ = handle.unpause_write();
-                } else {
-                    rate_paused = true;
-                }
+            if rate::ready(&collector.limits) {
+                collector.flow.rate_paused.store(false, Ordering::Release);
+                let _ = handle.unpause_write();
             }
         }
         let _ = multi.perform();

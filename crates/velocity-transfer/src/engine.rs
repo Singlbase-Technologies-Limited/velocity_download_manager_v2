@@ -362,6 +362,10 @@ impl DirectTransfer for InProcessEngine {
         Err(ErrorCode::Unsupported)
     }
 
+    fn set_global_limits(&mut self, _limits: Limits) -> Result<(), ErrorCode> {
+        Err(ErrorCode::Unsupported)
+    }
+
     fn set_connections(&mut self, id: TransferId, _connections: u32) -> Result<u32, ErrorCode> {
         drop(self.known(id)?);
         Err(ErrorCode::Unsupported)

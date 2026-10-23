@@ -452,6 +452,10 @@ impl ChildProcessEngine {
         self.done(TransferCommand::SetLimits { id, limits })
     }
 
+    pub fn set_global_limits(&self, limits: Limits) -> Result<(), ErrorCode> {
+        self.done(TransferCommand::SetGlobalLimits { limits })
+    }
+
     pub fn set_connections(&self, id: TransferId, connections: u32) -> Result<u32, ErrorCode> {
         match self
             .connection
@@ -510,6 +514,10 @@ impl DirectTransfer for ChildProcessEngine {
 
     fn set_limits(&mut self, id: TransferId, limits: Limits) -> Result<(), ErrorCode> {
         ChildProcessEngine::set_limits(self, id, limits)
+    }
+
+    fn set_global_limits(&mut self, limits: Limits) -> Result<(), ErrorCode> {
+        ChildProcessEngine::set_global_limits(self, limits)
     }
 
     fn set_connections(&mut self, id: TransferId, connections: u32) -> Result<u32, ErrorCode> {

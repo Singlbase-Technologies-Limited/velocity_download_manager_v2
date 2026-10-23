@@ -18,7 +18,8 @@ use std::sync::mpsc::Receiver;
 /// Version of this contract. Raise it whenever a command, reply, event or type here changes
 /// incompatibly; an engine in a child process reports the version it speaks (#39).
 /// Version 2 (#43) added checkpoints: [`TransferSpec::resume`] and [`TransferEvent::Checkpoint`].
-pub const TRANSFER_CONTRACT_VERSION: u32 = 2;
+/// Version 3 (#49) added the global speed limit: [`DirectTransfer::set_global_limits`].
+pub const TRANSFER_CONTRACT_VERSION: u32 = 3;
 
 /// An engine's id for one transfer. Assigned by the engine, never reused, and never shown as the
 /// app's download id.
@@ -69,11 +70,24 @@ pub struct Checksum {
     pub hex: String,
 }
 
-/// Per-transfer limits. `None` means no limit.
+/// Speed limits, for one transfer or for all of them. `None` means no limit.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Limits {
     pub max_download_bps: Option<u64>,
+}
+
+impl Limits {
+    /// The lowest limit an engine accepts: 1 KiB/s, V1's smallest unit (#49).
+    pub const MIN_BPS: u64 = 1024;
+
+    /// `InvalidInput` for a limit below [`Limits::MIN_BPS`]; no limit is always valid.
+    pub fn check(&self) -> Result<(), ErrorCode> {
+        match self.max_download_bps {
+            Some(bps) if bps < Self::MIN_BPS => Err(ErrorCode::InvalidInput),
+            _ => Ok(()),
+        }
+    }
 }
 
 /// Everything an engine needs to start one direct transfer. The manager builds it from a
@@ -196,7 +210,10 @@ pub trait DirectTransfer: Send {
     /// Forgets a finished transfer (Completed, Failed or Removed) and its checkpoint. Files are
     /// kept.
     fn remove(&mut self, id: TransferId) -> Result<(), ErrorCode>;
+    /// Limits one transfer. It holds alongside the global limit: the lower of the two applies.
     fn set_limits(&mut self, id: TransferId, limits: Limits) -> Result<(), ErrorCode>;
+    /// Limits all transfers together; the allowance is shared among the active ones (#49).
+    fn set_global_limits(&mut self, limits: Limits) -> Result<(), ErrorCode>;
     /// Requests a connection count and returns the count the engine applied, which is at least 1
     /// and at most `capabilities().max_connections_per_host`.
     fn set_connections(&mut self, id: TransferId, connections: u32) -> Result<u32, ErrorCode>;
@@ -239,6 +256,9 @@ pub enum TransferCommand {
     SetConnections {
         id: TransferId,
         connections: u32,
+    },
+    SetGlobalLimits {
+        limits: Limits,
     },
     Snapshot {},
 }
@@ -290,6 +310,10 @@ pub fn dispatch(
         TransferCommand::SetConnections { id, connections } => TransferReply::Connections {
             connections: engine.set_connections(id, connections)?,
         },
+        TransferCommand::SetGlobalLimits { limits } => {
+            engine.set_global_limits(limits)?;
+            TransferReply::Done {}
+        }
         TransferCommand::Snapshot {} => TransferReply::Snapshot {
             transfers: engine.snapshot()?,
         },
@@ -391,6 +415,11 @@ mod tests {
                 id: TransferId(1),
                 connections: 8,
             },
+            TransferCommand::SetGlobalLimits {
+                limits: Limits {
+                    max_download_bps: Some(4 << 20),
+                },
+            },
             TransferCommand::Snapshot {},
         ] {
             round_trip(&command);
@@ -442,6 +471,12 @@ mod tests {
             refuses_an_extra_field(&add, pointer);
         }
         refuses_an_extra_field(&TransferCommand::Snapshot {}, "");
+        let global = TransferCommand::SetGlobalLimits {
+            limits: Limits::default(),
+        };
+        for pointer in ["", "/limits"] {
+            refuses_an_extra_field(&global, pointer);
+        }
         refuses_an_extra_field(&TransferCommand::Pause { id: TransferId(1) }, "");
         refuses_an_extra_field(&TransferReply::Done {}, "");
         let capabilities = TransferReply::Capabilities {
@@ -565,6 +600,33 @@ mod tests {
     }
 
     #[test]
+    fn a_limit_below_one_kib_per_second_is_refused() {
+        let limit = |bps| Limits {
+            max_download_bps: bps,
+        };
+        assert_eq!(limit(None).check(), Ok(()));
+        assert_eq!(limit(Some(Limits::MIN_BPS)).check(), Ok(()));
+        assert_eq!(limit(Some(u64::MAX)).check(), Ok(()));
+        for bps in [0, 1, Limits::MIN_BPS - 1] {
+            assert_eq!(
+                limit(Some(bps)).check(),
+                Err(ErrorCode::InvalidInput),
+                "{bps}"
+            );
+        }
+        let mut engine = FakeTransfer::new();
+        let id = engine.add(spec()).unwrap();
+        assert_eq!(
+            engine.set_limits(id, limit(Some(0))),
+            Err(ErrorCode::InvalidInput)
+        );
+        assert_eq!(
+            engine.set_global_limits(limit(Some(0))),
+            Err(ErrorCode::InvalidInput)
+        );
+    }
+
+    #[test]
     fn every_subscriber_gets_every_later_event() {
         let mut engine = FakeTransfer::new();
         let (a, b) = (engine.subscribe(), engine.subscribe());
@@ -622,6 +684,17 @@ mod tests {
             dispatch(&mut engine, TransferCommand::Resume { id: TransferId(99) }),
             Err(ErrorCode::NotFound)
         );
+        let global = Limits {
+            max_download_bps: Some(4 << 20),
+        };
+        assert_eq!(
+            dispatch(
+                &mut engine,
+                TransferCommand::SetGlobalLimits { limits: global }
+            ),
+            Ok(TransferReply::Done {})
+        );
+        assert_eq!(engine.control().global_limits(), global);
         match dispatch(&mut engine, TransferCommand::Snapshot {}).unwrap() {
             TransferReply::Snapshot { transfers } => {
                 assert_eq!(transfers.len(), 1);

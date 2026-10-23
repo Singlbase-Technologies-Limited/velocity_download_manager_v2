@@ -16,6 +16,8 @@ struct State {
     subscribers: Vec<Sender<TransferEvent>>,
     /// Every command received, in order, for assertions.
     log: Vec<String>,
+    /// The limits from the last `set_global_limits`.
+    global_limits: Limits,
     /// Makes every command fail with this code, like an engine that stopped responding.
     unavailable: Option<ErrorCode>,
 }
@@ -128,6 +130,10 @@ impl FakeControl {
 
     pub fn limits(&self, id: TransferId) -> Limits {
         self.spec(id).limits
+    }
+
+    pub fn global_limits(&self) -> Limits {
+        lock(&self.state).global_limits
     }
 
     /// Reports bytes arriving: the transfer is Downloading with this progress.
@@ -258,7 +264,16 @@ impl DirectTransfer for FakeTransfer {
     fn set_limits(&mut self, id: TransferId, limits: Limits) -> Result<(), ErrorCode> {
         let mut s = lock(&self.state);
         s.command(format!("set_limits {}", id.0))?;
+        limits.check()?;
         s.transfer(id)?.spec.limits = limits;
+        Ok(())
+    }
+
+    fn set_global_limits(&mut self, limits: Limits) -> Result<(), ErrorCode> {
+        let mut s = lock(&self.state);
+        s.command("set_global_limits".to_owned())?;
+        limits.check()?;
+        s.global_limits = limits;
         Ok(())
     }
 

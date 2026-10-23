@@ -28,7 +28,8 @@ use std::time::{Duration, Instant, SystemTime};
 use velocity_core::domain::{DownloadStatus, FailureClass, TransferError};
 use velocity_core::transfer::{Checkpoint, Resume, CHECKPOINT_FORMAT};
 use velocity_curl::{
-    CurlLoop, Fetch, FetchError, FetchEvent, FetchLimit, FetchRequest, Gate, ResponseHead,
+    CurlLoop, Fetch, FetchError, FetchEvent, FetchLimit, FetchRequest, Gate, RateLimit,
+    ResponseHead,
 };
 
 use crate::failure::{self, fetch_failure};
@@ -66,6 +67,8 @@ pub struct Control {
     status: Option<StatusFn>,
     /// The status last passed to `status`, so each change is reported once.
     shown: Mutex<Option<DownloadStatus>>,
+    /// The speed limits every request of the download draws from (#49).
+    limits: Vec<RateLimit>,
 }
 
 impl Control {
@@ -91,6 +94,13 @@ impl Control {
     /// [`DownloadStatus::Downloading`] when bytes come again (#48).
     pub fn with_status(mut self, status: impl Fn(DownloadStatus) + Send + Sync + 'static) -> Self {
         self.status = Some(Box::new(status));
+        self
+    }
+
+    /// `limits` are the speed limits every request of the download draws from, such as its own
+    /// and the global one (#49).
+    pub fn with_limits(mut self, limits: Vec<RateLimit>) -> Self {
+        self.limits = limits;
         self
     }
 
@@ -660,24 +670,27 @@ fn probe(
         Arc::clone(&validators),
         retry_after.clone(),
     );
-    let fetch = lp.fetch(request, move |head: &ResponseHead| {
-        asked.note(head);
-        *seen.lock().expect("the validators lock") = (
-            head.header("etag").map(str::to_owned),
-            head.header("last-modified").map(str::to_owned),
-        );
-        if is_multipart(head) {
-            saw_multipart.store(true, Ordering::Release);
-            return Gate::Abort("a multipart/byteranges answer to one range".to_owned());
-        }
-        let result = classify_probe(head, probe_end);
-        let gate = match &result {
-            Ok(_) => Gate::Accept,
-            Err(e) => Gate::Abort(e.message.clone()),
-        };
-        *verdict.lock().expect("the probe verdict lock") = Some(result);
-        gate
-    });
+    let fetch = lp.fetch(
+        request.limited(&control.limits),
+        move |head: &ResponseHead| {
+            asked.note(head);
+            *seen.lock().expect("the validators lock") = (
+                head.header("etag").map(str::to_owned),
+                head.header("last-modified").map(str::to_owned),
+            );
+            if is_multipart(head) {
+                saw_multipart.store(true, Ordering::Release);
+                return Gate::Abort("a multipart/byteranges answer to one range".to_owned());
+            }
+            let result = classify_probe(head, probe_end);
+            let gate = match &result {
+                Ok(_) => Gate::Accept,
+                Err(e) => Gate::Abort(e.message.clone()),
+            };
+            *verdict.lock().expect("the probe verdict lock") = Some(result);
+            gate
+        },
+    );
     // The probe's bytes start at 0; how far they may go depends on its outcome.
     let mut cursor = 0u64;
     let drained = drain(&fetch, control, policy, |chunk| {
@@ -884,6 +897,7 @@ fn request(
     lease: Lease,
     tx: mpsc::SyncSender<(LeaseId, Segment)>,
     policy: &RetryPolicy,
+    limits: &[RateLimit],
 ) -> Active {
     let verdict: SegmentVerdict = Arc::new(Mutex::new(None));
     let v = Arc::clone(&verdict);
@@ -891,7 +905,7 @@ fn request(
     let asked = retry_after.clone();
     let (a, b) = (lease.start, lease.end - 1);
     let fetch = lp.fetch(
-        FetchRequest::range(url.to_owned(), a, Some(b)),
+        FetchRequest::range(url.to_owned(), a, Some(b)).limited(limits),
         move |head: &ResponseHead| {
             asked.note(head);
             let result = check_segment(head, a, b, total);
@@ -992,7 +1006,10 @@ fn fetch_ranges(
                 None => break,
             };
             fetches += 1;
-            active.insert(lease.id, request(lp, url, total, lease, tx.clone(), policy));
+            active.insert(
+                lease.id,
+                request(lp, url, total, lease, tx.clone(), policy, &control.limits),
+            );
         }
         if active.is_empty() {
             if waiting.is_empty() {
@@ -1156,7 +1173,7 @@ fn fetch_sequential(
         let retry_after = RetryAfter::default();
         let asked = retry_after.clone();
         let fetch = lp.fetch(
-            FetchRequest::range(url.to_owned(), from, None),
+            FetchRequest::range(url.to_owned(), from, None).limited(&control.limits),
             move |head: &ResponseHead| {
                 asked.note(head);
                 let result = check_continuation(head, from);
@@ -1262,7 +1279,7 @@ fn stream_gaps(
         let retry_after = RetryAfter::default();
         let asked = retry_after.clone();
         let fetch = lp.fetch(
-            FetchRequest::get(url.to_owned()),
+            FetchRequest::get(url.to_owned()).limited(&control.limits),
             move |head: &ResponseHead| {
                 asked.note(head);
                 let length = head

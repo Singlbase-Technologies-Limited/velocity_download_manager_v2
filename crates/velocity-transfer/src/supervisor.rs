@@ -530,6 +530,10 @@ impl DirectTransfer for SupervisedEngine {
         self.running(id)?.set_connections(id, connections)
     }
 
+    fn set_global_limits(&mut self, limits: Limits) -> Result<(), ErrorCode> {
+        self.engine()?.0.set_global_limits(limits)
+    }
+
     fn snapshot(&self) -> Result<Vec<TransferSnapshot>, ErrorCode> {
         let mut transfers = self.engine()?.0.snapshot()?;
         let state = self.shared.state();
