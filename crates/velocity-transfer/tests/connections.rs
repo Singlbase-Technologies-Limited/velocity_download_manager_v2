@@ -312,12 +312,14 @@ fn adaptive_connections_ramp_up_while_each_helps() {
 #[test]
 fn adaptive_connections_stop_below_the_cap_when_more_stop_helping() {
     let _serial = one_at_a_time();
-    // Per-IP throttle: 1 MiB/s per connection but 2.5 MiB/s in all, so 3 connections fill it and
-    // a 4th brings nothing. A cap of exactly 3 MiB/s let a 4th look like a 10% gain on CI, as 3
-    // never quite reach it while a new lease starts. 48 MiB, about 19 s, so the download is still
+    // Per-IP throttle: 1 MiB/s per connection but 1.5 MiB/s in all, so 2 connections fill it and
+    // a 3rd brings nothing. A correct ramp keeps 2 and peaks at 3, the one it tried. The checks
+    // below allow 4, one window's headroom: on CI's 2-vCPU runners, noise sometimes passes for a
+    // 10% gain once, which with 2.5 MiB/s in all (3 that help) took the peak to 5 (#159). Two
+    // noisy windows in a row would still fail it. 24 MiB, about 16 s, so the download is still
     // running when the ramp decides, however slowly a loaded machine lets it measure (#154).
-    let data = seeded_bytes(48 * MIB, 53);
-    let server = throttled_server(&data, MIB as u64, Some(5 * MIB as u64 / 2));
+    let data = seeded_bytes(24 * MIB, 53);
+    let server = throttled_server(&data, MIB as u64, Some(3 * MIB as u64 / 2));
     let dir = Dir::new("per-ip");
     let control = Arc::new(Control::default());
     let download = run(&server, &dir, ADAPTIVE, &control);
@@ -329,7 +331,7 @@ fn adaptive_connections_stop_below_the_cap_when_more_stop_helping() {
     let (kept, _) = control.connections_now().tuned.unwrap();
     assert!(
         kept <= 4,
-        "kept {kept}, more than the 3 that help and one to try"
+        "kept {kept}, more than the 2 that help, one to try and one noisy window"
     );
     let (dest, report) = download.join().unwrap();
     // Counted by the engine over the whole download: the server may count a stopped request's
