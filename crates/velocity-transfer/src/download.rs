@@ -822,16 +822,12 @@ fn probe_retrying(
     // The answer whose bytes were kept: every retry must be about the same file (#45).
     let mut earlier: Option<Answered> = None;
     loop {
-        let attempt = probe(
-            lp,
-            request.clone(),
-            probe_end,
-            part,
-            ck,
-            control,
-            policy,
-            earlier.as_ref(),
-        )?;
+        let ask = ProbeAsk {
+            request: request.clone(),
+            end: probe_end,
+            earlier: earlier.as_ref(),
+        };
+        let attempt = probe(lp, ask, part, ck, control, policy)?;
         match attempt {
             Ok(probed) => return Ok((probed, retries)),
             Err(failed) => {
@@ -848,20 +844,31 @@ fn probe_retrying(
     }
 }
 
+/// One probe attempt: its request, the last byte it asks for, and the earlier answer whose bytes
+/// were kept, which its answer must agree with (#45).
+struct ProbeAsk<'a> {
+    request: FetchRequest,
+    end: u64,
+    earlier: Option<&'a Answered>,
+}
+
 /// Runs the probe, or its retry without `Range`, and writes the bytes it may keep. The outcome is
 /// decided in the header callback, before the first byte. A failure worth retrying comes back as
 /// [`Retryable`]; a probe whose answer gave the file's total and was then cut off returns its
 /// outcome, and the range scheduler fetches the rest.
 fn probe(
     lp: &CurlLoop,
-    request: FetchRequest,
-    probe_end: u64,
+    ask: ProbeAsk,
     part: &mut PartFile,
     ck: &mut Checkpointer,
     control: &Control,
     policy: &RetryPolicy,
-    earlier: Option<&Answered>,
 ) -> Result<Result<Probed, Retryable>, DownloadError> {
+    let ProbeAsk {
+        request,
+        end: probe_end,
+        earlier,
+    } = ask;
     let probe_verdict = Arc::new(Mutex::new(None));
     let multipart = Arc::new(AtomicBool::new(false));
     let validators: Arc<Mutex<Option<Answered>>> = Arc::default();
@@ -1133,12 +1140,18 @@ fn answered_end(verdict: &SegmentVerdict) -> Option<u64> {
     }
 }
 
+/// What every segment request of one download is made from, and what its answer is checked
+/// against: the file's total and what the first answer said about it (#45).
+struct Asking<'a> {
+    base: &'a FetchRequest,
+    total: u64,
+    file: &'a Representation,
+}
+
 /// Starts the request for `lease`, `Range: bytes=start-(end−1)`, checked in the header callback.
 fn request(
     lp: &CurlLoop,
-    base: &FetchRequest,
-    total: u64,
-    file: &Representation,
+    asking: &Asking,
     lease: Lease,
     tx: mpsc::SyncSender<(LeaseId, Segment)>,
     policy: &RetryPolicy,
@@ -1151,11 +1164,11 @@ fn request(
     let (a, b) = (lease.start, lease.end - 1);
     let fetch_request = FetchRequest {
         range: Some((a, Some(b))),
-        ..base.clone()
+        ..asking.base.clone()
     }
-    .if_range(file.if_range())
+    .if_range(asking.file.if_range())
     .limited(&control.limits);
-    let file = file.clone();
+    let (total, file) = (asking.total, asking.file.clone());
     let fetch = lp.fetch(fetch_request, move |head: &ResponseHead| {
         asked.note(head);
         let result = check_segment(head, a, b, total, &file);
@@ -1349,9 +1362,11 @@ fn fetch_ranges(
                 lease.id,
                 request(
                     lp,
-                    &base,
-                    total,
-                    &ck.file,
+                    &Asking {
+                        base: &base,
+                        total,
+                        file: &ck.file,
+                    },
                     lease,
                     tx.clone(),
                     policy,
