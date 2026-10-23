@@ -405,3 +405,75 @@ fn a_paused_transfer_can_be_cancelled_and_its_part_file_goes() {
         assert!(!part_of(&dest).exists() && !dest.exists(), "{mode}");
     }
 }
+
+/// How long it takes transfer `id` to complete, from now.
+fn time_to_complete(events: &Receiver<TransferEvent>, id: TransferId) -> Duration {
+    let started = Instant::now();
+    let done = wait_for(events, id, |s| {
+        matches!(s, DownloadStatus::Completed | DownloadStatus::Failed)
+    });
+    assert_eq!(done.status, DownloadStatus::Completed, "{:?}", done.error);
+    started.elapsed()
+}
+
+#[test]
+fn speed_limits_are_checked_and_applied_live() {
+    // #49: a limit in the spec paces the transfer, set_limits changes it while it runs, and the
+    // global limit applies to every transfer. 512 KiB at 256 KiB/s takes about 2 s.
+    let data = seeded_bytes(512 * 1024, 32);
+    let server = TestServer::start(
+        vec![("f.bin".into(), data.clone())],
+        ServerOptions::default(),
+    );
+    let slow = Limits {
+        max_download_bps: Some(256 * 1024),
+    };
+    let too_low = Limits {
+        max_download_bps: Some(Limits::MIN_BPS - 1),
+    };
+    for (mode, mut engine) in engines() {
+        let dir = Dir::new(&format!("limits-{}", mode.replace(' ', "-")));
+        let events = engine.subscribe();
+
+        let mut limited = spec(server.url("f.bin"), dir.0.join("limited.bin"));
+        limited.limits = slow;
+        let id = engine.add(limited).expect("add");
+        let took = time_to_complete(&events, id);
+        assert!(took >= Duration::from_millis(1700), "{mode}: {took:?}");
+
+        // Lifted while it runs: it finishes long before 2 s.
+        let mut lifted = spec(server.url("f.bin"), dir.0.join("lifted.bin"));
+        lifted.limits = slow;
+        let id = engine.add(lifted).expect("add");
+        wait_for(&events, id, |s| s == DownloadStatus::Downloading);
+        engine
+            .set_limits(id, Limits::default())
+            .expect("set_limits");
+        let took = time_to_complete(&events, id);
+        assert!(took < Duration::from_millis(1500), "{mode}: {took:?}");
+
+        engine.set_global_limits(slow).expect("set_global_limits");
+        let id = engine
+            .add(spec(server.url("f.bin"), dir.0.join("global.bin")))
+            .expect("add");
+        let took = time_to_complete(&events, id);
+        assert!(took >= Duration::from_millis(1700), "{mode}: {took:?}");
+        engine
+            .set_global_limits(Limits::default())
+            .expect("lift the global limit");
+
+        assert_eq!(
+            engine.set_limits(id, too_low),
+            Err(ErrorCode::InvalidInput),
+            "{mode}"
+        );
+        assert_eq!(
+            engine.set_global_limits(too_low),
+            Err(ErrorCode::InvalidInput),
+            "{mode}"
+        );
+        let mut bad = spec(server.url("f.bin"), dir.0.join("bad.bin"));
+        bad.limits = too_low;
+        assert_eq!(engine.add(bad), Err(ErrorCode::InvalidInput), "{mode}");
+    }
+}

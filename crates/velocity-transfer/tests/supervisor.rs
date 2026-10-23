@@ -342,3 +342,33 @@ fn a_frozen_engine_is_killed_and_restarted_and_its_transfers_fail_as_retryable()
         .expect("the new engine takes transfers");
     assert!(next.0 > lost.0);
 }
+
+#[test]
+fn the_global_limit_survives_an_engine_restart() {
+    // #49: the supervisor gives a new engine the global limit the old one had. 512 KiB at
+    // 256 KiB/s takes about 2 s.
+    let server = TestServer::start(
+        vec![("small.bin".into(), seeded_bytes(512 * 1024, 49))],
+        ServerOptions::default(),
+    );
+    let dir = Dir::new("global-limit");
+    let mut engine = SupervisedEngine::start(program(), fast(5)).expect("the engine starts");
+    let health = engine.subscribe_health();
+    let events = engine.subscribe();
+    engine
+        .set_global_limits(Limits {
+            max_download_bps: Some(256 * 1024),
+        })
+        .expect("set_global_limits");
+    crash_and_recover(&engine, &health);
+    let started = Instant::now();
+    let id = engine
+        .add(spec(server.url("small.bin"), dir.0.join("out.bin")))
+        .expect("the new engine takes transfers");
+    let done = wait_for(&events, id, |s| {
+        matches!(s, DownloadStatus::Completed | DownloadStatus::Failed)
+    });
+    assert_eq!(done.status, DownloadStatus::Completed, "{:?}", done.error);
+    let took = started.elapsed();
+    assert!(took >= Duration::from_millis(1700), "{took:?}");
+}
