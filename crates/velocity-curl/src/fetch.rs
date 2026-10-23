@@ -52,6 +52,9 @@ pub struct FetchRequest {
     pub range: Option<(u64, Option<u64>)>,
     /// The speed limits the fetch draws from, such as its download's and the global one (#49).
     pub limits: Vec<RateLimit>,
+    /// Opens a connection of its own, closed when the fetch ends, instead of sharing one as an
+    /// HTTP/2 stream (`CURLOPT_FRESH_CONNECT`, `CURLOPT_FORBID_REUSE`; #47).
+    pub own_connection: bool,
 }
 
 impl FetchRequest {
@@ -60,6 +63,7 @@ impl FetchRequest {
             url,
             range: None,
             limits: Vec::new(),
+            own_connection: false,
         }
     }
 
@@ -68,7 +72,14 @@ impl FetchRequest {
             url,
             range: Some((start, end)),
             limits: Vec::new(),
+            own_connection: false,
         }
+    }
+
+    /// The same request, on a connection of its own (#47).
+    pub fn on_own_connection(mut self) -> Self {
+        self.own_connection = true;
+        self
     }
 
     /// The same request, drawing from `limits`.
@@ -83,6 +94,8 @@ impl FetchRequest {
 pub struct ResponseHead {
     pub status: u16,
     pub headers: Vec<(String, String)>,
+    /// It came over HTTP/2: its status line says `HTTP/2` (#47).
+    pub http2: bool,
 }
 
 impl ResponseHead {
@@ -209,6 +222,10 @@ pub struct LoopOptions {
     /// (`CURLMOPT_MAX_HOST_CONNECTIONS`). Fetches past it wait for a free connection. The engine's
     /// own budget keeps below it; this is the backstop (#47).
     pub max_connections_per_host: usize,
+    /// Speaks HTTP/2 to `http://` URLs without asking first (prior knowledge), for the HTTP/2 tests
+    /// against a local server without TLS. Test builds only (PO decision on #47).
+    #[cfg(feature = "test-h2c")]
+    pub http2_prior_knowledge: bool,
 }
 
 impl Default for LoopOptions {
@@ -220,6 +237,8 @@ impl Default for LoopOptions {
             buffer_bytes_per_fetch: 1024 * 1024,
             connect_timeout: Duration::from_secs(30),
             max_connections_per_host: 8,
+            #[cfg(feature = "test-h2c")]
+            http2_prior_knowledge: false,
         }
     }
 }
@@ -535,7 +554,11 @@ fn parse_head(lines: &[String]) -> Option<ResponseHead> {
         .filter_map(|l| l.split_once(':'))
         .map(|(k, v)| (k.trim().to_owned(), v.trim().to_owned()))
         .collect();
-    Some(ResponseHead { status, headers })
+    Some(ResponseHead {
+        status,
+        headers,
+        http2: lines.first()?.starts_with("HTTP/2"),
+    })
 }
 
 fn configure(
@@ -559,6 +582,19 @@ fn configure(
     easy.proxy("")?;
     set_string(&easy, CURLOPT_PROTOCOLS_STR, PROTOCOLS)?;
     set_string(&easy, CURLOPT_REDIR_PROTOCOLS_STR, REDIRECT_PROTOCOLS)?;
+    if request.own_connection {
+        // A connection of its own, closed at the end, so no other fetch shares it (#47).
+        easy.fresh_connect(true)?;
+        easy.forbid_reuse(true)?;
+    } else {
+        // HTTP/2 multiplexing first (report section 5.5): wait for a connection being set up to
+        // the same host, to share it if it turns out to speak HTTP/2, instead of opening another.
+        easy.pipewait(true)?;
+    }
+    #[cfg(feature = "test-h2c")]
+    if options.http2_prior_knowledge {
+        easy.http_version(curl::easy::HttpVersion::V2PriorKnowledge)?;
+    }
     Ok(easy)
 }
 

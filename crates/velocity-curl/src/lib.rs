@@ -1,6 +1,11 @@
 //! The libcurl layer of V2 (ADR-0002): the only crate that calls libcurl. It links the libcurl V2
 //! builds itself from verified sources (build.rs, docs/BUILDING_NATIVE.md).
 
+// HTTP/2 without TLS is for the tests against a local server only (PO decision on #47): an
+// optimised build with it doesn't compile, so a release can't contain it.
+#[cfg(all(feature = "test-h2c", not(debug_assertions)))]
+compile_error!("the test-h2c feature is for test builds only");
+
 mod capabilities;
 mod fetch;
 mod rate;
