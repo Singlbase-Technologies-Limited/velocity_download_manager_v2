@@ -806,7 +806,7 @@ impl Retrier {
 }
 
 /// Waits `wait` before a retry, showing Retrying, and stops early for a pause or a cancel.
-fn wait_out(control: &Control, wait: Duration) -> Result<(), DownloadError> {
+pub(crate) fn wait_out(control: &Control, wait: Duration) -> Result<(), DownloadError> {
     control.show(DownloadStatus::Retrying);
     let until = Instant::now() + wait;
     loop {
