@@ -643,8 +643,9 @@ fn jain(xs: &[f64]) -> f64 {
 #[test]
 fn downloads_from_one_host_share_its_cap_fairly() {
     // #47: 4 downloads each ask for 8 from one host with a cap of 8, so each is allowed 2. At
-    // 2 MiB/s per connection, a 24 MiB file takes about 6 s.
-    let data = seeded_bytes(24 << 20, 50);
+    // 2 MiB/s per connection, a 48 MiB file takes about 12 s, so each is still running when the
+    // last one has ramped up to its 2, however far apart they started (#154).
+    let data = seeded_bytes(48 << 20, 50);
     for (mode, mut engine) in engines() {
         let server = TestServer::start(
             vec![("f.bin".into(), data.clone())],
@@ -670,10 +671,14 @@ fn downloads_from_one_host_share_its_cap_fairly() {
         };
         let mut latest = HashMap::new();
         let deadline = Instant::now() + WAIT;
+        // Settled once each downloads on its 2: the allowance alone is set before a download has
+        // connected, and measuring then compared downloads still connecting (#154).
         while !ids.iter().all(|id| {
-            latest
-                .get(id)
-                .is_some_and(|s: &TransferSnapshot| s.progress.connection_detail == Some(shared))
+            latest.get(id).is_some_and(|s: &TransferSnapshot| {
+                s.progress.connection_detail == Some(shared)
+                    && s.status == DownloadStatus::Downloading
+                    && s.progress.connections == shared.allowed
+            })
         }) {
             assert!(Instant::now() < deadline, "{mode}: {latest:?}");
             latest_until(
