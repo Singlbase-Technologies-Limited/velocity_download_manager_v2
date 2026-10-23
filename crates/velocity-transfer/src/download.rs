@@ -19,7 +19,7 @@ use std::collections::HashMap;
 use std::fs::{self, File};
 use std::io;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::mpsc::{self, RecvTimeoutError};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -71,6 +71,9 @@ pub struct Control {
     limits: Vec<RateLimit>,
     /// The most bytes one of its requests held for the writer (#49); shared with the forwarders.
     peak_buffered: Arc<AtomicU64>,
+    /// The connections asked for while the download runs (#47). 0 until
+    /// [`Control::set_connections`] is called; [`DownloadOptions::connections`] applies until then.
+    connections: AtomicU32,
 }
 
 impl Control {
@@ -123,6 +126,21 @@ impl Control {
 
     pub fn is_cancelled(&self) -> bool {
         self.cancelled.load(Ordering::Acquire)
+    }
+
+    /// Changes the connections the download uses, at least 1, while it runs and without
+    /// restarting it (#47).
+    pub fn set_connections(&self, connections: u32) {
+        self.connections
+            .store(connections.max(1), Ordering::Release);
+    }
+
+    /// The connections asked for: the last [`Control::set_connections`], or `initial`.
+    fn connections(&self, initial: u32) -> u32 {
+        match self.connections.load(Ordering::Acquire) {
+            0 => initial.max(1),
+            n => n,
+        }
     }
 
     /// Reports progress. Bytes arriving also mean the download is downloading again.
@@ -879,6 +897,9 @@ struct Active {
     retry_after: RetryAfter,
     /// No byte has come for [`RetryPolicy::stalled_after`].
     quiet: bool,
+    /// Stopped because the download now uses fewer connections (#47): it ends at its next write,
+    /// and the rest of its lease is leased again.
+    retiring: bool,
 }
 
 type SegmentVerdict = Arc<Mutex<Option<Result<u64, SegmentRejection>>>>;
@@ -951,6 +972,7 @@ fn request(
         overran: false,
         retry_after,
         quiet: false,
+        retiring: false,
     }
 }
 
@@ -965,7 +987,9 @@ fn request(
 ///   missing bytes (report section 5.1, steps 4, 6 and 7);
 /// - a failure worth retrying, or a request silent for too long, frees its connection for a wait,
 ///   and the rest of its lease is leased again after it (#48). A throttling server halves the
-///   connections this download uses.
+///   connections this download uses;
+/// - the connections asked for may change while it runs ([`Control::set_connections`], #47): more
+///   take new leases at once, and fewer stop the newest requests, whose rest is leased again.
 ///
 /// Returns the fetches made, the splits and the mode.
 fn fetch_ranges(
@@ -978,15 +1002,17 @@ fn fetch_ranges(
     control: &Control,
 ) -> Result<(u32, u32, Mode), DownloadError> {
     let policy = &options.retry;
-    let mut connections = options.connections.max(1);
+    // The most connections a throttling server leaves this download (#48).
+    let mut throttled_to = u32::MAX;
     let mut sched = Scheduler::new(total, &part.coverage, options.leases);
     if ck.resumed {
         // What a resumed download starts with came from a checkpoint: it is on disk already.
         sched.synced();
     }
     // Bounded, so a slow writer stops the forwarders, which stops libcurl: an unbounded channel
-    // here once queued a whole file in memory (#38).
-    let (tx, rx) = mpsc::sync_channel(QUEUED_PER_SEGMENT * connections as usize);
+    // here once queued a whole file in memory (#38). It is sized for the starting connections;
+    // connections added later share it, which only holds them back sooner (#47).
+    let (tx, rx) = mpsc::sync_channel(QUEUED_PER_SEGMENT * options.connections.max(1) as usize);
     let mut active: HashMap<LeaseId, Active> = HashMap::new();
     // Connections waiting out a retry wait, by when each may be used again.
     let mut waiting: Vec<Instant> = Vec::new();
@@ -1001,6 +1027,19 @@ fn fetch_ranges(
         if failure.is_some() || changed.is_some() {
             // The download ends; nothing waits to be retried.
             waiting.clear();
+        }
+        let connections = control.connections(options.connections).min(throttled_to);
+        // Fewer connections asked for: the newest requests stop.
+        let mut live: Vec<LeaseId> = active
+            .iter()
+            .filter(|(_, a)| !a.retiring)
+            .map(|(id, _)| *id)
+            .collect();
+        live.sort_unstable_by_key(|id| id.0);
+        for id in live.iter().skip(connections as usize) {
+            let a = active.get_mut(id).expect("a live request");
+            a.retiring = true;
+            a.limit.stop_at(0);
         }
         // Fill the free connections, unless ranges stopped working for this download.
         while failure.is_none()
@@ -1058,7 +1097,7 @@ fn fetch_ranges(
                 Some(wait) => {
                     waiting.push(Instant::now() + wait);
                     if t.class == FailureClass::Throttled {
-                        connections = retry::after_throttling(connections);
+                        throttled_to = retry::after_throttling(connections);
                     }
                 }
                 None => failure = failure.take().or(Some(t)),
@@ -1077,9 +1116,11 @@ fn fetch_ranges(
             Segment::Reset => {
                 // The forwarder gave up on the request and cancelled it; its lease is ended, and
                 // the rest of it is leased again after the wait.
-                if active.remove(&id).is_some() {
+                if let Some(a) = active.remove(&id) {
                     sched.ended(id);
-                    retry_later(stall_error(policy), None, part.written);
+                    if !a.retiring {
+                        retry_later(stall_error(policy), None, part.written);
+                    }
                 }
             }
             Segment::Fetch(FetchEvent::Head(_)) => {
@@ -1117,6 +1158,14 @@ fn fetch_ranges(
                 };
                 let verdict = a.verdict.lock().expect("the segment verdict lock").take();
                 let unfinished = sched.lease(id).is_some_and(|l| l.cursor < l.end);
+                if a.retiring {
+                    // Stopped on purpose: only a changed file still matters.
+                    if let Some(Err(SegmentRejection::Changed(t))) = verdict {
+                        changed = changed.or(Some(t));
+                    }
+                    sched.ended(id);
+                    continue;
+                }
                 match (verdict, result) {
                     (Some(Err(SegmentRejection::RangesIgnored)), _) => ranges_ignored = true,
                     (Some(Err(SegmentRejection::Anomaly(_))), _) => anomalies += 1,
