@@ -32,6 +32,11 @@ httpdate = "=1.0.3"
 # Random spread (jitter) for the engine's retry waits (PO-approved on #48, 2026-10-23). Not for
 # anything security-related. The same version Tauri's build already brought.
 fastrand = "=2.5.0"
+# Whole-file and piece checksums for the engine (PO-approved on #46, 2026-10-23): RustCrypto's MD5,
+# SHA-1 and SHA-2 (224, 256, 384, 512). No default features: no `alloc` or `oid`, only `Digest`.
+sha2 = { version = "=0.11.1", default-features = false }
+sha1 = { version = "=0.11.0", default-features = false }
+md-5 = { version = "=0.11.0", default-features = false }
 # libcurl's C API, for crates/velocity-curl only (PO-approved on #35, 2026-10-22). Its bundled
 # build never runs: .cargo/config.toml overrides it, and velocity-curl links the Velocity-built
 # libcurl (docs/BUILDING_NATIVE.md). No default features, so it pulls in no openssl-sys.
