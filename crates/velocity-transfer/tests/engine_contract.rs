@@ -593,6 +593,33 @@ fn latest_until(
     }
 }
 
+/// Waits until every one of `ids` has ended, and checks each completed. `latest` holds the
+/// snapshots read so far, which may already include some of the ends.
+fn all_completed(
+    events: &Receiver<TransferEvent>,
+    latest: &mut HashMap<TransferId, TransferSnapshot>,
+    ids: &[TransferId],
+    mode: &str,
+) {
+    let deadline = Instant::now() + WAIT;
+    let ended = |s: Option<&TransferSnapshot>| {
+        s.is_some_and(|s| matches!(s.status, DownloadStatus::Completed | DownloadStatus::Failed))
+    };
+    while !ids.iter().all(|id| ended(latest.get(id))) {
+        assert!(Instant::now() < deadline, "{mode}: {latest:?}");
+        latest_until(events, latest, Instant::now() + Duration::from_millis(50));
+    }
+    for id in ids {
+        let done = &latest[id];
+        assert_eq!(
+            done.status,
+            DownloadStatus::Completed,
+            "{mode}: {:?}",
+            done.error
+        );
+    }
+}
+
 /// Jain's fairness index: 1 when all are equal, 1/n when one gets everything.
 fn jain(xs: &[f64]) -> f64 {
     let sum: f64 = xs.iter().sum();
@@ -670,31 +697,54 @@ fn downloads_from_one_host_share_its_cap_fairly() {
             "{mode}: Jain's index {index:.3} for {rates:?}"
         );
 
-        // The events read so far may already hold some of the ends.
-        let ended = |s: &TransferSnapshot| {
-            matches!(s.status, DownloadStatus::Completed | DownloadStatus::Failed)
-        };
-        while !ids.iter().all(|id| ended(&latest[id])) {
-            assert!(Instant::now() < deadline, "{mode}: {latest:?}");
-            latest_until(
-                &events,
-                &mut latest,
-                Instant::now() + Duration::from_millis(50),
-            );
-        }
-        for id in &ids {
-            let done = &latest[id];
-            assert_eq!(
-                done.status,
-                DownloadStatus::Completed,
-                "{mode}: {:?}",
-                done.error
-            );
-        }
+        all_completed(&events, &mut latest, &ids, mode);
         let peak = server.counters().peak_answering;
         assert!(
             peak <= cap,
             "{mode}: {peak} responses at once, over the cap of {cap}"
         );
+    }
+}
+
+#[test]
+fn small_files_reuse_connections() {
+    // #47: 40 files of 256 KiB from one host, smaller than the probe, so one GET each. One after
+    // another, they reuse one keep-alive connection; added at once, the per-host cap bounds the
+    // connections and the rest reuse them.
+    let data = seeded_bytes(256 * 1024, 51);
+    for (mode, mut engine) in engines() {
+        let server = TestServer::start(
+            vec![("f.bin".into(), data.clone())],
+            ServerOptions::default(),
+        );
+        let cap = engine.capabilities().max_connections_per_host;
+        let dir = Dir::new(&format!("reuse-{}", mode.replace(' ', "-")));
+        let events = engine.subscribe();
+        for i in 0..40 {
+            let id = engine
+                .add(spec(server.url("f.bin"), dir.0.join(format!("one{i}.bin"))))
+                .expect("add");
+            time_to_complete(&events, id);
+        }
+        let one_by_one = server.counters().connections;
+        assert_eq!(
+            one_by_one, 1,
+            "{mode}: 40 files one by one used {one_by_one} connections"
+        );
+
+        let ids: Vec<TransferId> = (0..40)
+            .map(|i| {
+                engine
+                    .add(spec(server.url("f.bin"), dir.0.join(format!("all{i}.bin"))))
+                    .expect("add")
+            })
+            .collect();
+        all_completed(&events, &mut HashMap::new(), &ids, mode);
+        let at_once = server.counters().connections - one_by_one;
+        assert!(
+            at_once <= u64::from(cap),
+            "{mode}: 40 files at once used {at_once} new connections, over the cap of {cap}"
+        );
+        assert_eq!(server.counters().gets, 80, "{mode}: one GET per file");
     }
 }
