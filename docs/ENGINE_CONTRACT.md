@@ -2,7 +2,7 @@
 
 The manager talks to a direct-download engine (HTTP, FTP, SFTP, Metalink) only through the `DirectTransfer` contract in [`crates/velocity-core/src/transfer.rs`](../crates/velocity-core/src/transfer.rs) (#36, [ADR-0002](decisions/0002-engine-crate-layout.md)). The manager never sees libcurl types, engine-internal ids or aria2 vocabulary. Torrent operations (trackers, peers, file priorities, seeding, magnet metadata) are not part of this contract; they belong to the torrent bridge (research report section 4.2).
 
-Contract version: `TRANSFER_CONTRACT_VERSION = 1`. Raise it with any incompatible change to a command, reply, event or type.
+Contract version: `TRANSFER_CONTRACT_VERSION = 2`. Raise it with any incompatible change to a command, reply, event or type. Version 2 added checkpoints (#43).
 
 ## Commands
 
@@ -28,6 +28,23 @@ Commands fail with an `ErrorCode` ([CONTRACTS.md](CONTRACTS.md)): `NotFound` for
 - **`TransferEvent`:** `changed { snapshot }` or `removed { id }`.
 
 A direct engine reports only these statuses: Queued, Connecting, Downloading, Retrying, Stalled, Paused, Verifying, Completed, Failed and Removed. "Cancelled" in the research report is Removed here.
+
+## Checkpoints and resuming (#43)
+
+- **`TransferEvent::Checkpoint { id, checkpoint }`:** the engine synced the transfer's part file, and the checkpoint's durable byte ranges are on disk. The app saves it.
+- **`TransferSpec::resume`:** how to treat what an earlier attempt left on disk.
+  - `None`: a new download.
+  - `Resume::Checkpoint { checkpoint }`: continue from a saved checkpoint.
+  - `Resume::DiscardPartFile {}`: the part file is the download's own but has no usable checkpoint; delete it and start over.
+- **`Checkpoint`:**
+  - `format`;
+  - `source`, the URL without login, query or fragment (`Checkpoint::source_of`);
+  - `total`;
+  - `etag` and `lastModified`;
+  - `durable`, half-open byte ranges.
+
+  No credential and no URL query is ever in it. The engine checks a returned checkpoint like any other input: one that doesn't fit its file isn't trusted.
+- **`pause` and `resume`** work since #43: a paused transfer keeps its part file and its last checkpoint. The rules are in [ENGINE_INTERNALS.md](ENGINE_INTERNALS.md#persistence-and-recovery-43).
 
 ## Secrets
 

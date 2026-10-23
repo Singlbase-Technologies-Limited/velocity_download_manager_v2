@@ -10,6 +10,7 @@
 //!   record is never routed to an engine.
 //! - **No secrets:** nothing that holds credentials or header values can be stored.
 
+mod checkpoints;
 mod downloads;
 mod settings;
 
@@ -24,7 +25,10 @@ use rusqlite_migration::{Migrations, M};
 
 use crate::domain::ErrorCode;
 
-const MIGRATIONS: &[M<'static>] = &[M::up(include_str!("../../migrations/0001_initial.sql"))];
+const MIGRATIONS: &[M<'static>] = &[
+    M::up(include_str!("../../migrations/0001_initial.sql")),
+    M::up(include_str!("../../migrations/0002_checkpoints.sql")),
+];
 
 /// The migrations this build applies.
 pub fn migrations() -> Migrations<'static> {
@@ -290,7 +294,9 @@ fn backup(conn: &Connection, path: &Path, version: u32) -> Result<(), DatabaseEr
 mod tests {
     use super::*;
     use crate::domain::{DownloadKind, DownloadStatus};
-    use crate::transfer::{CredentialHandle, Header, Limits, TransferSpec};
+    use crate::transfer::{
+        Checkpoint, CredentialHandle, Header, Limits, Resume, TransferSpec, CHECKPOINT_FORMAT,
+    };
 
     /// A fresh directory for one test.
     struct Dir(PathBuf);
@@ -324,13 +330,14 @@ mod tests {
         }
     }
 
-    /// Schema 1 plus a test-only second migration, to prove the upgrade path.
-    fn with_v2() -> Migrations<'static> {
-        Migrations::new(vec![
-            MIGRATIONS[0].clone(),
-            M::up("ALTER TABLE downloads ADD COLUMN note TEXT;"),
-        ])
+    /// This build's migrations plus a test-only next one, to prove the upgrade path.
+    fn with_next(sql: &'static str) -> Migrations<'static> {
+        let mut all = MIGRATIONS.to_vec();
+        all.push(M::up(sql));
+        Migrations::new(all)
     }
+
+    const NEXT: &str = "ALTER TABLE downloads ADD COLUMN note TEXT;";
 
     fn sample(id: &str) -> NewDownload {
         NewDownload {
@@ -354,14 +361,14 @@ mod tests {
     #[test]
     fn the_migrations_are_valid() {
         assert_eq!(migrations().validate(), Ok(()));
-        assert_eq!(latest_schema_version(), 1);
+        assert_eq!(latest_schema_version(), 2);
     }
 
     #[test]
     fn a_new_database_is_created_at_the_latest_schema() {
         let dir = Dir::new("new");
         let db = Database::open(&dir.db()).expect("opens");
-        assert_eq!(db.schema_version(), Ok(1));
+        assert_eq!(db.schema_version(), Ok(latest_schema_version()));
         assert_eq!(db.path(), Some(dir.db().as_path()));
         drop(db);
         assert!(
@@ -395,14 +402,15 @@ mod tests {
             let db = open_with(&dir.db(), &Migrations::from_slice(MIGRATIONS)).unwrap();
             db.insert_download(&sample("d-0001")).unwrap();
         }
-        let db = open_with(&dir.db(), &with_v2()).expect("upgrades");
-        assert_eq!(db.schema_version(), Ok(2));
+        let latest = latest_schema_version();
+        let db = open_with(&dir.db(), &with_next(NEXT)).expect("upgrades");
+        assert_eq!(db.schema_version(), Ok(latest + 1));
         assert_eq!(db.downloads().unwrap().len(), 1, "the record survived");
-        // The backup is a complete schema-1 database with the record in it.
+        // The backup is a complete database at the old version with the record in it.
         let backup = dir
             .names()
             .into_iter()
-            .find(|n| n.starts_with("velocity.sqlite3.bak-v1-"))
+            .find(|n| n.starts_with(&format!("velocity.sqlite3.bak-v{latest}-")))
             .expect("a backup before the upgrade");
         let old = Connection::open(dir.0.join(&backup)).unwrap();
         let version: u32 = old
@@ -411,7 +419,7 @@ mod tests {
         let rows: u32 = old
             .query_row("SELECT count(*) FROM downloads", [], |r| r.get(0))
             .unwrap();
-        assert_eq!((version, rows), (1, 1));
+        assert_eq!((version, rows), (latest, 1));
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
@@ -426,7 +434,7 @@ mod tests {
     #[test]
     fn a_newer_database_is_refused_unmodified() {
         let dir = Dir::new("newer");
-        drop(open_with(&dir.db(), &with_v2()).unwrap());
+        drop(open_with(&dir.db(), &with_next(NEXT)).unwrap());
         let before = std::fs::read(dir.db()).unwrap();
         let names = dir.names();
         let e = Database::open(&dir.db()).err().expect("refused");
@@ -445,19 +453,137 @@ mod tests {
             let db = Database::open(&dir.db()).unwrap();
             db.insert_download(&sample("d-0001")).unwrap();
         }
-        let broken = Migrations::new(vec![
-            MIGRATIONS[0].clone(),
-            M::up("ALTER TABLE downloads ADD COLUMN note TEXT; THIS IS NOT SQL;"),
-        ]);
+        let broken = with_next("ALTER TABLE downloads ADD COLUMN note TEXT; THIS IS NOT SQL;");
         let e = open_with(&dir.db(), &broken)
             .err()
             .expect("the upgrade fails");
         assert_eq!(e.code, ErrorCode::DatabaseMigration, "{e}");
-        // The original is still at schema 1 with its record, and the backup is there.
+        // The original is still at its version with its record, and the backup is there.
+        let latest = latest_schema_version();
         let db = Database::open(&dir.db()).expect("the original still opens");
-        assert_eq!(db.schema_version(), Ok(1));
+        assert_eq!(db.schema_version(), Ok(latest));
         assert_eq!(db.downloads().unwrap().len(), 1);
+        assert!(dir
+            .names()
+            .iter()
+            .any(|n| n.contains(&format!(".bak-v{latest}-"))));
+    }
+
+    #[test]
+    fn schema_1_is_upgraded_with_its_downloads_and_gains_checkpoints() {
+        // Migration 0002 (#43), from the previous schema with a record in it.
+        let dir = Dir::new("v1-to-v2");
+        {
+            let db = open_with(&dir.db(), &Migrations::from_slice(&MIGRATIONS[..1])).unwrap();
+            assert_eq!(db.schema_version(), Ok(1));
+            db.insert_download(&sample("d-0001")).unwrap();
+        }
+        let db = Database::open(&dir.db()).expect("upgrades");
+        assert_eq!(db.schema_version(), Ok(2));
+        assert_eq!(db.downloads().unwrap()[0].id, "d-0001");
+        db.save_checkpoint("d-0001", &checkpoint(), 5).unwrap();
         assert!(dir.names().iter().any(|n| n.contains(".bak-v1-")));
+    }
+
+    fn checkpoint() -> Checkpoint {
+        Checkpoint {
+            format: CHECKPOINT_FORMAT,
+            source: "https://example.com/files/a.zip".to_owned(),
+            total: 10_000,
+            etag: None,
+            last_modified: None,
+            durable: vec![(0, 4000)],
+        }
+    }
+
+    #[test]
+    fn a_checkpoint_is_saved_replaced_and_removed() {
+        let db = Database::open_in_memory().unwrap();
+        db.insert_download(&sample("d-0001")).unwrap();
+        assert_eq!(db.checkpoint("d-0001"), Ok(None));
+        let mut cp = checkpoint();
+        db.save_checkpoint("d-0001", &cp, 1).unwrap();
+        assert_eq!(db.checkpoint("d-0001"), Ok(Some(Stored::Known(cp.clone()))));
+        cp.durable = vec![(0, 9000)];
+        db.save_checkpoint("d-0001", &cp, 2).unwrap();
+        assert_eq!(db.checkpoint("d-0001"), Ok(Some(Stored::Known(cp))));
+        db.remove_checkpoint("d-0001").unwrap();
+        assert_eq!(db.checkpoint("d-0001"), Ok(None));
+        // A checkpoint belongs to a download; there is none for an unknown one.
+        let e = db
+            .save_checkpoint("d-9999", &checkpoint(), 3)
+            .err()
+            .unwrap();
+        assert_eq!(e.code, ErrorCode::NotFound, "{e}");
+    }
+
+    #[test]
+    fn a_checkpoint_in_another_format_is_never_used() {
+        let db = Database::open_in_memory().unwrap();
+        db.insert_download(&sample("d-0001")).unwrap();
+        for raw in [
+            r#"{"format":99,"source":"x","total":1,"etag":null,"lastModified":null,"durable":[]}"#,
+            r#"{"format":1,"source":"x","total":1,"etag":null,"lastModified":null,"durable":[],"spy":1}"#,
+        ] {
+            db.conn()
+                .execute(
+                    "INSERT OR REPLACE INTO checkpoints (download_id, document, updated_at_ms)                      VALUES ('d-0001', ?1, 1)",
+                    [raw],
+                )
+                .unwrap();
+            assert_eq!(
+                db.checkpoint("d-0001"),
+                Ok(Some(Stored::Unknown(raw.to_owned()))),
+                "{raw}"
+            );
+        }
+    }
+
+    #[test]
+    fn recovery_resumes_from_a_usable_checkpoint_and_otherwise_starts_over() {
+        let db = Database::open_in_memory().unwrap();
+        db.insert_download(&sample("d-0001")).unwrap();
+        let record = db.downloads().unwrap().remove(0);
+        let cp = checkpoint();
+        // A usable checkpoint of this record's source.
+        assert_eq!(
+            record.resume(Some(&Stored::Known(cp.clone()))),
+            Ok(Some(Resume::Checkpoint {
+                checkpoint: cp.clone()
+            }))
+        );
+        // No checkpoint, an unreadable one, another format, or another source: start over.
+        let other_source = Checkpoint {
+            source: "https://elsewhere.example/a.zip".to_owned(),
+            ..cp.clone()
+        };
+        let other_format = Checkpoint {
+            format: CHECKPOINT_FORMAT + 1,
+            ..cp.clone()
+        };
+        for checkpoint in [
+            None,
+            Some(Stored::Unknown("{}".to_owned())),
+            Some(Stored::Known(other_source)),
+            Some(Stored::Known(other_format)),
+        ] {
+            assert_eq!(
+                record.resume(checkpoint.as_ref()),
+                Ok(Some(Resume::DiscardPartFile {})),
+                "{checkpoint:?}"
+            );
+        }
+        // A finished download has nothing to resume.
+        let mut done = record.clone();
+        done.status = Stored::Known(DownloadStatus::Completed);
+        assert_eq!(done.resume(Some(&Stored::Known(cp.clone()))), Ok(None));
+        // A record this build can't route is never resumed.
+        let mut unknown = record;
+        unknown.engine = Stored::Unknown("aria2".to_owned());
+        assert_eq!(
+            unknown.resume(Some(&Stored::Known(cp))),
+            Err(ErrorCode::EngineUnavailable)
+        );
     }
 
     #[test]
@@ -527,6 +653,7 @@ mod tests {
             checksum: None,
             limits: Limits::default(),
             max_connections: 4,
+            resume: None,
         };
         let new =
             NewDownload::from_transfer("d-0001", DownloadKind::Http, &spec, 1_792_600_000_000);

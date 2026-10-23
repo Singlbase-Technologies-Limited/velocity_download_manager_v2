@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 
 use velocity_core::domain::{DownloadKind, DownloadStatus, ErrorCode};
 use velocity_core::transfer::{
-    DirectTransfer, Limits, TransferEvent, TransferId, TransferSnapshot, TransferSpec,
+    Checkpoint, DirectTransfer, Limits, TransferEvent, TransferId, TransferSnapshot, TransferSpec,
 };
 use velocity_test_http::{seeded_bytes, ServerOptions, TestServer};
 use velocity_transfer::engine::InProcessEngine;
@@ -58,6 +58,7 @@ fn spec(url: String, destination: PathBuf) -> TransferSpec {
         checksum: None,
         limits: Limits::default(),
         max_connections: 4,
+        resume: None,
     }
 }
 
@@ -265,7 +266,10 @@ fn refuses_bad_commands_with_their_codes() {
 }
 
 #[test]
-fn a_child_whose_parent_goes_away_cancels_and_cleans_up() {
+fn a_child_whose_parent_goes_away_stops_and_keeps_its_part_file() {
+    // #43 changes #39's behaviour: when the app goes away, the engine pauses its transfers and
+    // keeps their part files, so the app can resume them from their checkpoints when it starts
+    // again, instead of cancelling and deleting them.
     let server = TestServer::start(
         vec![("big.bin".into(), seeded_bytes(4_000_000, 34))],
         ServerOptions {
@@ -286,16 +290,50 @@ fn a_child_whose_parent_goes_away_cancels_and_cleans_up() {
     // Dropping the client closes the child's stdin and waits for it to exit.
     drop(engine);
     assert!(
-        !dest.exists() && !part_of(&dest).exists(),
-        "the child removed its part file before exiting"
+        part_of(&dest).exists(),
+        "the part file is kept for a resume"
+    );
+    assert!(!dest.exists(), "nothing looks finished");
+    // The child stopped: once the last chunk the server had under way is counted, it sends
+    // nothing more. (The test server counts a chunk before writing it, and on Windows a write into
+    // a socket its peer just closed can still succeed.)
+    std::thread::sleep(Duration::from_millis(300));
+    let sent = server.counters().body_bytes_sent;
+    std::thread::sleep(Duration::from_millis(500));
+    assert_eq!(
+        server.counters().body_bytes_sent,
+        sent,
+        "the child still downloads"
     );
 }
 
+/// The last checkpoint event for `id` among `events` received so far, after waiting for `status`.
+fn wait_with_checkpoint(
+    events: &Receiver<TransferEvent>,
+    id: TransferId,
+    status: DownloadStatus,
+) -> (TransferSnapshot, Option<Checkpoint>) {
+    let deadline = Instant::now() + WAIT;
+    let mut last = None;
+    loop {
+        let left = deadline.saturating_duration_since(Instant::now());
+        match events.recv_timeout(left).expect("an event in time") {
+            TransferEvent::Checkpoint { id: of, checkpoint } if of == id => last = Some(checkpoint),
+            TransferEvent::Changed { snapshot }
+                if snapshot.id == id && snapshot.status == status =>
+            {
+                return (snapshot, last)
+            }
+            _ => {}
+        }
+    }
+}
+
 #[test]
-fn pause_is_unsupported_until_checkpoints_exist() {
+fn a_paused_transfer_keeps_its_part_file_and_resumes_from_its_checkpoint() {
     let data = seeded_bytes(4_000_000, 33);
     let server = TestServer::start(
-        vec![("big.bin".into(), data)],
+        vec![("big.bin".into(), data.clone())],
         ServerOptions {
             throttle_bytes_per_sec: Some(300_000),
             ..ServerOptions::default()
@@ -303,17 +341,67 @@ fn pause_is_unsupported_until_checkpoints_exist() {
     );
     for (mode, mut engine) in engines() {
         let dir = Dir::new(&format!("pause-{}", mode.replace(' ', "-")));
+        let dest = dir.0.join("out.bin");
         let events = engine.subscribe();
         let id = engine
-            .add(spec(server.url("big.bin"), dir.0.join("out.bin")))
+            .add(spec(server.url("big.bin"), dest.clone()))
             .expect("add");
         wait_for(&events, id, |s| s == DownloadStatus::Downloading);
+        engine.pause(id).expect("pause");
+        let (paused, checkpoint) = wait_with_checkpoint(&events, id, DownloadStatus::Paused);
+        let checkpoint = checkpoint.expect("a checkpoint at the pause");
+        assert!(!checkpoint.durable.is_empty(), "{mode}");
+        assert!(part_of(&dest).exists() && !dest.exists(), "{mode}");
         assert_eq!(
             engine.pause(id),
-            Err(ErrorCode::Unsupported),
-            "{mode}: no pause without checkpoints (#43)"
+            Err(ErrorCode::InvalidState),
+            "{mode}: already paused"
         );
+        assert!(paused.progress.completed_bytes > 0, "{mode}");
+
+        engine.resume(id).expect("resume");
+        let done = wait_for(&events, id, |s| {
+            matches!(s, DownloadStatus::Completed | DownloadStatus::Failed)
+        });
+        assert_eq!(
+            done.status,
+            DownloadStatus::Completed,
+            "{mode}: {:?}",
+            done.error
+        );
+        assert!(
+            std::fs::read(&dest).unwrap() == data,
+            "{mode}: the file differs from the source"
+        );
+        assert_eq!(
+            engine.resume(id),
+            Err(ErrorCode::InvalidState),
+            "{mode}: nothing to resume"
+        );
+    }
+}
+
+#[test]
+fn a_paused_transfer_can_be_cancelled_and_its_part_file_goes() {
+    let server = TestServer::start(
+        vec![("big.bin".into(), seeded_bytes(4_000_000, 35))],
+        ServerOptions {
+            throttle_bytes_per_sec: Some(300_000),
+            ..ServerOptions::default()
+        },
+    );
+    for (mode, mut engine) in engines() {
+        let dir = Dir::new(&format!("pause-cancel-{}", mode.replace(' ', "-")));
+        let dest = dir.0.join("out.bin");
+        let events = engine.subscribe();
+        let id = engine
+            .add(spec(server.url("big.bin"), dest.clone()))
+            .expect("add");
+        wait_for(&events, id, |s| s == DownloadStatus::Downloading);
+        engine.pause(id).expect("pause");
+        wait_for(&events, id, |s| s == DownloadStatus::Paused);
         engine.cancel(id).expect("cancel");
         wait_for(&events, id, |s| s == DownloadStatus::Removed);
+        assert!(!part_of(&dest).exists() && !dest.exists(), "{mode}");
     }
 }

@@ -12,7 +12,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
 
 use velocity_curl::{CurlLoop, Libcurl, LoopOptions};
-use velocity_transfer::download::{download_with, Control, DownloadOptions};
+use velocity_transfer::download::{download_with, Cadence, Control, DownloadOptions};
 use velocity_transfer::engine::{MAX_CONNECTIONS, PROBE_BYTES};
 use velocity_transfer::scheduler::Sizes;
 use velocity_transfer::stdio;
@@ -45,6 +45,7 @@ fn parse_get(args: &[String]) -> Result<(String, PathBuf, DownloadOptions), Stri
         connections: 4,
         probe_bytes: PROBE_BYTES,
         leases: Sizes::DEFAULT,
+        checkpoints: Cadence::DEFAULT,
     };
     let mut rest = args.iter();
     while let Some(arg) = rest.next() {

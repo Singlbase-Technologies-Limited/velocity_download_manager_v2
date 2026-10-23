@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 
 use super::{from_sql_int, to_sql_int, Database, DatabaseError};
 use crate::domain::{DownloadKind, DownloadStatus, ErrorCode};
-use crate::transfer::TransferSpec;
+use crate::transfer::{Checkpoint, Resume, TransferSpec, CHECKPOINT_FORMAT};
 
 /// The engine a record is routed to. A record never changes engine.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -169,6 +169,36 @@ impl StoredDownload {
             (Some(engine), Some(_), Some(_), Some(_)) => Ok(*engine),
             _ => Err(ErrorCode::EngineUnavailable),
         }
+    }
+}
+
+impl StoredDownload {
+    /// How to restart this unfinished download after a restart or a crash: from `checkpoint` if it
+    /// is usable (known, in this build's format, and of this record's source); otherwise by
+    /// discarding the part file, which this record's download created, and starting over (PO
+    /// decision on #43). `None` for a finished download. A record this build can't route is never
+    /// resumed.
+    pub fn resume(
+        &self,
+        checkpoint: Option<&Stored<Checkpoint>>,
+    ) -> Result<Option<Resume>, ErrorCode> {
+        let engine = self.route()?;
+        let finished = self.status.known().is_some_and(|s| s.is_terminal());
+        // Torrents resume through libtorrent's own data (#62), not through these checkpoints.
+        if finished || engine != Engine::Velocity {
+            return Ok(None);
+        }
+        Ok(Some(match checkpoint {
+            Some(Stored::Known(c))
+                if c.format == CHECKPOINT_FORMAT
+                    && c.source == Checkpoint::source_of(&self.source_url) =>
+            {
+                Resume::Checkpoint {
+                    checkpoint: c.clone(),
+                }
+            }
+            _ => Resume::DiscardPartFile {},
+        }))
     }
 }
 

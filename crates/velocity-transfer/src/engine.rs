@@ -1,11 +1,12 @@
-//! The prototype engine behind the `DirectTransfer` contract (#36, #37), in the app's process.
-//! Each transfer runs [`download_with`] on its own worker thread, sharing one libcurl loop; the
-//! engine turns what happens into contract events. `stdio.rs` serves the same engine from a child
-//! process.
+//! The engine behind the `DirectTransfer` contract (#36, #37, #43), in the app's process. Each
+//! transfer runs [`download_resumable`] on its own worker thread, sharing one libcurl loop; the
+//! engine turns what happens into contract events, checkpoints included. `stdio.rs` serves the
+//! same engine from a child process.
 //!
-//! What the prototype can't do is refused, not faked: pause and resume need checkpoints (#43),
-//! limits need #49, and live connection changes need #47, so those commands return `Unsupported`
-//! and `capabilities()` says so.
+//! - **Pause** stops the worker and keeps the part file, after a last checkpoint; **resume** starts
+//!   a new worker from that checkpoint (#43).
+//! - What it can't do yet is refused, not faked: limits need #49, and live connection changes need
+//!   #47, so those commands return `Unsupported` and `capabilities()` says so.
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -18,11 +19,15 @@ use velocity_core::domain::{
     Capabilities, DownloadKind, DownloadStatus, ErrorCode, FailureClass, Progress, TransferError,
 };
 use velocity_core::transfer::{
-    DirectTransfer, Limits, TransferEvent, TransferId, TransferSnapshot, TransferSpec,
+    Checkpoint, DirectTransfer, Limits, Resume, TransferEvent, TransferId, TransferSnapshot,
+    TransferSpec,
 };
 use velocity_curl::{CurlLoop, Libcurl, LoopOptions};
 
-use crate::download::{download_with, Control, DownloadError, DownloadOptions};
+use crate::download::{
+    download_resumable, part_path, Cadence, Control, DownloadError, DownloadOptions,
+};
+use crate::files;
 use crate::scheduler::Sizes;
 
 /// The most connections one transfer may use. A starting value for #47 to tune, not a requirement.
@@ -51,6 +56,19 @@ struct State {
 struct Entry {
     snapshot: TransferSnapshot,
     control: Arc<Control>,
+    job: Job,
+    /// The last checkpoint the worker sent, to resume from after a pause.
+    last_checkpoint: Option<Checkpoint>,
+    /// A worker thread is running the download.
+    running: bool,
+}
+
+/// What a transfer downloads, kept to start a worker again after a pause.
+#[derive(Clone)]
+struct Job {
+    url: String,
+    destination: PathBuf,
+    connections: u32,
 }
 
 impl State {
@@ -105,19 +123,29 @@ impl InProcessEngine {
         })
     }
 
-    /// Cancels every unfinished transfer (a child process does this when its parent goes away).
+    /// Cancels every unfinished transfer, removing its part file.
     pub fn cancel_all(&self) {
         for entry in lock(&self.shared.state).transfers.values() {
             entry.control.cancel();
         }
     }
 
-    /// Whether every transfer has finished.
+    /// Pauses every running transfer and keeps its part file (a child process does this when its
+    /// parent goes away, so the app can resume them from their checkpoints, #43).
+    pub fn pause_all(&self) {
+        for entry in lock(&self.shared.state).transfers.values() {
+            if entry.running {
+                entry.control.pause();
+            }
+        }
+    }
+
+    /// Whether no worker is running.
     pub fn idle(&self) -> bool {
         lock(&self.shared.state)
             .transfers
             .values()
-            .all(|e| finished(e.snapshot.status))
+            .all(|e| !e.running)
     }
 
     fn known(&self, id: TransferId) -> Result<MutexGuard<'_, State>, ErrorCode> {
@@ -215,11 +243,6 @@ impl DirectTransfer for InProcessEngine {
         let mut state = lock(&self.shared.state);
         state.next_id += 1;
         let id = TransferId(state.next_id);
-        let control = Arc::new(Control::with_progress(progress_reporter(
-            &self.shared,
-            id,
-            connections,
-        )));
         let snapshot = TransferSnapshot {
             id,
             status: DownloadStatus::Queued,
@@ -237,47 +260,82 @@ impl DirectTransfer for InProcessEngine {
             id,
             Entry {
                 snapshot,
-                control: Arc::clone(&control),
+                control: Arc::new(Control::default()),
+                job: Job {
+                    url,
+                    destination: spec.destination.clone(),
+                    connections,
+                },
+                last_checkpoint: None,
+                running: false,
             },
         );
         state.changed(id);
         drop(state);
-        let shared = Arc::clone(&self.shared);
-        let destination = spec.destination.clone();
-        let started = thread::Builder::new()
-            .name(format!("velocity-transfer-{}", id.0))
-            .spawn(move || run(&shared, id, &url, destination, connections, &control));
-        if started.is_err() {
-            update(&self.shared, id, |s| {
-                s.status = DownloadStatus::Failed;
-                s.error = Some(TransferError::new(
-                    FailureClass::Transient,
-                    None,
-                    "the engine couldn't start a worker thread",
-                ));
-            });
-        }
+        start_worker(&self.shared, id, spec.resume);
         Ok(id)
     }
 
     fn pause(&mut self, id: TransferId) -> Result<(), ErrorCode> {
-        drop(self.known(id)?);
-        Err(ErrorCode::Unsupported)
+        let state = self.known(id)?;
+        let entry = &state.transfers[&id];
+        if !entry.running || finished(entry.snapshot.status) {
+            return Err(ErrorCode::InvalidState);
+        }
+        // The worker sees it, takes a last checkpoint, keeps the part file, and reports Paused.
+        entry.control.pause();
+        Ok(())
     }
 
     fn resume(&mut self, id: TransferId) -> Result<(), ErrorCode> {
-        drop(self.known(id)?);
-        Err(ErrorCode::Unsupported)
+        let mut state = self.known(id)?;
+        let entry = state.transfers.get_mut(&id).expect("known");
+        if entry.running || entry.snapshot.status != DownloadStatus::Paused {
+            return Err(ErrorCode::InvalidState);
+        }
+        // From the last checkpoint; without one, the part file is this transfer's own and starts
+        // over (PO decision on #43).
+        let resume = match entry.last_checkpoint.clone() {
+            Some(checkpoint) => Resume::Checkpoint { checkpoint },
+            None => Resume::DiscardPartFile {},
+        };
+        entry.snapshot.status = DownloadStatus::Queued;
+        state.changed(id);
+        drop(state);
+        start_worker(&self.shared, id, Some(resume));
+        Ok(())
     }
 
     fn cancel(&mut self, id: TransferId) -> Result<(), ErrorCode> {
-        let state = self.known(id)?;
-        let entry = &state.transfers[&id];
+        let mut state = self.known(id)?;
+        let entry = state.transfers.get_mut(&id).expect("known");
         if finished(entry.snapshot.status) {
             return Err(ErrorCode::InvalidState);
         }
-        // The worker sees it, removes the part file, and reports Removed.
-        entry.control.cancel();
+        if entry.running {
+            // The worker sees it, removes the part file, and reports Removed.
+            entry.control.cancel();
+            return Ok(());
+        }
+        // Paused: no worker holds the part file, so it is discarded here.
+        let part = part_path(&entry.job.destination);
+        match files::remove_part(&part) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => {
+                entry.snapshot.status = DownloadStatus::Failed;
+                entry.snapshot.error = Some(TransferError::new(
+                    FailureClass::Permanent,
+                    None,
+                    &format!("couldn't remove {}: {e}", part.display()),
+                ));
+                state.changed(id);
+                return Ok(());
+            }
+        }
+        entry.snapshot.status = DownloadStatus::Removed;
+        entry.last_checkpoint = None;
+        state.changed(id);
         Ok(())
     }
 
@@ -316,23 +374,62 @@ impl DirectTransfer for InProcessEngine {
     }
 }
 
+/// Starts a worker for transfer `id`, with a new control that reports its progress and passes its
+/// checkpoints on as events.
+fn start_worker(shared: &Arc<Shared>, id: TransferId, resume: Option<Resume>) {
+    let job = {
+        let mut state = lock(&shared.state);
+        let Some(entry) = state.transfers.get_mut(&id) else {
+            return;
+        };
+        let reporter = Arc::clone(shared);
+        let control = Control::with_progress(progress_reporter(shared, id, entry.job.connections))
+            .with_checkpoints(move |checkpoint| {
+                let mut state = lock(&reporter.state);
+                if let Some(entry) = state.transfers.get_mut(&id) {
+                    entry.last_checkpoint = Some(checkpoint.clone());
+                    state.emit(TransferEvent::Checkpoint { id, checkpoint });
+                }
+            });
+        entry.control = Arc::new(control);
+        entry.running = true;
+        (entry.job.clone(), Arc::clone(&entry.control))
+    };
+    let (job, control) = job;
+    let worker = Arc::clone(shared);
+    let started = thread::Builder::new()
+        .name(format!("velocity-transfer-{}", id.0))
+        .spawn(move || run(&worker, id, &job, resume.as_ref(), &control));
+    if started.is_err() {
+        ended(shared, id, |s| {
+            s.status = DownloadStatus::Failed;
+            s.error = Some(TransferError::new(
+                FailureClass::Transient,
+                None,
+                "the engine couldn't start a worker thread",
+            ));
+        });
+    }
+}
+
 /// A transfer's worker: runs the download and reports how it ended.
-fn run(
-    shared: &Shared,
-    id: TransferId,
-    url: &str,
-    destination: PathBuf,
-    connections: u32,
-    control: &Control,
-) {
+fn run(shared: &Shared, id: TransferId, job: &Job, resume: Option<&Resume>, control: &Control) {
     update(shared, id, |s| s.status = DownloadStatus::Connecting);
     let options = DownloadOptions {
-        connections,
+        connections: job.connections,
         probe_bytes: PROBE_BYTES,
         leases: Sizes::DEFAULT,
+        checkpoints: Cadence::DEFAULT,
     };
-    let result = download_with(&shared.curl, url, &destination, options, control);
-    update(shared, id, |s| {
+    let result = download_resumable(
+        &shared.curl,
+        &job.url,
+        &job.destination,
+        options,
+        resume,
+        control,
+    );
+    ended(shared, id, |s| {
         s.progress.download_speed_bps = 0;
         s.progress.connections = 0;
         match result {
@@ -343,7 +440,8 @@ fn run(
                 s.wasted_bytes = report.wasted_bytes;
             }
             Err(DownloadError::Cancelled) => s.status = DownloadStatus::Removed,
-            Err(DownloadError::Transfer(e)) => {
+            Err(DownloadError::Paused) => s.status = DownloadStatus::Paused,
+            Err(DownloadError::Transfer(e) | DownloadError::Changed(e)) => {
                 s.status = DownloadStatus::Failed;
                 s.error = Some(e);
             }
@@ -368,6 +466,19 @@ fn update(shared: &Shared, id: TransferId, change: impl FnOnce(&mut TransferSnap
     let mut state = lock(&shared.state);
     if let Some(entry) = state.transfers.get_mut(&id) {
         change(&mut entry.snapshot);
+        state.changed(id);
+    }
+}
+
+/// [`update`] for the end of a worker: it is no longer running.
+fn ended(shared: &Shared, id: TransferId, change: impl FnOnce(&mut TransferSnapshot)) {
+    let mut state = lock(&shared.state);
+    if let Some(entry) = state.transfers.get_mut(&id) {
+        change(&mut entry.snapshot);
+        entry.running = false;
+        if entry.snapshot.status != DownloadStatus::Paused {
+            entry.last_checkpoint = None;
+        }
         state.changed(id);
     }
 }

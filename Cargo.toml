@@ -18,6 +18,12 @@ dirs = "7.0.0"
 rusqlite = { version = "=0.40.2", features = ["bundled"] }
 # Numbered migrations for the app database (PO-approved on #26, 2026-10-23). No default features.
 rusqlite_migration = { version = "=2.6.0", default-features = false }
+# Windows file operations for the engine: sparse part files and the no-replace rename (PO-approved on
+# #43, 2026-10-23). The same version curl and dirs already bring.
+windows-sys = { version = "=0.61.2", features = ["Win32_Foundation", "Win32_Storage_FileSystem", "Win32_System_IO", "Win32_System_Ioctl"] }
+# Unix file operations for the engine: the no-replace rename (PO-approved on #43, 2026-10-23). The
+# same version Tauri already brings.
+libc = "=0.2.191"
 # Property tests for the range scheduler, test-only (PO-approved on #42, 2026-10-23). 1.11.0 over
 # 1.12.0, released 2026-10-10. Without default features: no fork or timeout support.
 proptest = { version = "=1.11.0", default-features = false, features = ["std"] }

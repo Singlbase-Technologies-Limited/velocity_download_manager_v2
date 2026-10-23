@@ -6,9 +6,10 @@
 //! - the app checks them and answers `start` with its own, and the first transfer id to assign;
 //! - the app then sends `request`s, each answered by one `reply`, and the child pushes `event`s.
 //!
-//! When the app closes stdin, or goes away, the child cancels every transfer, waits briefly for
-//! the part files to be removed, and exits. The child gets one argument, `serve`, and a cleared
-//! environment: nothing secret can reach its arguments or environment (`.claude/rules/security.md`).
+//! When the app closes stdin, or goes away, the child pauses every transfer, keeping its part file
+//! for a resume (#43), waits briefly for the workers to stop, and exits. The child gets one
+//! argument, `serve`, and a cleared environment: nothing secret can reach its arguments or
+//! environment (`.claude/rules/security.md`).
 
 use std::collections::HashMap;
 use std::io::{Read, Write};
@@ -126,7 +127,8 @@ pub fn serve() -> Result<(), String> {
         }
     }
 
-    engine.cancel_all();
+    // Paused, not cancelled: the part files stay for the app to resume them from (#43).
+    engine.pause_all();
     let deadline = Instant::now() + SHUTDOWN_WAIT;
     while !engine.idle() && Instant::now() < deadline {
         thread::sleep(Duration::from_millis(20));
@@ -403,7 +405,9 @@ impl ChildProcessEngine {
     }
 
     pub fn add(&self, spec: TransferSpec) -> Result<TransferId, ErrorCode> {
-        match self.connection.request(TransferCommand::Add { spec })? {
+        match self.connection.request(TransferCommand::Add {
+            spec: Box::new(spec),
+        })? {
             TransferReply::Added { id } => Ok(id),
             _ => Err(ErrorCode::EngineIncompatible),
         }

@@ -48,22 +48,22 @@ The app doesn't use the supervisor yet; the manager is wired to it in #58.
 For example:
 
 ```json
-{"type":"hello","protocol":2,"contract":1}
-{"type":"start","protocol":2,"contract":1,"firstTransferId":12}
+{"type":"hello","protocol":2,"contract":2}
+{"type":"start","protocol":2,"contract":2,"firstTransferId":12}
 {"type":"request","seq":7,"command":{"command":"pause","id":3}}
 {"type":"reply","seq":7,"result":{"Err":"NOT_FOUND"}}
 ```
 
 ## Versions
 
-- **What's checked:** the protocol version (`PROTOCOL_VERSION`, now 2) and the contract version (`TRANSFER_CONTRACT_VERSION`, now 1) must match exactly, and both sides check them.
+- **What's checked:** the protocol version (`PROTOCOL_VERSION`, now 2) and the contract version (`TRANSFER_CONTRACT_VERSION`, now 2: version 2 added checkpoints, #43) must match exactly, and both sides check them.
 - **The first frame:** the app refuses an engine whose `hello` has other versions, or whose first frame isn't a `hello`, as `ENGINE_INCOMPATIBLE`. Version 1 was the #37 prototype's JSON lines; an engine that still speaks it is refused this way.
 - **The answer:** the engine refuses a `start` with other versions by exiting, with the reason on stderr.
 - **An engine that exits before `hello`** failed to start: `ENGINE_START_FAILED`. A program that isn't there is `ENGINE_MISSING`.
 
 ## Shutdown
 
-- **Graceful stop:** closing the engine's stdin is the stop request. The engine cancels every transfer, waits up to 5 seconds for their part files to be removed, and exits.
+- **Graceful stop:** closing the engine's stdin is the stop request. The engine pauses every transfer, keeping its part file for a resume from its last checkpoint (#43), waits up to 5 seconds for its workers to stop, and exits.
 - **Kill:** the app waits up to 5 seconds for the engine's stdout to end, and kills it if it doesn't. The engine does the same when the app goes away.
 - **No polling:** the app waits on the end of the engine's stdout, not on a polling loop.
 

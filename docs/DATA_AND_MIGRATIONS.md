@@ -19,13 +19,14 @@ The code is in [`crates/velocity-core/src/database/`](../crates/velocity-core/sr
 
 ## Schema
 
-The schema version is `PRAGMA user_version`. Version 1 ([`0001_initial.sql`](../crates/velocity-core/migrations/0001_initial.sql)) is V2's clean baseline. V1's data isn't imported ([ADR-0007](decisions/0007-no-v1-import-at-first.md)).
+The schema version is `PRAGMA user_version`. Version 1 ([`0001_initial.sql`](../crates/velocity-core/migrations/0001_initial.sql)) is V2's clean baseline, and version 2 adds checkpoints. V1's data isn't imported ([ADR-0007](decisions/0007-no-v1-import-at-first.md)).
 
 | Table | Holds |
 |---|---|
 | `downloads` | One download per row. It records the engine (`velocity` or `libtorrent`), kind, status, source URL (never with a login), folder, file name and category. It also has the byte counts, the last error, the options to retry it, and `has_sensitive_options`. The history flags (`in_list`, `in_history`) are here too, along with the torrent info hashes (v1 and v2) and when seeding started. For direct downloads, nullable `etag`, `last_modified`, `validator_kind` (#45) and `checkpoint_ref` (#43) columns are reserved |
 | `categories` | Built-in and user categories, with their extensions as JSON. The built-in rows arrive with #31 |
 | `settings` | One row: the settings document as a JSON object, checked by SQLite (`json_type = 'object'`). Its fields are #30 |
+| `checkpoints` | Schema 2 ([`0002_checkpoints.sql`](../crates/velocity-core/migrations/0002_checkpoints.sql), #43): one row per direct download, its last `Checkpoint` as JSON. It holds the durable byte ranges, the total and the validators, with no credential and no URL query. It is removed with its download. A checkpoint in another format, or one this build can't read, is `Stored::Unknown` and never used. `downloads.checkpoint_ref`, reserved in schema 1, stays unused |
 
 Kinds and statuses are stored by their wire names (`http`, `queued`, `fetchingMetadata`), as in [CONTRACTS.md](CONTRACTS.md). Counts and times are integers; times are milliseconds since the Unix epoch.
 

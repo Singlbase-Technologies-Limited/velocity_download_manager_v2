@@ -11,7 +11,7 @@
 //! - the file is renamed into place only after its coverage is complete and synced to disk.
 
 use std::collections::HashMap;
-use std::fs::{self, File, OpenOptions};
+use std::fs::{self, File};
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -21,10 +21,12 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use velocity_core::domain::{FailureClass, TransferError};
+use velocity_core::transfer::{Checkpoint, Resume, CHECKPOINT_FORMAT};
 use velocity_curl::{
     CurlLoop, Fetch, FetchError, FetchEvent, FetchLimit, FetchRequest, Gate, ResponseHead,
 };
 
+use crate::files;
 use crate::probe::{
     check_continuation, check_segment, classify_probe, is_multipart, Continuation, ProbeOutcome,
     SegmentRejection,
@@ -45,21 +47,44 @@ const MAX_ANOMALIES: u32 = 2;
 
 /// Called with the bytes written so far and the total, once known.
 type ProgressFn = Box<dyn Fn(u64, Option<u64>) + Send + Sync>;
+/// Called with each checkpoint, after the part file was synced.
+type CheckpointFn = Box<dyn Fn(Checkpoint) + Send + Sync>;
 
-/// Lets a caller follow and stop a running download (the engine, #37).
+/// Lets a caller follow, pause and stop a running download (the engine, #37, #43).
 #[derive(Default)]
 pub struct Control {
     cancelled: AtomicBool,
+    paused: AtomicBool,
     progress: Option<ProgressFn>,
+    checkpoints: Option<CheckpointFn>,
 }
 
 impl Control {
     /// `progress` is called with the bytes written so far and the total, once known.
     pub fn with_progress(progress: impl Fn(u64, Option<u64>) + Send + Sync + 'static) -> Self {
         Control {
-            cancelled: AtomicBool::new(false),
             progress: Some(Box::new(progress)),
+            ..Control::default()
         }
+    }
+
+    /// `checkpoint` is called with each checkpoint, after the part file was synced (#43).
+    pub fn with_checkpoints(
+        mut self,
+        checkpoint: impl Fn(Checkpoint) + Send + Sync + 'static,
+    ) -> Self {
+        self.checkpoints = Some(Box::new(checkpoint));
+        self
+    }
+
+    /// Stops the download and keeps its part file: it ends with [`DownloadError::Paused`], after a
+    /// last checkpoint when it has ranges to resume from.
+    pub fn pause(&self) {
+        self.paused.store(true, Ordering::Release);
+    }
+
+    pub fn is_paused(&self) -> bool {
+        self.paused.load(Ordering::Acquire)
     }
 
     /// Stops the download; it ends with [`DownloadError::Cancelled`] and removes its part file.
@@ -76,6 +101,12 @@ impl Control {
             p(written, total);
         }
     }
+
+    fn checkpoint(&self, checkpoint: Checkpoint) {
+        if let Some(c) = &self.checkpoints {
+            c(checkpoint);
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -87,6 +118,25 @@ pub struct DownloadOptions {
     pub probe_bytes: u64,
     /// Lease and split sizes for the range scheduler (#42); [`Sizes::DEFAULT`] outside tests.
     pub leases: Sizes,
+    /// How often a checkpoint is taken (#43); [`Cadence::DEFAULT`] outside tests.
+    pub checkpoints: Cadence,
+}
+
+/// How often the part file is synced and a checkpoint taken: after this many new bytes or this
+/// much time, whichever comes first.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Cadence {
+    pub bytes: u64,
+    pub interval: Duration,
+}
+
+impl Cadence {
+    /// The report's hypothesis (section 5.2): 16 MiB or 2 s, a starting value to tune by
+    /// measurement (#43's risk: fsync costs on slow disks).
+    pub const DEFAULT: Cadence = Cadence {
+        bytes: 16 << 20,
+        interval: Duration::from_secs(2),
+    };
 }
 
 /// How the file was fetched.
@@ -120,6 +170,12 @@ pub struct DownloadReport {
     pub wasted_bytes: u64,
     /// Leases cut from a live one, whose old request then stopped at the new boundary.
     pub splits: u32,
+    /// Checkpoints sent.
+    pub checkpoints: u32,
+    /// Bytes trusted from the checkpoint it resumed from, not fetched again.
+    pub resumed_bytes: u64,
+    /// The part file was marked sparse (Windows; see `files::create_part`).
+    pub sparse: bool,
 }
 
 #[derive(Debug)]
@@ -132,6 +188,11 @@ pub enum DownloadError {
     Io(String),
     /// [`Control::cancel`] stopped it.
     Cancelled,
+    /// [`Control::pause`] stopped it; its part file is kept.
+    Paused,
+    /// The file on the server isn't the one this download started (another total): its bytes
+    /// are never mixed with the old ones (report section 5.3).
+    Changed(TransferError),
 }
 
 impl From<TransferError> for DownloadError {
@@ -150,6 +211,110 @@ pub fn download(
     download_with(lp, url, destination, options, &Control::default())
 }
 
+/// [`download_with`], continuing what an earlier attempt left on disk as `resume` says (#43).
+///
+/// - A usable checkpoint (this format, this source, ranges that fit its file) is trusted as far as
+///   its durable ranges go, and only the rest is fetched. If the file changed on the server since
+///   (another total), its old bytes are discarded and the download starts over.
+/// - Without a usable checkpoint, the part file, which the caller says is the download's own, is
+///   discarded and the download starts over (PO decision on #43).
+/// - A paused download, or one that fails in a way worth retrying after a checkpoint was taken,
+///   keeps its part file; any other failure removes it.
+pub fn download_resumable(
+    lp: &CurlLoop,
+    url: &str,
+    destination: &Path,
+    options: DownloadOptions,
+    resume: Option<&Resume>,
+    control: &Control,
+) -> Result<DownloadReport, DownloadError> {
+    // symlink_metadata doesn't follow a link: a dangling link at the destination still counts.
+    if fs::symlink_metadata(destination).is_ok() {
+        return Err(DownloadError::FileExists);
+    }
+    let path = part_path(destination);
+    let mut part = None;
+    let mut from = None;
+    if let Some(Resume::Checkpoint { checkpoint }) = resume {
+        if let Some(durable) = trusted(checkpoint, url) {
+            match files::open_part(&path) {
+                Ok(file) => {
+                    part = Some(PartFile::resumed(path.clone(), file, durable));
+                    from = Some(checkpoint);
+                }
+                Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+                Err(e) => return Err(io_error("open the part file", &path, &e)),
+            }
+        }
+    }
+    if part.is_none() && resume.is_some() {
+        discard(&path)?;
+    }
+    let mut part = match part {
+        Some(p) => p,
+        None => PartFile::create(path)?,
+    };
+
+    let mut ck = Checkpointer::new(options.checkpoints, url);
+    let mut resumed_bytes = 0;
+    let mut outcome = match from {
+        Some(checkpoint) => {
+            resumed_bytes = part.coverage.len();
+            ck.etag.clone_from(&checkpoint.etag);
+            ck.last_modified.clone_from(&checkpoint.last_modified);
+            ck.resumed = true;
+            fetch_ranges(
+                lp,
+                url,
+                checkpoint.total,
+                options,
+                &mut part,
+                &mut ck,
+                control,
+            )
+            .map(|(fetches, splits, mode)| Fetched {
+                mode,
+                total: checkpoint.total,
+                fetches,
+                splits,
+            })
+        }
+        None => fetch_fresh(lp, url, options, &mut part, &mut ck, control),
+    };
+    if from.is_some() && matches!(outcome, Err(DownloadError::Changed(_))) {
+        // The file changed on the server since the checkpoint: its old bytes are never mixed with
+        // the new ones (report section 5.3).
+        part.start_over()?;
+        ck = Checkpointer::new(options.checkpoints, url);
+        resumed_bytes = 0;
+        outcome = fetch_fresh(lp, url, options, &mut part, &mut ck, control);
+    }
+    match outcome {
+        Ok(fetched) => {
+            let (written, wasted, sparse) = (part.written, part.wasted, part.sparse);
+            part.finish(fetched.total, destination)?;
+            Ok(DownloadReport {
+                mode: fetched.mode,
+                total: fetched.total,
+                fetches: fetched.fetches,
+                written_bytes: written,
+                wasted_bytes: wasted,
+                splits: fetched.splits,
+                checkpoints: ck.sent,
+                resumed_bytes,
+                sparse,
+            })
+        }
+        Err(e) => {
+            let retryable = matches!(&e, DownloadError::Transfer(t) if t.retryable);
+            if matches!(e, DownloadError::Paused) || (retryable && ck.sent > 0) {
+                part.keep = true;
+            }
+            Err(e)
+        }
+    }
+}
+
 /// [`download`], followed and stoppable through `control`.
 pub fn download_with(
     lp: &CurlLoop,
@@ -158,44 +323,44 @@ pub fn download_with(
     options: DownloadOptions,
     control: &Control,
 ) -> Result<DownloadReport, DownloadError> {
-    // symlink_metadata doesn't follow a link: a dangling link at the destination still counts.
-    if fs::symlink_metadata(destination).is_ok() {
-        return Err(DownloadError::FileExists);
-    }
-    let part = part_path(destination);
-    let file = OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(&part)
-        .map_err(|e| match e.kind() {
-            io::ErrorKind::AlreadyExists => DownloadError::Io(format!(
-                "{} already exists; it may belong to another download",
-                part.display()
-            )),
-            _ => io_error("create the part file", &part, &e),
-        })?;
-    // From here on the part file is ours: removed on any failure, renamed on success.
-    let mut guard = PartFile {
-        path: part,
-        file: Some(file),
-        coverage: Coverage::default(),
-        written: 0,
-        wasted: 0,
-        keep: false,
-    };
+    download_resumable(lp, url, destination, options, None, control)
+}
 
+/// How the file was fetched, before it is finished.
+struct Fetched {
+    mode: Mode,
+    total: u64,
+    fetches: u32,
+    splits: u32,
+}
+
+/// A download from the start: the probe decides how the rest is fetched.
+fn fetch_fresh(
+    lp: &CurlLoop,
+    url: &str,
+    options: DownloadOptions,
+    part: &mut PartFile,
+    ck: &mut Checkpointer,
+    control: &Control,
+) -> Result<Fetched, DownloadError> {
     let probe_end = options.probe_bytes.max(1) - 1;
     let mut fetches = 1;
     let mut splits = 0;
     let request = FetchRequest::range(url.to_owned(), 0, Some(probe_end));
-    let (outcome, cursor) = match probe(lp, request, probe_end, &mut guard, control)? {
-        Probed::Outcome(outcome, cursor) => (outcome, cursor),
+    let (outcome, cursor, validators) = match probe(lp, request, probe_end, part, ck, control)? {
+        Probed::Outcome(outcome, cursor, validators) => (outcome, cursor, validators),
+        Probed::Paused(total, validators) => {
+            return paused_in_probe(total, validators, part, ck, control)
+        }
         // Report 5.1: a multipart answer to one range is retried once without Range.
         Probed::Multipart => {
             fetches += 1;
             let request = FetchRequest::get(url.to_owned());
-            match probe(lp, request, probe_end, &mut guard, control)? {
-                Probed::Outcome(outcome, cursor) => (outcome, cursor),
+            match probe(lp, request, probe_end, part, ck, control)? {
+                Probed::Outcome(outcome, cursor, validators) => (outcome, cursor, validators),
+                Probed::Paused(total, validators) => {
+                    return paused_in_probe(total, validators, part, ck, control)
+                }
                 Probed::Multipart => {
                     return Err(TransferError::new(
                         FailureClass::Permanent,
@@ -207,6 +372,7 @@ pub fn download_with(
             }
         }
     };
+    (ck.etag, ck.last_modified) = validators;
 
     let (mode, total) = match outcome {
         ProbeOutcome::Empty => (Mode::Empty, 0),
@@ -222,52 +388,164 @@ pub fn download_with(
             (Mode::SingleStream, cursor)
         }
         ProbeOutcome::SequentialRanges { received_end } => {
-            let (n, total, mode) =
-                fetch_sequential(lp, url, received_end + 1, &mut guard, control)?;
+            let (n, total, mode) = fetch_sequential(lp, url, received_end + 1, part, control)?;
             fetches += n;
             (mode, total)
         }
         ProbeOutcome::RangesOk { total, .. } => {
-            let connections = options.connections.max(1);
-            let (n, s, mode) = fetch_ranges(
-                lp,
-                url,
-                total,
-                connections,
-                options.leases,
-                &mut guard,
-                control,
-            )?;
+            let (n, s, mode) = fetch_ranges(lp, url, total, options, part, ck, control)?;
             fetches += n;
             splits = s;
             (mode, total)
         }
     };
-    let (written, wasted) = (guard.written, guard.wasted);
-    guard.finish(total, destination)?;
-    Ok(DownloadReport {
+    Ok(Fetched {
         mode,
         total,
         fetches,
-        written_bytes: written,
-        wasted_bytes: wasted,
         splits,
     })
 }
 
+/// A pause while the probe ran. When the probe's answer gave the file's total, ranges work, so
+/// its bytes are synced and checkpointed like any others; otherwise there is nothing to resume
+/// from, and a resume starts over.
+fn paused_in_probe(
+    total: Option<u64>,
+    validators: Validators,
+    part: &mut PartFile,
+    ck: &mut Checkpointer,
+    control: &Control,
+) -> Result<Fetched, DownloadError> {
+    if let Some(total) = total {
+        (ck.etag, ck.last_modified) = validators;
+        ck.take_probe(part, total, control)?;
+    }
+    Err(DownloadError::Paused)
+}
+
+/// The durable ranges of `checkpoint`, if it can be trusted for `url`: this format, this source,
+/// and ranges that are sorted, disjoint, non-empty and inside the file. A checkpoint comes back
+/// from the app, so it is checked like any other input.
+fn trusted(checkpoint: &Checkpoint, url: &str) -> Option<Coverage> {
+    if checkpoint.format != CHECKPOINT_FORMAT
+        || checkpoint.source != Checkpoint::source_of(url)
+        || checkpoint.total == 0
+    {
+        return None;
+    }
+    let mut end = 0;
+    for (i, &(a, b)) in checkpoint.durable.iter().enumerate() {
+        if a >= b || b > checkpoint.total || (i > 0 && a < end) {
+            return None;
+        }
+        end = b;
+    }
+    Some(Coverage::of(&checkpoint.durable))
+}
+
+/// Discards a part file the caller says is the download's own; there may be none. A link, or
+/// anything that isn't a plain file, is refused and left alone.
+fn discard(path: &Path) -> Result<(), DownloadError> {
+    match files::remove_part(path) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(io_error("discard the part file", path, &e)),
+    }
+}
+
+/// Takes checkpoints at the cadence (#43, report section 5.2): syncs the part file first, then
+/// records the durable coverage, so a byte is in D only once it is on disk (invariant I5).
+struct Checkpointer {
+    cadence: Cadence,
+    source: String,
+    etag: Option<String>,
+    last_modified: Option<String>,
+    last_at: Instant,
+    written_at_last: u64,
+    sent: u32,
+    /// The download resumed from a checkpoint: what it starts with is durable already.
+    resumed: bool,
+}
+
+impl Checkpointer {
+    fn new(cadence: Cadence, url: &str) -> Self {
+        Checkpointer {
+            cadence,
+            source: Checkpoint::source_of(url),
+            etag: None,
+            last_modified: None,
+            last_at: Instant::now(),
+            written_at_last: 0,
+            sent: 0,
+            resumed: false,
+        }
+    }
+
+    fn due(&self, part: &PartFile) -> bool {
+        part.written.saturating_sub(self.written_at_last) >= self.cadence.bytes
+            || self.last_at.elapsed() >= self.cadence.interval
+    }
+
+    /// Syncs the part file, marks what the scheduler covers durable, and sends the checkpoint.
+    fn take(
+        &mut self,
+        part: &PartFile,
+        sched: &mut Scheduler,
+        control: &Control,
+    ) -> Result<(), DownloadError> {
+        part.sync()?;
+        sched.synced();
+        self.send(sched.total(), sched.durable(), part, control);
+        Ok(())
+    }
+
+    /// During the probe, before a scheduler exists: everything written so far is the probe's own,
+    /// at its place, so once synced it is all durable.
+    fn take_probe(
+        &mut self,
+        part: &PartFile,
+        total: u64,
+        control: &Control,
+    ) -> Result<(), DownloadError> {
+        part.sync()?;
+        self.send(total, &part.coverage, part, control);
+        Ok(())
+    }
+
+    fn send(&mut self, total: u64, durable: &Coverage, part: &PartFile, control: &Control) {
+        control.checkpoint(Checkpoint {
+            format: CHECKPOINT_FORMAT,
+            source: self.source.clone(),
+            total,
+            etag: self.etag.clone(),
+            last_modified: self.last_modified.clone(),
+            durable: durable.intervals().to_vec(),
+        });
+        self.sent += 1;
+        self.last_at = Instant::now();
+        self.written_at_last = part.written;
+    }
+}
+
 /// `<destination>.vdmpart`.
-fn part_path(destination: &Path) -> PathBuf {
+pub(crate) fn part_path(destination: &Path) -> PathBuf {
     let mut p = destination.as_os_str().to_owned();
     p.push(".vdmpart");
     PathBuf::from(p)
 }
 
+/// An answer's validators: its ETag and Last-Modified, as sent.
+type Validators = (Option<String>, Option<String>);
+
 /// What the probe found.
 enum Probed {
-    /// Its outcome, and how far its bytes reached.
-    Outcome(ProbeOutcome, u64),
+    /// Its outcome, how far its bytes reached, and its answer's validators.
+    Outcome(ProbeOutcome, u64, Validators),
     /// A `multipart/byteranges` answer, aborted before any byte was written.
     Multipart,
+    /// Paused while the probe ran; the file's total, if its answer gave one, and its validators.
+    Paused(Option<u64>, Validators),
 }
 
 /// Runs the probe, or its retry without `Range`, and writes the bytes it may keep. The outcome is
@@ -277,12 +555,22 @@ fn probe(
     request: FetchRequest,
     probe_end: u64,
     part: &mut PartFile,
+    ck: &mut Checkpointer,
     control: &Control,
 ) -> Result<Probed, DownloadError> {
     let probe_verdict = Arc::new(Mutex::new(None));
     let multipart = Arc::new(AtomicBool::new(false));
-    let (verdict, saw_multipart) = (Arc::clone(&probe_verdict), Arc::clone(&multipart));
+    let validators: Arc<Mutex<Validators>> = Arc::new(Mutex::new((None, None)));
+    let (verdict, saw_multipart, seen) = (
+        Arc::clone(&probe_verdict),
+        Arc::clone(&multipart),
+        Arc::clone(&validators),
+    );
     let fetch = lp.fetch(request, move |head: &ResponseHead| {
+        *seen.lock().expect("the validators lock") = (
+            head.header("etag").map(str::to_owned),
+            head.header("last-modified").map(str::to_owned),
+        );
         if is_multipart(head) {
             saw_multipart.store(true, Ordering::Release);
             return Gate::Abort("a multipart/byteranges answer to one range".to_owned());
@@ -297,7 +585,7 @@ fn probe(
     });
     // The probe's bytes start at 0; how far they may go depends on its outcome.
     let mut cursor = 0u64;
-    let probe_done = drain(&fetch, control, |chunk| {
+    let drained = drain(&fetch, control, |chunk| {
         let (limit, total) = match probe_verdict
             .lock()
             .expect("the probe verdict lock")
@@ -315,8 +603,34 @@ fn probe(
         };
         part.accept(&mut cursor, limit, chunk)?;
         control.report(part.written, total);
+        // With a total, ranges work, so the probe's bytes can be resumed from: checkpoint them.
+        let total = match probe_verdict
+            .lock()
+            .expect("the probe verdict lock")
+            .as_ref()
+        {
+            Some(Ok(ProbeOutcome::RangesOk { total, .. })) => Some(*total),
+            _ => None,
+        };
+        if let (Some(total), true) = (total, ck.due(part)) {
+            (ck.etag, ck.last_modified) = validators.lock().expect("the validators lock").clone();
+            ck.take_probe(part, total, control)?;
+        }
         Ok(())
-    })?;
+    });
+    if matches!(drained, Err(DownloadError::Paused)) {
+        let total = match probe_verdict
+            .lock()
+            .expect("the probe verdict lock")
+            .as_ref()
+        {
+            Some(Ok(ProbeOutcome::RangesOk { total, .. })) => Some(*total),
+            _ => None,
+        };
+        let validators = validators.lock().expect("the validators lock").clone();
+        return Ok(Probed::Paused(total, validators));
+    }
+    let probe_done = drained?;
     if multipart.load(Ordering::Acquire) {
         return Ok(Probed::Multipart);
     }
@@ -330,7 +644,8 @@ fn probe(
     if let Err(e) = probe_done {
         return Err(fetch_failure(e).into());
     }
-    Ok(Probed::Outcome(outcome, cursor))
+    let validators = validators.lock().expect("the validators lock").clone();
+    Ok(Probed::Outcome(outcome, cursor, validators))
 }
 
 /// The request one lease is fetched with.
@@ -376,9 +691,11 @@ fn request(
                 Err(SegmentRejection::RangesIgnored) => {
                     Gate::Abort("a 200 for a range after byte 0".to_owned())
                 }
-                Err(SegmentRejection::Invalid(e) | SegmentRejection::Anomaly(e)) => {
-                    Gate::Abort(e.message.clone())
-                }
+                Err(
+                    SegmentRejection::Invalid(e)
+                    | SegmentRejection::Anomaly(e)
+                    | SegmentRejection::Changed(e),
+                ) => Gate::Abort(e.message.clone()),
             };
             *v.lock().expect("the segment verdict lock") = Some(result);
             gate
@@ -410,12 +727,17 @@ fn fetch_ranges(
     lp: &CurlLoop,
     url: &str,
     total: u64,
-    connections: u32,
-    sizes: Sizes,
+    options: DownloadOptions,
     part: &mut PartFile,
+    ck: &mut Checkpointer,
     control: &Control,
 ) -> Result<(u32, u32, Mode), DownloadError> {
-    let mut sched = Scheduler::new(total, &part.coverage, sizes);
+    let connections = options.connections.max(1);
+    let mut sched = Scheduler::new(total, &part.coverage, options.leases);
+    if ck.resumed {
+        // What a resumed download starts with came from a checkpoint: it is on disk already.
+        sched.synced();
+    }
     // Bounded, so a slow writer stops the forwarders, which stops libcurl: an unbounded channel
     // here once queued a whole file in memory (#38).
     let (tx, rx) = mpsc::sync_channel(QUEUED_PER_SEGMENT * connections as usize);
@@ -423,9 +745,11 @@ fn fetch_ranges(
     let (mut fetches, mut splits, mut anomalies) = (0u32, 0u32, 0u32);
     let mut ranges_ignored = false;
     let mut failure: Option<TransferError> = None;
+    let mut changed: Option<TransferError> = None;
     loop {
         // Fill the free connections, unless ranges stopped working for this download.
         while failure.is_none()
+            && changed.is_none()
             && !ranges_ignored
             && anomalies < MAX_ANOMALIES
             && (active.len() as u32) < connections
@@ -452,6 +776,11 @@ fn fetch_ranges(
         if control.is_cancelled() {
             // Dropping `rx` ends the forwarders, and dropping their fetches cancels them.
             return Err(DownloadError::Cancelled);
+        }
+        if control.is_paused() {
+            // What was written so far is synced and recorded; the requests stop as `rx` goes.
+            ck.take(part, &mut sched, control)?;
+            return Err(DownloadError::Paused);
         }
         let (id, event) = match rx.recv_timeout(CANCEL_CHECK) {
             Ok(e) => e,
@@ -483,6 +812,9 @@ fn fetch_ranges(
                     anomalies += 1;
                 }
                 control.report(part.written, Some(total));
+                if ck.due(part) {
+                    ck.take(part, &mut sched, control)?;
+                }
             }
             FetchEvent::Done(result) => {
                 let Some(a) = active.remove(&id) else {
@@ -494,6 +826,7 @@ fn fetch_ranges(
                     (Some(Err(SegmentRejection::RangesIgnored)), _) => ranges_ignored = true,
                     (Some(Err(SegmentRejection::Anomaly(_))), _) => anomalies += 1,
                     (Some(Err(SegmentRejection::Invalid(t))), _) => failure = failure.or(Some(t)),
+                    (Some(Err(SegmentRejection::Changed(t))), _) => changed = changed.or(Some(t)),
                     // Accepted, then cut off: the rest of the lease is leased again.
                     (Some(Ok(_)), Err(_)) => anomalies += 1,
                     // Complete by its own account, but it stopped before the end its Content-Range
@@ -511,6 +844,10 @@ fn fetch_ranges(
                 sched.ended(id);
             }
         }
+    }
+    // A changed file explains any other failure seen alongside it.
+    if let Some(t) = changed {
+        return Err(DownloadError::Changed(t));
     }
     if let Some(e) = failure {
         return Err(e.into());
@@ -559,9 +896,11 @@ fn fetch_sequential(
                     Err(SegmentRejection::RangesIgnored) => {
                         Gate::Abort("a 200 for a range after byte 0".to_owned())
                     }
-                    Err(SegmentRejection::Invalid(e) | SegmentRejection::Anomaly(e)) => {
-                        Gate::Abort(e.message.clone())
-                    }
+                    Err(
+                        SegmentRejection::Invalid(e)
+                        | SegmentRejection::Anomaly(e)
+                        | SegmentRejection::Changed(e),
+                    ) => Gate::Abort(e.message.clone()),
                 };
                 *v.lock().expect("the continuation verdict lock") = Some(result);
                 gate
@@ -603,6 +942,7 @@ fn fetch_sequential(
             }
             Some(Err(SegmentRejection::Anomaly(_))) => anomalies += 1,
             Some(Err(SegmentRejection::Invalid(t))) => return Err(t.into()),
+            Some(Err(SegmentRejection::Changed(t))) => return Err(DownloadError::Changed(t)),
             None => return Err(fetch_failure(done.err().unwrap_or(FetchError::LoopStopped)).into()),
         }
         if part.written == before {
@@ -697,6 +1037,10 @@ fn drain(
             fetch.cancel();
             return Err(DownloadError::Cancelled);
         }
+        if control.is_paused() {
+            fetch.cancel();
+            return Err(DownloadError::Paused);
+        }
         let Some(event) = fetch.next_event(CANCEL_CHECK) else {
             if last.elapsed() < SILENCE_LIMIT {
                 continue;
@@ -739,6 +1083,17 @@ fn io_error(what: &str, path: &Path, e: &io::Error) -> DownloadError {
 }
 
 /// The part file this download owns: removed on drop unless it was finished.
+/// Creates the part file at `path`, which must not exist yet.
+fn new_part(path: &Path) -> Result<files::NewPart, DownloadError> {
+    files::create_part(path).map_err(|e| match e.kind() {
+        io::ErrorKind::AlreadyExists => DownloadError::Io(format!(
+            "{} already exists; it may belong to another download",
+            path.display()
+        )),
+        _ => io_error("create the part file", path, &e),
+    })
+}
+
 struct PartFile {
     path: PathBuf,
     file: Option<File>,
@@ -746,9 +1101,60 @@ struct PartFile {
     written: u64,
     wasted: u64,
     keep: bool,
+    /// This run created it sparse (`files::create_part`).
+    sparse: bool,
 }
 
 impl PartFile {
+    /// A new part file at `path`, sparse on Windows. From here on it is the download's own:
+    /// removed on a failure, renamed on success.
+    fn create(path: PathBuf) -> Result<Self, DownloadError> {
+        let new = new_part(&path)?;
+        Ok(PartFile {
+            path,
+            file: Some(new.file),
+            coverage: Coverage::default(),
+            written: 0,
+            wasted: 0,
+            keep: false,
+            sparse: new.sparse,
+        })
+    }
+
+    /// The download's own part file, reopened to resume: only `durable` is trusted.
+    fn resumed(path: PathBuf, file: File, durable: Coverage) -> Self {
+        PartFile {
+            path,
+            file: Some(file),
+            coverage: durable,
+            written: 0,
+            wasted: 0,
+            keep: false,
+            sparse: false,
+        }
+    }
+
+    /// Discards what is in the part file and starts again with an empty one.
+    fn start_over(&mut self) -> Result<(), DownloadError> {
+        drop(self.file.take());
+        discard(&self.path)?;
+        let new = new_part(&self.path)?;
+        self.file = Some(new.file);
+        self.coverage = Coverage::default();
+        self.written = 0;
+        self.sparse = new.sparse;
+        Ok(())
+    }
+
+    /// Syncs what was written to disk.
+    fn sync(&self) -> Result<(), DownloadError> {
+        self.file
+            .as_ref()
+            .expect("the part file is open")
+            .sync_data()
+            .map_err(|e| io_error("sync", &self.path, &e))
+    }
+
     /// Writes `chunk` at `*cursor`, up to the exclusive `limit`, and advances the cursor. Bytes past
     /// the limit, or already covered, are counted as wasted. Returns how many were past the limit.
     fn accept(
@@ -816,18 +1222,17 @@ impl PartFile {
         file.sync_all()
             .map_err(|e| io_error("sync", &self.path, &e))?;
         drop(file);
-        // A hard link fails if the destination exists, so an existing file is never replaced,
-        // whatever appeared there during the download (rename would replace it on Windows).
-        match fs::hard_link(&self.path, destination) {
-            Ok(()) => {}
-            Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {
-                return Err(DownloadError::FileExists)
+        // An existing file is never replaced, whatever appeared there during the download, and a
+        // crash before this leaves only the part file: nothing that looks finished (#43).
+        match files::rename_no_replace(&self.path, destination) {
+            Ok(()) => {
+                // The part file is the destination now; this guard is done.
+                self.keep = true;
+                Ok(())
             }
-            Err(e) => return Err(io_error("move the finished file to", destination, &e)),
+            Err(e) if e.kind() == io::ErrorKind::AlreadyExists => Err(DownloadError::FileExists),
+            Err(e) => Err(io_error("move the finished file to", destination, &e)),
         }
-        // The destination now holds the data; the part file's name goes, and this guard is done.
-        self.keep = true;
-        fs::remove_file(&self.path).map_err(|e| io_error("remove the part file", &self.path, &e))
     }
 }
 
@@ -835,9 +1240,9 @@ impl Drop for PartFile {
     fn drop(&mut self) {
         if !self.keep {
             drop(self.file.take());
-            // Only the part file this download created is removed. A failure here leaves it behind,
-            // and the next download refuses to reuse it.
-            let _ = fs::remove_file(&self.path);
+            // Only the part file this download created is removed, never through a link. A
+            // failure here leaves it behind, and the next download refuses to reuse it.
+            let _ = files::remove_part(&self.path);
         }
     }
 }

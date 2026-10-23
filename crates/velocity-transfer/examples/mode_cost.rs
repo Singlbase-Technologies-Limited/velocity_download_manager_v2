@@ -232,6 +232,7 @@ fn spec(url: &str, destination: PathBuf, connections: u32) -> TransferSpec {
         checksum: None,
         limits: Limits::default(),
         max_connections: connections,
+        resume: None,
     }
 }
 

@@ -3,14 +3,16 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use velocity_core::domain::FailureClass;
+use velocity_core::transfer::{Checkpoint, Resume, CHECKPOINT_FORMAT};
 use velocity_curl::{CurlLoop, Libcurl, LoopOptions};
 use velocity_test_http::{seeded_bytes, RangeMode, ServerOptions, TestServer};
 use velocity_transfer::download::{
-    download, download_with, Control, DownloadError, DownloadOptions, Mode,
+    download, download_resumable, download_with, Cadence, Control, DownloadError, DownloadOptions,
+    Mode,
 };
 use velocity_transfer::scheduler::Sizes;
 
@@ -66,6 +68,7 @@ const OPTIONS: DownloadOptions = DownloadOptions {
     connections: 4,
     probe_bytes: 64 * 1024,
     leases: Sizes::DEFAULT,
+    checkpoints: Cadence::DEFAULT,
 };
 
 #[test]
@@ -418,6 +421,7 @@ fn a_split_stops_the_old_request_at_the_new_boundary() {
             min_split: 32 << 10,
             align: 4 << 10,
         },
+        checkpoints: Cadence::DEFAULT,
     };
     let report = download(&curl_loop(), &server.url("f.bin"), &dest, options)
         .expect("the download succeeds");
@@ -433,6 +437,301 @@ fn a_split_stops_the_old_request_at_the_new_boundary() {
         "the server sent {sent} bytes for a {LEN}-byte file: the old request didn't stop"
     );
     assert!(report.wasted_bytes <= sent - LEN as u64, "{report:?}");
+}
+
+/// Checkpoints often, so that small test files get several.
+const FAST: Cadence = Cadence {
+    bytes: 64 << 10,
+    interval: Duration::from_millis(50),
+};
+
+fn durable_len(c: &Checkpoint) -> u64 {
+    c.durable.iter().map(|(a, b)| b - a).sum()
+}
+
+/// A control that records every checkpoint the download sends.
+fn recording() -> (Control, Arc<Mutex<Vec<Checkpoint>>>) {
+    let points = Arc::new(Mutex::new(Vec::new()));
+    let p = Arc::clone(&points);
+    let control = Control::default().with_checkpoints(move |c| p.lock().unwrap().push(c));
+    (control, points)
+}
+
+fn throttled(len: usize, seed: u64, rate: u64) -> (TestServer, Vec<u8>) {
+    let data = seeded_bytes(len, seed);
+    let server = TestServer::start(
+        vec![("f.bin".into(), data.clone())],
+        ServerOptions {
+            throttle_bytes_per_sec: Some(rate),
+            ..ServerOptions::default()
+        },
+    );
+    (server, data)
+}
+
+#[test]
+fn a_download_sends_checkpoints_of_what_it_synced() {
+    // Report 5.2: every N seconds or M MiB, the part file is synced and the durable coverage D is
+    // recorded. Only D is trusted after a crash.
+    let (s, data) = serve(1_000_000, RangeMode::Honour);
+    let dir = Dir::new("checkpoints");
+    let dest = dir.file("out.bin");
+    let (control, points) = recording();
+    let options = DownloadOptions {
+        checkpoints: FAST,
+        ..OPTIONS
+    };
+    let report = download_with(&curl_loop(), &s.url("f.bin"), &dest, options, &control)
+        .expect("the download succeeds");
+    assert!(std::fs::read(&dest).unwrap() == data);
+    let points = points.lock().unwrap();
+    assert!(points.len() >= 2, "{} checkpoints", points.len());
+    assert_eq!(report.checkpoints as usize, points.len());
+    let mut before = 0;
+    for c in points.iter() {
+        assert_eq!(c.format, CHECKPOINT_FORMAT);
+        assert_eq!(
+            (c.total, c.source.as_str()),
+            (1_000_000, s.url("f.bin").as_str())
+        );
+        assert!(
+            c.durable.windows(2).all(|w| w[0].1 < w[1].0)
+                && c.durable.iter().all(|&(a, b)| a < b && b <= c.total),
+            "sorted, disjoint and inside the file: {:?}",
+            c.durable
+        );
+        assert!(durable_len(c) >= before, "durable coverage only grows");
+        before = durable_len(c);
+    }
+}
+
+#[test]
+fn the_probe_checkpoints_its_bytes_too() {
+    // The probe can be the whole file (here 300 KB under a 1 MiB probe): a crash during it must
+    // lose at most one checkpoint interval, like any other bytes.
+    let (s, data) = throttled(300_000, 45, 200_000);
+    let dir = Dir::new("probe-checkpoints");
+    let dest = dir.file("out.bin");
+    let (control, points) = recording();
+    let options = DownloadOptions {
+        probe_bytes: 1 << 20,
+        checkpoints: FAST,
+        ..OPTIONS
+    };
+    let report = download_with(&curl_loop(), &s.url("f.bin"), &dest, options, &control)
+        .expect("the download succeeds");
+    assert!(std::fs::read(&dest).unwrap() == data);
+    assert_eq!(report.fetches, 1, "the probe was the whole download");
+    let points = points.lock().unwrap();
+    assert!(points.len() >= 2, "{} checkpoints", points.len());
+    assert!(points
+        .iter()
+        .all(|c| c.durable.first().map(|r| r.0) == Some(0) && c.total == 300_000));
+}
+
+#[test]
+fn a_paused_download_keeps_its_part_file_and_resumes_from_its_last_checkpoint() {
+    const LEN: usize = 2_000_000;
+    let (s, data) = throttled(LEN, 43, 400_000);
+    let dir = Dir::new("pause");
+    let dest = dir.file("out.bin");
+    let (control, points) = recording();
+    let options = DownloadOptions {
+        checkpoints: FAST,
+        ..OPTIONS
+    };
+    let url = s.url("f.bin");
+    let lp = curl_loop();
+    let paused = std::thread::scope(|scope| {
+        let run = scope.spawn(|| download_with(&lp, &url, &dest, options, &control));
+        let deadline = std::time::Instant::now() + Duration::from_secs(30);
+        while points.lock().unwrap().last().map_or(0, durable_len) < 300_000 {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "no checkpoint in time"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        control.pause();
+        run.join().unwrap()
+    });
+    assert!(matches!(paused, Err(DownloadError::Paused)), "{paused:?}");
+    assert!(part_of(&dest).exists(), "a pause keeps the part file");
+    assert!(!dest.exists(), "and nothing looks finished");
+    let checkpoint = points
+        .lock()
+        .unwrap()
+        .last()
+        .cloned()
+        .expect("a final checkpoint");
+    let kept = durable_len(&checkpoint);
+
+    let sent_before = s.counters().body_bytes_sent;
+    let resume = Resume::Checkpoint { checkpoint };
+    let report = download_resumable(
+        &lp,
+        &url,
+        &dest,
+        options,
+        Some(&resume),
+        &Control::default(),
+    )
+    .expect("the download resumes");
+    assert!(
+        std::fs::read(&dest).unwrap() == data,
+        "the file differs from the source"
+    );
+    assert_eq!(report.resumed_bytes, kept);
+    // Only the missing bytes were fetched again (plus what libcurl had in flight when stopped).
+    let sent = s.counters().body_bytes_sent - sent_before;
+    assert!(
+        sent <= LEN as u64 - kept + (256 << 10),
+        "the resume fetched {sent} bytes for {} missing",
+        LEN as u64 - kept
+    );
+}
+
+#[test]
+fn a_resume_of_a_file_that_changed_on_the_server_starts_over() {
+    let (s, data) = serve(300_000, RangeMode::Honour);
+    let dir = Dir::new("changed");
+    let dest = dir.file("out.bin");
+    // A part file from the old file, which was 400,000 bytes long.
+    std::fs::write(part_of(&dest), vec![0xEE; 100_000]).unwrap();
+    let checkpoint = Checkpoint {
+        format: CHECKPOINT_FORMAT,
+        source: s.url("f.bin"),
+        total: 400_000,
+        etag: None,
+        last_modified: None,
+        durable: vec![(0, 100_000)],
+    };
+    let resume = Resume::Checkpoint { checkpoint };
+    let report = download_resumable(
+        &curl_loop(),
+        &s.url("f.bin"),
+        &dest,
+        OPTIONS,
+        Some(&resume),
+        &Control::default(),
+    )
+    .expect("it starts over");
+    assert!(
+        std::fs::read(&dest).unwrap() == data,
+        "none of the old bytes were kept"
+    );
+    assert_eq!(report.resumed_bytes, 0);
+}
+
+#[test]
+fn a_checkpoint_that_does_not_fit_its_file_is_not_trusted() {
+    let (s, data) = serve(300_000, RangeMode::Honour);
+    for (name, durable) in [
+        ("past-the-end", vec![(0, 999_999)]),
+        ("overlapping", vec![(0, 200), (100, 300)]),
+        ("unsorted", vec![(500, 600), (0, 100)]),
+        ("empty-range", vec![(50, 50)]),
+    ] {
+        let dir = Dir::new(&format!("unfit-{name}"));
+        let dest = dir.file("out.bin");
+        std::fs::write(part_of(&dest), vec![0xEE; 1000]).unwrap();
+        let checkpoint = Checkpoint {
+            format: CHECKPOINT_FORMAT,
+            source: s.url("f.bin"),
+            total: 300_000,
+            etag: None,
+            last_modified: None,
+            durable,
+        };
+        let resume = Resume::Checkpoint { checkpoint };
+        let report = download_resumable(
+            &curl_loop(),
+            &s.url("f.bin"),
+            &dest,
+            OPTIONS,
+            Some(&resume),
+            &Control::default(),
+        )
+        .expect("it starts over");
+        assert!(std::fs::read(&dest).unwrap() == data, "{name}");
+        assert_eq!(report.resumed_bytes, 0, "{name}");
+    }
+}
+
+#[test]
+fn a_resume_whose_part_file_is_gone_starts_over() {
+    let (s, data) = serve(300_000, RangeMode::Honour);
+    let dir = Dir::new("gone");
+    let dest = dir.file("out.bin");
+    let checkpoint = Checkpoint {
+        format: CHECKPOINT_FORMAT,
+        source: s.url("f.bin"),
+        total: 300_000,
+        etag: None,
+        last_modified: None,
+        durable: vec![(0, 100_000)],
+    };
+    let resume = Resume::Checkpoint { checkpoint };
+    let report = download_resumable(
+        &curl_loop(),
+        &s.url("f.bin"),
+        &dest,
+        OPTIONS,
+        Some(&resume),
+        &Control::default(),
+    )
+    .expect("it starts over");
+    assert!(std::fs::read(&dest).unwrap() == data);
+    assert_eq!(report.resumed_bytes, 0);
+}
+
+#[test]
+fn an_owned_part_file_without_a_usable_checkpoint_is_discarded() {
+    // PO decision on #43: delete it and start over.
+    let (s, data) = serve(300_000, RangeMode::Honour);
+    let dir = Dir::new("discard");
+    let dest = dir.file("out.bin");
+    std::fs::write(part_of(&dest), vec![0xEE; 50_000]).unwrap();
+    let resume = Resume::DiscardPartFile {};
+    download_resumable(
+        &curl_loop(),
+        &s.url("f.bin"),
+        &dest,
+        OPTIONS,
+        Some(&resume),
+        &Control::default(),
+    )
+    .expect("it starts over");
+    assert!(std::fs::read(&dest).unwrap() == data);
+}
+
+#[test]
+fn a_file_created_at_the_destination_mid_download_is_never_replaced() {
+    let (s, _) = throttled(1_000_000, 44, 400_000);
+    let dir = Dir::new("appeared");
+    let dest = dir.file("out.bin");
+    let target = dest.clone();
+    let made = std::sync::atomic::AtomicBool::new(false);
+    let control = Control::with_progress(move |written, _| {
+        if written > 100_000 && !made.swap(true, Ordering::Relaxed) {
+            std::fs::write(&target, b"keep me").unwrap();
+        }
+    });
+    let result = download_with(&curl_loop(), &s.url("f.bin"), &dest, OPTIONS, &control);
+    assert!(
+        matches!(result, Err(DownloadError::FileExists)),
+        "{result:?}"
+    );
+    assert_eq!(std::fs::read(&dest).unwrap(), b"keep me", "never replaced");
+}
+
+#[test]
+fn the_part_file_is_sparse_on_windows() {
+    let (s, _) = serve(300_000, RangeMode::Honour);
+    let dir = Dir::new("sparse");
+    let report = download(&curl_loop(), &s.url("f.bin"), &dir.file("out.bin"), OPTIONS)
+        .expect("the download succeeds");
+    assert_eq!(report.sparse, cfg!(windows));
 }
 
 #[test]
