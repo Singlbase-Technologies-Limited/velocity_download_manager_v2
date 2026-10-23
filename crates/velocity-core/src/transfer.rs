@@ -59,8 +59,24 @@ impl fmt::Debug for Header {
 pub enum HashAlgorithm {
     Md5,
     Sha1,
+    Sha224,
     Sha256,
+    Sha384,
     Sha512,
+}
+
+impl HashAlgorithm {
+    /// How many hexadecimal characters a digest of this algorithm has.
+    pub const fn hex_len(self) -> usize {
+        match self {
+            HashAlgorithm::Md5 => 32,
+            HashAlgorithm::Sha1 => 40,
+            HashAlgorithm::Sha224 => 56,
+            HashAlgorithm::Sha256 => 64,
+            HashAlgorithm::Sha384 => 96,
+            HashAlgorithm::Sha512 => 128,
+        }
+    }
 }
 
 /// A whole-file hash to verify before the download is marked Completed (#46).
@@ -70,6 +86,22 @@ pub struct Checksum {
     pub algorithm: HashAlgorithm,
     /// Lowercase hexadecimal digest.
     pub hex: String,
+}
+
+impl Checksum {
+    /// The checksum with its digest in lowercase, or `InvalidInput` when the digest isn't
+    /// hexadecimal or doesn't have its algorithm's length.
+    pub fn normalized(&self) -> Result<Checksum, ErrorCode> {
+        if self.hex.len() != self.algorithm.hex_len()
+            || !self.hex.bytes().all(|b| b.is_ascii_hexdigit())
+        {
+            return Err(ErrorCode::InvalidInput);
+        }
+        Ok(Checksum {
+            algorithm: self.algorithm,
+            hex: self.hex.to_ascii_lowercase(),
+        })
+    }
 }
 
 /// Speed limits, for one transfer or for all of them. `None` means no limit.
@@ -366,6 +398,40 @@ mod tests {
             last_modified: None,
             content_encoding: None,
             durable: vec![(0, 400), (600, 800)],
+        }
+    }
+
+    #[test]
+    fn a_checksum_needs_its_algorithms_length_in_hex_digits() {
+        use HashAlgorithm::*;
+        for (algorithm, len) in [
+            (Md5, 32),
+            (Sha1, 40),
+            (Sha224, 56),
+            (Sha256, 64),
+            (Sha384, 96),
+            (Sha512, 128),
+        ] {
+            assert_eq!(algorithm.hex_len(), len, "{algorithm:?}");
+            let checksum = |hex: String| Checksum { algorithm, hex };
+            assert_eq!(
+                checksum("Ab".repeat(len / 2)).normalized(),
+                Ok(checksum("ab".repeat(len / 2))),
+                "{algorithm:?}: uppercase is accepted and lowercased"
+            );
+            for bad in [
+                "a".repeat(len - 1),
+                "a".repeat(len + 1),
+                format!("{}g", "a".repeat(len - 1)),
+                format!(" {}", "a".repeat(len - 1)),
+                String::new(),
+            ] {
+                assert_eq!(
+                    checksum(bad.clone()).normalized(),
+                    Err(ErrorCode::InvalidInput),
+                    "{algorithm:?}: {bad:?}"
+                );
+            }
         }
     }
 

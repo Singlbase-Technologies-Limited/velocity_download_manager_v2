@@ -12,7 +12,8 @@ use velocity_core::domain::{
     ConnectionDetail, ConnectionLimit, DownloadKind, DownloadStatus, ErrorCode,
 };
 use velocity_core::transfer::{
-    Checkpoint, DirectTransfer, Limits, TransferEvent, TransferId, TransferSnapshot, TransferSpec,
+    Checkpoint, Checksum, DirectTransfer, HashAlgorithm, Limits, TransferEvent, TransferId,
+    TransferSnapshot, TransferSpec,
 };
 use velocity_test_http::{seeded_bytes, ServerOptions, TestServer};
 use velocity_transfer::engine::InProcessEngine;
@@ -266,6 +267,12 @@ fn refuses_bad_commands_with_their_codes() {
         let mut empty = spec("https://example.com/a".into(), PathBuf::from("a"));
         empty.urls.clear();
         assert_eq!(engine.add(empty), Err(ErrorCode::InvalidInput), "{mode}");
+        let mut short = spec("https://example.com/a".into(), PathBuf::from("a"));
+        short.checksum = Some(Checksum {
+            algorithm: HashAlgorithm::Sha256,
+            hex: "ab".repeat(31),
+        });
+        assert_eq!(engine.add(short), Err(ErrorCode::InvalidInput), "{mode}");
     }
 }
 

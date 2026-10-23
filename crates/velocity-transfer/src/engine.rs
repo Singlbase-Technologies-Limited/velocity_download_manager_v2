@@ -364,8 +364,11 @@ impl DirectTransfer for InProcessEngine {
             return Err(ErrorCode::InvalidPath);
         }
         spec.limits.check()?;
+        if let Some(checksum) = &spec.checksum {
+            checksum.normalized()?;
+        }
         // What the prototype can't honour is refused, never silently dropped: credentials and
-        // headers (#70), and checksums (#46).
+        // headers (#70), and checksums until the engine verifies them (#46).
         if spec.credentials.is_some() || !spec.headers.is_empty() || spec.checksum.is_some() {
             return Err(ErrorCode::Unsupported);
         }
