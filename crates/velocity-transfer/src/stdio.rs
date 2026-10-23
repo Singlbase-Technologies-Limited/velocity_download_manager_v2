@@ -250,6 +250,15 @@ impl Connection {
     }
 
     fn request(&self, command: TransferCommand) -> Result<TransferReply, ErrorCode> {
+        self.request_within(command, COMMAND_TIMEOUT)
+    }
+
+    /// [`Self::request`], waiting at most `timeout` for the reply.
+    fn request_within(
+        &self,
+        command: TransferCommand,
+        timeout: Duration,
+    ) -> Result<TransferReply, ErrorCode> {
         let seq = self.next_seq.fetch_add(1, Ordering::Relaxed) + 1;
         let (tx, rx) = channel();
         match lock(&self.shared.pending).as_mut() {
@@ -261,7 +270,7 @@ impl Connection {
             forget(&self.shared, seq);
             return Err(code);
         }
-        match rx.recv_timeout(COMMAND_TIMEOUT) {
+        match rx.recv_timeout(timeout) {
             Ok(result) => result,
             Err(RecvTimeoutError::Timeout) => {
                 forget(&self.shared, seq);
@@ -393,6 +402,16 @@ impl ChildProcessEngine {
     /// engine.
     pub fn stop(&self) {
         lock(&self.connection.stdin).take();
+    }
+
+    /// Whether the engine answers a request for its state within `timeout`: the supervisor's
+    /// check for an engine that hangs without exiting (#48). An error reply is still an answer.
+    pub fn answers_within(&self, timeout: Duration) -> bool {
+        !matches!(
+            self.connection
+                .request_within(TransferCommand::Snapshot {}, timeout),
+            Err(ErrorCode::EngineUnavailable)
+        )
     }
 
     /// The child's operating-system process id, for diagnostics and measurements.

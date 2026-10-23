@@ -10,7 +10,9 @@ use velocity_core::domain::{DownloadStatus, ErrorCode};
 use velocity_core::transfer::{
     DirectTransfer, Limits, TransferEvent, TransferId, TransferSnapshot, TransferSpec,
 };
-use velocity_test_http::{kill_process, seeded_bytes, ServerOptions, TestServer};
+use velocity_test_http::{
+    freeze_process, kill_process, process_exists, seeded_bytes, ServerOptions, TestServer,
+};
 use velocity_transfer::supervisor::{EngineHealth, SupervisedEngine, SupervisorOptions};
 
 const WAIT: Duration = Duration::from_secs(30);
@@ -26,6 +28,7 @@ fn fast(max_restarts: usize) -> SupervisorOptions {
         restart_window: Duration::from_secs(300),
         first_backoff: Duration::from_millis(10),
         max_backoff: Duration::from_millis(40),
+        ..SupervisorOptions::default()
     }
 }
 
@@ -287,4 +290,55 @@ fn the_engine_process_gets_one_argument_and_no_inherited_environment() {
             "the engine inherited {name}"
         );
     }
+}
+
+#[test]
+fn a_frozen_engine_is_killed_and_restarted_and_its_transfers_fail_as_retryable() {
+    // #48: an engine that stops answering without exiting is treated like a crash. Checks every
+    // 200 ms, each answered within 300 ms, two missed in a row: noticed within about a second.
+    let server = slow_server();
+    let dir = Dir::new("frozen");
+    let dest = dir.0.join("out.bin");
+    let options = SupervisorOptions {
+        check_every: Duration::from_millis(200),
+        check_timeout: Duration::from_millis(300),
+        missed_checks: 2,
+        ..fast(5)
+    };
+    let mut engine = SupervisedEngine::start(program(), options).expect("the engine starts");
+    let health = engine.subscribe_health();
+    let events = engine.subscribe();
+    let lost = engine
+        .add(spec(server.url("big.bin"), dest.clone()))
+        .expect("add");
+    wait_for(&events, lost, |s| s == DownloadStatus::Downloading);
+    let pid = engine.process_id().expect("an engine is running");
+
+    let frozen = freeze_process(pid).expect("freeze the engine");
+    let failed = wait_for(&events, lost, |s| s == DownloadStatus::Failed);
+    let error = failed.error.expect("an error");
+    assert!(error.retryable, "{error:?}");
+    assert!(error.message.contains("stopped responding"), "{error:?}");
+    // On Windows a killed process may not finish exiting while the test is its debugger, so the
+    // test lets go once the supervisor has given up on it. The supervisor kills it either way.
+    drop(frozen);
+
+    wait_health(&health, |h| matches!(h, EngineHealth::Restarting { .. }));
+    wait_health(&health, |h| h == EngineHealth::Running);
+    let new_pid = engine.process_id().expect("a new engine runs");
+    assert_ne!(new_pid, pid, "a new engine process");
+    // The frozen engine is gone, not left running beside its successor.
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while process_exists(pid).expect("look for the process") {
+        assert!(
+            Instant::now() < deadline,
+            "the frozen engine {pid} still runs"
+        );
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    // The new engine takes transfers.
+    let next = engine
+        .add(spec(server.url("big.bin"), dir.0.join("next.bin")))
+        .expect("the new engine takes transfers");
+    assert!(next.0 > lost.0);
 }

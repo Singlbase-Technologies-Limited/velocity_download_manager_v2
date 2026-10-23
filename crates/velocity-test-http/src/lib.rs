@@ -194,6 +194,93 @@ pub fn kill_process(pid: u32) -> Result<(), String> {
     }
 }
 
+/// Whether a process with this id exists: `kill -0` on Linux, `tasklist` on Windows.
+pub fn process_exists(pid: u32) -> Result<bool, String> {
+    if cfg!(windows) {
+        let filter = format!("PID eq {pid}");
+        let out = std::process::Command::new("tasklist")
+            .args(["/FI", &filter, "/FO", "CSV", "/NH"])
+            .output()
+            .map_err(|e| e.to_string())?;
+        // One CSV line per match, with the id quoted; "INFO: No tasks..." otherwise.
+        Ok(String::from_utf8_lossy(&out.stdout).contains(&format!("\"{pid}\"")))
+    } else {
+        let status = std::process::Command::new("kill")
+            .args(["-0", &pid.to_string()])
+            .stderr(std::process::Stdio::null())
+            .status()
+            .map_err(|e| e.to_string())?;
+        Ok(status.success())
+    }
+}
+
+/// A process frozen by [`freeze_process`]; dropping it lets the process run again.
+pub struct Frozen {
+    pid: u32,
+}
+
+/// Freezes a process: it keeps running in the eyes of the system, but none of its threads run,
+/// the way a hung process looks to the program that started it (#48). On Linux it is sent
+/// `SIGSTOP` (`kill -STOP`), and dropping the guard sends `SIGCONT`. On Windows the calling thread
+/// attaches as its debugger and never lets it continue (`DebugActiveProcess`); dropping the guard,
+/// on the same thread, detaches. A killed process may not finish exiting on Windows until then.
+pub fn freeze_process(pid: u32) -> Result<Frozen, String> {
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::System::Diagnostics::Debug::{
+            DebugActiveProcess, DebugSetProcessKillOnExit,
+        };
+        // SAFETY: plain Win32 calls that take a process id or a flag by value; no pointers.
+        unsafe {
+            if DebugActiveProcess(pid) == 0 {
+                return Err(format!(
+                    "DebugActiveProcess({pid}) failed: {}",
+                    std::io::Error::last_os_error()
+                ));
+            }
+            // If the test ends first, the process isn't killed with it.
+            DebugSetProcessKillOnExit(0);
+        }
+        Ok(Frozen { pid })
+    }
+    #[cfg(not(windows))]
+    {
+        signal(pid, "-STOP")?;
+        Ok(Frozen { pid })
+    }
+}
+
+#[cfg(not(windows))]
+fn signal(pid: u32, which: &str) -> Result<(), String> {
+    let status = std::process::Command::new("kill")
+        .args([which, &pid.to_string()])
+        .status()
+        .map_err(|e| e.to_string())?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(format!("kill {which} {pid} failed"))
+    }
+}
+
+impl Drop for Frozen {
+    fn drop(&mut self) {
+        // The process may be gone already; either way there is nothing left to undo.
+        #[cfg(windows)]
+        {
+            use windows_sys::Win32::System::Diagnostics::Debug::DebugActiveProcessStop;
+            // SAFETY: a plain Win32 call that takes a process id by value.
+            unsafe {
+                DebugActiveProcessStop(self.pid);
+            }
+        }
+        #[cfg(not(windows))]
+        {
+            let _ = signal(self.pid, "-CONT");
+        }
+    }
+}
+
 /// `len` deterministic pseudo-random bytes (xorshift64*), different for each seed.
 pub fn seeded_bytes(len: usize, seed: u64) -> Vec<u8> {
     let mut x = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1;
