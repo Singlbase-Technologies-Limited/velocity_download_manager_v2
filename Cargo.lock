@@ -4217,6 +4217,7 @@ dependencies = [
  "curl",
  "curl-sys",
  "serde_json",
+ "velocity-curl",
  "velocity-test-http",
 ]
 
