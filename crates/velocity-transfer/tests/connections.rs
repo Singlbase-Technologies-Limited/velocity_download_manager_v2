@@ -3,13 +3,15 @@
 //! server.
 
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
 use velocity_curl::{CurlLoop, Libcurl, LoopOptions};
 use velocity_test_http::{seeded_bytes, ServerOptions, TestServer};
 use velocity_transfer::adaptive::{AdaptivePolicy, Tuning};
-use velocity_transfer::download::{download_with, Cadence, Control, DownloadOptions};
+use velocity_transfer::download::{
+    download_with, Cadence, Control, DownloadOptions, DownloadReport,
+};
 use velocity_transfer::retry::RetryPolicy;
 use velocity_transfer::scheduler::Sizes;
 
@@ -42,6 +44,17 @@ fn curl_loop() -> Arc<CurlLoop> {
     )
 }
 
+/// These tests measure speed, and on a 2-vCPU machine running them at once stretched the ramp's
+/// windows from 1 s to almost 3 s (#154). Each holds this for its whole run, so they run one at a
+/// time; a failed one doesn't block the rest.
+static SERIAL: Mutex<()> = Mutex::new(());
+
+fn one_at_a_time() -> MutexGuard<'static, ()> {
+    SERIAL
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
 /// Polls `done` every 20 ms; panics with `what` after `timeout`.
 fn wait_until(timeout: Duration, what: &str, done: impl Fn() -> bool) {
     let deadline = Instant::now() + timeout;
@@ -53,6 +66,7 @@ fn wait_until(timeout: Duration, what: &str, done: impl Fn() -> bool) {
 
 #[test]
 fn the_connection_count_follows_live_changes_without_a_restart() {
+    let _serial = one_at_a_time();
     // 1 MiB/s per connection, so a 16 MiB file is still running while the count changes.
     let data = seeded_bytes(16 * MIB, 47);
     let server = TestServer::start(
@@ -165,6 +179,7 @@ const EIGHT: DownloadOptions = DownloadOptions {
 
 #[test]
 fn the_downloader_reports_its_requests_and_when_the_file_is_too_small_for_more() {
+    let _serial = one_at_a_time();
     // 2 MiB in 8 leases of about 256 KiB, at 256 KiB/s each: once the first ends, the rest is
     // too small to split (a split needs twice the 1 MiB minimum).
     let control = Arc::new(Control::default());
@@ -192,6 +207,7 @@ fn the_downloader_reports_its_requests_and_when_the_file_is_too_small_for_more()
 
 #[test]
 fn the_engine_allowance_holds_a_download_below_its_ask() {
+    let _serial = one_at_a_time();
     let control = Arc::new(Control::default());
     control.allow(2);
     let (server, _dir, download) = start_throttled(
@@ -218,16 +234,11 @@ fn the_engine_allowance_holds_a_download_below_its_ask() {
     download.join().unwrap();
 }
 
-/// The report's ramp with shorter windows, so a test runs in seconds (#47).
-const FAST_RAMP: AdaptivePolicy = AdaptivePolicy {
-    // 1 s windows: each measurement averages twice the bytes of 500 ms ones, which misjudged
-    // gains on CI's slower runners.
-    min_window: Duration::from_secs(1),
-    ..AdaptivePolicy::DEFAULT
-};
-
+/// Eight connections asked for, with the engine's adaptive ramp (#47).
 const ADAPTIVE: DownloadOptions = DownloadOptions {
-    adaptive: Some(FAST_RAMP),
+    // The engine's own policy, with its 2 s windows. Shorter ones, 500 ms and then 1 s, misjudged
+    // gains on loaded machines: a flat 5th connection once measured as a 10% gain (#154).
+    adaptive: Some(AdaptivePolicy::DEFAULT),
     ..EIGHT
 };
 
@@ -249,7 +260,7 @@ fn run(
     dir: &Dir,
     options: DownloadOptions,
     control: &Arc<Control>,
-) -> std::thread::JoinHandle<PathBuf> {
+) -> std::thread::JoinHandle<(PathBuf, DownloadReport)> {
     let (lp, url, dest, c) = (
         curl_loop(),
         server.url("f.bin"),
@@ -257,13 +268,14 @@ fn run(
         Arc::clone(control),
     );
     std::thread::spawn(move || {
-        download_with(&lp, &url, &dest, options, &c).expect("the download completes");
-        dest
+        let report = download_with(&lp, &url, &dest, options, &c).expect("the download completes");
+        (dest, report)
     })
 }
 
 #[test]
 fn adaptive_connections_ramp_up_while_each_helps() {
+    let _serial = one_at_a_time();
     // Per-connection throttle: every connection adds 1 MiB/s, so the ramp reaches the 4 asked
     // for. 4, so each added connection adds at least 33%, well clear of the 10% threshold and of
     // measurement noise on a loaded machine; the 8th would add only 14%.
@@ -284,12 +296,13 @@ fn adaptive_connections_ramp_up_while_each_helps() {
         Some((1, Tuning::RampingUp)),
         "it starts with one connection"
     );
-    wait_until(Duration::from_secs(15), "4 responses run", || {
+    wait_until(Duration::from_secs(30), "4 responses run", || {
         server.counters().answering == 4
     });
     assert_eq!(control.connections_now().tuned, None, "at the 4 asked for");
-    assert_eq!(server.counters().peak_answering, 4, "never more than asked");
-    let dest = download.join().unwrap();
+    let (dest, report) = download.join().unwrap();
+    // Counted by the engine: the server may count a stopped request's tail as one more (#154).
+    assert_eq!(report.peak_requests, 4, "never more than asked");
     assert!(
         std::fs::read(dest).unwrap() == data,
         "the file is the source"
@@ -298,31 +311,35 @@ fn adaptive_connections_ramp_up_while_each_helps() {
 
 #[test]
 fn adaptive_connections_stop_below_the_cap_when_more_stop_helping() {
+    let _serial = one_at_a_time();
     // Per-IP throttle: 1 MiB/s per connection but 2.5 MiB/s in all, so 3 connections fill it and
     // a 4th brings nothing. A cap of exactly 3 MiB/s let a 4th look like a 10% gain on CI, as 3
-    // never quite reach it while a new lease starts.
-    let data = seeded_bytes(24 * MIB, 53);
+    // never quite reach it while a new lease starts. 48 MiB, about 19 s, so the download is still
+    // running when the ramp decides, however slowly a loaded machine lets it measure (#154).
+    let data = seeded_bytes(48 * MIB, 53);
     let server = throttled_server(&data, MIB as u64, Some(5 * MIB as u64 / 2));
     let dir = Dir::new("per-ip");
     let control = Arc::new(Control::default());
     let download = run(&server, &dir, ADAPTIVE, &control);
     wait_until(
-        Duration::from_secs(15),
+        Duration::from_secs(30),
         "more connections stop helping",
         || matches!(control.connections_now().tuned, Some((_, Tuning::NoGain))),
     );
     let (kept, _) = control.connections_now().tuned.unwrap();
-    let peak = server.counters().peak_answering;
-    eprintln!("per-IP: kept {kept} connections, at most {peak} at once");
     assert!(
         kept <= 4,
         "kept {kept}, more than the 3 that help and one to try"
     );
+    let (dest, report) = download.join().unwrap();
+    // Counted by the engine over the whole download: the server may count a stopped request's
+    // tail as one more (#154).
+    let peak = report.peak_requests;
+    eprintln!("per-IP: kept {kept} connections, at most {peak} requests at once");
     assert!(
         peak <= 4,
-        "{peak} responses at once, well below the 8 asked for"
+        "{peak} requests at once, well below the 8 asked for"
     );
-    let dest = download.join().unwrap();
     assert!(
         std::fs::read(dest).unwrap() == data,
         "the file is the source"

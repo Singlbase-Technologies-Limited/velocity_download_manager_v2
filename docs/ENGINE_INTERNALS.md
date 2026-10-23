@@ -243,6 +243,8 @@ All are starting values to tune by measurement (#77), and #30 makes them setting
 | HTTP/2, 1 MiB/s per stream, 5 runs | One multiplexed connection | 1 connection, 8 streams |
 | 40 small files from one host | Reuse | 1 connection one by one; at most 8 at once |
 
+The "at once" counts above are the server's. Since #154, the ramp fixtures check the engine's own count instead, `DownloadReport::peak_requests`.
+
 ## Persistence and recovery (#43)
 
 A download survives a pause, an app restart, an engine crash and a power loss without a corrupt or falsely finished file. The rules are in the [persistence rule](../.claude/rules/persistence.md); the PO decisions are on #43.
@@ -364,7 +366,12 @@ Run it with `cargo run --release -p velocity-transfer --example high_offset_writ
 
   `tests/engine_retries.rs` covers starting a whole download again, giving up after the restarts, never restarting a permanent failure, a cancel during the wait, and Stalled in the snapshot. `tests/supervisor.rs` freezes a real engine process and checks it is restarted.
 - **Limit fixtures:** `tests/limits.rs` measures the bytes written over a window: a global 4 MiB/s across 3 downloads, a change taking effect within 2 s, and a download limit under a higher global one, each within ±10% over 10 s. `VELOCITY_LIMIT_SECONDS=30 cargo test -p velocity-transfer --test limits -- --nocapture` runs the 30 s window of #49 by hand (PO decision on #49). `tests/engine_contract.rs` checks limits in both engine modes, and `tests/supervisor.rs` checks that the global limit survives a restart.
-- **Connection fixtures (#47):** `tests/connections.rs` changes a download's count live (up and down, with no byte wasted and no second probe), holds it to the engine's allowance, reports when the file is too small for more, and runs the adaptive ramp against a per-connection and a per-IP throttle. `tests/engine_contract.rs` checks `set_connections`, the per-host share with Jain's index, and connection reuse in both engine modes.
+- **Connection fixtures (#47):** `tests/connections.rs` changes a download's count live (up and down, with no byte wasted and no second probe), holds it to the engine's allowance, reports when the file is too small for more, and runs the adaptive ramp against a per-connection and a per-IP throttle. `tests/engine_contract.rs` checks `set_connections`, the per-host share with Jain's index, and connection reuse in both engine modes. Since #154, so that slow machines don't fail them:
+  - `tests/connections.rs` runs its tests one at a time, and so do the three in `tests/engine_contract.rs` that measure speed. At once, on 2 vCPUs, they stretched the ramp's windows to almost 3 s;
+  - the ramp fixtures use the engine's own policy, with its 2 s windows. With 1 s windows, noise passed for a 10% gain;
+  - **still known:** about 1 run in 25 on 2 vCPUs, the per-IP fixture sees the ramp try a 5th connection when noise passes for a gain. The check stays at 4, a CI failure there is re-run, and the ramp's response to noise is for #77 (PO decision on #154);
+  - the ramp fixtures check "never more than asked" with the engine's own count, `DownloadReport::peak_requests`. A server counts a stopped request for a moment longer, because it writes the request's tail until it sees the connection close;
+  - the fairness fixture measures once every download is downloading on its 2 connections. A download's allowance alone is set before it connects.
 - **HTTP/2 fixtures (#47):** `tests/http2.rs` runs against the cleartext HTTP/2 server: #41's probe fixtures, #42's split that resets only its stream, and the multiplex policy against a server throttling each TCP connection and one throttling each stream. They need the `test-h2c` feature, which only test builds have ([TESTING.md](TESTING.md#fixture-servers-v2-needs)).
 - **Unit tests:** the tests in `probe.rs`, `failure.rs`, `retry.rs`, `adaptive.rs`, `budget.rs`, the libcurl layer's `rate.rs`, `scheduler.rs`, `files.rs` and the libcurl layer's `tests/curl_loop.rs` (`FetchLimit`, the per-host cap) and `tests/http2.rs` cover each rule on its own.
 
