@@ -332,3 +332,27 @@ fn freezes_the_first_later_range_after_some_bytes() {
     );
     assert!(r.body == data[5000..]);
 }
+
+#[test]
+fn counts_the_responses_it_sends_at_once() {
+    // Two throttled responses overlap: each takes about 200 ms.
+    let s = TestServer::start(
+        vec![("f".into(), seeded_bytes(200_000, 3))],
+        ServerOptions {
+            throttle_bytes_per_sec: Some(1_000_000),
+            ..ServerOptions::default()
+        },
+    );
+    let clients: Vec<_> = (0..2)
+        .map(|_| {
+            let mut stream = connect(&s);
+            std::thread::spawn(move || request(&mut stream, "GET", "/f", &[]).body.len())
+        })
+        .collect();
+    for c in clients {
+        assert_eq!(c.join().unwrap(), 200_000);
+    }
+    let c = s.counters();
+    assert_eq!(c.peak_answering, 2);
+    assert_eq!(c.answering, 0, "both responses ended");
+}

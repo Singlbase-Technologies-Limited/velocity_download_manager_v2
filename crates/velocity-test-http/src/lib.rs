@@ -106,6 +106,28 @@ pub struct Counters {
     pub dropped: u32,
     /// Whether the response that [`ServerOptions::freeze_later_range`] freezes was sent.
     pub frozen: bool,
+    /// Responses to file requests being sent now, from their status line to their last byte.
+    pub answering: u32,
+    /// The most responses to file requests that were sent at once (#47).
+    pub peak_answering: u32,
+}
+
+/// Counts one response in [`Counters::answering`] while it lives.
+struct Answering<'a>(&'a Mutex<Counters>);
+
+impl<'a> Answering<'a> {
+    fn start(counters: &'a Mutex<Counters>) -> Self {
+        let mut c = counters.lock().unwrap();
+        c.answering += 1;
+        c.peak_answering = c.peak_answering.max(c.answering);
+        Answering(counters)
+    }
+}
+
+impl Drop for Answering<'_> {
+    fn drop(&mut self) {
+        self.0.lock().unwrap().answering -= 1;
+    }
 }
 
 /// A running server on 127.0.0.1 and a free port. It stops when dropped.
@@ -487,6 +509,7 @@ fn serve_connection(
                 )
             }
         };
+        let _answering = Answering::start(counters);
         if let (RangeMode::OverrunLaterRanges { extra: over, .. }, true) = (mode, fault) {
             let header = format!(
                 "HTTP/1.1 {status}\r\nTransfer-Encoding: chunked\r\n{accept_ranges}{extra}\r\n"
