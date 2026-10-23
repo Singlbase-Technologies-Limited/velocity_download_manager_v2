@@ -85,6 +85,8 @@ pub struct Control {
     file_bound: AtomicBool,
     /// The adaptive ramp's count, when it is below what the download may use, and why.
     tuned: Mutex<Option<(u32, Tuning)>>,
+    /// The requests go on connections of their own, not as HTTP/2 streams of one (#47).
+    own_connections: AtomicBool,
 }
 
 /// The connections a download runs now, and what of its own holds it back (#47).
@@ -313,6 +315,9 @@ pub struct DownloadReport {
     /// The most body bytes one request held for the writer at a time, measured (#49). Bounded by
     /// the libcurl layer's buffer per fetch: a slow disk pauses the transfer instead.
     pub peak_buffered_bytes: u64,
+    /// Over HTTP/2, more streams on one connection stopped helping, and connections of their own
+    /// did better, so the requests went on those (#47).
+    pub own_connections: bool,
 }
 
 #[derive(Debug)]
@@ -444,6 +449,7 @@ pub fn download_resumable(
                 resumed_bytes,
                 sparse,
                 peak_buffered_bytes: control.peak_buffered.load(Ordering::Acquire),
+                own_connections: control.own_connections.load(Ordering::Acquire),
             })
         }
         Err(e) => {
@@ -950,6 +956,19 @@ fn stall_error(policy: &RetryPolicy) -> TransferError {
     )
 }
 
+/// How a download over HTTP/2 uses its streams (#47, report section 5.5): as streams of one
+/// connection first; when more streams stop helping, connections of their own are tried once, and
+/// the faster way is kept.
+#[derive(Clone, Copy, Debug)]
+enum Multiplex {
+    /// Streams of one connection, and nothing else tried yet.
+    First,
+    /// Trying connections of their own; what streams of one achieved: the best speed and count.
+    Trying { best: f64, count: u32 },
+    /// Decided: `true` for connections of their own.
+    Chosen(bool),
+}
+
 /// The request one lease is fetched with.
 struct Active {
     /// Where the request's range starts, and where its next byte lands.
@@ -994,7 +1013,7 @@ fn answered_end(verdict: &SegmentVerdict) -> Option<u64> {
 /// Starts the request for `lease`, `Range: bytes=start-(end−1)`, checked in the header callback.
 fn request(
     lp: &CurlLoop,
-    url: &str,
+    base: &FetchRequest,
     total: u64,
     lease: Lease,
     tx: mpsc::SyncSender<(LeaseId, Segment)>,
@@ -1006,26 +1025,28 @@ fn request(
     let retry_after = RetryAfter::default();
     let asked = retry_after.clone();
     let (a, b) = (lease.start, lease.end - 1);
-    let fetch = lp.fetch(
-        FetchRequest::range(url.to_owned(), a, Some(b)).limited(&control.limits),
-        move |head: &ResponseHead| {
-            asked.note(head);
-            let result = check_segment(head, a, b, total);
-            let gate = match &result {
-                Ok(_) => Gate::Accept,
-                Err(SegmentRejection::RangesIgnored) => {
-                    Gate::Abort("a 200 for a range after byte 0".to_owned())
-                }
-                Err(
-                    SegmentRejection::Invalid(e)
-                    | SegmentRejection::Anomaly(e)
-                    | SegmentRejection::Changed(e),
-                ) => Gate::Abort(e.message.clone()),
-            };
-            *v.lock().expect("the segment verdict lock") = Some(result);
-            gate
-        },
-    );
+    let fetch_request = FetchRequest {
+        range: Some((a, Some(b))),
+        ..base.clone()
+    }
+    .limited(&control.limits);
+    let fetch = lp.fetch(fetch_request, move |head: &ResponseHead| {
+        asked.note(head);
+        let result = check_segment(head, a, b, total);
+        let gate = match &result {
+            Ok(_) => Gate::Accept,
+            Err(SegmentRejection::RangesIgnored) => {
+                Gate::Abort("a 200 for a range after byte 0".to_owned())
+            }
+            Err(
+                SegmentRejection::Invalid(e)
+                | SegmentRejection::Anomaly(e)
+                | SegmentRejection::Changed(e),
+            ) => Gate::Abort(e.message.clone()),
+        };
+        *v.lock().expect("the segment verdict lock") = Some(result);
+        gate
+    });
     let limit = fetch.limit();
     forward(
         fetch,
@@ -1095,6 +1116,9 @@ fn fetch_ranges(
     let mut failure: Option<TransferError> = None;
     let mut changed: Option<TransferError> = None;
     let mut ramp = options.adaptive.map(Ramp::new);
+    // Answers came over HTTP/2, and how its streams are used (#47).
+    let mut h2 = false;
+    let mut multiplex = Multiplex::First;
     // Body bytes received, written or not, and the shortest wait for an answer: the ramp's
     // measures (#47).
     let mut received = 0u64;
@@ -1118,24 +1142,55 @@ fn fetch_ranges(
             .connections(options.connections)
             .min(control.allowed())
             .min(throttled_to);
-        let connections = match ramp.as_mut() {
-            Some(r) => {
-                r.step(now, received, ceiling, live.len() as u32, rtt);
-                r.target()
+        if let Some(r) = ramp.as_mut() {
+            r.step(now, received, ceiling, live.len() as u32, rtt);
+        }
+        // HTTP/2: when more streams stop helping, connections of their own are tried once, and
+        // the faster way is kept. Changing the way stops every request, to measure it cleanly.
+        let mut restart = false;
+        if let (Some(r), Some(adaptive), true) = (ramp.as_mut(), options.adaptive, h2) {
+            match multiplex {
+                Multiplex::First if r.why(ceiling) == Some(Tuning::NoGain) => {
+                    multiplex = Multiplex::Trying {
+                        best: r.best_rate().unwrap_or(0.0),
+                        count: r.target(),
+                    };
+                    *r = Ramp::new(adaptive);
+                    restart = true;
+                }
+                Multiplex::Trying { best, count } if r.settled(ceiling) => {
+                    let enough = 1.0 + f64::from(adaptive.add_gain_percent) / 100.0;
+                    let better = r.best_rate().is_some_and(|b| b > best * enough);
+                    multiplex = Multiplex::Chosen(better);
+                    control.own_connections.store(better, Ordering::Release);
+                    if !better {
+                        *r = Ramp::holding_at(adaptive, count);
+                        restart = true;
+                    }
+                }
+                _ => {}
             }
-            None => ceiling,
-        };
+        }
+        let connections = ramp.as_ref().map_or(ceiling, Ramp::target);
         control.tune(
             ramp.as_ref()
                 .and_then(|r| r.why(ceiling).map(|why| (r.target(), why))),
         );
         // Fewer connections than run now: the newest requests stop.
-        for id in live.iter().skip(connections as usize) {
+        let keep = if restart { 0 } else { connections as usize };
+        for id in live.iter().skip(keep) {
             let a = active.get_mut(id).expect("a live request");
             a.retiring = true;
             a.limit.stop_at(0);
         }
         // Fill the free connections, unless ranges stopped working for this download.
+        let mut base = FetchRequest::get(url.to_owned());
+        if matches!(
+            multiplex,
+            Multiplex::Trying { .. } | Multiplex::Chosen(true)
+        ) {
+            base = base.on_own_connection();
+        }
         let mut file_bound = false;
         while failure.is_none()
             && changed.is_none()
@@ -1163,7 +1218,7 @@ fn fetch_ranges(
             fetches += 1;
             active.insert(
                 lease.id,
-                request(lp, url, total, lease, tx.clone(), policy, control),
+                request(lp, &base, total, lease, tx.clone(), policy, control),
             );
         }
         control.running(active.len() as u32, file_bound);
@@ -1224,7 +1279,8 @@ fn fetch_ranges(
                     }
                 }
             }
-            Segment::Fetch(FetchEvent::Head(_)) => {
+            Segment::Fetch(FetchEvent::Head(head)) => {
+                h2 |= head.http2;
                 if let Some(a) = active.get(&id) {
                     let waited = a.asked.elapsed();
                     rtt = Some(rtt.map_or(waited, |r| r.min(waited)));

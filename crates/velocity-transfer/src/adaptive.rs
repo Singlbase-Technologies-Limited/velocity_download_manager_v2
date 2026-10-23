@@ -62,6 +62,8 @@ pub struct Ramp {
     ceiling: u32,
     /// When the current window started, and the bytes received by then.
     window: Option<(Instant, u64)>,
+    /// The fastest window measured, in bytes per second.
+    best: Option<f64>,
 }
 
 impl Ramp {
@@ -75,7 +77,30 @@ impl Ramp {
             holding: false,
             ceiling: 1,
             window: None,
+            best: None,
         }
+    }
+
+    /// A ramp that keeps `target` connections and adds none until the ceiling rises: what a
+    /// download goes back to after trying another way that did no better (#47).
+    pub fn holding_at(policy: AdaptivePolicy, target: u32) -> Self {
+        Ramp {
+            target: target.max(1),
+            holding: true,
+            ceiling: target.max(1),
+            ..Ramp::new(policy)
+        }
+    }
+
+    /// Whether the ramp has stopped changing: more stopped helping, or it reached `ceiling` and
+    /// judged its last connection.
+    pub fn settled(&self, ceiling: u32) -> bool {
+        self.holding || (self.target >= ceiling && !self.judging)
+    }
+
+    /// The fastest window measured so far, in bytes per second.
+    pub fn best_rate(&self) -> Option<f64> {
+        self.best
     }
 
     /// The connections the ramp wants now.
@@ -134,6 +159,7 @@ impl Ramp {
         }
         let rate = received.saturating_sub(bytes) as f64 / elapsed.as_secs_f64();
         self.window = Some((now, received));
+        self.best = Some(self.best.map_or(rate, |b| b.max(rate)));
         self.judge(rate);
     }
 
@@ -287,6 +313,33 @@ mod tests {
         let linear = |n: u32| u64::from(n) * 1_000_000;
         let targets = run(&mut ramp, &mut clock, 2, 16, linear);
         assert_eq!(targets, [4, 5]);
+    }
+
+    #[test]
+    fn settles_when_it_stops_or_reaches_the_ceiling_and_knows_its_best_speed() {
+        let (mut ramp, mut clock) = start();
+        assert!(!ramp.settled(8));
+        run(&mut ramp, &mut clock, 8, 8, |n| {
+            u64::from(n.min(3)) * 1_000_000
+        });
+        assert!(ramp.settled(8), "stopped: more stopped helping");
+        let best = ramp.best_rate().expect("measured");
+        assert!((best - 3_000_000.0).abs() < 1.0, "{best}");
+
+        let (mut ramp, mut clock) = start();
+        run(&mut ramp, &mut clock, 3, 3, |n| u64::from(n) * 1_000_000);
+        assert!(
+            ramp.settled(3),
+            "at the ceiling, its last connection judged"
+        );
+    }
+
+    #[test]
+    fn a_ramp_can_start_holding_at_a_count() {
+        let ramp = Ramp::holding_at(AdaptivePolicy::DEFAULT, 3);
+        assert_eq!(ramp.target(), 3);
+        assert_eq!(ramp.why(8), Some(Tuning::NoGain));
+        assert!(ramp.settled(8));
     }
 
     #[test]
