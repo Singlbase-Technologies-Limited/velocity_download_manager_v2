@@ -193,9 +193,11 @@ fn a_split_over_http2_resets_only_the_stream() {
     assert_eq!(c.connections, 1, "and the connection kept");
 }
 
-/// The report's ramp with shorter windows, so a test runs in seconds.
+/// The report's ramp with shorter windows, so a test runs in seconds. 4 asked for, so each added
+/// connection that helps adds at least 33%, well clear of the 10% threshold and of measurement
+/// noise on a loaded machine; the 8th would add only 14% (seen stopping at 7 on a 2-vCPU Linux).
 const ADAPTIVE: DownloadOptions = DownloadOptions {
-    connections: 8,
+    connections: 4,
     adaptive: Some(AdaptivePolicy {
         min_window: Duration::from_millis(500),
         ..AdaptivePolicy::DEFAULT
@@ -226,8 +228,11 @@ fn a_server_that_throttles_each_connection_gets_separate_connections() {
         r.own_connections,
         "it chose connections of their own: {r:?}"
     );
-    assert!(c.peak_answering >= 4, "{c:?}");
-    assert!(c.connections >= 4, "{c:?}");
+    assert_eq!(
+        c.peak_answering, 4,
+        "it ramped up to the 4 asked for: {c:?}"
+    );
+    assert!(c.connections >= 4, "one each: {c:?}");
 }
 
 #[test]
@@ -250,8 +255,8 @@ fn a_server_that_throttles_each_stream_keeps_one_multiplexed_connection() {
     );
     assert!(!r.own_connections, "{r:?}");
     assert_eq!(
-        c.peak_answering, 8,
-        "it ramped up to the 8 asked for: {c:?}"
+        c.peak_answering, 4,
+        "it ramped up to the 4 asked for: {c:?}"
     );
     assert_eq!(c.connections, 1, "as streams on one connection: {c:?}");
 }

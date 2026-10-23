@@ -262,12 +262,18 @@ fn run(
 
 #[test]
 fn adaptive_connections_ramp_up_while_each_helps() {
-    // Per-connection throttle: every connection adds 1 MiB/s, so the ramp reaches the 8 asked for.
+    // Per-connection throttle: every connection adds 1 MiB/s, so the ramp reaches the 4 asked
+    // for. 4, so each added connection adds at least 33%, well clear of the 10% threshold and of
+    // measurement noise on a loaded machine; the 8th would add only 14%.
     let data = seeded_bytes(48 * MIB, 52);
     let server = throttled_server(&data, MIB as u64, None);
     let dir = Dir::new("ramp-up");
     let control = Arc::new(Control::default());
-    let download = run(&server, &dir, ADAPTIVE, &control);
+    let four = DownloadOptions {
+        connections: 4,
+        ..ADAPTIVE
+    };
+    let download = run(&server, &dir, four, &control);
     wait_until(Duration::from_secs(10), "a range follows the probe", || {
         server.counters().gets >= 2
     });
@@ -276,10 +282,11 @@ fn adaptive_connections_ramp_up_while_each_helps() {
         Some((1, Tuning::RampingUp)),
         "it starts with one connection"
     );
-    wait_until(Duration::from_secs(15), "8 responses run", || {
-        server.counters().answering == 8
+    wait_until(Duration::from_secs(15), "4 responses run", || {
+        server.counters().answering == 4
     });
-    assert_eq!(control.connections_now().tuned, None, "at the 8 asked for");
+    assert_eq!(control.connections_now().tuned, None, "at the 4 asked for");
+    assert_eq!(server.counters().peak_answering, 4, "never more than asked");
     let dest = download.join().unwrap();
     assert!(
         std::fs::read(dest).unwrap() == data,
