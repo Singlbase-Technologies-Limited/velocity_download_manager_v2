@@ -350,7 +350,8 @@ impl DirectTransfer for InProcessEngine {
         Capabilities {
             protocols: vec![DownloadKind::Http],
             live_connection_changes: true,
-            validator_resume: false,
+            // With a strong validator, resume sends it in If-Range (#45).
+            validator_resume: true,
             metalink: false,
             max_connections_per_host: MAX_CONNECTIONS,
         }
