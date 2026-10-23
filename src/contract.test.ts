@@ -87,7 +87,7 @@ describe('parseAppInfo', () => {
 
   it('refuses a native side with another contract version, saying so', () => {
     expect(() => parseAppInfo({ ...ok, commandApiVersion: COMMAND_API_VERSION + 1 })).toThrow(
-      /contract version 4.*expects 3/,
+      /contract version 5.*expects 4/,
     );
   });
 

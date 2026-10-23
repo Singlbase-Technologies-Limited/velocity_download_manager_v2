@@ -9,11 +9,12 @@ use std::sync::{Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
 use velocity_core::domain::{
-    ConnectionDetail, ConnectionLimit, DownloadKind, DownloadStatus, ErrorCode, Verification,
+    ConnectionDetail, ConnectionLimit, DownloadKind, DownloadStatus, ErrorCode,
+    ProtocolCapabilities, Verification,
 };
 use velocity_core::transfer::{
-    Checkpoint, Checksum, DirectTransfer, HashAlgorithm, Limits, PieceHashes, TransferEvent,
-    TransferId, TransferSnapshot, TransferSpec,
+    Checkpoint, Checksum, DirectTransfer, EngineLimits, HashAlgorithm, Limits, PieceHashes,
+    TransferEvent, TransferId, TransferSnapshot, TransferSpec,
 };
 use velocity_test_http::{seeded_bytes, ServerOptions, TestServer};
 use velocity_transfer::engine::InProcessEngine;
@@ -96,14 +97,21 @@ fn part_of(dest: &Path) -> PathBuf {
 fn reports_its_capabilities_honestly() {
     for (mode, engine) in engines() {
         let c = engine.capabilities();
+        // Only HTTP(S) in the prototype: segmented (#42), resumed (#43) against a strong validator
+        // (#45), over HTTP/2 when the server offers it (#47).
         assert_eq!(
             c.protocols,
-            vec![DownloadKind::Http],
-            "{mode}: only HTTP(S) in the prototype"
+            vec![ProtocolCapabilities {
+                kind: DownloadKind::Http,
+                segmented: true,
+                resume: true,
+                validator_resume: true,
+                http2: true,
+            }],
+            "{mode}"
         );
-        // Live connection changes came with #47, resume checked against a strong validator with
-        // #45.
-        assert!(c.live_connection_changes && c.validator_resume, "{mode}");
+        // Live connection changes came with #47.
+        assert!(c.live_connection_changes, "{mode}");
         assert!(!c.metalink, "{mode}");
         assert!(c.max_connections_per_host >= 1, "{mode}");
     }
@@ -256,6 +264,75 @@ fn checks_piece_hashes_and_refuses_a_malformed_list() {
             hex: vec!["not hex".to_owned(); 6],
         });
         assert_eq!(engine.add(bad), Err(ErrorCode::InvalidInput), "{mode}");
+    }
+}
+
+#[test]
+fn engine_limits_set_the_per_server_cap_live_and_are_checked() {
+    // #57: the profile's per-server cap. A slow download keeps running while the cap changes.
+    let server = TestServer::start(
+        vec![("f.bin".into(), seeded_bytes(2_000_000, 57))],
+        ServerOptions {
+            throttle_bytes_per_sec: Some(200_000),
+            ..ServerOptions::default()
+        },
+    );
+    for (mode, mut engine) in engines() {
+        let dir = Dir::new(&format!("engine-limits-{}", mode.replace(' ', "-")));
+        let events = engine.subscribe();
+        assert_eq!(
+            engine.capabilities().max_connections_per_host,
+            8,
+            "{mode}: Balanced"
+        );
+        let id = engine
+            .add(spec(server.url("f.bin"), dir.0.join("f.bin")))
+            .expect("add");
+        assert_eq!(
+            engine.set_connections(id, 16),
+            Ok(8),
+            "{mode}: at most 8 by default"
+        );
+        let maximum = EngineLimits {
+            max_connections_per_host: 16,
+            ..EngineLimits::DEFAULT
+        };
+        engine
+            .set_engine_limits(maximum)
+            .expect("set_engine_limits");
+        assert_eq!(engine.capabilities().max_connections_per_host, 16, "{mode}");
+        assert_eq!(
+            engine.set_connections(id, 16),
+            Ok(16),
+            "{mode}: Maximum allows 16"
+        );
+        let conservative = EngineLimits {
+            max_connections_per_host: 2,
+            min_segment_bytes: 20 << 20,
+        };
+        engine
+            .set_engine_limits(conservative)
+            .expect("set_engine_limits");
+        let held = wait_for_snapshot(&events, id, |s| {
+            s.progress.connection_detail.is_some_and(|d| {
+                d.allowed <= 2 && d.limited_by == Some(ConnectionLimit::PerHostCap)
+            })
+        });
+        assert_eq!(
+            held.progress.connection_detail.unwrap().requested,
+            16,
+            "{mode}"
+        );
+        let too_many = EngineLimits {
+            max_connections_per_host: 17,
+            ..EngineLimits::DEFAULT
+        };
+        assert_eq!(
+            engine.set_engine_limits(too_many),
+            Err(ErrorCode::InvalidInput),
+            "{mode}"
+        );
+        engine.cancel(id).expect("cancel");
     }
 }
 
@@ -852,6 +929,41 @@ fn downloads_from_one_host_share_its_cap_fairly() {
         assert!(
             peak <= cap,
             "{mode}: {peak} responses at once, over the cap of {cap}"
+        );
+    }
+}
+
+#[test]
+fn a_lower_profile_cap_bounds_many_small_downloads() {
+    // #57: each running download keeps one connection, so with many small ones at once it is
+    // libcurl's own per-host cap that bounds a host. It must follow the profile's.
+    let data = seeded_bytes(256 * 1024, 58);
+    for (mode, mut engine) in engines() {
+        let server = TestServer::start(
+            vec![("f.bin".into(), data.clone())],
+            ServerOptions::default(),
+        );
+        let dir = Dir::new(&format!("small-capped-{}", mode.replace(' ', "-")));
+        let events = engine.subscribe();
+        let conservative = EngineLimits {
+            max_connections_per_host: 2,
+            min_segment_bytes: 20 << 20,
+        };
+        engine
+            .set_engine_limits(conservative)
+            .expect("set_engine_limits");
+        let ids: Vec<TransferId> = (0..10)
+            .map(|i| {
+                engine
+                    .add(spec(server.url("f.bin"), dir.0.join(format!("f{i}.bin"))))
+                    .expect("add")
+            })
+            .collect();
+        all_completed(&events, &mut HashMap::new(), &ids, mode);
+        let used = server.counters().connections;
+        assert!(
+            used <= 2,
+            "{mode}: 10 files at once used {used} connections, over the cap of 2"
         );
     }
 }

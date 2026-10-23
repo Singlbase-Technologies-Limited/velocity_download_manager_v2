@@ -25,7 +25,8 @@ use std::sync::mpsc::Receiver;
 /// Version 5 (#45) added [`Checkpoint::content_encoding`].
 /// Version 6 (#46) added [`TransferSnapshot::verification`], [`TransferSpec::pieces`], and SHA-224
 /// and SHA-384 to [`HashAlgorithm`]; engines now check a [`TransferSpec::checksum`].
-pub const TRANSFER_CONTRACT_VERSION: u32 = 6;
+/// Version 7 (#57) added the performance profile's limits: [`DirectTransfer::set_engine_limits`].
+pub const TRANSFER_CONTRACT_VERSION: u32 = 7;
 
 /// An engine's id for one transfer. Assigned by the engine, never reused, and never shown as the
 /// app's download id.
@@ -180,6 +181,51 @@ impl Limits {
     }
 }
 
+/// How far an engine may go for every transfer it runs (#57): set by the performance profile
+/// ([`crate::performance::PerformanceSettings::engine_limits`]). Within them the engine still
+/// adds connections one at a time, only while each helps (#47).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct EngineLimits {
+    /// The most connections to one server, for one download and for all of them together.
+    pub max_connections_per_host: u32,
+    /// The smallest piece a download is split into.
+    pub min_segment_bytes: u64,
+}
+
+impl EngineLimits {
+    /// The most connections to one server any profile allows (V1's Maximum).
+    pub const MAX_CONNECTIONS_PER_HOST: u32 = 16;
+    /// The smallest and largest pieces a profile may set: 1 MiB to 1 GiB.
+    pub const MIN_SEGMENT_BYTES: u64 = 1 << 20;
+    pub const MAX_SEGMENT_BYTES: u64 = 1 << 30;
+    /// Today's engine values, and the Balanced profile's: 8 per server, 1 MiB pieces.
+    pub const DEFAULT: EngineLimits = EngineLimits {
+        max_connections_per_host: 8,
+        min_segment_bytes: 1 << 20,
+    };
+
+    /// `InvalidInput` unless 1 to [`Self::MAX_CONNECTIONS_PER_HOST`] connections per server and a
+    /// smallest piece from [`Self::MIN_SEGMENT_BYTES`] to [`Self::MAX_SEGMENT_BYTES`].
+    pub fn check(&self) -> Result<(), ErrorCode> {
+        let hosts = 1..=Self::MAX_CONNECTIONS_PER_HOST;
+        let segments = Self::MIN_SEGMENT_BYTES..=Self::MAX_SEGMENT_BYTES;
+        if hosts.contains(&self.max_connections_per_host)
+            && segments.contains(&self.min_segment_bytes)
+        {
+            Ok(())
+        } else {
+            Err(ErrorCode::InvalidInput)
+        }
+    }
+}
+
+impl Default for EngineLimits {
+    fn default() -> Self {
+        Self::DEFAULT
+    }
+}
+
 /// Everything an engine needs to start one direct transfer. The manager builds it from a
 /// validated download record; the engine still treats it as untrusted input.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -313,6 +359,10 @@ pub trait DirectTransfer: Send {
     fn set_limits(&mut self, id: TransferId, limits: Limits) -> Result<(), ErrorCode>;
     /// Limits all transfers together; the allowance is shared among the active ones (#49).
     fn set_global_limits(&mut self, limits: Limits) -> Result<(), ErrorCode>;
+    /// Sets the limits every transfer runs within (#57): the most connections to one server, and
+    /// the smallest piece. A lower cap applies to running transfers at once; a new smallest piece
+    /// applies to transfers that start after it. `InvalidInput` for limits out of bounds.
+    fn set_engine_limits(&mut self, limits: EngineLimits) -> Result<(), ErrorCode>;
     /// Requests a connection count and returns the count the engine applied, which is at least 1
     /// and at most `capabilities().max_connections_per_host`.
     fn set_connections(&mut self, id: TransferId, connections: u32) -> Result<u32, ErrorCode>;
@@ -358,6 +408,9 @@ pub enum TransferCommand {
     },
     SetGlobalLimits {
         limits: Limits,
+    },
+    SetEngineLimits {
+        limits: EngineLimits,
     },
     Snapshot {},
 }
@@ -411,6 +464,10 @@ pub fn dispatch(
         },
         TransferCommand::SetGlobalLimits { limits } => {
             engine.set_global_limits(limits)?;
+            TransferReply::Done {}
+        }
+        TransferCommand::SetEngineLimits { limits } => {
+            engine.set_engine_limits(limits)?;
             TransferReply::Done {}
         }
         TransferCommand::Snapshot {} => TransferReply::Snapshot {
@@ -536,6 +593,24 @@ mod tests {
     }
 
     #[test]
+    fn engine_limits_are_bounded() {
+        assert_eq!(EngineLimits::DEFAULT.check(), Ok(()));
+        let with = |host: u32, segment: u64| EngineLimits {
+            max_connections_per_host: host,
+            min_segment_bytes: segment,
+        };
+        assert_eq!(with(16, 1 << 30).check(), Ok(()));
+        for bad in [
+            with(0, 1 << 20),
+            with(17, 1 << 20),
+            with(8, (1 << 20) - 1),
+            with(8, (1 << 30) + 1),
+        ] {
+            assert_eq!(bad.check(), Err(ErrorCode::InvalidInput), "{bad:?}");
+        }
+    }
+
+    #[test]
     fn a_checkpoint_saved_before_content_encoding_reads_as_none() {
         let saved = r#"{"format":1,"source":"https://example.com/a.zip","total":1000,"etag":"\"v1\"","lastModified":null,"durable":[[0,400],[600,800]]}"#;
         let read: Checkpoint = serde_json::from_str(saved).expect("an older checkpoint reads");
@@ -608,6 +683,9 @@ mod tests {
                     max_download_bps: Some(4 << 20),
                 },
             },
+            TransferCommand::SetEngineLimits {
+                limits: EngineLimits::DEFAULT,
+            },
             TransferCommand::Snapshot {},
         ] {
             round_trip(&command);
@@ -665,6 +743,12 @@ mod tests {
         };
         for pointer in ["", "/limits"] {
             refuses_an_extra_field(&global, pointer);
+        }
+        let engine_limits = TransferCommand::SetEngineLimits {
+            limits: EngineLimits::DEFAULT,
+        };
+        for pointer in ["", "/limits"] {
+            refuses_an_extra_field(&engine_limits, pointer);
         }
         refuses_an_extra_field(&TransferCommand::Pause { id: TransferId(1) }, "");
         refuses_an_extra_field(&TransferReply::Done {}, "");
@@ -884,6 +968,18 @@ mod tests {
             Ok(TransferReply::Done {})
         );
         assert_eq!(engine.control().global_limits(), global);
+        let maximum = EngineLimits {
+            max_connections_per_host: 16,
+            ..EngineLimits::DEFAULT
+        };
+        assert_eq!(
+            dispatch(
+                &mut engine,
+                TransferCommand::SetEngineLimits { limits: maximum }
+            ),
+            Ok(TransferReply::Done {})
+        );
+        assert_eq!(engine.control().engine_limits(), maximum);
         match dispatch(&mut engine, TransferCommand::Snapshot {}).unwrap() {
             TransferReply::Snapshot { transfers } => {
                 assert_eq!(transfers.len(), 1);

@@ -30,6 +30,7 @@ Terms used across V2's documents, issues and code, in alphabetical order. Where 
 | **Native lock file** | `scripts/native/deps.lock`: the pinned version, source URL, SHA-256, signing key and licence of every native library V2 builds (#35; [DEPENDENCIES.md](DEPENDENCIES.md#lock-file)) |
 | **No-clobber finalisation** | Completing a download by renaming its part file to the final name without replacing an existing file (report §5.3; #43) |
 | **Part file** | The file being downloaded, `<destination>.vdmpart`, until it is complete and renamed into place without replacing an existing file. Sparse on Windows (#43) |
+| **Performance profile** | Conservative, Balanced (the default), Maximum or Custom: limits for the adaptive engine, the most connections per server and the smallest piece. Within them the engine still adds connections only while each helps ([SETTINGS.md](SETTINGS.md#performance); ADR-0005; #57) |
 | **Piece hashes** | Trusted digests of a file's fixed-size pieces, such as a Metalink file's `<pieces>`. Each piece is checked once it is covered, and a bad one is fetched again on its own (report §5.3; #46, #54) |
 | **PO** | The Product Owner, who decides scope, architecture, dependencies, licensing, security, repository settings, merges and releases |
 | **Probe** | The first request of a download: a bounded range request whose bytes are kept. Its response decides between ranges, sequential ranges and a single stream, without a wasted full transfer. V2 doesn't use HEAD as proof of range support (report §5.1; #41) |

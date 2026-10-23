@@ -272,7 +272,8 @@ All are starting values to tune by measurement (#77), and #30 makes them setting
 
 | Value | Starting value | Where it comes from |
 |---|---|---|
-| Per-host cap (`MAX_CONNECTIONS`) | 8 | Report section 5.5 (8, at most 16); PO decision on #47 |
+| Per-host cap | The performance profile's: 8 for Balanced, 2 to 16 for the others ([SETTINGS.md](SETTINGS.md#performance)) | Report section 5.5 (8, at most 16); PO decisions on #47 and #57. `set_engine_limits` changes it while transfers run, and libcurl's own per-host cap (`CURLMOPT_MAX_HOST_CONNECTIONS`) with it: with many small downloads at once, each keeping one connection, that is what bounds a host |
+| Smallest piece (`Sizes::min_split`) | The profile's: 1 MiB for Balanced | PO decision on #57 |
 | Shared budget (`CONNECTION_BUDGET`) | 48 | V1's `connection_budget`; PO decision on #47 |
 | Window | max(2 s, 4 × RTT) | Report section 5.5 |
 | Gain to add another | 10% | Report section 5.5 |
@@ -523,7 +524,7 @@ Run it with `cargo run --release -p velocity-transfer --example high_offset_writ
 ## Not yet
 
 - **HTTP/2 over TLS:** the HTTP/2 fixtures run over cleartext, with prior knowledge. HTTP/2 negotiated through TLS (ALPN) is #69, as Windows' Schannel refuses a test CA it can't check for revocation (PO decision on #47).
-- **Connection values:** the per-host cap, the budget and the ramp's values are engine defaults until the settings model passes the user's (#30). Tuning them by measurement is #77.
+- **Connection values:** the per-host cap and the smallest piece come from the performance profile (#57). The budget and the ramp's values are engine defaults until the settings model passes the user's (#30). Tuning them by measurement is #77.
 - **Learning per host:** what a host allowed isn't remembered between downloads (a non-goal of #47).
 - **Throttling across downloads:** a `429` or `503` halves the connections of the download that got it, not of the other downloads to that host.
 - **Retry settings:** the values are engine defaults until the settings model passes the user's (#30).

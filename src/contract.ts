@@ -5,7 +5,7 @@
 import { z } from 'zod';
 
 /** Must equal `velocity_core::COMMAND_API_VERSION`; the app refuses to start on a mismatch. */
-export const COMMAND_API_VERSION = 3;
+export const COMMAND_API_VERSION = 4;
 
 const bytes = z.number().int().nonnegative();
 
@@ -87,10 +87,19 @@ export const DownloadRecordSchema = z.strictObject({
 });
 export type DownloadRecord = z.infer<typeof DownloadRecordSchema>;
 
-export const CapabilitiesSchema = z.strictObject({
-  protocols: z.array(DownloadKindSchema),
-  liveConnectionChanges: z.boolean(),
+/** What an engine does for one protocol (#57). A protocol it doesn't list isn't supported. */
+export const ProtocolCapabilitiesSchema = z.strictObject({
+  kind: DownloadKindSchema,
+  segmented: z.boolean(),
+  resume: z.boolean(),
   validatorResume: z.boolean(),
+  http2: z.boolean(),
+});
+export type ProtocolCapabilities = z.infer<typeof ProtocolCapabilitiesSchema>;
+
+export const CapabilitiesSchema = z.strictObject({
+  protocols: z.array(ProtocolCapabilitiesSchema),
+  liveConnectionChanges: z.boolean(),
   metalink: z.boolean(),
   maxConnectionsPerHost: z.number().int().positive(),
 });

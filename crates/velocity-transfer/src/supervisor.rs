@@ -30,7 +30,7 @@ use std::time::{Duration, Instant};
 
 use velocity_core::domain::{Capabilities, DownloadStatus, ErrorCode, FailureClass, TransferError};
 use velocity_core::transfer::{
-    DirectTransfer, Limits, TransferEvent, TransferId, TransferSnapshot, TransferSpec,
+    DirectTransfer, EngineLimits, Limits, TransferEvent, TransferId, TransferSnapshot, TransferSpec,
 };
 
 use crate::engine_log::EngineLog;
@@ -123,6 +123,8 @@ struct State {
     highest_id: u64,
     /// The global speed limit last set, given to every new engine (#49).
     global_limits: Limits,
+    /// The engine limits last set, given to every new engine (#57).
+    engine_limits: EngineLimits,
     crashes: VecDeque<Instant>,
     subscribers: Vec<Sender<TransferEvent>>,
     health_subscribers: Vec<Sender<EngineHealth>>,
@@ -217,6 +219,13 @@ impl Shared {
         if global != Limits::default() {
             engine
                 .set_global_limits(global)
+                .map_err(|_| ErrorCode::EngineStartFailed)?;
+        }
+        // And the profile's engine limits (#57).
+        let limits = self.state().engine_limits;
+        if limits != EngineLimits::DEFAULT {
+            engine
+                .set_engine_limits(limits)
                 .map_err(|_| ErrorCode::EngineStartFailed)?;
         }
         let events = engine.subscribe();
@@ -425,7 +434,6 @@ impl SupervisedEngine {
                 capabilities: Capabilities {
                     protocols: Vec::new(),
                     live_connection_changes: false,
-                    validator_resume: false,
                     metalink: false,
                     max_connections_per_host: 1,
                 },
@@ -433,6 +441,7 @@ impl SupervisedEngine {
                 orphans: BTreeMap::new(),
                 highest_id: 0,
                 global_limits: Limits::default(),
+                engine_limits: EngineLimits::DEFAULT,
                 crashes: VecDeque::new(),
                 subscribers: Vec::new(),
                 health_subscribers: Vec::new(),
@@ -546,6 +555,18 @@ impl DirectTransfer for SupervisedEngine {
     fn set_global_limits(&mut self, limits: Limits) -> Result<(), ErrorCode> {
         self.engine()?.0.set_global_limits(limits)?;
         self.shared.state().global_limits = limits;
+        Ok(())
+    }
+
+    fn set_engine_limits(&mut self, limits: EngineLimits) -> Result<(), ErrorCode> {
+        let engine = self.engine()?.0;
+        engine.set_engine_limits(limits)?;
+        // The capabilities were read when the engine started; the engine's report now has the new
+        // cap.
+        let capabilities = engine.capabilities();
+        let mut state = self.shared.state();
+        state.engine_limits = limits;
+        state.capabilities = capabilities;
         Ok(())
     }
 

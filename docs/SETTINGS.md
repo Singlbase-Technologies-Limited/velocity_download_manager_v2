@@ -1,0 +1,38 @@
+# Settings
+
+The settings V2 has so far, what each one does, and its bounds. The settings model as a whole, how it is saved and the Settings screen are #30; this page grows with it. Each setting is checked in Rust before it applies, whatever the screen allows.
+
+## Performance
+
+**Performance profiles are limits for the adaptive engine** ([ADR-0005](decisions/0005-v1-features-without-aria2.md), #57), not V1's aria2 option sets. Within a profile's limits, the engine still adds connections one at a time, only while each one makes the download faster ([ENGINE_INTERNALS.md](ENGINE_INTERNALS.md#adaptive-connections), #47). A server that gains nothing from more connections gets fewer.
+
+| Profile | Connections, per download and per server | Smallest piece | Notes |
+|---|---|---|---|
+| Conservative | 2 | 20 MiB | V1's values, for servers or networks that dislike many connections |
+| **Balanced**, the default | 8 | 1 MiB | The engine's values before profiles existed, so nothing changed without a measurement |
+| Maximum | 16 | 1 MiB | V1's connections. More than 8 only helps a server that gives each connection its own speed |
+| Custom | The user's: 1 to 16 | The user's: 1 to 1024 MiB | V1's `max_connection_per_server` and `min_split_size_mib`. aria2's `split` count is gone, as V2 splits by itself |
+
+- **All profiles add a connection at the same 10% gain** for now (PO decision on #57). Whether Conservative and Maximum should use other thresholds is for #77's measurements.
+- **The smallest piece** applies to downloads that start after the profile changes. The connection cap applies at once: a lower one holds running downloads back, which their details then say ("the performance profile allows no more to one server").
+- **The shared budget** for all downloads together stays 48 connections, V1's `connection_budget` (#47).
+- **In code:** `PerformanceSettings` in [`crates/velocity-core/src/performance.rs`](../crates/velocity-core/src/performance.rs) maps a profile to `EngineLimits`. `Manager::set_performance` applies it, and new downloads ask for at most its connections (`Manager::connections_for_new_downloads`). The engine takes the limits through `set_engine_limits` ([ENGINE_CONTRACT.md](ENGINE_CONTRACT.md)).
+- **Removed,** as ADR-0005 decided: "allow mid-download tuning" (V2 changes connections without restarting a download), and the aria2 optimizer.
+
+## Queue
+
+`QueueSettings` in [`crates/velocity-core/src/queue.rs`](../crates/velocity-core/src/queue.rs) (#50):
+
+| Setting | Default | Bounds |
+|---|---|---|
+| `maxConcurrentDownloads` | 3 | 1 to 32 |
+| `startImmediately` | on | — |
+| `schedule.enabled` | off | — |
+| `schedule.startTime`, `schedule.stopTime` | 02:00 to 07:00 | `HH:MM`, 24-hour; no stop time runs to midnight, and a stop before the start crosses midnight |
+| `schedule.days` | every day | 0 (Monday) to 6 (Sunday); at least one when the schedule is on |
+
+How the queue applies them is in [ENGINE_CONTRACT.md](ENGINE_CONTRACT.md#the-managers-side).
+
+## What a build can do
+
+Settings and details never offer what the build can't do. The engine reports its capabilities per protocol (`ProtocolCapabilities`, [CONTRACTS.md](CONTRACTS.md)): whether it downloads the protocol at all, and whether it segments, resumes, checks validators and uses HTTP/2 for it. In the UI, `availability` ([`src/capabilities.ts`](../src/capabilities.ts)) turns that into "available" or a reason, and `CapabilityOption` shows a control that is disabled, with the reason beside it, when the build lacks something. #30 and the download details (R8) place it.

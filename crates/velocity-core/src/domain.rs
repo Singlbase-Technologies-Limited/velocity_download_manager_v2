@@ -212,13 +212,36 @@ pub struct DownloadRecord {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Capabilities {
-    pub protocols: Vec<DownloadKind>,
+    /// The protocols it downloads, each with what it does for it (#57). One that isn't listed
+    /// isn't supported.
+    pub protocols: Vec<ProtocolCapabilities>,
     /// Connections can change during a transfer without restarting it.
     pub live_connection_changes: bool,
-    /// Resume is checked against a strong validator (ETag or Last-Modified).
-    pub validator_resume: bool,
     pub metalink: bool,
+    /// The most connections to one server now: the performance profile's cap (#57).
     pub max_connections_per_host: u32,
+}
+
+/// What an engine does for one protocol (#57), reported rather than assumed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ProtocolCapabilities {
+    pub kind: DownloadKind,
+    /// Parallel segments over several connections.
+    pub segmented: bool,
+    /// A download resumes after a pause, a restart or a crash.
+    pub resume: bool,
+    /// Resume is checked against a strong validator (ETag or Last-Modified, #45).
+    pub validator_resume: bool,
+    /// HTTP/2, with several requests as streams of one connection (#47).
+    pub http2: bool,
+}
+
+impl Capabilities {
+    /// What the engine does for `kind`; `None` when it doesn't download it.
+    pub fn protocol(&self, kind: DownloadKind) -> Option<&ProtocolCapabilities> {
+        self.protocols.iter().find(|p| p.kind == kind)
+    }
 }
 
 /// Stable error codes for command failures. The code is the contract; the message is for people.
@@ -346,9 +369,23 @@ impl Capabilities {
     /// A fixed example for the contract fixtures and UI tests.
     pub fn sample() -> Self {
         Self {
-            protocols: vec![DownloadKind::Http, DownloadKind::Ftp],
+            protocols: vec![
+                ProtocolCapabilities {
+                    kind: DownloadKind::Http,
+                    segmented: true,
+                    resume: true,
+                    validator_resume: true,
+                    http2: true,
+                },
+                ProtocolCapabilities {
+                    kind: DownloadKind::Ftp,
+                    segmented: false,
+                    resume: true,
+                    validator_resume: false,
+                    http2: false,
+                },
+            ],
             live_connection_changes: true,
-            validator_resume: true,
             metalink: false,
             max_connections_per_host: 8,
         }
@@ -558,6 +595,22 @@ mod tests {
             check(
                 "download-record.json",
                 serde_json::to_value(DownloadRecord::sample()).unwrap(),
+            );
+        }
+
+        #[test]
+        fn contract_capabilities_name_what_each_protocol_does() {
+            let c = Capabilities::sample();
+            assert!(c
+                .protocol(DownloadKind::Http)
+                .is_some_and(|p| p.segmented && p.http2));
+            assert!(c
+                .protocol(DownloadKind::Ftp)
+                .is_some_and(|p| !p.segmented && p.resume));
+            assert_eq!(
+                c.protocol(DownloadKind::Sftp),
+                None,
+                "not listed: not supported"
             );
         }
 

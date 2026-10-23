@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 
 use velocity_core::domain::{DownloadStatus, ErrorCode};
 use velocity_core::transfer::{
-    DirectTransfer, Limits, TransferEvent, TransferId, TransferSnapshot, TransferSpec,
+    DirectTransfer, EngineLimits, Limits, TransferEvent, TransferId, TransferSnapshot, TransferSpec,
 };
 use velocity_test_http::{
     freeze_process, kill_process, process_exists, seeded_bytes, ServerOptions, TestServer,
@@ -342,6 +342,32 @@ fn a_frozen_engine_is_killed_and_restarted_and_its_transfers_fail_as_retryable()
         .add(spec(server.url("big.bin"), dir.0.join("next.bin")))
         .expect("the new engine takes transfers");
     assert!(next.0 > lost.0);
+}
+
+#[test]
+fn the_engine_limits_apply_at_once_and_survive_an_engine_restart() {
+    // #57: the profile's limits reach the running engine, show in its capabilities, and are
+    // given to a new engine after a crash.
+    let mut engine = SupervisedEngine::start(program(), fast(5)).expect("the engine starts");
+    let health = engine.subscribe_health();
+    let maximum = EngineLimits {
+        max_connections_per_host: 16,
+        ..EngineLimits::DEFAULT
+    };
+    engine
+        .set_engine_limits(maximum)
+        .expect("set_engine_limits");
+    assert_eq!(
+        engine.capabilities().max_connections_per_host,
+        16,
+        "at once"
+    );
+    crash_and_recover(&engine, &health);
+    assert_eq!(
+        engine.capabilities().max_connections_per_host,
+        16,
+        "after a restart"
+    );
 }
 
 #[test]

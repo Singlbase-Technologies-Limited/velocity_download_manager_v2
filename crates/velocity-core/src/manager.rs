@@ -21,6 +21,7 @@ use crate::database::QueueEntry;
 use crate::domain::{
     DownloadKind, DownloadRecord, DownloadStatus, ErrorCode, FailureClass, Progress, TransferError,
 };
+use crate::performance::PerformanceSettings;
 use crate::queue::QueueSettings;
 use crate::transfer::{DirectTransfer, TransferEvent, TransferId, TransferSpec};
 use jiff::civil::DateTime;
@@ -72,6 +73,7 @@ pub struct Manager {
     /// The unfinished downloads in queue order; the first waiting ones start first.
     order: Vec<String>,
     settings: QueueSettings,
+    performance: PerformanceSettings,
     /// The local time at the last [`Manager::tick`], and whether the window was open then.
     local: Option<DateTime>,
     window_open: bool,
@@ -113,6 +115,7 @@ impl Manager {
             next_id: 0,
             order: Vec::new(),
             settings: QueueSettings::default(),
+            performance: PerformanceSettings::default(),
             local: None,
             window_open: false,
         }
@@ -136,12 +139,16 @@ impl Manager {
     pub fn add_with(
         &mut self,
         kind: DownloadKind,
-        spec: TransferSpec,
+        mut spec: TransferSpec,
         options: AddOptions,
         now_ms: u64,
     ) -> Result<String, ErrorCode> {
+        // The profile caps what a download asks for (#57).
+        spec.max_connections = spec
+            .max_connections
+            .min(self.connections_for_new_downloads());
         if matches!(kind, DownloadKind::Torrent | DownloadKind::Magnet)
-            || !self.engine.capabilities().protocols.contains(&kind)
+            || self.engine.capabilities().protocol(kind).is_none()
         {
             return Err(ErrorCode::Unsupported);
         }
@@ -339,6 +346,20 @@ impl Manager {
         self.settings = settings;
         self.fill();
         Ok(())
+    }
+
+    /// Applies a performance profile (#57): the engine gets its limits, and new downloads ask
+    /// for at most its connections. `InvalidInput`, with nothing sent, for settings out of bounds.
+    pub fn set_performance(&mut self, settings: PerformanceSettings) -> Result<(), ErrorCode> {
+        settings.check()?;
+        self.engine.set_engine_limits(settings.engine_limits())?;
+        self.performance = settings;
+        Ok(())
+    }
+
+    /// The connections a new download asks for under the current profile: its per-server cap.
+    pub fn connections_for_new_downloads(&self) -> u32 {
+        self.performance.engine_limits().max_connections_per_host
     }
 
     /// Applies the engine's pending events and the schedule at local time `local`: when the
@@ -691,7 +712,11 @@ mod tests {
     #[test]
     fn torrent_kinds_and_protocols_the_engine_lacks_are_refused() {
         let fake = FakeTransfer::with_capabilities(Capabilities {
-            protocols: vec![DownloadKind::Http],
+            protocols: Capabilities::sample()
+                .protocols
+                .into_iter()
+                .filter(|p| p.kind == DownloadKind::Http)
+                .collect(),
             ..Capabilities::sample()
         });
         let control = fake.control();
@@ -1064,6 +1089,52 @@ mod tests {
                 [entry(&c, true), entry(&b, false)],
                 "a finished and left it"
             );
+        }
+
+        #[test]
+        fn a_profile_sets_the_engines_limits_and_caps_new_downloads() {
+            use crate::performance::{PerformanceProfile, PerformanceSettings};
+            use crate::transfer::EngineLimits;
+            let (mut m, control) = queue_of(3);
+            let profile = |profile| PerformanceSettings {
+                profile,
+                ..PerformanceSettings::default()
+            };
+            let asking = |name: &str, connections| TransferSpec {
+                max_connections: connections,
+                ..named(name)
+            };
+            assert_eq!(m.connections_for_new_downloads(), 8, "Balanced by default");
+            m.set_performance(profile(PerformanceProfile::Maximum))
+                .unwrap();
+            assert_eq!(control.engine_limits().max_connections_per_host, 16);
+            assert_eq!(m.connections_for_new_downloads(), 16);
+            m.add(DownloadKind::Http, asking("a", 16), T0).unwrap();
+            assert_eq!(
+                control.spec(TransferId(1)).max_connections,
+                16,
+                "Maximum allows it"
+            );
+            m.set_performance(profile(PerformanceProfile::Conservative))
+                .unwrap();
+            assert_eq!(
+                control.engine_limits(),
+                EngineLimits {
+                    max_connections_per_host: 2,
+                    min_segment_bytes: 20 << 20
+                }
+            );
+            m.add(DownloadKind::Http, asking("b", 16), T0).unwrap();
+            assert_eq!(
+                control.spec(TransferId(2)).max_connections,
+                2,
+                "Conservative caps it"
+            );
+            let mut bad = profile(PerformanceProfile::Custom);
+            bad.custom.max_connections_per_server = 0;
+            let log = control.log().len();
+            assert_eq!(m.set_performance(bad), Err(ErrorCode::InvalidInput));
+            assert_eq!(control.log().len(), log, "nothing reached the engine");
         }
 
         #[test]
