@@ -15,3 +15,4 @@ pub mod retry;
 pub mod scheduler;
 pub mod stdio;
 pub mod supervisor;
+pub mod validator;
