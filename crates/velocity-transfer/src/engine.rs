@@ -25,8 +25,8 @@ use velocity_core::domain::{
     FailureClass, Progress, TransferError,
 };
 use velocity_core::transfer::{
-    Checkpoint, DirectTransfer, Limits, Resume, TransferEvent, TransferId, TransferSnapshot,
-    TransferSpec,
+    Checkpoint, Checksum, DirectTransfer, Limits, PieceHashes, Resume, TransferEvent, TransferId,
+    TransferSnapshot, TransferSpec,
 };
 use velocity_curl::{CurlLoop, Libcurl, LoopOptions, RateLimit};
 
@@ -34,7 +34,7 @@ use crate::adaptive::{AdaptivePolicy, Tuning};
 use crate::budget::{self, Demand, Share};
 use crate::download::{
     download_resumable, part_path, wait_out, Cadence, ConnectionsNow, Control, DownloadError,
-    DownloadOptions,
+    DownloadOptions, Expected,
 };
 use crate::files;
 use crate::retry::RetryPolicy;
@@ -92,6 +92,8 @@ struct Job {
     url: String,
     destination: PathBuf,
     connections: u32,
+    /// The hashes checked before the file is renamed into place (#46), in lowercase.
+    expected: Expected,
 }
 
 impl State {
@@ -364,9 +366,21 @@ impl DirectTransfer for InProcessEngine {
             return Err(ErrorCode::InvalidPath);
         }
         spec.limits.check()?;
+        let expected = Expected {
+            checksum: spec
+                .checksum
+                .as_ref()
+                .map(Checksum::normalized)
+                .transpose()?,
+            pieces: spec
+                .pieces
+                .as_ref()
+                .map(PieceHashes::normalized)
+                .transpose()?,
+        };
         // What the prototype can't honour is refused, never silently dropped: credentials and
-        // headers (#70), and checksums (#46).
-        if spec.credentials.is_some() || !spec.headers.is_empty() || spec.checksum.is_some() {
+        // headers (#70).
+        if spec.credentials.is_some() || !spec.headers.is_empty() {
             return Err(ErrorCode::Unsupported);
         }
         let connections = spec.max_connections.clamp(1, MAX_CONNECTIONS);
@@ -386,6 +400,7 @@ impl DirectTransfer for InProcessEngine {
             },
             wasted_bytes: 0,
             error: None,
+            verification: None,
         };
         state.transfers.insert(
             id,
@@ -396,6 +411,7 @@ impl DirectTransfer for InProcessEngine {
                     url,
                     destination: spec.destination.clone(),
                     connections,
+                    expected,
                 },
                 limit: RateLimit::new(spec.limits.max_download_bps),
                 last_checkpoint: None,
@@ -582,6 +598,7 @@ fn run(shared: &Shared, id: TransferId, job: &Job, resume: Option<&Resume>, cont
             &job.destination,
             options,
             resume.as_ref(),
+            &job.expected,
             control,
         );
         let Err(DownloadError::Transfer(e)) = &result else {
@@ -626,13 +643,15 @@ fn run(shared: &Shared, id: TransferId, job: &Job, resume: Option<&Resume>, cont
                 s.progress.completed_bytes = report.total;
                 s.progress.total_bytes = Some(report.total);
                 s.wasted_bytes = report.wasted_bytes;
+                s.verification = Some(report.verification);
             }
             Err(DownloadError::Cancelled) => s.status = DownloadStatus::Removed,
             Err(DownloadError::Paused) => s.status = DownloadStatus::Paused,
             Err(
                 DownloadError::Transfer(e)
                 | DownloadError::Changed(e)
-                | DownloadError::EncodingChanged(e),
+                | DownloadError::EncodingChanged(e)
+                | DownloadError::IntegrityFailed(e),
             ) => {
                 s.status = DownloadStatus::Failed;
                 s.error = Some(e);

@@ -230,6 +230,7 @@ fn spec(url: &str, destination: PathBuf, connections: u32) -> TransferSpec {
         credentials: None,
         headers: Vec::new(),
         checksum: None,
+        pieces: None,
         limits: Limits::default(),
         max_connections: connections,
         resume: None,

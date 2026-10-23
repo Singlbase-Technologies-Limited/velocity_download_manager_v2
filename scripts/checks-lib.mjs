@@ -206,6 +206,14 @@ export function checkCommands(selection) {
 export const FULL_EXTRA_COMMANDS = [
   { id: 'web-build', name: 'Frontend production build (vite build)', tool: 'vite', args: ['build'] },
   { id: 'rust-release', name: 'Rust release build (cargo build --release)', tool: 'cargo', args: ['build', '--workspace', '--release'] },
+  // The engine's measurement examples, which a test-only feature once broke unseen (#46). Built on
+  // their own: across the workspace, examples turn on every member's dev-dependency features.
+  {
+    id: 'rust-release-examples',
+    name: 'Engine examples, release build (cargo build --release --examples)',
+    tool: 'cargo',
+    args: ['build', '--release', '-p', 'velocity-transfer', '--examples'],
+  },
 ];
 
 const FRONTEND_AREAS = { frontend: 'src', scripts: 'scripts' };

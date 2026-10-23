@@ -25,5 +25,6 @@
     "uploadSpeedBps": 0
   },
   "sourceUrl": "https://example.com/files/archive.zip",
-  "status": "retrying"
+  "status": "retrying",
+  "verification": null
 }

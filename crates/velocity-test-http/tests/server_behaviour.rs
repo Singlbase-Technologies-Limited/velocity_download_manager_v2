@@ -383,3 +383,32 @@ fn throttles_all_connections_together() {
         started.elapsed()
     );
 }
+
+#[test]
+fn corrupts_one_byte_once_then_serves_it_as_it_is() {
+    let data = seeded_bytes(SIZE, 7);
+    let s = TestServer::start(
+        vec![("file.bin".into(), data.clone())],
+        ServerOptions {
+            corrupt_once: Some(50_000),
+            ..ServerOptions::default()
+        },
+    );
+    let mut stream = connect(&s);
+    // A range that misses the byte is served as it is.
+    let r = request(&mut stream, "GET", "/file.bin", &[("Range", "bytes=0-999")]);
+    assert_eq!(r.body, data[..1000]);
+    let r = request(
+        &mut stream,
+        "GET",
+        "/file.bin",
+        &[("Range", "bytes=40000-59999")],
+    );
+    assert_eq!(r.status, 206);
+    assert_eq!(r.body[10_000], data[50_000] ^ 0xFF, "flipped");
+    assert_eq!(r.body[..10_000], data[40_000..50_000]);
+    assert_eq!(r.body[10_001..], data[50_001..60_000]);
+    let r = request(&mut stream, "GET", "/file.bin", &[]);
+    assert_eq!(r.body, data, "only once");
+    assert!(s.counters().corrupted);
+}

@@ -8,7 +8,7 @@ Every CI run reports **all** of its failures at once, in one table and one machi
 |---|---|
 | Run summary (the run's page on GitHub) | A **Job selection** table: each job runs or is skipped, with the reason. A **CI diagnostics** table: one row per check, with its status and its first errors, each with `file:line` |
 | `ci-diagnostics` artifact | `ci-diagnostics.json`: the same rows, with up to 10 errors per check |
-| `report-<job>` artifacts | Each job's own report, which the summary combines (pull requests only) |
+| `report-<job>-<attempt>` artifacts | Each job's own report for one run attempt, which the summary combines. A re-run keeps the earlier attempts' reports, and the summary uses each job's newest (#46) |
 | The `ci-required` check (PRs) or the `linux` job (`main`) | Failed unless every mandatory check passed or was deselected by the selector |
 
 Artifacts are kept 7 days for pull requests and 14 days for `main`.
@@ -46,6 +46,7 @@ In Claude Code, `/ci-triage <run id or PR>` does this and proposes one fix plan 
 
 - **FAILED:** fix the code. Don't re-run hoping it passes; a flaky test is a defect too.
 - **INFRA:** one re-run (`gh run rerun <id> --failed`) is reasonable for a runner or network fault. If the same step fails again, treat it as a defect.
+- **A re-run counts:** the summary takes each job's report from its newest attempt, so a job that passes when re-run turns `ci-required` green. Before #46, the first attempt's report could win and keep it red.
 - **Never** make a check optional, skip it, or relax it to get a green run (AGENTS.md).
 
 ## `ci-diagnostics.json`

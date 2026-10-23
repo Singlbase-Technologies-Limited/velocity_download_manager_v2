@@ -41,6 +41,14 @@ impl Coverage {
         self.0.is_empty()
     }
 
+    /// Where the covered prefix from byte 0 ends: 0 when byte 0 isn't covered.
+    pub fn prefix(&self) -> u64 {
+        match self.0.first() {
+            Some(&(0, end)) => end,
+            _ => 0,
+        }
+    }
+
     pub fn insert(&mut self, a: u64, b: u64) {
         if a >= b {
             return;

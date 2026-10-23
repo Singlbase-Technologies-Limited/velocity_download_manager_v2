@@ -174,6 +174,48 @@ mod tests {
     }
 
     #[test]
+    fn the_largest_piece_list_a_spec_may_carry_fits_in_one_message() {
+        use velocity_core::transfer::{HashAlgorithm, Limits, PieceHashes, TransferSpec};
+        use HashAlgorithm::*;
+        for algorithm in [Md5, Sha1, Sha224, Sha256, Sha384, Sha512] {
+            let most = PieceHashes::MAX_HEX_BYTES / algorithm.hex_len();
+            let list = |count: usize| PieceHashes {
+                algorithm,
+                length: 1 << 20,
+                hex: vec!["a".repeat(algorithm.hex_len()); count],
+            };
+            assert!(
+                list(most + 1).normalized().is_err(),
+                "{algorithm:?}: one digest more is refused"
+            );
+            let spec = TransferSpec {
+                // A long URL and mirrors, so the rest of the spec isn't empty.
+                urls: vec![format!("https://example.com/{}", "p".repeat(8000)); 8],
+                destination: "d".repeat(4000).into(),
+                credentials: None,
+                headers: Vec::new(),
+                checksum: None,
+                pieces: Some(
+                    list(most)
+                        .normalized()
+                        .expect("the largest list is accepted"),
+                ),
+                limits: Limits::default(),
+                max_connections: 8,
+                resume: None,
+            };
+            let add = ToChild::Request {
+                seq: 1,
+                command: TransferCommand::Add {
+                    spec: Box::new(spec),
+                },
+            };
+            let len = serde_json::to_vec(&add).unwrap().len();
+            assert!(len <= MAX_MESSAGE_BYTES, "{algorithm:?}: {len} bytes");
+        }
+    }
+
+    #[test]
     fn the_handshake_uses_camel_case_names() {
         let start = ToChild::Start {
             protocol: PROTOCOL_VERSION,
@@ -182,7 +224,7 @@ mod tests {
         };
         assert_eq!(
             serde_json::to_string(&start).unwrap(),
-            r#"{"type":"start","protocol":2,"contract":5,"firstTransferId":12}"#
+            r#"{"type":"start","protocol":2,"contract":6,"firstTransferId":12}"#
         );
         let refused = FromChild::Reply {
             seq: 7,

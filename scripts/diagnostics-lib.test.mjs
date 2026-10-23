@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { buildDiagnostics, diagnosticsMarkdown, extractErrors } from './diagnostics-lib.mjs';
+import { buildDiagnostics, diagnosticsMarkdown, extractErrors, latestReports } from './diagnostics-lib.mjs';
 
 // Trimmed from real tool output captured on 2026-10-21 (Windows paths and colours included).
 const ROOT = 'C:\\work\\v2';
@@ -282,5 +282,26 @@ describe('diagnosticsMarkdown', () => {
     expect(md).toMatch(/\| Rust unit tests \| code \| FAILED \|/);
     expect(md).toContain('`src-tauri/src/lib.rs:63:9`');
     expect(md).toMatch(/Result: \*\*failed\*\*/);
+  });
+});
+
+describe('latestReports', () => {
+  const report = (job, attempt, status) => ({
+    job,
+    ...(attempt === undefined ? {} : { attempt }),
+    infraFailure: null,
+    checks: [{ id: 'tests', name: 'Tests', status, errors: [] }],
+  });
+
+  it('keeps each job’s report from its newest attempt, so a re-run that passed counts', () => {
+    const latest = latestReports([report('code', 2, 'pass'), report('code', 1, 'fail'), report('select', 1, 'pass')]);
+    expect(latest.code.attempt).toBe(2);
+    expect(latest.code.checks[0].status).toBe('pass');
+    expect(latest.select.attempt).toBe(1);
+  });
+
+  it('reads a report without an attempt as the first', () => {
+    const latest = latestReports([report('code', undefined, 'fail'), report('code', 2, 'pass')]);
+    expect(latest.code.checks[0].status).toBe('pass');
   });
 });

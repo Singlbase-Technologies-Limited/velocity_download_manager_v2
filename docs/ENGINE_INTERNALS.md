@@ -83,7 +83,7 @@ Checked after every change in debug builds (`Scheduler::check`), and by the prop
 
 ## Accounting
 
-Every received byte is either written into the part file once, or counted in `wasted_bytes`. That includes bytes past a lease's end, bytes for a lease that isn't live, bytes the single stream sends again, and bytes already covered. Progress counts written bytes only. A server that ignores ranges costs exactly one GET with no wasted bytes, which a fixture test checks.
+Every received byte is either written into the part file once, or counted in `wasted_bytes`. That includes bytes past a lease's end, bytes for a lease that isn't live, bytes the single stream sends again, bytes already covered, and the bytes of a piece that failed its hash and was fetched again ([integrity](#piece-hashes)). Progress counts written bytes only. A server that ignores ranges costs exactly one GET with no wasted bytes, which a fixture test checks.
 
 ## Changed files (#45)
 
@@ -129,7 +129,7 @@ A `403` on any answer after the first fails with "The download link expired (403
 
 ### What can't be detected
 
-A server that changes the file but keeps its ETag, its date and its length looks unchanged. Only a checksum catches it (#46). Without any validator, only the total is compared ([ADR-0010](decisions/0010-resume-without-validator.md)).
+A server that changes the file but keeps its ETag, its date and its length looks unchanged. Only a checksum catches it ([integrity](#integrity-46)). Without any validator, only the total is compared ([ADR-0010](decisions/0010-resume-without-validator.md)).
 
 ## Retries, waits and stalls (#48)
 
@@ -336,9 +336,9 @@ The app hands back what it saved, in `TransferSpec::resume`:
 
 ### Finishing
 
-The file is renamed into place only when coverage is complete:
+The file is renamed into place only when coverage is complete and, with a checksum, the hash matches ([the completion gate](#the-completion-gate)):
 
-1. the part file is sized and synced;
+1. the part file is sized, checked and synced;
 2. it is renamed **without ever replacing** an existing file. On Windows that's `MoveFileExW` without `MOVEFILE_REPLACE_EXISTING`, and with `MOVEFILE_WRITE_THROUGH`. On Linux it's `renameat2(RENAME_NOREPLACE)`, then a sync of the folder, so the new name survives a power loss.
 
 A file that appeared at the destination during the download is kept, and the download fails with `FileExists`. On a Linux file system without `RENAME_NOREPLACE`, a hard link does the same job. The rename, unlike #37's hard link, also works on FAT32 and exFAT drives.
@@ -353,6 +353,84 @@ A file that appeared at the destination during the download is kept, and the dow
 - **The no-replace rename:** described above.
 
 The calls go through `windows-sys` and `libc` (PO decision), each `unsafe` call with its `SAFETY` note. `DownloadReport::sparse` says whether this run's part file was made sparse. A file system without sparse files, such as FAT or exFAT, still works, only slower.
+
+## Integrity (#46)
+
+A download is Completed only once its bytes are proven as far as the trusted hashes it has allow (report section 5.3, [`integrity.rs`](../crates/velocity-transfer/src/integrity.rs)). Hashing never runs on the network or downloader thread.
+
+### The completion gate
+
+In this order:
+
+1. coverage is `[0, T)`;
+2. the part file's length is T;
+3. every piece matches its trusted hash, when there are piece hashes, and the whole-file hash matches the checksum, when there is one. The status is Verifying while the end of the whole-file hash is computed;
+4. the part file is synced;
+5. it is renamed without replacing an existing file;
+6. on Unix, the folder is synced.
+
+### The hash frontier
+
+Hashes don't compose: the digests of separate segments can't be combined into the file's. So the frontier, on a thread of its own, hashes the covered prefix from byte 0. The part file tells it, after every write, how far the bytes from 0 reach; it reads the new ones back and hashes them. At completion it hashes whatever is left. Its state isn't saved, so after a crash or a resume it starts again from byte 0, reading back what is on disk.
+
+- **The worst case** is one full sequential read at completion: the first segment finishes last, as when the range after the probe is the slowest.
+- **A checksum is never skipped:** without a running frontier, the whole file is hashed at completion.
+- **Memory:** the frontier holds one 1 MiB buffer and one number, how far it may hash; the writer never waits for it.
+- **Cancel and pause while it waits:** completion waits for the frontier and for the last piece verdicts, checking every 100 ms (`CANCEL_CHECK`). A cancel ends the download and removes the part file; a pause keeps it, and a resume hashes again from byte 0. Either thread stops after its current 1 MiB read.
+
+### Piece hashes
+
+`TransferSpec::pieces` holds trusted hashes of fixed-size pieces, such as a Metalink file's `<pieces>` (#54 fills it; PO decision on #46). Hashes Velocity computes itself would only catch disk errors, never wrong server content, so only trusted ones are used.
+
+- **Checked once covered:** each piece goes to the piece verifier, on a thread of its own, as soon as its last byte is written, in every mode. The last piece ends with the file, so it goes once the total is known.
+- **Re-fetched alone:** once the file is covered, the engine waits for every verdict. A bad piece is taken out of coverage, its bytes from this attempt count as wasted, and the download fetches the missing ranges again with a new scheduler built from the coverage. The range scheduler isn't changed for this, so invariants I1 to I7 hold as before.
+- **At most 2 re-fetches** per piece, 3 tries in all (PO decision on #46). A third bad copy fails the download: "The downloaded file's piece n of m doesn't match its trusted hash, even after fetching it again 2 times: the server sends bad data. …".
+- **Without ranges** (a single stream, or ranges lost), a piece can't come alone, so the whole file is downloaded once more as one stream (PO decision on #46). A bad piece again fails it.
+- **A list that doesn't fit** the file, with more or fewer pieces than its size needs, fails at once as Permanent.
+- **With a checksum as well,** the frontier starts again from byte 0 after a piece is fetched again, because it may have hashed the bad bytes.
+- **Mirrors:** a bad piece will prefer another mirror once a download has mirrors (Metalink, #54). Today it comes from the same server.
+
+### A failed check
+
+A wrong checksum, or a piece that stays bad, fails the download with a message and `DownloadError::IntegrityFailed`, as Transient and retryable:
+
+- the part file is **kept** for inspection, and not renamed;
+- the engine **doesn't start it again** on its own, as that would replace the part file;
+- when checkpoints were sent, a last one follows that **trusts no byte**, so a resume from it downloads the whole file again instead of checking the same bytes a second time (report section 5.3: "A retry re-downloads once").
+
+A piece list that doesn't fit the file fails the same way, but as Permanent: the list or the server is wrong.
+
+### What was proven
+
+`DownloadReport::verification` and the snapshot's `verification` say what the completed file's bytes were checked against ([ADR-0010](decisions/0010-resume-without-validator.md)):
+
+| Verification | When |
+|---|---|
+| `verified` | A checksum or trusted piece hashes were given, and they matched |
+| `notVerified` | No hash, and the download resumed from bytes on disk without a strong validator, so a file that changed at the same length could have mixed two versions |
+| `sizeVerified` | Anything else complete: every byte arrived and the length matched |
+
+"Verified" is shown only when a hash was checked. The value isn't saved in the database yet (#58).
+
+### Read-back cost
+
+Measured with [`examples/hash_readback.rs`](../crates/velocity-transfer/examples/hash_readback.rs) (the issue's risk; #46, 2026-10-23) on Windows 11 with an Intel Core i7-13620H (16 threads, 16 GB). A 1 GiB file is written in 1 MiB chunks to a part file, and the frontier follows. Medians of 3 runs, in seconds:
+
+| Algorithm | Hash alone, from memory | Completion waits, segments in reverse (worst case) | Completion waits, segments in order |
+|---|---|---|---|
+| MD5 | 2.89 | 3.20 | 3.04 |
+| SHA-1 | 0.91 | 1.18 | 1.16 |
+| SHA-256 | 1.35 | 1.60 | 1.34 |
+| SHA-512 | 3.30 | 3.40 | 3.52 |
+
+What they show, and what they don't:
+
+- **The hash itself is most of the cost.** Reading back the whole file adds 0.1 to 0.3 s per GiB here, because the file was just written and the read comes from the operating system's cache. A read from the disk itself would take longer; it isn't measured.
+- **In order isn't faster here,** because the example writes from memory far faster than the hash runs, so the frontier is still behind when the last byte lands. A download slower than the hash, as from a network, keeps it nearly caught up; that isn't measured either.
+- **SHA-1 and SHA-256 are faster than MD5 on this CPU,** which has SHA instructions that RustCrypto uses.
+- **Single runs vary:** the slowest of the three was up to 1.4 times the median.
+
+Run it with `cargo run --release -p velocity-transfer --example hash_readback -- [dir] [--mib N] [--runs R] [--algorithms md5,sha1,sha256,sha512]`. The numbers above were taken with `--config profile.release.debug-assertions=true`, which the examples needed until the HTTP/2 tests moved out of `velocity-transfer` (below); debug assertions don't touch the hashing code.
 
 ## Disk writes far into a new file (Windows)
 
@@ -427,7 +505,19 @@ Run it with `cargo run --release -p velocity-transfer --example high_offset_writ
   - **still known:** about 1 run in 25 on 2 vCPUs, the per-IP fixture sees the ramp try a 5th connection when noise passes for a gain. The check stays at 4, a CI failure there is re-run, and the ramp's response to noise is for #77 (PO decision on #154);
   - the ramp fixtures check "never more than asked" with the engine's own count, `DownloadReport::peak_requests`. A server counts a stopped request for a moment longer, because it writes the request's tail until it sees the connection close;
   - the fairness fixture measures once every download is downloading on its 2 connections. A download's allowance alone is set before it connects.
-- **HTTP/2 fixtures (#47):** `tests/http2.rs` runs against the cleartext HTTP/2 server: #41's probe fixtures, #42's split that resets only its stream, and the multiplex policy against a server throttling each TCP connection and one throttling each stream. They need the `test-h2c` feature, which only test builds have ([TESTING.md](TESTING.md#fixture-servers-v2-needs)).
+- **Integrity fixtures (#46):** `tests/integrity.rs` runs against the test server:
+  - a correct checksum completes a download whose segments land out of order, with Verifying shown;
+  - a wrong one fails with the part file kept and nothing renamed, and a resume from its last checkpoint downloads every byte again;
+  - checksums on a single stream and an empty file;
+  - Verified, Size verified and Not verified, for fresh and resumed downloads with and without a strong ETag;
+  - a piece the server sends bad once (`ServerOptions::corrupt_once`) is fetched again alone;
+  - a piece that stays bad fails after 2 re-fetches;
+  - without ranges, a bad piece starts the download over once;
+  - a piece list that doesn't fit fails;
+  - after a piece is fetched again, the whole-file hash still matches.
+
+  The unit tests in `integrity.rs` check the six algorithms against their standard test vectors, a frontier fed in reverse order, and the piece verifier. `tests/engine_contract.rs` checks checksums and piece hashes in both engine modes.
+- **HTTP/2 fixtures (#47):** `crates/velocity-transfer-h2c/tests/http2.rs` runs against the cleartext HTTP/2 server: #41's probe fixtures, #42's split that resets only its stream, and the multiplex policy against a server throttling each TCP connection and one throttling each stream. They need the `test-h2c` feature, which only test builds have ([TESTING.md](TESTING.md#fixture-servers-v2-needs)). They live in a test-only crate of their own (#46): a dev-dependency's features reach every example of its crate, so while they were in `velocity-transfer`, none of its examples could be built for release.
 - **Unit tests:** the tests in `probe.rs`, `validator.rs`, `failure.rs`, `retry.rs`, `adaptive.rs`, `budget.rs`, the libcurl layer's `rate.rs`, `scheduler.rs`, `files.rs` and the libcurl layer's `tests/curl_loop.rs` (`FetchLimit`, the per-host cap) and `tests/http2.rs` cover each rule on its own.
 
 ## Not yet
@@ -437,5 +527,6 @@ Run it with `cargo run --release -p velocity-transfer --example high_offset_writ
 - **Learning per host:** what a host allowed isn't remembered between downloads (a non-goal of #47).
 - **Throttling across downloads:** a `429` or `503` halves the connections of the download that got it, not of the other downloads to that host.
 - **Retry settings:** the values are engine defaults until the settings model passes the user's (#30).
-- **"Not verified":** marking a download resumed without a validator as "not verified" ([ADR-0010](decisions/0010-resume-without-validator.md)) is #46.
+- **Saving the verification state:** `verification` isn't saved in the database yet (#58).
+- **Integrity without the app:** a whole-file hash that a server gives (`Repr-Digest`) is deferred (report section 5.3).
 - **Saving checkpoints in the app:** the manager saves the engine's checkpoint events in the database and resumes unfinished downloads at startup with `StoredDownload::resume` (#58).

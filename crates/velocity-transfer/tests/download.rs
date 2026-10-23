@@ -12,7 +12,7 @@ use velocity_curl::{CurlLoop, Libcurl, LoopOptions};
 use velocity_test_http::{seeded_bytes, RangeMode, ServerOptions, TestServer};
 use velocity_transfer::download::{
     download, download_resumable, download_with, Cadence, Control, DownloadError, DownloadOptions,
-    Mode,
+    Expected, Mode,
 };
 use velocity_transfer::retry::RetryPolicy;
 use velocity_transfer::scheduler::Sizes;
@@ -600,6 +600,7 @@ fn a_paused_download_keeps_its_part_file_and_resumes_from_its_last_checkpoint() 
         &dest,
         options,
         Some(&resume),
+        &Expected::default(),
         &Control::default(),
     )
     .expect("the download resumes");
@@ -640,6 +641,7 @@ fn a_resume_of_a_file_that_changed_on_the_server_starts_over() {
         &dest,
         OPTIONS,
         Some(&resume),
+        &Expected::default(),
         &Control::default(),
     )
     .expect("it starts over");
@@ -678,6 +680,7 @@ fn a_checkpoint_that_does_not_fit_its_file_is_not_trusted() {
             &dest,
             OPTIONS,
             Some(&resume),
+            &Expected::default(),
             &Control::default(),
         )
         .expect("it starts over");
@@ -707,6 +710,7 @@ fn a_resume_whose_part_file_is_gone_starts_over() {
         &dest,
         OPTIONS,
         Some(&resume),
+        &Expected::default(),
         &Control::default(),
     )
     .expect("it starts over");
@@ -728,6 +732,7 @@ fn an_owned_part_file_without_a_usable_checkpoint_is_discarded() {
         &dest,
         OPTIONS,
         Some(&resume),
+        &Expected::default(),
         &Control::default(),
     )
     .expect("it starts over");

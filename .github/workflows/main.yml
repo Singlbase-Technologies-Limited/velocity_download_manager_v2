@@ -89,7 +89,7 @@ jobs:
         if: ${{ !cancelled() && steps.checkout.outcome == 'success' }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: report-select
+          name: report-select-${{ github.run_attempt }}
           path: ci-reports/report-select.json
           retention-days: 14
 
@@ -137,7 +137,7 @@ jobs:
         if: ${{ !cancelled() && steps.checkout.outcome == 'success' }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: report-linux
+          name: report-linux-${{ github.run_attempt }}
           path: ci-reports/report-linux.json
           retention-days: 14
 
@@ -207,7 +207,7 @@ jobs:
         if: ${{ !cancelled() && steps.checkout.outcome == 'success' }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: report-windows
+          name: report-windows-${{ github.run_attempt }}
           path: ci-reports/report-windows.json
           retention-days: 14
       - name: Keep only dependency artefacts
@@ -257,7 +257,8 @@ jobs:
         with:
           pattern: report-*
           path: ci-reports
-          merge-multiple: true
+          # One folder per artifact, so each attempt of a job keeps its own report (#46).
+          merge-multiple: false
       - id: combine
         name: Combine the results
         env:

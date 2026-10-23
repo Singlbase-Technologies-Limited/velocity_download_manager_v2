@@ -12,7 +12,7 @@ use velocity_test_http::{
     seeded_bytes, Change, Counters, FileHeaders, RangeMode, ServerOptions, TestServer,
 };
 use velocity_transfer::download::{
-    download, download_resumable, Cadence, Control, DownloadError, DownloadOptions, Mode,
+    download, download_resumable, Cadence, Control, DownloadError, DownloadOptions, Expected, Mode,
 };
 use velocity_transfer::retry::RetryPolicy;
 use velocity_transfer::scheduler::Sizes;
@@ -281,6 +281,7 @@ fn a_resume_of_a_file_whose_etag_changed_starts_over() {
         &dest,
         OPTIONS,
         Some(&Resume::Checkpoint { checkpoint }),
+        &Expected::default(),
         &Control::default(),
     )
     .expect("it starts over");
@@ -397,6 +398,7 @@ fn a_resume_needs_the_encoding_its_checkpoint_recorded() {
             &dest,
             OPTIONS,
             Some(&Resume::Checkpoint { checkpoint }),
+            &Expected::default(),
             &Control::default(),
         )
         .expect("it finishes");
@@ -432,6 +434,7 @@ fn a_link_that_stops_working_after_the_first_answer_has_expired() {
         &dest,
         OPTIONS,
         Some(&Resume::Checkpoint { checkpoint }),
+        &Expected::default(),
         &Control::default(),
     );
     let Err(DownloadError::Transfer(e)) = result else {

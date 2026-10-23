@@ -2,7 +2,7 @@
 
 The manager talks to a direct-download engine (HTTP, FTP, SFTP, Metalink) only through the `DirectTransfer` contract in [`crates/velocity-core/src/transfer.rs`](../crates/velocity-core/src/transfer.rs) (#36, [ADR-0002](decisions/0002-engine-crate-layout.md)). The manager never sees libcurl types, engine-internal ids or aria2 vocabulary. Torrent operations (trackers, peers, file priorities, seeding, magnet metadata) are not part of this contract; they belong to the torrent bridge (research report section 4.2).
 
-Contract version: `TRANSFER_CONTRACT_VERSION = 5`. Raise it with any incompatible change to a command, reply, event or type. Version 2 added checkpoints (#43), version 3 the global speed limit (#49), version 4 the connection detail in snapshots (#47), and version 5 the checkpoint's `contentEncoding` (#45).
+Contract version: `TRANSFER_CONTRACT_VERSION = 6`. Raise it with any incompatible change to a command, reply, event or type. Version 2 added checkpoints (#43), version 3 the global speed limit (#49), version 4 the connection detail in snapshots (#47), version 5 the checkpoint's `contentEncoding` (#45), and version 6 integrity (#46): checked checksums with SHA-224 and SHA-384, `pieces` in the spec, and `verification` in snapshots.
 
 ## Commands
 
@@ -24,14 +24,18 @@ A limit below 1 KiB/s (`Limits::MIN_BPS`), in a spec or a command, is refused wi
 
 ## Types
 
-- **`TransferSpec`:** URLs (primary first, then mirrors; never empty, credentials removed), the final destination path, a credential handle, custom headers, an optional trusted checksum (MD5, SHA-1, SHA-256 or SHA-512), limits, and the requested connection count.
-- **`TransferSnapshot`:** the id, a `DownloadStatus`, `Progress` (accepted bytes only; the connections in use now, and `connectionDetail` while a direct transfer runs), `wasted_bytes` and the last `TransferError`.
+- **`TransferSpec`:** URLs (primary first, then mirrors; never empty, credentials removed), the final destination path, a credential handle, custom headers, an optional trusted checksum, optional trusted piece hashes, limits, and the requested connection count.
+  - **`checksum`:** `{ algorithm, hex }`, with `md5`, `sha1`, `sha224`, `sha256`, `sha384` or `sha512`, the six V1 accepts. A digest that isn't hexadecimal, or doesn't have its algorithm's length (32, 40, 56, 64, 96 or 128 characters), is refused with `InvalidInput`; uppercase is accepted. The whole file is checked before it is renamed into place.
+  - **`pieces`:** `{ algorithm, length, hex }`, one digest per `length` bytes, the last piece ending with the file, such as a Metalink file's `<pieces>` (#54 fills it). `InvalidInput` for a bad digest, pieces under 1 KiB (`PieceHashes::MIN_LENGTH`), or no pieces, or more digests than 2 MiB of hex (`MAX_HEX_BYTES`), so that a spec always fits in one message to the engine's child process: 32,768 SHA-256 digests, 32 GiB of file in 1 MiB pieces. Each piece is checked once covered, and a bad one is fetched again.
+- **`TransferSnapshot`:** the id, a `DownloadStatus`, `Progress` (accepted bytes only; the connections in use now, and `connectionDetail` while a direct transfer runs), `wasted_bytes`, the last `TransferError`, and `verification`: what was proven about the bytes once the transfer completed, `null` until then ([ENGINE_INTERNALS.md](ENGINE_INTERNALS.md#what-was-proven)).
 - **`TransferEvent`:** `changed { snapshot }` or `removed { id }`.
 
 A direct engine reports only these statuses: Queued, Connecting, Downloading, Retrying, Stalled, Paused, Verifying, Completed, Failed and Removed. "Cancelled" in the research report is Removed here.
 
 - **Retrying:** the transfer waits before trying again (#48). When the engine starts a failed download again, `error` holds the failure it waits after, with "Retrying automatically (n of 2)." The error is cleared once bytes come again.
 - **Stalled:** no byte has come from the network for a while. The transfer isn't failed, and goes back to Downloading when bytes come.
+- **Verifying:** every byte is in; the engine is finishing the whole-file hash before the file is renamed (#46).
+- **A failed check** (a wrong checksum, a piece still bad after it was fetched again) ends as Failed with a message. The part file is kept for inspection and isn't renamed, the engine doesn't start it again on its own, and its last checkpoint trusts no byte, so a resume from it downloads the whole file again ([ENGINE_INTERNALS.md](ENGINE_INTERNALS.md#a-failed-check)).
 
 ## Checkpoints and resuming (#43)
 

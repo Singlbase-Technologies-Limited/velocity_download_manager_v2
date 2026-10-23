@@ -11,6 +11,9 @@ velocity-core = { path = "../velocity-core" }
 velocity-curl = { path = "../velocity-curl" }
 httpdate.workspace = true
 fastrand.workspace = true
+sha2.workspace = true
+sha1.workspace = true
+md-5.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 
@@ -22,6 +25,4 @@ libc.workspace = true
 
 [dev-dependencies]
 velocity-test-http = { path = "../velocity-test-http" }
-# HTTP/2 without TLS for the tests against the local HTTP/2 server (PO decision on #47).
-velocity-curl = { path = "../velocity-curl", features = ["test-h2c"] }
 proptest.workspace = true

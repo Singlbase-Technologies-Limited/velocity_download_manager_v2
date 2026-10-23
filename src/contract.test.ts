@@ -10,6 +10,7 @@ import {
   DownloadStatusSchema,
   ErrorCodeSchema,
   parseAppInfo,
+  VerificationSchema,
 } from './contract';
 
 // Fixtures are generated from the Rust types (crates/velocity-core/src/domain.rs):
@@ -24,6 +25,10 @@ describe('contract fixtures generated from Rust', () => {
 
   it('connection limits: exactly the values the schema knows, in order', () => {
     expect(fixture('connection-limits.json')).toEqual(ConnectionLimitSchema.options);
+  });
+
+  it('verifications: exactly the values the schema knows, in order', () => {
+    expect(fixture('verifications.json')).toEqual(VerificationSchema.options);
   });
 
   it('error codes: exactly the codes the schema knows, each with a user-facing message', () => {
@@ -82,7 +87,7 @@ describe('parseAppInfo', () => {
 
   it('refuses a native side with another contract version, saying so', () => {
     expect(() => parseAppInfo({ ...ok, commandApiVersion: COMMAND_API_VERSION + 1 })).toThrow(
-      /contract version 3.*expects 2/,
+      /contract version 4.*expects 3/,
     );
   });
 

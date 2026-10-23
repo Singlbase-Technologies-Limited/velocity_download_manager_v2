@@ -158,6 +158,7 @@ impl State {
             },
             wasted_bytes: 0,
             error: None,
+            verification: None,
         };
         if generation == self.generation {
             self.current.entry(id).or_insert(queued);

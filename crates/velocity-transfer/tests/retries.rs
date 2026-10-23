@@ -247,6 +247,11 @@ fn a_host_that_does_not_resolve_fails_as_transient() {
     let options = DownloadOptions {
         retry: RetryPolicy {
             failures_in_a_row: 2,
+            // The engine's own stall times, not FAST's 1 s: a name lookup counts as silence, and
+            // on a loaded or WSL machine it can take longer than 1 s (a lookup took 2.2 s there).
+            // With 1 s, the request was reset before the lookup failed (#46).
+            stalled_after: RetryPolicy::DEFAULT.stalled_after,
+            reset_after: RetryPolicy::DEFAULT.reset_after,
             ..FAST
         },
         ..OPTIONS

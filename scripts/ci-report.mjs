@@ -4,18 +4,18 @@
 //   node scripts/ci-report.mjs job --job <id> --infra <step ids> [--step-check <id>=<name> …]
 //     Run as a job's last step (`if: ${{ !cancelled() }}`). Reads the step outcomes from $STEPS
 //     (`toJSON(steps)`) and the checks the job recorded in $CI_REPORT_PATH, and writes
-//     ci-reports/report-<job>.json. A failed infra step (checkout, toolchain, cache, install) marks
+//     ci-reports/report-<job>.json, with the run attempt. A failed infra step (checkout, toolchain, cache, install) marks
 //     the job INFRA; a failed --step-check step that recorded nothing becomes a failed check.
 //
 //   node scripts/ci-report.mjs summary --jobs '<json>' [--reports <dir>]
 //     Run as the final summary step. Reads the job results from $NEEDS (`toJSON(needs)`) and the
-//     job reports, writes the table to $GITHUB_STEP_SUMMARY and ci-diagnostics.json, and exits
+//     job reports (each job's newest attempt, from any folder under --reports), writes the table to $GITHUB_STEP_SUMMARY and ci-diagnostics.json, and exits
 //     non-zero unless every mandatory check passed or was deselected by the selector.
 //
 // The decisions live in diagnostics-lib.mjs, which is unit tested.
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync, appendFileSync } from 'node:fs';
-import { join } from 'node:path';
-import { buildDiagnostics, diagnosticsMarkdown } from './diagnostics-lib.mjs';
+import { basename, join } from 'node:path';
+import { buildDiagnostics, diagnosticsMarkdown, latestReports } from './diagnostics-lib.mjs';
 
 const [command, ...rest] = process.argv.slice(2);
 const opts = {};
@@ -61,19 +61,21 @@ if (command === 'job') {
   }
   mkdirSync('ci-reports', { recursive: true });
   const out = join('ci-reports', `report-${job}.json`);
-  writeFileSync(out, JSON.stringify({ job, infraFailure, checks }, null, 2));
+  const attempt = Number(process.env.GITHUB_RUN_ATTEMPT ?? 1);
+  writeFileSync(out, JSON.stringify({ job, attempt, infraFailure, checks }, null, 2));
   console.log(`Wrote ${out}: ${checks.length} check(s), infra failure: ${infraFailure ?? 'none'}`);
 } else if (command === 'summary') {
   const jobs = readJson(one('jobs') ?? '', '--jobs');
   const needs = readJson(process.env.NEEDS ?? '{}', '$NEEDS');
   const dir = one('reports') ?? 'ci-reports';
-  const reports = {};
-  if (existsSync(dir)) {
-    for (const f of readdirSync(dir).filter((n) => /^report-.+\.json$/.test(n))) {
-      const r = readJson(readFileSync(join(dir, f), 'utf8'), f);
-      reports[r.job] = r;
-    }
-  }
+  // Each attempt's reports are in a folder of their own (report-<job>-<attempt>), so a re-run
+  // never hides behind the attempt it replaced (#46).
+  const found = existsSync(dir)
+    ? readdirSync(dir, { recursive: true })
+        .map(String)
+        .filter((n) => /^report-.+\.json$/.test(basename(n)))
+    : [];
+  const reports = latestReports(found.map((f) => readJson(readFileSync(join(dir, f), 'utf8'), f)));
   const diagnostics = buildDiagnostics({ needs, reports, jobs });
   const { GITHUB_SERVER_URL: server, GITHUB_REPOSITORY: repo, GITHUB_RUN_ID: runId } = process.env;
   const run = {

@@ -9,10 +9,11 @@ use std::sync::{Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
 use velocity_core::domain::{
-    ConnectionDetail, ConnectionLimit, DownloadKind, DownloadStatus, ErrorCode,
+    ConnectionDetail, ConnectionLimit, DownloadKind, DownloadStatus, ErrorCode, Verification,
 };
 use velocity_core::transfer::{
-    Checkpoint, DirectTransfer, Limits, TransferEvent, TransferId, TransferSnapshot, TransferSpec,
+    Checkpoint, Checksum, DirectTransfer, HashAlgorithm, Limits, PieceHashes, TransferEvent,
+    TransferId, TransferSnapshot, TransferSpec,
 };
 use velocity_test_http::{seeded_bytes, ServerOptions, TestServer};
 use velocity_transfer::engine::InProcessEngine;
@@ -60,6 +61,7 @@ fn spec(url: String, destination: PathBuf) -> TransferSpec {
         credentials: None,
         headers: Vec::new(),
         checksum: None,
+        pieces: None,
         limits: Limits::default(),
         max_connections: 4,
         resume: None,
@@ -135,6 +137,11 @@ fn downloads_a_file_and_reports_completion() {
             (800_000, Some(800_000)),
             "{mode}"
         );
+        assert_eq!(
+            done.verification,
+            Some(Verification::SizeVerified),
+            "{mode}: complete without a checksum"
+        );
         assert!(
             std::fs::read(&dest).unwrap() == data,
             "{mode}: the file differs from the source"
@@ -146,6 +153,109 @@ fn downloads_a_file_and_reports_completion() {
                 .any(|s| s.id == id && s.status == DownloadStatus::Completed),
             "{mode}"
         );
+    }
+}
+
+#[test]
+fn checks_a_checksum_before_reporting_completion() {
+    use sha2::{Digest, Sha256};
+    let data = seeded_bytes(400_000, 46);
+    let server = TestServer::start(
+        vec![("f.bin".into(), data.clone())],
+        ServerOptions::default(),
+    );
+    let digest: String = Sha256::digest(&data)
+        .iter()
+        .map(|b| format!("{b:02X}"))
+        .collect();
+    for (mode, mut engine) in engines() {
+        let dir = Dir::new(&format!("checksum-{}", mode.replace(' ', "-")));
+        let events = engine.subscribe();
+
+        let dest = dir.0.join("ok.bin");
+        let mut ok = spec(server.url("f.bin"), dest.clone());
+        // Uppercase, as a user may paste it.
+        ok.checksum = Some(Checksum {
+            algorithm: HashAlgorithm::Sha256,
+            hex: digest.clone(),
+        });
+        let id = engine.add(ok).expect("add");
+        let done = wait_for(&events, id, |s| {
+            matches!(s, DownloadStatus::Completed | DownloadStatus::Failed)
+        });
+        assert_eq!(done.status, DownloadStatus::Completed, "{mode}: {done:?}");
+        assert_eq!(done.verification, Some(Verification::Verified), "{mode}");
+        assert!(std::fs::read(&dest).unwrap() == data, "{mode}");
+
+        let dest = dir.0.join("bad.bin");
+        let mut bad = spec(server.url("f.bin"), dest.clone());
+        bad.checksum = Some(Checksum {
+            algorithm: HashAlgorithm::Sha256,
+            hex: "0".repeat(64),
+        });
+        let id = engine.add(bad).expect("add");
+        let seen = std::cell::RefCell::new(Vec::new());
+        let done = wait_for(&events, id, |s| {
+            seen.borrow_mut().push(s);
+            matches!(s, DownloadStatus::Completed | DownloadStatus::Failed)
+        });
+        let seen = seen.into_inner();
+        assert_eq!(done.status, DownloadStatus::Failed, "{mode}: {done:?}");
+        assert_eq!(done.verification, None, "{mode}");
+        let message = done.error.map(|e| e.message).unwrap_or_default();
+        assert!(message.contains("SHA-256 checksum"), "{mode}: {message}");
+        assert!(
+            !seen.contains(&DownloadStatus::Retrying),
+            "{mode}: not restarted on its own: {seen:?}"
+        );
+        assert!(!dest.exists(), "{mode}: not renamed");
+        assert!(part_of(&dest).exists(), "{mode}: kept for inspection");
+    }
+}
+
+#[test]
+fn checks_piece_hashes_and_refuses_a_malformed_list() {
+    use sha2::{Digest, Sha256};
+    const PIECE: usize = 64 * 1024;
+    let data = seeded_bytes(5 * PIECE + 100, 54);
+    let server = TestServer::start(
+        vec![("f.bin".into(), data.clone())],
+        ServerOptions::default(),
+    );
+    let hex: Vec<String> = data
+        .chunks(PIECE)
+        .map(|c| {
+            Sha256::digest(c)
+                .iter()
+                .map(|b| format!("{b:02x}"))
+                .collect()
+        })
+        .collect();
+    for (mode, mut engine) in engines() {
+        let dir = Dir::new(&format!("pieces-{}", mode.replace(' ', "-")));
+        let events = engine.subscribe();
+        let dest = dir.0.join("ok.bin");
+        let mut ok = spec(server.url("f.bin"), dest.clone());
+        ok.pieces = Some(PieceHashes {
+            algorithm: HashAlgorithm::Sha256,
+            length: PIECE as u64,
+            hex: hex.clone(),
+        });
+        let id = engine.add(ok).expect("add");
+        let done = wait_for(&events, id, |s| {
+            matches!(s, DownloadStatus::Completed | DownloadStatus::Failed)
+        });
+        assert_eq!(done.status, DownloadStatus::Completed, "{mode}: {done:?}");
+        assert_eq!(done.verification, Some(Verification::Verified), "{mode}");
+        assert!(std::fs::read(&dest).unwrap() == data, "{mode}");
+
+        let mut bad = spec(server.url("f.bin"), dir.0.join("bad.bin"));
+        bad.pieces = Some(PieceHashes {
+            algorithm: HashAlgorithm::Sha256,
+            length: PIECE as u64,
+            hex: vec!["not hex".to_owned(); 6],
+        });
+        assert_eq!(engine.add(bad), Err(ErrorCode::InvalidInput), "{mode}");
     }
 }
 
@@ -266,6 +376,12 @@ fn refuses_bad_commands_with_their_codes() {
         let mut empty = spec("https://example.com/a".into(), PathBuf::from("a"));
         empty.urls.clear();
         assert_eq!(engine.add(empty), Err(ErrorCode::InvalidInput), "{mode}");
+        let mut short = spec("https://example.com/a".into(), PathBuf::from("a"));
+        short.checksum = Some(Checksum {
+            algorithm: HashAlgorithm::Sha256,
+            hex: "ab".repeat(31),
+        });
+        assert_eq!(engine.add(short), Err(ErrorCode::InvalidInput), "{mode}");
     }
 }
 

@@ -56,6 +56,7 @@ fn spec(url: String, destination: PathBuf) -> TransferSpec {
         credentials: None,
         headers: Vec::new(),
         checksum: None,
+        pieces: None,
         limits: Limits::default(),
         max_connections: 2,
         resume: None,

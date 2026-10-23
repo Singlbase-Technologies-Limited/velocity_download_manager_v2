@@ -5,7 +5,7 @@
 import { z } from 'zod';
 
 /** Must equal `velocity_core::COMMAND_API_VERSION`; the app refuses to start on a mismatch. */
-export const COMMAND_API_VERSION = 2;
+export const COMMAND_API_VERSION = 3;
 
 const bytes = z.number().int().nonnegative();
 
@@ -57,6 +57,10 @@ export const ConnectionDetailSchema = z.strictObject({
 });
 export type ConnectionDetail = z.infer<typeof ConnectionDetailSchema>;
 
+/** What was proven about a completed download's bytes (#46, ADR-0010). Only `verified` means a hash was checked. */
+export const VerificationSchema = z.enum(['verified', 'sizeVerified', 'notVerified']);
+export type Verification = z.infer<typeof VerificationSchema>;
+
 export const ProgressSchema = z.strictObject({
   completedBytes: bytes,
   totalBytes: bytes.nullable(),
@@ -77,6 +81,7 @@ export const DownloadRecordSchema = z.strictObject({
   status: DownloadStatusSchema,
   progress: ProgressSchema,
   error: TransferErrorSchema.nullable(),
+  verification: VerificationSchema.nullable(),
   createdAtMs: bytes,
   completedAtMs: bytes.nullable(),
 });

@@ -3,7 +3,9 @@
 //! (progress, failures, completion) through a [`FakeControl`]. Compiled for tests only.
 
 use super::{DirectTransfer, Limits, TransferEvent, TransferId, TransferSnapshot, TransferSpec};
-use crate::domain::{Capabilities, DownloadStatus, ErrorCode, Progress, TransferError};
+use crate::domain::{
+    Capabilities, DownloadStatus, ErrorCode, Progress, TransferError, Verification,
+};
 use std::collections::BTreeMap;
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -178,6 +180,8 @@ impl FakeControl {
         let mut s = lock(&self.state);
         let t = s.transfers.get_mut(&id).expect("known transfer");
         t.snapshot.status = DownloadStatus::Completed;
+        // What the engine reports for a complete file without a checksum.
+        t.snapshot.verification = Some(Verification::SizeVerified);
         let total = t.snapshot.progress.total_bytes.unwrap_or(0);
         t.snapshot.progress = Progress {
             completed_bytes: total,
@@ -227,6 +231,7 @@ impl DirectTransfer for FakeTransfer {
             },
             wasted_bytes: 0,
             error: None,
+            verification: None,
         };
         s.transfers.insert(id, Transfer { spec, snapshot });
         s.changed(id);
