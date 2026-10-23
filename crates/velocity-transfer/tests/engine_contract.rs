@@ -9,7 +9,8 @@ use std::sync::{Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
 use velocity_core::domain::{
-    ConnectionDetail, ConnectionLimit, DownloadKind, DownloadStatus, ErrorCode, Verification,
+    ConnectionDetail, ConnectionLimit, DownloadKind, DownloadStatus, ErrorCode,
+    ProtocolCapabilities, Verification,
 };
 use velocity_core::transfer::{
     Checkpoint, Checksum, DirectTransfer, EngineLimits, HashAlgorithm, Limits, PieceHashes,
@@ -96,14 +97,21 @@ fn part_of(dest: &Path) -> PathBuf {
 fn reports_its_capabilities_honestly() {
     for (mode, engine) in engines() {
         let c = engine.capabilities();
+        // Only HTTP(S) in the prototype: segmented (#42), resumed (#43) against a strong validator
+        // (#45), over HTTP/2 when the server offers it (#47).
         assert_eq!(
             c.protocols,
-            vec![DownloadKind::Http],
-            "{mode}: only HTTP(S) in the prototype"
+            vec![ProtocolCapabilities {
+                kind: DownloadKind::Http,
+                segmented: true,
+                resume: true,
+                validator_resume: true,
+                http2: true,
+            }],
+            "{mode}"
         );
-        // Live connection changes came with #47, resume checked against a strong validator with
-        // #45.
-        assert!(c.live_connection_changes && c.validator_resume, "{mode}");
+        // Live connection changes came with #47.
+        assert!(c.live_connection_changes, "{mode}");
         assert!(!c.metalink, "{mode}");
         assert!(c.max_connections_per_host >= 1, "{mode}");
     }

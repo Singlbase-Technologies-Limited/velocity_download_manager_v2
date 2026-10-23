@@ -223,7 +223,6 @@ impl Connection {
             capabilities: Mutex::new(Capabilities {
                 protocols: Vec::new(),
                 live_connection_changes: false,
-                validator_resume: false,
                 metalink: false,
                 max_connections_per_host: 1,
             }),
@@ -611,7 +610,6 @@ mod tests {
                 capabilities: Capabilities {
                     protocols: Vec::new(),
                     live_connection_changes: false,
-                    validator_resume: false,
                     metalink: false,
                     max_connections_per_host: 3,
                 },

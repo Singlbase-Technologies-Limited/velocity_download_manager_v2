@@ -148,7 +148,7 @@ impl Manager {
             .max_connections
             .min(self.connections_for_new_downloads());
         if matches!(kind, DownloadKind::Torrent | DownloadKind::Magnet)
-            || !self.engine.capabilities().protocols.contains(&kind)
+            || self.engine.capabilities().protocol(kind).is_none()
         {
             return Err(ErrorCode::Unsupported);
         }
@@ -712,7 +712,11 @@ mod tests {
     #[test]
     fn torrent_kinds_and_protocols_the_engine_lacks_are_refused() {
         let fake = FakeTransfer::with_capabilities(Capabilities {
-            protocols: vec![DownloadKind::Http],
+            protocols: Capabilities::sample()
+                .protocols
+                .into_iter()
+                .filter(|p| p.kind == DownloadKind::Http)
+                .collect(),
             ..Capabilities::sample()
         });
         let control = fake.control();

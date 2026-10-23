@@ -22,7 +22,7 @@ use std::time::Instant;
 
 use velocity_core::domain::{
     Capabilities, ConnectionDetail, ConnectionLimit, DownloadKind, DownloadStatus, ErrorCode,
-    FailureClass, Progress, TransferError,
+    FailureClass, Progress, ProtocolCapabilities, TransferError,
 };
 use velocity_core::transfer::{
     Checkpoint, Checksum, DirectTransfer, EngineLimits, Limits, PieceHashes, Resume, TransferEvent,
@@ -358,10 +358,17 @@ fn progress_reporter(
 impl DirectTransfer for InProcessEngine {
     fn capabilities(&self) -> Capabilities {
         Capabilities {
-            protocols: vec![DownloadKind::Http],
+            protocols: vec![ProtocolCapabilities {
+                kind: DownloadKind::Http,
+                // Ranges as leases over several connections (#42).
+                segmented: true,
+                // From a checkpoint (#43), with the strong validator in If-Range (#45).
+                resume: true,
+                validator_resume: true,
+                // libcurl is refused at start without HTTP/2 (velocity-curl's capability check).
+                http2: true,
+            }],
             live_connection_changes: true,
-            // With a strong validator, resume sends it in If-Range (#45).
-            validator_resume: true,
             metalink: false,
             max_connections_per_host: lock(&self.shared.state).limits.max_connections_per_host,
         }

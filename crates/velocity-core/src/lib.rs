@@ -19,7 +19,9 @@ use serde::Serialize;
 /// against a native side with a different version (`COMMAND_API_VERSION` in `src/contract.ts`).
 /// Version 2 (#47) added [`domain::Progress::connection_detail`].
 /// Version 3 (#46) added [`domain::DownloadRecord::verification`].
-pub const COMMAND_API_VERSION: u32 = 3;
+/// Version 4 (#57) gave [`domain::Capabilities`] what each protocol does
+/// ([`domain::ProtocolCapabilities`]), in place of a list of kinds and one `validatorResume`.
+pub const COMMAND_API_VERSION: u32 = 4;
 
 /// Name, version and contract version of the running application.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]

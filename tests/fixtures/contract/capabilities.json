@@ -3,8 +3,19 @@
   "maxConnectionsPerHost": 8,
   "metalink": false,
   "protocols": [
-    "http",
-    "ftp"
-  ],
-  "validatorResume": true
+    {
+      "http2": true,
+      "kind": "http",
+      "resume": true,
+      "segmented": true,
+      "validatorResume": true
+    },
+    {
+      "http2": false,
+      "kind": "ftp",
+      "resume": true,
+      "segmented": false,
+      "validatorResume": false
+    }
+  ]
 }
