@@ -1,15 +1,19 @@
 [package]
 name = "velocity-test-http"
-description = "A local HTTP/1.1 server for V2's engine tests: serves seeded files and misbehaves on demand (test-only)"
+description = "Local HTTP/1.1 and HTTP/2 (cleartext) servers for V2's engine tests: serve seeded files and misbehave on demand (test-only)"
 version.workspace = true
 edition.workspace = true
 publish.workspace = true
 rust-version.workspace = true
 
-# Standard library only, so the engine's correctness tests need no new dependency (#37); on
-# Windows also windows-sys, already approved, to freeze a process in the hung-engine test (PO
-# decision on #48, 2026-10-23).
+# The HTTP/1.1 server uses the standard library only (#37). The HTTP/2 server uses h2 on tokio
+# (PO decision on #47, 2026-10-23). On Windows also windows-sys, already approved, to freeze a
+# process in the hung-engine test (PO decision on #48, 2026-10-23).
 [dependencies]
+bytes.workspace = true
+h2.workspace = true
+http.workspace = true
+tokio.workspace = true
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { workspace = true, features = ["Win32_System_Diagnostics_Debug"] }
