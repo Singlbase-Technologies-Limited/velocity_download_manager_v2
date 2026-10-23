@@ -376,6 +376,7 @@ Hashes don't compose: the digests of separate segments can't be combined into th
 - **The worst case** is one full sequential read at completion: the first segment finishes last, as when the range after the probe is the slowest.
 - **A checksum is never skipped:** without a running frontier, the whole file is hashed at completion.
 - **Memory:** the frontier holds one 1 MiB buffer and one number, how far it may hash; the writer never waits for it.
+- **Cancel and pause while it waits:** completion waits for the frontier and for the last piece verdicts, checking every 100 ms (`CANCEL_CHECK`). A cancel ends the download and removes the part file; a pause keeps it, and a resume hashes again from byte 0. Either thread stops after its current 1 MiB read.
 
 ### Piece hashes
 
