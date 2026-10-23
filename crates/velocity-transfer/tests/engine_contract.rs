@@ -2,11 +2,14 @@
 //! (#37, #38): in the app's process, and as a child process speaking the framed protocol over
 //! stdio (#39). One test function per behaviour runs against both, so they can't drift apart.
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::Receiver;
 use std::time::{Duration, Instant};
 
-use velocity_core::domain::{DownloadKind, DownloadStatus, ErrorCode};
+use velocity_core::domain::{
+    ConnectionDetail, ConnectionLimit, DownloadKind, DownloadStatus, ErrorCode,
+};
 use velocity_core::transfer::{
     Checkpoint, DirectTransfer, Limits, TransferEvent, TransferId, TransferSnapshot, TransferSpec,
 };
@@ -95,10 +98,9 @@ fn reports_its_capabilities_honestly() {
             vec![DownloadKind::Http],
             "{mode}: only HTTP(S) in the prototype"
         );
-        assert!(
-            !c.live_connection_changes && !c.validator_resume && !c.metalink,
-            "{mode}"
-        );
+        // Live connection changes came with #47.
+        assert!(c.live_connection_changes, "{mode}");
+        assert!(!c.validator_resume && !c.metalink, "{mode}");
         assert!(c.max_connections_per_host >= 1, "{mode}");
     }
 }
@@ -475,5 +477,287 @@ fn speed_limits_are_checked_and_applied_live() {
         let mut bad = spec(server.url("f.bin"), dir.0.join("bad.bin"));
         bad.limits = too_low;
         assert_eq!(engine.add(bad), Err(ErrorCode::InvalidInput), "{mode}");
+    }
+}
+
+/// Waits for a snapshot of `id` that satisfies `done`.
+fn wait_for_snapshot(
+    events: &Receiver<TransferEvent>,
+    id: TransferId,
+    done: impl Fn(&TransferSnapshot) -> bool,
+) -> TransferSnapshot {
+    let deadline = Instant::now() + WAIT;
+    loop {
+        let left = deadline.saturating_duration_since(Instant::now());
+        match events.recv_timeout(left).expect("an event in time") {
+            TransferEvent::Changed { snapshot } if snapshot.id == id && done(&snapshot) => {
+                return snapshot
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Polls `done` every 20 ms; panics with `what` after `timeout`.
+fn wait_until(timeout: Duration, what: &str, done: impl Fn() -> bool) {
+    let deadline = Instant::now() + timeout;
+    while !done() {
+        assert!(Instant::now() < deadline, "timed out waiting until {what}");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+#[test]
+fn connections_change_live_within_the_cap() {
+    // #47: 1 MiB/s per connection, so each added connection helps, and a 48 MiB file is still
+    // running while the engine ramps up to a raised count, one connection per 2 s window.
+    let data = seeded_bytes(48 << 20, 47);
+    for (mode, mut engine) in engines() {
+        let server = TestServer::start(
+            vec![("f.bin".into(), data.clone())],
+            ServerOptions {
+                throttle_bytes_per_sec: Some(1 << 20),
+                ..ServerOptions::default()
+            },
+        );
+        let cap = engine.capabilities().max_connections_per_host;
+        let dir = Dir::new(&format!("connections-{}", mode.replace(' ', "-")));
+        let dest = dir.0.join("f.bin");
+        let events = engine.subscribe();
+        let mut one = spec(server.url("f.bin"), dest.clone());
+        one.max_connections = 1;
+        let id = engine.add(one).expect("add");
+
+        // The probe, then one range at a time.
+        wait_until(WAIT, "a range follows the probe", || {
+            server.counters().gets >= 2
+        });
+        assert_eq!(engine.set_connections(id, 4), Ok(4), "{mode}");
+        // Raised, it ramps up to 4 rather than jumping (PO decision on #47), and says so.
+        wait_for_snapshot(&events, id, |s| {
+            s.progress.connection_detail.is_some_and(|d| {
+                d.requested == 4 && d.limited_by == Some(ConnectionLimit::RampingUp)
+            })
+        });
+        wait_until(
+            Duration::from_secs(20),
+            &format!("{mode}: 4 responses run at once"),
+            || server.counters().answering == 4,
+        );
+        wait_for_snapshot(&events, id, |s| s.progress.connections == 4);
+
+        assert_eq!(engine.set_connections(id, 1000), Ok(cap), "{mode}");
+        wait_for_snapshot(&events, id, |s| {
+            s.progress
+                .connection_detail
+                .is_some_and(|d| d.requested == cap)
+        });
+        assert_eq!(
+            engine.set_connections(TransferId(999), 2),
+            Err(ErrorCode::NotFound),
+            "{mode}"
+        );
+
+        let done = wait_for(&events, id, |s| {
+            matches!(s, DownloadStatus::Completed | DownloadStatus::Failed)
+        });
+        assert_eq!(
+            done.status,
+            DownloadStatus::Completed,
+            "{mode}: {:?}",
+            done.error
+        );
+        assert!(
+            std::fs::read(&dest).unwrap() == data,
+            "{mode}: the file is the source"
+        );
+        let c = server.counters();
+        assert!(
+            c.peak_answering <= cap,
+            "{mode}: {} over the cap",
+            c.peak_answering
+        );
+        let from_zero = c
+            .ranges
+            .iter()
+            .filter(|r| r.as_deref().is_some_and(|r| r.starts_with("bytes=0-")))
+            .count();
+        assert_eq!(
+            from_zero, 1,
+            "{mode}: only the probe asked for byte 0: no restart"
+        );
+    }
+}
+
+/// Reads events until `until`, keeping each transfer's latest snapshot.
+fn latest_until(
+    events: &Receiver<TransferEvent>,
+    latest: &mut HashMap<TransferId, TransferSnapshot>,
+    until: Instant,
+) {
+    while let Some(left) = until.checked_duration_since(Instant::now()) {
+        match events.recv_timeout(left) {
+            Ok(TransferEvent::Changed { snapshot }) => {
+                latest.insert(snapshot.id, snapshot);
+            }
+            Ok(_) => {}
+            Err(_) => return,
+        }
+    }
+}
+
+/// Waits until every one of `ids` has ended, and checks each completed. `latest` holds the
+/// snapshots read so far, which may already include some of the ends.
+fn all_completed(
+    events: &Receiver<TransferEvent>,
+    latest: &mut HashMap<TransferId, TransferSnapshot>,
+    ids: &[TransferId],
+    mode: &str,
+) {
+    let deadline = Instant::now() + WAIT;
+    let ended = |s: Option<&TransferSnapshot>| {
+        s.is_some_and(|s| matches!(s.status, DownloadStatus::Completed | DownloadStatus::Failed))
+    };
+    while !ids.iter().all(|id| ended(latest.get(id))) {
+        assert!(Instant::now() < deadline, "{mode}: {latest:?}");
+        latest_until(events, latest, Instant::now() + Duration::from_millis(50));
+    }
+    for id in ids {
+        let done = &latest[id];
+        assert_eq!(
+            done.status,
+            DownloadStatus::Completed,
+            "{mode}: {:?}",
+            done.error
+        );
+    }
+}
+
+/// Jain's fairness index: 1 when all are equal, 1/n when one gets everything.
+fn jain(xs: &[f64]) -> f64 {
+    let sum: f64 = xs.iter().sum();
+    let squares: f64 = xs.iter().map(|x| x * x).sum();
+    sum * sum / (xs.len() as f64 * squares)
+}
+
+#[test]
+fn downloads_from_one_host_share_its_cap_fairly() {
+    // #47: 4 downloads each ask for 8 from one host with a cap of 8, so each is allowed 2. At
+    // 2 MiB/s per connection, a 24 MiB file takes about 6 s.
+    let data = seeded_bytes(24 << 20, 50);
+    for (mode, mut engine) in engines() {
+        let server = TestServer::start(
+            vec![("f.bin".into(), data.clone())],
+            ServerOptions {
+                throttle_bytes_per_sec: Some(2 << 20),
+                ..ServerOptions::default()
+            },
+        );
+        let cap = engine.capabilities().max_connections_per_host;
+        let dir = Dir::new(&format!("fair-{}", mode.replace(' ', "-")));
+        let events = engine.subscribe();
+        let ids: Vec<TransferId> = (0..4)
+            .map(|i| {
+                let mut s = spec(server.url("f.bin"), dir.0.join(format!("f{i}.bin")));
+                s.max_connections = cap;
+                engine.add(s).expect("add")
+            })
+            .collect();
+        let shared = ConnectionDetail {
+            requested: cap,
+            allowed: cap / 4,
+            limited_by: Some(ConnectionLimit::PerHostCap),
+        };
+        let mut latest = HashMap::new();
+        let deadline = Instant::now() + WAIT;
+        while !ids.iter().all(|id| {
+            latest
+                .get(id)
+                .is_some_and(|s: &TransferSnapshot| s.progress.connection_detail == Some(shared))
+        }) {
+            assert!(Instant::now() < deadline, "{mode}: {latest:?}");
+            latest_until(
+                &events,
+                &mut latest,
+                Instant::now() + Duration::from_millis(50),
+            );
+        }
+
+        // Settled: measure each download's bytes over 2 s.
+        latest_until(
+            &events,
+            &mut latest,
+            Instant::now() + Duration::from_millis(500),
+        );
+        let before: Vec<u64> = ids
+            .iter()
+            .map(|id| latest[id].progress.completed_bytes)
+            .collect();
+        latest_until(
+            &events,
+            &mut latest,
+            Instant::now() + Duration::from_secs(2),
+        );
+        let rates: Vec<f64> = ids
+            .iter()
+            .zip(&before)
+            .map(|(id, b)| (latest[id].progress.completed_bytes - b) as f64)
+            .collect();
+        let index = jain(&rates);
+        eprintln!("{mode}: bytes in 2 s {rates:?}, Jain's index {index:.3}");
+        assert!(
+            index >= 0.9,
+            "{mode}: Jain's index {index:.3} for {rates:?}"
+        );
+
+        all_completed(&events, &mut latest, &ids, mode);
+        let peak = server.counters().peak_answering;
+        assert!(
+            peak <= cap,
+            "{mode}: {peak} responses at once, over the cap of {cap}"
+        );
+    }
+}
+
+#[test]
+fn small_files_reuse_connections() {
+    // #47: 40 files of 256 KiB from one host, smaller than the probe, so one GET each. One after
+    // another, they reuse one keep-alive connection; added at once, the per-host cap bounds the
+    // connections and the rest reuse them.
+    let data = seeded_bytes(256 * 1024, 51);
+    for (mode, mut engine) in engines() {
+        let server = TestServer::start(
+            vec![("f.bin".into(), data.clone())],
+            ServerOptions::default(),
+        );
+        let cap = engine.capabilities().max_connections_per_host;
+        let dir = Dir::new(&format!("reuse-{}", mode.replace(' ', "-")));
+        let events = engine.subscribe();
+        for i in 0..40 {
+            let id = engine
+                .add(spec(server.url("f.bin"), dir.0.join(format!("one{i}.bin"))))
+                .expect("add");
+            time_to_complete(&events, id);
+        }
+        let one_by_one = server.counters().connections;
+        assert_eq!(
+            one_by_one, 1,
+            "{mode}: 40 files one by one used {one_by_one} connections"
+        );
+
+        let ids: Vec<TransferId> = (0..40)
+            .map(|i| {
+                engine
+                    .add(spec(server.url("f.bin"), dir.0.join(format!("all{i}.bin"))))
+                    .expect("add")
+            })
+            .collect();
+        all_completed(&events, &mut HashMap::new(), &ids, mode);
+        let at_once = server.counters().connections - one_by_one;
+        assert!(
+            at_once <= u64::from(cap),
+            "{mode}: 40 files at once used {at_once} new connections, over the cap of {cap}"
+        );
+        assert_eq!(server.counters().gets, 80, "{mode}: one GET per file");
     }
 }

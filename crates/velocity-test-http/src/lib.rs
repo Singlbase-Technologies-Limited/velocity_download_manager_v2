@@ -2,8 +2,12 @@
 //! connections and misbehaves on demand, the way real servers do (research report section 5.4),
 //! and counts what it sends so a test can prove, for example, that no second full transfer was
 //! made. It can also freeze a process, for the supervisor's hang test (#48). Standard library
-//! only, plus `windows-sys` on Windows for that. Test code: it trusts its callers and isn't
-//! hardened.
+//! only, plus `windows-sys` on Windows for that. [`Http2Server`] serves the same files and range
+//! modes over HTTP/2 (#47). Test code: it trusts its callers and isn't hardened.
+
+mod http2;
+
+pub use http2::{Http2Options, Http2Server};
 
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Write};
@@ -53,6 +57,9 @@ pub struct ServerOptions {
     pub range_mode: RangeMode,
     /// Limits every connection to this many body bytes per second.
     pub throttle_bytes_per_sec: Option<u64>,
+    /// Limits all connections together to this many body bytes per second, the way a server that
+    /// throttles per client IP does (#47).
+    pub throttle_total_bytes_per_sec: Option<u64>,
     /// Limits only the first response to a range after byte 0 to this many body bytes per second,
     /// so that one connection is slower than the others (a range split, #42).
     pub throttle_first_later_range: Option<u64>,
@@ -106,6 +113,30 @@ pub struct Counters {
     pub dropped: u32,
     /// Whether the response that [`ServerOptions::freeze_later_range`] freezes was sent.
     pub frozen: bool,
+    /// Responses to file requests being sent now, from their status line to their last byte.
+    pub answering: u32,
+    /// The most responses to file requests that were sent at once (#47).
+    pub peak_answering: u32,
+    /// HTTP/2 streams the client reset (`RST_STREAM`) before their last byte (#47).
+    pub streams_reset: u32,
+}
+
+/// Counts one response in [`Counters::answering`] while it lives.
+struct Answering<'a>(&'a Mutex<Counters>);
+
+impl<'a> Answering<'a> {
+    fn start(counters: &'a Mutex<Counters>) -> Self {
+        let mut c = counters.lock().unwrap();
+        c.answering += 1;
+        c.peak_answering = c.peak_answering.max(c.answering);
+        Answering(counters)
+    }
+}
+
+impl Drop for Answering<'_> {
+    fn drop(&mut self) {
+        self.0.lock().unwrap().answering -= 1;
+    }
 }
 
 /// A running server on 127.0.0.1 and a free port. It stops when dropped.
@@ -125,6 +156,7 @@ impl TestServer {
             Arc::new(files.into_iter().map(|(n, d)| (n, Arc::new(d))).collect());
         let counters = Arc::new(Mutex::new(Counters::default()));
         let stop = Arc::new(AtomicBool::new(false));
+        let pace = Arc::new(Pace::new(options.throttle_total_bytes_per_sec));
         let acceptor = {
             let (counters, stop) = (Arc::clone(&counters), Arc::clone(&stop));
             thread::spawn(move || {
@@ -134,9 +166,15 @@ impl TestServer {
                     }
                     let Ok(stream) = stream else { continue };
                     counters.lock().unwrap().connections += 1;
-                    let (files, counters, options) =
-                        (Arc::clone(&files), Arc::clone(&counters), options.clone());
-                    thread::spawn(move || serve_connection(stream, &files, &counters, &options));
+                    let (files, counters, options, pace) = (
+                        Arc::clone(&files),
+                        Arc::clone(&counters),
+                        options.clone(),
+                        Arc::clone(&pace),
+                    );
+                    thread::spawn(move || {
+                        serve_connection(stream, &files, &counters, &options, &pace)
+                    });
                 }
             })
         };
@@ -353,11 +391,52 @@ fn parse_range(value: &str) -> Option<(u64, Option<u64>)> {
     Some((start, end))
 }
 
+/// Paces the body bytes of all connections together ([`ServerOptions::throttle_total_bytes_per_sec`]).
+struct Pace {
+    rate: Option<u64>,
+    /// When the current run of sending started, and the bytes reserved since.
+    run: Mutex<(Instant, u64)>,
+}
+
+impl Pace {
+    fn new(rate: Option<u64>) -> Self {
+        Pace {
+            rate: rate.filter(|r| *r > 0),
+            run: Mutex::new((Instant::now(), 0)),
+        }
+    }
+
+    /// Reserves `bytes` and returns when they may be sent, or `None` without a rate. Reservations
+    /// are taken in turn, so the senders share the rate; an idle server doesn't save up a burst.
+    fn reserve(&self, bytes: usize) -> Option<Instant> {
+        let rate = self.rate?;
+        let mut run = self.run.lock().unwrap();
+        let now = Instant::now();
+        if run.0 + Duration::from_secs_f64(run.1 as f64 / rate as f64) < now {
+            *run = (now, 0);
+        }
+        let due = run.0 + Duration::from_secs_f64(run.1 as f64 / rate as f64);
+        run.1 += bytes as u64;
+        Some(due)
+    }
+
+    /// Waits until `bytes` more may be sent.
+    fn wait(&self, bytes: usize) {
+        if let Some(wait) = self
+            .reserve(bytes)
+            .and_then(|due| due.checked_duration_since(Instant::now()))
+        {
+            thread::sleep(wait);
+        }
+    }
+}
+
 fn serve_connection(
     stream: TcpStream,
     files: &HashMap<String, Arc<Vec<u8>>>,
     counters: &Mutex<Counters>,
     options: &ServerOptions,
+    pace: &Pace,
 ) {
     let Ok(read_half) = stream.try_clone() else {
         return;
@@ -418,79 +497,29 @@ fn serve_connection(
             }
             continue;
         };
-        let total = data.len() as u64;
         let range = req.header("Range").and_then(parse_range);
         let mode = options.range_mode;
-        if let RangeMode::Status(code) = mode {
-            let retry = if matches!(code, 429 | 503) {
-                "Retry-After: 1\r\n"
-            } else {
-                ""
-            };
+        let fault = takes_fault(mode, range, counters);
+        let answer = answer(data, range, mode, fault);
+        let status = format!("{} {}", answer.status, answer.reason);
+        let extra: String = answer
+            .headers
+            .iter()
+            .map(|(name, value)| format!("{name}: {value}\r\n"))
+            .collect();
+        let body = answer.body;
+        if let RangeMode::Status(_) = mode {
             let _ = out.write_all(
-                format!("HTTP/1.1 {code} Status\r\nContent-Length: 0\r\n{retry}\r\n").as_bytes(),
+                format!("HTTP/1.1 {status}\r\nContent-Length: 0\r\n{extra}\r\n").as_bytes(),
             );
             if close {
                 return;
             }
             continue;
         }
-        let accept_ranges = if mode == RangeMode::Ignore {
-            ""
-        } else {
-            "Accept-Ranges: bytes\r\n"
-        };
-        // The limited misbehaviours apply only to ranges after byte 0, so the probe stays honest.
-        let fault = match (mode, range) {
-            (
-                RangeMode::MalformedLaterRanges(n)
-                | RangeMode::CutLaterBodies { count: n, .. }
-                | RangeMode::OverrunLaterRanges { count: n, .. },
-                Some((start, _)),
-            ) if start > 0 => take_fault(counters, n),
-            _ => false,
-        };
-
-        // (status line, extra headers, body slice)
-        let (status, extra, body): (&str, String, &[u8]) = match (mode, range) {
-            (RangeMode::Ignore, _) | (_, None) => ("200 OK", String::new(), &data[..]),
-            (RangeMode::FullBodyForNonZeroStart, Some((start, _))) if start > 0 => {
-                ("200 OK", String::new(), &data[..])
-            }
-            (_, Some((start, _))) if start >= total => (
-                "416 Range Not Satisfiable",
-                format!("Content-Range: bytes */{total}\r\n"),
-                &[][..],
-            ),
-            (_, Some((start, end))) => {
-                let mut last = end.unwrap_or(total - 1).min(total - 1);
-                if let RangeMode::ShortRanges(max) = mode {
-                    last = last.min(start + max.max(1) - 1);
-                }
-                let content_range = match mode {
-                    RangeMode::MalformedContentRange => {
-                        format!("Content-Range: bytes {start}-oops/{total}\r\n")
-                    }
-                    RangeMode::MalformedLaterRanges(_) if fault => {
-                        format!("Content-Range: bytes {start}-oops/{total}\r\n")
-                    }
-                    RangeMode::UnknownTotal => format!("Content-Range: bytes {start}-{last}/*\r\n"),
-                    RangeMode::Multipart => {
-                        "Content-Type: multipart/byteranges; boundary=v2test\r\n".to_owned()
-                    }
-                    _ => format!("Content-Range: bytes {start}-{last}/{total}\r\n"),
-                };
-                (
-                    "206 Partial Content",
-                    content_range,
-                    &data[start as usize..=last as usize],
-                )
-            }
-        };
+        let _answering = Answering::start(counters);
         if let (RangeMode::OverrunLaterRanges { extra: over, .. }, true) = (mode, fault) {
-            let header = format!(
-                "HTTP/1.1 {status}\r\nTransfer-Encoding: chunked\r\n{accept_ranges}{extra}\r\n"
-            );
+            let header = format!("HTTP/1.1 {status}\r\nTransfer-Encoding: chunked\r\n{extra}\r\n");
             if out.write_all(header.as_bytes()).is_err() {
                 return;
             }
@@ -502,7 +531,7 @@ fn serve_connection(
             continue;
         }
         let header = format!(
-            "HTTP/1.1 {status}\r\nContent-Length: {}\r\n{accept_ranges}{extra}\r\n",
+            "HTTP/1.1 {status}\r\nContent-Length: {}\r\n{extra}\r\n",
             body.len()
         );
         if out.write_all(header.as_bytes()).is_err() {
@@ -516,6 +545,7 @@ fn serve_connection(
                 &body[..cut],
                 options.throttle_bytes_per_sec,
                 counters,
+                Some(pace),
             );
             return;
         }
@@ -528,7 +558,7 @@ fn serve_connection(
             };
             if first {
                 let cut = (freeze.after as usize).min(body.len());
-                if write_body(&mut out, &body[..cut], None, counters).is_ok() {
+                if write_body(&mut out, &body[..cut], None, counters, None).is_ok() {
                     thread::sleep(freeze.hold);
                 }
                 return;
@@ -542,7 +572,7 @@ fn serve_connection(
                 rate = Some(slow);
             }
         }
-        if !head && write_body(&mut out, body, rate, counters).is_err() {
+        if !head && write_body(&mut out, body, rate, counters, Some(pace)).is_err() {
             return;
         }
         if close {
@@ -578,6 +608,99 @@ fn take_fault(counters: &Mutex<Counters>, limit: u32) -> bool {
     }
 }
 
+/// Whether this response carries `mode`'s limited misbehaviour. They apply only to ranges after
+/// byte 0, so the probe stays honest.
+fn takes_fault(
+    mode: RangeMode,
+    range: Option<(u64, Option<u64>)>,
+    counters: &Mutex<Counters>,
+) -> bool {
+    match (mode, range) {
+        (
+            RangeMode::MalformedLaterRanges(n)
+            | RangeMode::CutLaterBodies { count: n, .. }
+            | RangeMode::OverrunLaterRanges { count: n, .. },
+            Some((start, _)),
+        ) if start > 0 => take_fault(counters, n),
+        _ => false,
+    }
+}
+
+/// What a server answers to a request for a file, the same over HTTP/1.1 and HTTP/2.
+pub(crate) struct Answer<'a> {
+    pub status: u16,
+    pub reason: &'static str,
+    /// Headers besides `Content-Length` (and the HTTP/1.1 framing).
+    pub headers: Vec<(&'static str, String)>,
+    pub body: &'a [u8],
+}
+
+/// The answer to a request for `data` with `range` (inclusive, `(start, None)` is `start-`), in
+/// `mode`; `fault` is whether this response carries the mode's limited misbehaviour.
+pub(crate) fn answer(
+    data: &[u8],
+    range: Option<(u64, Option<u64>)>,
+    mode: RangeMode,
+    fault: bool,
+) -> Answer<'_> {
+    let total = data.len() as u64;
+    if let RangeMode::Status(code) = mode {
+        let mut headers = Vec::new();
+        if matches!(code, 429 | 503) {
+            headers.push(("Retry-After", "1".to_owned()));
+        }
+        return Answer {
+            status: code,
+            reason: "Status",
+            headers,
+            body: &[],
+        };
+    }
+    let mut headers = Vec::new();
+    if mode != RangeMode::Ignore {
+        headers.push(("Accept-Ranges", "bytes".to_owned()));
+    }
+    let (status, reason, body): (u16, &'static str, &[u8]) = match (mode, range) {
+        (RangeMode::Ignore, _) | (_, None) => (200, "OK", data),
+        (RangeMode::FullBodyForNonZeroStart, Some((start, _))) if start > 0 => (200, "OK", data),
+        (_, Some((start, _))) if start >= total => {
+            headers.push(("Content-Range", format!("bytes */{total}")));
+            (416, "Range Not Satisfiable", &[][..])
+        }
+        (_, Some((start, end))) => {
+            let mut last = end.unwrap_or(total - 1).min(total - 1);
+            if let RangeMode::ShortRanges(max) = mode {
+                last = last.min(start + max.max(1) - 1);
+            }
+            headers.push(match mode {
+                RangeMode::MalformedContentRange => {
+                    ("Content-Range", format!("bytes {start}-oops/{total}"))
+                }
+                RangeMode::MalformedLaterRanges(_) if fault => {
+                    ("Content-Range", format!("bytes {start}-oops/{total}"))
+                }
+                RangeMode::UnknownTotal => ("Content-Range", format!("bytes {start}-{last}/*")),
+                RangeMode::Multipart => (
+                    "Content-Type",
+                    "multipart/byteranges; boundary=v2test".to_owned(),
+                ),
+                _ => ("Content-Range", format!("bytes {start}-{last}/{total}")),
+            });
+            (
+                206,
+                "Partial Content",
+                &data[start as usize..=last as usize],
+            )
+        }
+    };
+    Answer {
+        status,
+        reason,
+        headers,
+        body,
+    }
+}
+
 /// Writes `body` with chunked transfer coding, in 16 KiB chunks.
 fn write_chunked(
     out: &mut TcpStream,
@@ -594,12 +717,14 @@ fn write_chunked(
     out.flush()
 }
 
-/// Writes `body` in 16 KiB chunks, pacing them to `rate` bytes per second when set.
+/// Writes `body` in 16 KiB chunks, pacing them to `rate` bytes per second when set, and to the
+/// server-wide `pace` when given.
 fn write_body(
     out: &mut TcpStream,
     body: &[u8],
     rate: Option<u64>,
     counters: &Mutex<Counters>,
+    pace: Option<&Pace>,
 ) -> std::io::Result<()> {
     const CHUNK: usize = 16 * 1024;
     let started = Instant::now();
@@ -610,6 +735,9 @@ fn write_body(
             if let Some(wait) = due.checked_sub(started.elapsed()) {
                 thread::sleep(wait);
             }
+        }
+        if let Some(pace) = pace {
+            pace.wait(chunk.len());
         }
         // Counted before the write, so a client that has read these bytes always sees them
         // counted; counting after let a test read the counter first (#38). A failed write takes

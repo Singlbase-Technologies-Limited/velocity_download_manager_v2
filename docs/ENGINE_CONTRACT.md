@@ -2,7 +2,7 @@
 
 The manager talks to a direct-download engine (HTTP, FTP, SFTP, Metalink) only through the `DirectTransfer` contract in [`crates/velocity-core/src/transfer.rs`](../crates/velocity-core/src/transfer.rs) (#36, [ADR-0002](decisions/0002-engine-crate-layout.md)). The manager never sees libcurl types, engine-internal ids or aria2 vocabulary. Torrent operations (trackers, peers, file priorities, seeding, magnet metadata) are not part of this contract; they belong to the torrent bridge (research report section 4.2).
 
-Contract version: `TRANSFER_CONTRACT_VERSION = 3`. Raise it with any incompatible change to a command, reply, event or type. Version 2 added checkpoints (#43), and version 3 the global speed limit (#49).
+Contract version: `TRANSFER_CONTRACT_VERSION = 4`. Raise it with any incompatible change to a command, reply, event or type. Version 2 added checkpoints (#43), version 3 the global speed limit (#49), and version 4 the connection detail in snapshots (#47).
 
 ## Commands
 
@@ -16,7 +16,7 @@ Contract version: `TRANSFER_CONTRACT_VERSION = 3`. Raise it with any incompatibl
 | `remove(id)` | finished: Completed, Failed or Removed | The engine forgets the transfer and its checkpoint, and sends `Removed`. Files are kept |
 | `set_limits(id, Limits)` | known transfer | The transfer's own speed limit (`None` = unlimited), applied while it runs. The lower of it and the global limit applies |
 | `set_global_limits(Limits)` | always | The limit all transfers share (`None` = unlimited), applied while they run. Its allowance goes to whichever transfers are active |
-| `set_connections(id, n)` | known transfer | The count actually applied: at least 1, at most `max_connections_per_host` |
+| `set_connections(id, n)` | known transfer | The count actually applied: at least 1, at most `max_connections_per_host`. It is the most the transfer may use, applied while it runs without a restart, or when a paused one resumes. Within it, the engine shares connections between transfers and ramps up while each helps; `connectionDetail` says what holds a transfer below it ([ENGINE_INTERNALS.md](ENGINE_INTERNALS.md#connections-47)) |
 | `snapshot()` | always | The state of every transfer the engine knows |
 | `subscribe()` | always | A receiver that gets every event from then on |
 
@@ -25,7 +25,7 @@ A limit below 1 KiB/s (`Limits::MIN_BPS`), in a spec or a command, is refused wi
 ## Types
 
 - **`TransferSpec`:** URLs (primary first, then mirrors; never empty, credentials removed), the final destination path, a credential handle, custom headers, an optional trusted checksum (MD5, SHA-1, SHA-256 or SHA-512), limits, and the requested connection count.
-- **`TransferSnapshot`:** the id, a `DownloadStatus`, `Progress` (accepted bytes only), `wasted_bytes` and the last `TransferError`.
+- **`TransferSnapshot`:** the id, a `DownloadStatus`, `Progress` (accepted bytes only; the connections in use now, and `connectionDetail` while a direct transfer runs), `wasted_bytes` and the last `TransferError`.
 - **`TransferEvent`:** `changed { snapshot }` or `removed { id }`.
 
 A direct engine reports only these statuses: Queued, Connecting, Downloading, Retrying, Stalled, Paused, Verifying, Completed, Failed and Removed. "Cancelled" in the research report is Removed here.

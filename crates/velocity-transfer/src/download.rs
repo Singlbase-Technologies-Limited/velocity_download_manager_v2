@@ -19,7 +19,7 @@ use std::collections::HashMap;
 use std::fs::{self, File};
 use std::io;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::mpsc::{self, RecvTimeoutError};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -32,6 +32,7 @@ use velocity_curl::{
     ResponseHead,
 };
 
+use crate::adaptive::{AdaptivePolicy, Ramp, Tuning};
 use crate::failure::{self, fetch_failure};
 use crate::files;
 use crate::probe::{
@@ -71,6 +72,34 @@ pub struct Control {
     limits: Vec<RateLimit>,
     /// The most bytes one of its requests held for the writer (#49); shared with the forwarders.
     peak_buffered: Arc<AtomicU64>,
+    /// The connections asked for while the download runs (#47). 0 until
+    /// [`Control::set_connections`] is called; [`DownloadOptions::connections`] applies until then.
+    connections: AtomicU32,
+    /// The most connections the engine's budget allows it (#47); 0 for no limit.
+    allowed: AtomicU32,
+    /// What the download runs now, for the engine to report (#47).
+    active: AtomicU32,
+    /// The most connections a throttling server left it; 0 when none did.
+    throttled_to: AtomicU32,
+    /// The rest of the file was too small to split for another connection.
+    file_bound: AtomicBool,
+    /// The adaptive ramp's count, when it is below what the download may use, and why.
+    tuned: Mutex<Option<(u32, Tuning)>>,
+    /// The requests go on connections of their own, not as HTTP/2 streams of one (#47).
+    own_connections: AtomicBool,
+}
+
+/// The connections a download runs now, and what of its own holds it back (#47).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ConnectionsNow {
+    /// Requests open now, including ones being stopped.
+    pub active: u32,
+    /// The most connections a throttling server left it (#48).
+    pub throttled_to: Option<u32>,
+    /// The rest of the file is too small to split between more connections.
+    pub file_bound: bool,
+    /// The adaptive ramp's count, when it is below what the download may use, and why.
+    pub tuned: Option<(u32, Tuning)>,
 }
 
 impl Control {
@@ -125,6 +154,59 @@ impl Control {
         self.cancelled.load(Ordering::Acquire)
     }
 
+    /// Changes the connections the download uses, at least 1, while it runs and without
+    /// restarting it (#47).
+    pub fn set_connections(&self, connections: u32) {
+        self.connections
+            .store(connections.max(1), Ordering::Release);
+    }
+
+    /// The connections asked for: the last [`Control::set_connections`], or `initial`.
+    fn connections(&self, initial: u32) -> u32 {
+        match self.connections.load(Ordering::Acquire) {
+            0 => initial.max(1),
+            n => n,
+        }
+    }
+
+    /// Caps the connections at what the engine's budget allows, at least 1, while the download
+    /// runs (#47).
+    pub fn allow(&self, connections: u32) {
+        self.allowed.store(connections.max(1), Ordering::Release);
+    }
+
+    /// The engine's cap from [`Control::allow`]; no limit until it is called.
+    fn allowed(&self) -> u32 {
+        match self.allowed.load(Ordering::Acquire) {
+            0 => u32::MAX,
+            n => n,
+        }
+    }
+
+    /// Records the requests open now, and whether the file is too small for more.
+    fn running(&self, active: u32, file_bound: bool) {
+        self.active.store(active, Ordering::Release);
+        self.file_bound.store(file_bound, Ordering::Release);
+    }
+
+    /// Records the adaptive ramp's count when it is below what the download may use.
+    fn tune(&self, tuned: Option<(u32, Tuning)>) {
+        *self.tuned.lock().expect("the tuning lock") = tuned;
+    }
+
+    /// What the download runs now (#47).
+    pub fn connections_now(&self) -> ConnectionsNow {
+        ConnectionsNow {
+            active: self.active.load(Ordering::Acquire),
+            throttled_to: match self.throttled_to.load(Ordering::Acquire) {
+                0 => None,
+                n => Some(n),
+            },
+            file_bound: self.file_bound.load(Ordering::Acquire),
+            tuned: *self.tuned.lock().expect("the tuning lock"),
+        }
+    }
+
     /// Reports progress. Bytes arriving also mean the download is downloading again.
     fn report(&self, written: u64, total: Option<u64>) {
         self.show(DownloadStatus::Downloading);
@@ -171,6 +253,9 @@ pub struct DownloadOptions {
     pub checkpoints: Cadence,
     /// When to retry, wait and give up (#48); [`RetryPolicy::DEFAULT`] outside tests.
     pub retry: RetryPolicy,
+    /// Adaptive connections (#47): start with one and add while each helps, up to `connections`.
+    /// `None` uses `connections` from the start, as the CLI does to compare fixed counts.
+    pub adaptive: Option<AdaptivePolicy>,
 }
 
 /// How often the part file is synced and a checkpoint taken: after this many new bytes or this
@@ -230,6 +315,9 @@ pub struct DownloadReport {
     /// The most body bytes one request held for the writer at a time, measured (#49). Bounded by
     /// the libcurl layer's buffer per fetch: a slow disk pauses the transfer instead.
     pub peak_buffered_bytes: u64,
+    /// Over HTTP/2, more streams on one connection stopped helping, and connections of their own
+    /// did better, so the requests went on those (#47).
+    pub own_connections: bool,
 }
 
 #[derive(Debug)]
@@ -311,6 +399,8 @@ pub fn download_resumable(
 
     let mut ck = Checkpointer::new(options.checkpoints, url);
     let mut resumed_bytes = 0;
+    // One request until the ranges start: the probe, or the first lease of a resume.
+    control.running(1, false);
     let mut outcome = match from {
         Some(checkpoint) => {
             resumed_bytes = part.coverage.len();
@@ -343,6 +433,7 @@ pub fn download_resumable(
         resumed_bytes = 0;
         outcome = fetch_fresh(lp, url, options, &mut part, &mut ck, control);
     }
+    control.running(0, false);
     match outcome {
         Ok(fetched) => {
             let (written, wasted, sparse) = (part.written, part.wasted, part.sparse);
@@ -358,6 +449,7 @@ pub fn download_resumable(
                 resumed_bytes,
                 sparse,
                 peak_buffered_bytes: control.peak_buffered.load(Ordering::Acquire),
+                own_connections: control.own_connections.load(Ordering::Acquire),
             })
         }
         Err(e) => {
@@ -864,6 +956,19 @@ fn stall_error(policy: &RetryPolicy) -> TransferError {
     )
 }
 
+/// How a download over HTTP/2 uses its streams (#47, report section 5.5): as streams of one
+/// connection first; when more streams stop helping, connections of their own are tried once, and
+/// the faster way is kept.
+#[derive(Clone, Copy, Debug)]
+enum Multiplex {
+    /// Streams of one connection, and nothing else tried yet.
+    First,
+    /// Trying connections of their own; what streams of one achieved: the best speed and count.
+    Trying { best: f64, count: u32 },
+    /// Decided: `true` for connections of their own.
+    Chosen(bool),
+}
+
 /// The request one lease is fetched with.
 struct Active {
     /// Where the request's range starts, and where its next byte lands.
@@ -879,6 +984,11 @@ struct Active {
     retry_after: RetryAfter,
     /// No byte has come for [`RetryPolicy::stalled_after`].
     quiet: bool,
+    /// Stopped because the download now uses fewer connections (#47): it ends at its next write,
+    /// and the rest of its lease is leased again.
+    retiring: bool,
+    /// When the request was made, to measure the round trip to its answer (#47).
+    asked: Instant,
 }
 
 type SegmentVerdict = Arc<Mutex<Option<Result<u64, SegmentRejection>>>>;
@@ -903,7 +1013,7 @@ fn answered_end(verdict: &SegmentVerdict) -> Option<u64> {
 /// Starts the request for `lease`, `Range: bytes=start-(end−1)`, checked in the header callback.
 fn request(
     lp: &CurlLoop,
-    url: &str,
+    base: &FetchRequest,
     total: u64,
     lease: Lease,
     tx: mpsc::SyncSender<(LeaseId, Segment)>,
@@ -915,26 +1025,28 @@ fn request(
     let retry_after = RetryAfter::default();
     let asked = retry_after.clone();
     let (a, b) = (lease.start, lease.end - 1);
-    let fetch = lp.fetch(
-        FetchRequest::range(url.to_owned(), a, Some(b)).limited(&control.limits),
-        move |head: &ResponseHead| {
-            asked.note(head);
-            let result = check_segment(head, a, b, total);
-            let gate = match &result {
-                Ok(_) => Gate::Accept,
-                Err(SegmentRejection::RangesIgnored) => {
-                    Gate::Abort("a 200 for a range after byte 0".to_owned())
-                }
-                Err(
-                    SegmentRejection::Invalid(e)
-                    | SegmentRejection::Anomaly(e)
-                    | SegmentRejection::Changed(e),
-                ) => Gate::Abort(e.message.clone()),
-            };
-            *v.lock().expect("the segment verdict lock") = Some(result);
-            gate
-        },
-    );
+    let fetch_request = FetchRequest {
+        range: Some((a, Some(b))),
+        ..base.clone()
+    }
+    .limited(&control.limits);
+    let fetch = lp.fetch(fetch_request, move |head: &ResponseHead| {
+        asked.note(head);
+        let result = check_segment(head, a, b, total);
+        let gate = match &result {
+            Ok(_) => Gate::Accept,
+            Err(SegmentRejection::RangesIgnored) => {
+                Gate::Abort("a 200 for a range after byte 0".to_owned())
+            }
+            Err(
+                SegmentRejection::Invalid(e)
+                | SegmentRejection::Anomaly(e)
+                | SegmentRejection::Changed(e),
+            ) => Gate::Abort(e.message.clone()),
+        };
+        *v.lock().expect("the segment verdict lock") = Some(result);
+        gate
+    });
     let limit = fetch.limit();
     forward(
         fetch,
@@ -951,6 +1063,8 @@ fn request(
         overran: false,
         retry_after,
         quiet: false,
+        retiring: false,
+        asked: Instant::now(),
     }
 }
 
@@ -965,7 +1079,11 @@ fn request(
 ///   missing bytes (report section 5.1, steps 4, 6 and 7);
 /// - a failure worth retrying, or a request silent for too long, frees its connection for a wait,
 ///   and the rest of its lease is leased again after it (#48). A throttling server halves the
-///   connections this download uses.
+///   connections this download uses;
+/// - the connections asked for may change while it runs ([`Control::set_connections`], #47): more
+///   take new leases at once, and fewer stop the newest requests, whose rest is leased again;
+/// - with [`DownloadOptions::adaptive`], it starts with one connection and adds one per window
+///   while each helps, up to what it may use ([`Ramp`], #47).
 ///
 /// Returns the fetches made, the splits and the mode.
 fn fetch_ranges(
@@ -978,15 +1096,17 @@ fn fetch_ranges(
     control: &Control,
 ) -> Result<(u32, u32, Mode), DownloadError> {
     let policy = &options.retry;
-    let mut connections = options.connections.max(1);
+    // The most connections a throttling server leaves this download (#48).
+    let mut throttled_to = u32::MAX;
     let mut sched = Scheduler::new(total, &part.coverage, options.leases);
     if ck.resumed {
         // What a resumed download starts with came from a checkpoint: it is on disk already.
         sched.synced();
     }
     // Bounded, so a slow writer stops the forwarders, which stops libcurl: an unbounded channel
-    // here once queued a whole file in memory (#38).
-    let (tx, rx) = mpsc::sync_channel(QUEUED_PER_SEGMENT * connections as usize);
+    // here once queued a whole file in memory (#38). It is sized for the starting connections;
+    // connections added later share it, which only holds them back sooner (#47).
+    let (tx, rx) = mpsc::sync_channel(QUEUED_PER_SEGMENT * options.connections.max(1) as usize);
     let mut active: HashMap<LeaseId, Active> = HashMap::new();
     // Connections waiting out a retry wait, by when each may be used again.
     let mut waiting: Vec<Instant> = Vec::new();
@@ -995,6 +1115,14 @@ fn fetch_ranges(
     let mut ranges_ignored = false;
     let mut failure: Option<TransferError> = None;
     let mut changed: Option<TransferError> = None;
+    let mut ramp = options.adaptive.map(Ramp::new);
+    // Answers came over HTTP/2, and how its streams are used (#47).
+    let mut h2 = false;
+    let mut multiplex = Multiplex::First;
+    // Body bytes received, written or not, and the shortest wait for an answer: the ramp's
+    // measures (#47).
+    let mut received = 0u64;
+    let mut rtt: Option<Duration> = None;
     loop {
         let now = Instant::now();
         waiting.retain(|until| *until > now);
@@ -1002,7 +1130,68 @@ fn fetch_ranges(
             // The download ends; nothing waits to be retried.
             waiting.clear();
         }
+        let mut live: Vec<LeaseId> = active
+            .iter()
+            .filter(|(_, a)| !a.retiring)
+            .map(|(id, _)| *id)
+            .collect();
+        live.sort_unstable_by_key(|id| id.0);
+        // What was asked for, within the engine's budget and what a throttling server left; with
+        // adaptive connections, what helps within that.
+        let ceiling = control
+            .connections(options.connections)
+            .min(control.allowed())
+            .min(throttled_to);
+        if let Some(r) = ramp.as_mut() {
+            r.step(now, received, ceiling, live.len() as u32, rtt);
+        }
+        // HTTP/2: when more streams stop helping, connections of their own are tried once, and
+        // the faster way is kept. Changing the way stops every request, to measure it cleanly.
+        let mut restart = false;
+        if let (Some(r), Some(adaptive), true) = (ramp.as_mut(), options.adaptive, h2) {
+            match multiplex {
+                Multiplex::First if r.why(ceiling) == Some(Tuning::NoGain) => {
+                    multiplex = Multiplex::Trying {
+                        best: r.best_rate().unwrap_or(0.0),
+                        count: r.target(),
+                    };
+                    *r = Ramp::new(adaptive);
+                    restart = true;
+                }
+                Multiplex::Trying { best, count } if r.settled(ceiling) => {
+                    let enough = 1.0 + f64::from(adaptive.add_gain_percent) / 100.0;
+                    let better = r.best_rate().is_some_and(|b| b > best * enough);
+                    multiplex = Multiplex::Chosen(better);
+                    control.own_connections.store(better, Ordering::Release);
+                    if !better {
+                        *r = Ramp::holding_at(adaptive, count);
+                        restart = true;
+                    }
+                }
+                _ => {}
+            }
+        }
+        let connections = ramp.as_ref().map_or(ceiling, Ramp::target);
+        control.tune(
+            ramp.as_ref()
+                .and_then(|r| r.why(ceiling).map(|why| (r.target(), why))),
+        );
+        // Fewer connections than run now: the newest requests stop.
+        let keep = if restart { 0 } else { connections as usize };
+        for id in live.iter().skip(keep) {
+            let a = active.get_mut(id).expect("a live request");
+            a.retiring = true;
+            a.limit.stop_at(0);
+        }
         // Fill the free connections, unless ranges stopped working for this download.
+        let mut base = FetchRequest::get(url.to_owned());
+        if matches!(
+            multiplex,
+            Multiplex::Trying { .. } | Multiplex::Chosen(true)
+        ) {
+            base = base.on_own_connection();
+        }
+        let mut file_bound = false;
         while failure.is_none()
             && changed.is_none()
             && !ranges_ignored
@@ -1020,14 +1209,19 @@ fn fetch_ranges(
                     splits += 1;
                     new
                 }
-                None => break,
+                None => {
+                    // Nothing unassigned, and no remainder large enough to split.
+                    file_bound = true;
+                    break;
+                }
             };
             fetches += 1;
             active.insert(
                 lease.id,
-                request(lp, url, total, lease, tx.clone(), policy, control),
+                request(lp, &base, total, lease, tx.clone(), policy, control),
             );
         }
+        control.running(active.len() as u32, file_bound);
         if active.is_empty() {
             if waiting.is_empty() {
                 break;
@@ -1058,7 +1252,8 @@ fn fetch_ranges(
                 Some(wait) => {
                     waiting.push(Instant::now() + wait);
                     if t.class == FailureClass::Throttled {
-                        connections = retry::after_throttling(connections);
+                        throttled_to = retry::after_throttling(connections);
+                        control.throttled_to.store(throttled_to, Ordering::Release);
                     }
                 }
                 None => failure = failure.take().or(Some(t)),
@@ -1077,20 +1272,25 @@ fn fetch_ranges(
             Segment::Reset => {
                 // The forwarder gave up on the request and cancelled it; its lease is ended, and
                 // the rest of it is leased again after the wait.
-                if active.remove(&id).is_some() {
+                if let Some(a) = active.remove(&id) {
                     sched.ended(id);
-                    retry_later(stall_error(policy), None, part.written);
+                    if !a.retiring {
+                        retry_later(stall_error(policy), None, part.written);
+                    }
                 }
             }
-            Segment::Fetch(FetchEvent::Head(_)) => {
-                if active
-                    .get(&id)
-                    .is_some_and(|a| answered_end(&a.verdict).is_some())
-                {
-                    sched.start(id);
+            Segment::Fetch(FetchEvent::Head(head)) => {
+                h2 |= head.http2;
+                if let Some(a) = active.get(&id) {
+                    let waited = a.asked.elapsed();
+                    rtt = Some(rtt.map_or(waited, |r| r.min(waited)));
+                    if answered_end(&a.verdict).is_some() {
+                        sched.start(id);
+                    }
                 }
             }
             Segment::Fetch(FetchEvent::Data(chunk)) => {
+                received += chunk.len() as u64;
                 let Some(a) = active.get_mut(&id) else {
                     continue;
                 };
@@ -1117,6 +1317,14 @@ fn fetch_ranges(
                 };
                 let verdict = a.verdict.lock().expect("the segment verdict lock").take();
                 let unfinished = sched.lease(id).is_some_and(|l| l.cursor < l.end);
+                if a.retiring {
+                    // Stopped on purpose: only a changed file still matters.
+                    if let Some(Err(SegmentRejection::Changed(t))) = verdict {
+                        changed = changed.or(Some(t));
+                    }
+                    sched.ended(id);
+                    continue;
+                }
                 match (verdict, result) {
                     (Some(Err(SegmentRejection::RangesIgnored)), _) => ranges_ignored = true,
                     (Some(Err(SegmentRejection::Anomaly(_))), _) => anomalies += 1,
@@ -1178,6 +1386,7 @@ fn fetch_sequential(
     control: &Control,
     policy: &RetryPolicy,
 ) -> Result<(u32, u64, Mode), DownloadError> {
+    control.running(1, false);
     let mut fetches = 0;
     let mut anomalies = 0;
     let mut cursor = start;
@@ -1287,6 +1496,7 @@ fn stream_gaps(
     control: &Control,
     policy: &RetryPolicy,
 ) -> Result<(u64, u32), DownloadError> {
+    control.running(1, false);
     let mut retrier = Retrier::new(*policy);
     let mut fetches = 0;
     loop {

@@ -10,8 +10,15 @@ rust-version.workspace = true
 curl.workspace = true
 curl-sys.workspace = true
 
+# Test-only: HTTP/2 without TLS, for the HTTP/2 tests (PO decision on #47). A release build
+# refuses to compile with it (src/lib.rs).
+[features]
+test-h2c = []
+
 [dev-dependencies]
 velocity-test-http = { path = "../velocity-test-http" }
+# This crate's own tests enable test-h2c.
+velocity-curl = { path = ".", features = ["test-h2c"] }
 
 [build-dependencies]
 serde_json.workspace = true

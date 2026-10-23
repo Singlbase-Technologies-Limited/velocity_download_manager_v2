@@ -46,7 +46,7 @@ A lease owns `[cursor, end)` of the file alone; `[start, cursor)` is already wri
 - **Split (work-stealing):** a free connection with nothing unassigned takes half of the live lease with the largest remainder. The remainder must be at least `2 × min_split`, and the midpoint is rounded down to `align`.
   - The old lease shrinks to end at the midpoint.
   - Its request is told to stop there: `FetchLimit::stop_at` in the libcurl layer delivers bytes up to the limit, then stops the transfer, and reports that as a completed fetch, not an error.
-  - Over HTTP/1.1 its connection closes. Over HTTP/2 only the stream should be reset; that is tested with #47.
+  - Over HTTP/1.1 its connection closes. Over HTTP/2 only the stream is reset, and the connection is kept (tested in #47).
 - **Retries:** a lease that ends before its end fails, and the rest of its range is handed out again under a new id. A late callback from the old request carries the old id and is refused.
 
 | Size | Value | Where it comes from |
@@ -143,7 +143,7 @@ All of them are starting values to tune by measurement, not requirements (PO dec
 - **Live changes:** a limit's rate changes at once. The next write sees it, so a change applies within one loop round (10 ms).
 - **Why not libcurl's own cap:** `CURLOPT_MAX_RECV_SPEED_LARGE` is "not an exact science" by its own documentation, and its documentation doesn't say whether it can change during a transfer (report open question 3).
 - **The smallest limit is 1 KiB/s,** V1's unit. A lower one is refused with `INVALID_INPUT`. A low limit is bursty, as data arrives in writes of up to 16 KiB, but its average holds.
-- **HTTP/2:** a paused stream may still receive up to one stream window of data, which libcurl keeps (curl_easy_pause documentation). The HTTP/2 policy is #47.
+- **HTTP/2:** a paused stream may still receive up to one stream window of data, which libcurl keeps (curl_easy_pause documentation). The HTTP/2 policy is in [Connections](#connections-47).
 - **After a restart:** the supervisor gives every new engine the global limit the old one had. A transfer's own limit is in its spec, which the app passes again when it resumes the transfer.
 
 **Measured** on the local test server (Windows 11, `tests/limits.rs`):
@@ -164,6 +164,84 @@ A slow disk slows the network instead of growing memory. This was built in #37 a
 - **The queue:** at most 2 events per connection wait between the requests and the writer.
 - **Measured:** `DownloadReport::peak_buffered_bytes` reports the most one request held at a time. The slow-writer test stalls the writer for 2 s, and checks that each buffer filled and never went past its cap by more than one 16 KiB write.
 - **The kernel's share:** the sockets' own buffers belong to the kernel. They hold more, depending on the system, and on Windows they kept growing during a pause (#147, #150). Only Velocity's own buffers are checked exactly.
+
+## Connections (#47)
+
+How many connections a download uses, and how they are shared. The PO decisions are on #47.
+
+### What a download may use
+
+A download's connections are the tightest of these, from the outside in:
+
+| Limit | Where it comes from | Shown as |
+|---|---|---|
+| What it asked for | `TransferSpec::max_connections`, or `set_connections` later, at least 1 and at most the per-host cap | `requested` |
+| Its share of the per-host cap and the shared budget | The engine, max-min fairly between the running transfers ([`budget.rs`](../crates/velocity-transfer/src/budget.rs)) | `perHostCap`, `sharedBudget` |
+| A throttling server | A `429` or `503` halves the connections, down to one (#48) | `serverThrottling` |
+| What helps | The adaptive ramp ([`adaptive.rs`](../crates/velocity-transfer/src/adaptive.rs)) | `rampingUp`, `noGain` |
+| What is left to split | No remainder of at least 2 × `min_split` | `fileSize` |
+
+Snapshots carry the connections in use now (`Progress::connections`) and `connectionDetail`: `requested`, `allowed` and the tightest limit, `limitedBy` ([CONTRACTS.md](CONTRACTS.md)).
+
+### Live changes
+
+- **`set_connections`** changes the count while the transfer runs, without a restart: no new probe, and the part file and its coverage stay as they are.
+- **More** take new leases at the next step of the download, splitting a live lease when nothing is unassigned.
+- **Fewer** stop the newest requests. Each stops at its next write (`stop_at(0)`), the bytes it already delivered are kept, and the rest of its lease is leased again. The fixture checks that its changes waste no byte.
+- **A paused transfer** keeps the count for when it resumes.
+
+### Budgets and fairness
+
+- **Per host:** at most 8 connections to one host name and port, shared by every transfer to it. libcurl's `CURLMOPT_MAX_HOST_CONNECTIONS` is set to the same 8, as the backstop: a fetch past it waits for a free connection.
+- **Shared budget:** at most 48 connections across all transfers.
+- **Max-min fair:** the engine shares both again whenever a transfer starts, ends or changes its count. Connections go one per transfer per round, so no transfer gets more while another that wants more has fewer; a small download's unused share goes to the others.
+- **One each:** every running transfer keeps one connection, even past the caps, as a download makes no progress without one. How many transfers run at once is the queue's job (#50).
+- **The budget always applies,** to a count set by hand too (PO decision on #47; V1 let a hand-set count ignore it).
+
+### Adaptive connections
+
+The asked-for count is the most a download may use, not a must (PO decision on #47). Every download in the engine starts with one connection, the probe, and ramps up:
+
+- **Windows:** the ramp measures the body bytes received over a window of max(2 s, 4 × RTT). RTT is the shortest wait seen between a request and its answer.
+- **Add while it helps:** after a window in which the last connection added raised the speed by at least 10%, it adds another.
+- **A small gain** (2% to 10%) keeps the last one and stops.
+- **No gain:** after 2 windows below 2%, it drops the last one and stops.
+- **No decision** while fewer requests run than the ramp wants, at a file's tail for example: that speed says nothing about the count.
+- **A lower ceiling** (the budget, the user, a throttling server) applies at once. **A higher one** starts the ramp again.
+- **Example:** asked for 8, from a server that gives one client no more than 3 connections' worth, a download keeps 3, and shows `noGain`.
+
+`DownloadOptions::adaptive` is `None` for a fixed count, which the CLI uses to compare fixed plans.
+
+### HTTP/2
+
+- **Multiplexing first:** requests to one host wait for the connection being set up (`CURLOPT_PIPEWAIT`), and share it as streams if it speaks HTTP/2.
+- **Then connections of their own, once:** when the ramp finds that more streams stop helping, the download tries requests on connections of their own (`CURLOPT_FRESH_CONNECT` and `CURLOPT_FORBID_REUSE`), ramping again from one.
+- **The faster way is kept:** connections of their own stay only if their best speed beats the best multiplexed one by the ramp's 10%. Otherwise the download goes back to the multiplexed count. Changing the way stops every request first, so each way is measured on its own.
+- **`DownloadReport::own_connections`** says which way was kept.
+- **A split** resets only its stream; the connection stays.
+
+### The values
+
+All are starting values to tune by measurement (#77), and #30 makes them settings.
+
+| Value | Starting value | Where it comes from |
+|---|---|---|
+| Per-host cap (`MAX_CONNECTIONS`) | 8 | Report section 5.5 (8, at most 16); PO decision on #47 |
+| Shared budget (`CONNECTION_BUDGET`) | 48 | V1's `connection_budget`; PO decision on #47 |
+| Window | max(2 s, 4 × RTT) | Report section 5.5 |
+| Gain to add another | 10% | Report section 5.5 |
+| Flat gain, and windows before stepping back | below 2%, 2 windows | Report section 5.5 |
+
+**Measured** on the local test servers (Windows 11). These check behaviour, not speed: no speed claim is made until #77 (PO decision on #47):
+
+| Fixture | Expected | Observed |
+|---|---|---|
+| 4 downloads from one host, 8 asked for each, 2 MiB/s per connection | 2 each (`perHostCap`); Jain's index ≥ 0.9 | 2 each; Jain's index 1.000 in both engine modes |
+| 1 MiB/s per connection, 8 asked for | Ramps up to 8 | 8 |
+| 1 MiB/s per connection, 3 MiB/s per client, 8 asked for, 5 runs | Stops below the cap | Kept 3, at most 4 at once, every run |
+| HTTP/2, 1 MiB/s per TCP connection, 5 runs | Connections of their own | 9 or 10 connections, 6 to 8 at once |
+| HTTP/2, 1 MiB/s per stream, 5 runs | One multiplexed connection | 1 connection, 8 streams |
+| 40 small files from one host | Reuse | 1 connection one by one; at most 8 at once |
 
 ## Persistence and recovery (#43)
 
@@ -286,12 +364,16 @@ Run it with `cargo run --release -p velocity-transfer --example high_offset_writ
 
   `tests/engine_retries.rs` covers starting a whole download again, giving up after the restarts, never restarting a permanent failure, a cancel during the wait, and Stalled in the snapshot. `tests/supervisor.rs` freezes a real engine process and checks it is restarted.
 - **Limit fixtures:** `tests/limits.rs` measures the bytes written over a window: a global 4 MiB/s across 3 downloads, a change taking effect within 2 s, and a download limit under a higher global one, each within ±10% over 10 s. `VELOCITY_LIMIT_SECONDS=30 cargo test -p velocity-transfer --test limits -- --nocapture` runs the 30 s window of #49 by hand (PO decision on #49). `tests/engine_contract.rs` checks limits in both engine modes, and `tests/supervisor.rs` checks that the global limit survives a restart.
-- **Unit tests:** the tests in `probe.rs`, `failure.rs`, `retry.rs`, the libcurl layer's `rate.rs`, `scheduler.rs`, `files.rs` and the libcurl layer's `tests/curl_loop.rs` (`FetchLimit`) cover each rule on its own.
+- **Connection fixtures (#47):** `tests/connections.rs` changes a download's count live (up and down, with no byte wasted and no second probe), holds it to the engine's allowance, reports when the file is too small for more, and runs the adaptive ramp against a per-connection and a per-IP throttle. `tests/engine_contract.rs` checks `set_connections`, the per-host share with Jain's index, and connection reuse in both engine modes.
+- **HTTP/2 fixtures (#47):** `tests/http2.rs` runs against the cleartext HTTP/2 server: #41's probe fixtures, #42's split that resets only its stream, and the multiplex policy against a server throttling each TCP connection and one throttling each stream. They need the `test-h2c` feature, which only test builds have ([TESTING.md](TESTING.md#fixture-servers-v2-needs)).
+- **Unit tests:** the tests in `probe.rs`, `failure.rs`, `retry.rs`, `adaptive.rs`, `budget.rs`, the libcurl layer's `rate.rs`, `scheduler.rs`, `files.rs` and the libcurl layer's `tests/curl_loop.rs` (`FetchLimit`, the per-host cap) and `tests/http2.rs` cover each rule on its own.
 
 ## Not yet
 
-- **HTTP/2:** the fixtures run over HTTP/1.1. The HTTP/2 fixtures, including the split's stream reset, need the HTTPS test server, and are #47 (PO decisions on #41 and #42). libcurl gives the engine the same final status and headers over either version.
-- **Per-host and global connection budgets:** throttling halves the connections of one download only. Budgets shared across downloads and hosts are #47.
+- **HTTP/2 over TLS:** the HTTP/2 fixtures run over cleartext, with prior knowledge. HTTP/2 negotiated through TLS (ALPN) is #69, as Windows' Schannel refuses a test CA it can't check for revocation (PO decision on #47).
+- **Connection values:** the per-host cap, the budget and the ramp's values are engine defaults until the settings model passes the user's (#30). Tuning them by measurement is #77.
+- **Learning per host:** what a host allowed isn't remembered between downloads (a non-goal of #47).
+- **Throttling across downloads:** a `429` or `503` halves the connections of the download that got it, not of the other downloads to that host.
 - **Retry settings:** the values are engine defaults until the settings model passes the user's (#30).
 - **Validators and changed files:** a changed `Content-Encoding` between responses is an anomaly for now. Treating it, a changed total and changed validators as a changed object, with `new_epoch`, is #45.
 - **Saving checkpoints in the app:** the manager saves the engine's checkpoint events in the database and resumes unfinished downloads at startup with `StoredDownload::resume` (#58).

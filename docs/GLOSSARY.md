@@ -4,10 +4,11 @@ Terms used across V2's documents, issues and code, in alphabetical order. Where 
 
 | Term | Meaning |
 |---|---|
+| **Adaptive connections (ramp)** | Starting a download with one connection and adding one per window while the last one made it faster, then keeping the count that stopped helping. The asked-for count is the most it may use, not a must ([ENGINE_INTERNALS.md](ENGINE_INTERNALS.md#adaptive-connections); #47) |
 | **ADR** | Architecture decision record: one numbered, accepted decision with its context and consequences. See [decisions/](decisions/README.md) |
 | **Anomaly** | An answer that contradicts its request: a wrong or malformed `Content-Range`, a length that disagrees with it, a multipart body, or a body that stops short of or runs past its range. The first is retried; a second on the same download ends ranges for it ([ENGINE_INTERNALS.md](ENGINE_INTERNALS.md); report §5.1; #41) |
 | **Back-pressure** | Pausing a transfer while the bounded disk-write queue is full, so a slow disk slows the network instead of growing memory (report §5.2; #49) |
-| **Budget** | The connection allowance per download, per host and globally, which the scheduler shares fairly between downloads (#47) |
+| **Budget** | The connection allowance per host (8) and across all downloads (48), which the engine shares max-min fairly between running downloads ([ENGINE_INTERNALS.md](ENGINE_INTERNALS.md#budgets-and-fairness); #47) |
 | **Build identity record** | `build-info.json`: what one native build contains and how it was made: each library's source, SHA-256, signature result and build options, what `curl -V` reports as linked, the artefact checksums, the toolchains and the V2 commit (#35; [BUILDING_NATIVE.md](BUILDING_NATIVE.md#build-infojson)) |
 | **Capability** | Something an engine or build really supports, such as a protocol, live connection changes or validator-checked resume. It is reported, never assumed, so the UI can explain differences truthfully (report §4.2; #57) |
 | **Changed object** | A file that changed on the server during a download, detected through its validator, its total length or its encoding. The old bytes are discarded and the download restarts once (report §5.3; #45) |
@@ -22,8 +23,10 @@ Terms used across V2's documents, issues and code, in alphabetical order. Where 
 | **Full jitter** | A retry wait drawn at random between zero and the doubled wait, so clients that failed together don't come back together (#48) |
 | **Hash frontier** | Hashing the file's contiguous prefix from byte 0 as it becomes covered. Segment hashes can't be combined into a whole-file hash, so the rest is read back at the end (report §5.3; #46) |
 | **Invariants I1–I7** | The scheduler properties checked after every simulated event: partition, exclusivity, acceptance, monotonic coverage, durability, completion and conservation (report §5.2; #42) |
+| **Jain's index** | A fairness measure for shares x₁…xₙ: (Σx)² / (n·Σx²). It is 1 when all are equal and 1/n when one gets everything; the concurrent-download fixtures require at least 0.9 (#47) |
 | **Lease** | Exclusive ownership of a byte range `[cursor, end)` by one request, with an id that is never reused. States: Assigned, InFlight, Completed, Failed and Revoked. Bytes from a revoked or unknown lease are dropped and counted as wasted (report §5.2; #42) |
 | **libcurl layer** | The only code that calls libcurl: FFI and the `Multi` event loop on its own thread (report §4.2; `crates/velocity-curl`, ADR-0002) |
+| **Multiplexing** | Running several requests as HTTP/2 streams of one connection. V2 tries it first, and switches a download to connections of their own only when that is measurably faster (#47) |
 | **Native lock file** | `scripts/native/deps.lock`: the pinned version, source URL, SHA-256, signing key and licence of every native library V2 builds (#35; [DEPENDENCIES.md](DEPENDENCIES.md#lock-file)) |
 | **No-clobber finalisation** | Completing a download by renaming its part file to the final name without replacing an existing file (report §5.3; #43) |
 | **Part file** | The file being downloaded, `<destination>.vdmpart`, until it is complete and renamed into place without replacing an existing file. Sparse on Windows (#43) |

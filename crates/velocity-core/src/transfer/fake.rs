@@ -148,6 +148,7 @@ impl FakeControl {
             download_speed_bps: 500_000,
             upload_speed_bps: 0,
             connections,
+            connection_detail: None,
         };
         s.changed(id);
     }
@@ -184,6 +185,7 @@ impl FakeControl {
             download_speed_bps: 0,
             upload_speed_bps: 0,
             connections: 0,
+            connection_detail: None,
         };
         s.changed(id);
     }
@@ -221,6 +223,7 @@ impl DirectTransfer for FakeTransfer {
                 download_speed_bps: 0,
                 upload_speed_bps: 0,
                 connections: 0,
+                connection_detail: None,
             },
             wasted_bytes: 0,
             error: None,

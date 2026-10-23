@@ -87,6 +87,7 @@ impl Manager {
                 download_speed_bps: 0,
                 upload_speed_bps: 0,
                 connections: 0,
+                connection_detail: None,
             },
             error: None,
             created_at_ms: now_ms,
@@ -427,6 +428,7 @@ mod tests {
                 download_speed_bps: 500_000,
                 upload_speed_bps: 0,
                 connections: 4,
+                connection_detail: None,
             }
         );
     }

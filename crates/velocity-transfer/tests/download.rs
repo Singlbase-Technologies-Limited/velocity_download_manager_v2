@@ -71,6 +71,7 @@ const OPTIONS: DownloadOptions = DownloadOptions {
     leases: Sizes::DEFAULT,
     checkpoints: Cadence::DEFAULT,
     retry: FAST_RETRY,
+    adaptive: None,
 };
 
 /// Short waits, so tests that meet a transient failure don't wait out the production policy.
@@ -442,6 +443,7 @@ fn a_split_stops_the_old_request_at_the_new_boundary() {
         },
         checkpoints: Cadence::DEFAULT,
         retry: FAST_RETRY,
+        adaptive: None,
     };
     let report = download(&curl_loop(), &server.url("f.bin"), &dest, options)
         .expect("the download succeeds");
