@@ -444,3 +444,34 @@ fn a_link_that_stops_working_after_the_first_answer_has_expired() {
     assert!(!e.retryable);
     assert_eq!(s.counters().gets, 1, "never retried");
 }
+
+#[test]
+fn a_retried_first_answer_of_another_file_starts_over() {
+    // The first answer is cut off without giving ranges, so it is asked for again and only the
+    // missing bytes are written: if the file changed in between, those must not be its bytes.
+    let v2 = version(2);
+    let s = TestServer::start(
+        vec![("f.bin".into(), version(1))],
+        ServerOptions {
+            range_mode: RangeMode::Ignore,
+            file_headers: etag("\"v1\""),
+            changes: vec![Change {
+                after: 1,
+                data: v2.clone(),
+                headers: etag("\"v2\""),
+            }],
+            cut_first: Some(100_000),
+            ..ServerOptions::default()
+        },
+    );
+    let dir = Dir::new("probe-retry");
+    let dest = dir.file("out.bin");
+    let report = download(&curl_loop(), &s.url("f.bin"), &dest, OPTIONS).expect("it starts over");
+    assert!(std::fs::read(&dest).unwrap() == v2, "no mix of versions");
+    assert_eq!(report.mode, Mode::SingleStream);
+    assert_eq!(
+        s.counters().gets,
+        3,
+        "the cut answer, the refused retry, the new start"
+    );
+}

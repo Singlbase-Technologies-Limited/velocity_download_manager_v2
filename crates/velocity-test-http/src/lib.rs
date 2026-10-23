@@ -77,6 +77,9 @@ pub struct ServerOptions {
     pub file_headers: FileHeaders,
     /// The file changes on the server part way, once per entry, in order of `after` (#45).
     pub changes: Vec<Change>,
+    /// Closes the connection after this many body bytes of the first GET's answer, although its
+    /// `Content-Length` promised more (#45).
+    pub cut_first: Option<u64>,
 }
 
 /// Headers the server sends with a file, each as given and only when set (#45).
@@ -574,6 +577,11 @@ fn serve_connection(
             body.len()
         );
         if out.write_all(header.as_bytes()).is_err() {
+            return;
+        }
+        if let (Some(after), 1, false) = (options.cut_first, gets, head) {
+            let cut = (after as usize).min(body.len());
+            let _ = write_body(&mut out, &body[..cut], None, counters, None);
             return;
         }
         if let (RangeMode::CutLaterBodies { after, .. }, true) = (mode, fault) {

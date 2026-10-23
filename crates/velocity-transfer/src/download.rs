@@ -755,17 +755,51 @@ enum Probed {
 struct Retryable {
     error: TransferError,
     retry_after: Option<Duration>,
+    /// What the failed probe's answer said, if it answered with the file.
+    answered: Option<Answered>,
+}
+
+/// What a probe's answer said about the file: a retry that writes after its bytes must agree
+/// (#45).
+#[derive(Clone)]
+struct Answered {
+    file: Representation,
+    /// The length a `200` gave.
+    length: Option<u64>,
+}
+
+impl Answered {
+    /// Whether `head`, whose outcome is `outcome`, is about the same file: `Err` says what changed.
+    fn check(&self, head: &ResponseHead, outcome: &ProbeOutcome) -> Result<(), String> {
+        self.file.check(head)?;
+        self.file.same_encoding(head)?;
+        match (self.length, single_stream_length(outcome)) {
+            (Some(was), Some(now)) if was != now => {
+                Err(format!("the file's length changed from {was} to {now}"))
+            }
+            _ => Ok(()),
+        }
+    }
+}
+
+fn single_stream_length(outcome: &ProbeOutcome) -> Option<u64> {
+    match outcome {
+        ProbeOutcome::SingleStream { length } => *length,
+        _ => None,
+    }
 }
 
 /// `error` as a [`Retryable`] when it is worth retrying, or as the download's end otherwise.
 fn retryable(
     error: TransferError,
     retry_after: &RetryAfter,
+    answered: Option<Answered>,
 ) -> Result<Result<Probed, Retryable>, DownloadError> {
     if error.retryable {
         Ok(Err(Retryable {
             error,
             retry_after: retry_after.get(),
+            answered,
         }))
     } else {
         Err(error.into())
@@ -785,10 +819,25 @@ fn probe_retrying(
 ) -> Result<(Probed, u32), DownloadError> {
     let mut retrier = Retrier::new(*policy);
     let mut retries = 0;
+    // The answer whose bytes were kept: every retry must be about the same file (#45).
+    let mut earlier: Option<Answered> = None;
     loop {
-        match probe(lp, request.clone(), probe_end, part, ck, control, policy)? {
+        let attempt = probe(
+            lp,
+            request.clone(),
+            probe_end,
+            part,
+            ck,
+            control,
+            policy,
+            earlier.as_ref(),
+        )?;
+        match attempt {
             Ok(probed) => return Ok((probed, retries)),
             Err(failed) => {
+                if earlier.is_none() && part.written > 0 {
+                    earlier = failed.answered;
+                }
                 let wait = retrier
                     .wait(&failed.error, failed.retry_after, part.written)
                     .ok_or(failed.error)?;
@@ -811,27 +860,42 @@ fn probe(
     ck: &mut Checkpointer,
     control: &Control,
     policy: &RetryPolicy,
+    earlier: Option<&Answered>,
 ) -> Result<Result<Probed, Retryable>, DownloadError> {
     let probe_verdict = Arc::new(Mutex::new(None));
     let multipart = Arc::new(AtomicBool::new(false));
-    let validators: Arc<Mutex<Representation>> = Arc::default();
+    let validators: Arc<Mutex<Option<Answered>>> = Arc::default();
+    let changed: Arc<Mutex<Option<TransferError>>> = Arc::default();
     let retry_after = RetryAfter::default();
-    let (verdict, saw_multipart, seen, asked) = (
+    let (verdict, saw_multipart, seen, other, asked) = (
         Arc::clone(&probe_verdict),
         Arc::clone(&multipart),
         Arc::clone(&validators),
+        Arc::clone(&changed),
         retry_after.clone(),
     );
+    let earlier = earlier.cloned();
     let fetch = lp.fetch(
         request.limited(&control.limits),
         move |head: &ResponseHead| {
             asked.note(head);
-            *seen.lock().expect("the validators lock") = Representation::of(head);
             if is_multipart(head) {
                 saw_multipart.store(true, Ordering::Release);
                 return Gate::Abort("a multipart/byteranges answer to one range".to_owned());
             }
             let result = classify_probe(head, probe_end);
+            if let Ok(outcome) = &result {
+                if let Some(Err(why)) = earlier.as_ref().map(|e| e.check(head, outcome)) {
+                    // The bytes written so far are another answer's (#45).
+                    let e = TransferError::new(FailureClass::Permanent, Some(head.status), &why);
+                    *other.lock().expect("the changed lock") = Some(e);
+                    return Gate::Abort(why);
+                }
+                *seen.lock().expect("the validators lock") = Some(Answered {
+                    file: Representation::of(head),
+                    length: single_stream_length(outcome),
+                });
+            }
             let gate = match &result {
                 Ok(_) => Gate::Accept,
                 Err(e) => Gate::Abort(e.message.clone()),
@@ -870,7 +934,7 @@ fn probe(
             _ => None,
         };
         if let (Some(total), true) = (total, ck.due(part)) {
-            ck.file = validators.lock().expect("the validators lock").clone();
+            ck.file = answered_file(&validators);
             ck.take_probe(part, total, control)?;
         }
         Ok(())
@@ -884,30 +948,43 @@ fn probe(
             Some(Ok(ProbeOutcome::RangesOk { total, .. })) => Some(*total),
             _ => None,
         };
-        let validators = validators.lock().expect("the validators lock").clone();
-        return Ok(Ok(Probed::Paused(total, validators)));
+        return Ok(Ok(Probed::Paused(total, answered_file(&validators))));
     }
     let probe_done = drained?;
+    if let Some(e) = changed.lock().expect("the changed lock").take() {
+        return Err(DownloadError::Changed(e));
+    }
+    let answered = validators.lock().expect("the validators lock").clone();
     if multipart.load(Ordering::Acquire) {
         return Ok(Ok(Probed::Multipart));
     }
     let outcome = match probe_verdict.lock().expect("the probe verdict lock").take() {
         Some(Ok(o)) => o,
-        Some(Err(e)) => return retryable(e, &retry_after),
+        Some(Err(e)) => return retryable(e, &retry_after, answered),
         None => {
             let e = probe_done.failure(policy).unwrap_or_else(loop_stopped);
-            return retryable(e, &retry_after);
+            return retryable(e, &retry_after, answered);
         }
     };
     if let Some(e) = probe_done.failure(policy) {
         // Cut off. With the file's total, the scheduler fetches what is missing; otherwise the
         // probe is tried again (it writes only the bytes not yet covered).
         if !matches!(outcome, ProbeOutcome::RangesOk { .. }) {
-            return retryable(e, &retry_after);
+            return retryable(e, &retry_after, answered);
         }
     }
-    let validators = validators.lock().expect("the validators lock").clone();
-    Ok(Ok(Probed::Outcome(outcome, cursor, validators)))
+    let file = answered.map(|a| a.file).unwrap_or_default();
+    Ok(Ok(Probed::Outcome(outcome, cursor, file)))
+}
+
+/// What the probe's answer said about the file, or nothing before it answered with the file.
+fn answered_file(answered: &Mutex<Option<Answered>>) -> Representation {
+    answered
+        .lock()
+        .expect("the validators lock")
+        .as_ref()
+        .map(|a| a.file.clone())
+        .unwrap_or_default()
 }
 
 /// The wait a `429` or `503` asked for in `Retry-After`, noted in a header callback.
