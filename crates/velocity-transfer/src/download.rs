@@ -1621,7 +1621,7 @@ fn stream_gaps(
                     return Gate::Accept;
                 }
                 // An error status keeps its own class; any other answer isn't the same file.
-                let e = failure::status_failure(head.status).unwrap_or_else(|| {
+                let e = failure::later_status_failure(head.status).unwrap_or_else(|| {
                     TransferError::new(
                         FailureClass::Permanent,
                         Some(head.status),

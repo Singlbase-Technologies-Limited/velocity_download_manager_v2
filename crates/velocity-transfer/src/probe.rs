@@ -58,7 +58,7 @@ pub fn check_continuation(
     start: u64,
     file: &Representation,
 ) -> Result<Continuation, SegmentRejection> {
-    status_error(head).map_err(SegmentRejection::Invalid)?;
+    later_status_error(head).map_err(SegmentRejection::Invalid)?;
     if head.status == 416 {
         // Only a 416 that agrees the file ends at `start` (or says nothing) ends it.
         return match head.header("content-range").map(str::trim) {
@@ -164,7 +164,7 @@ pub fn check_segment(
     total: u64,
     file: &Representation,
 ) -> Result<u64, SegmentRejection> {
-    status_error(head).map_err(SegmentRejection::Invalid)?;
+    later_status_error(head).map_err(SegmentRejection::Invalid)?;
     one_range(head).map_err(SegmentRejection::Anomaly)?;
     if matches!(head.status, 200 | 206) {
         // A 200 to If-Range with other validators is the new file (RFC 9110 §13.1.5); with the
@@ -220,6 +220,14 @@ fn same_file(head: &ResponseHead, file: &Representation) -> Result<(), SegmentRe
 /// Error statuses, classified with their messages (`failure::status_failure`, #48).
 fn status_error(head: &ResponseHead) -> Result<(), TransferError> {
     match crate::failure::status_failure(head.status) {
+        Some(e) => Err(e),
+        None => Ok(()),
+    }
+}
+
+/// [`status_error`] for an answer after the first, where a `403` means the link expired (#45).
+fn later_status_error(head: &ResponseHead) -> Result<(), TransferError> {
+    match crate::failure::later_status_failure(head.status) {
         Some(e) => Err(e),
         None => Ok(()),
     }
@@ -574,6 +582,31 @@ mod tests {
             check_segment(&multipart, 1000, 1999, 5000, &none()),
             Err(SegmentRejection::Anomaly(_))
         ));
+    }
+
+    #[test]
+    fn a_403_after_the_first_answer_means_the_link_expired() {
+        // Report 5.3: a signed link that worked for the first answer and is refused later has
+        // expired; it needs a fresh link from the browser (PO decision on #45: a message only).
+        let expired = |r: Result<_, SegmentRejection>| match r {
+            Err(SegmentRejection::Invalid(e)) => {
+                assert_eq!(
+                    (e.class, e.http_status),
+                    (FailureClass::Permanent, Some(403))
+                );
+                e.message
+            }
+            other => panic!("expected a refusal, got {other:?}"),
+        };
+        let message = "The download link expired (403). Get a fresh link from the browser.";
+        let segment = check_segment(&head(403, &[]), 1000, 1999, 5000, &none());
+        assert_eq!(expired(segment.map(|_| ())), message);
+        let continuation = check_continuation(&head(403, &[]), 1000, &none());
+        assert_eq!(expired(continuation.map(|_| ())), message);
+        // On the first answer, a 403 may be a real refusal.
+        assert!(error(classify_probe(&head(403, &[]), 999))
+            .message
+            .contains("Access was denied"));
     }
 
     #[test]

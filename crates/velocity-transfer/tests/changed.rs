@@ -409,3 +409,38 @@ fn a_resume_needs_the_encoding_its_checkpoint_recorded() {
     let other = resume("resume-identity", None);
     assert_eq!((other.resumed_bytes, other.mode), (0, Mode::SingleStream));
 }
+
+#[test]
+fn a_link_that_stops_working_after_the_first_answer_has_expired() {
+    // Report 5.3: a signed link refused part way needs a fresh link from the browser.
+    let s = serve(FileHeaders::default(), Vec::new(), RangeMode::Status(403));
+    let dir = Dir::new("expired");
+    let dest = dir.file("out.bin");
+    std::fs::write(part_of(&dest), &version(1)[..100_000]).unwrap();
+    let checkpoint = Checkpoint {
+        format: CHECKPOINT_FORMAT,
+        source: s.url("f.bin"),
+        total: LEN as u64,
+        etag: None,
+        last_modified: None,
+        content_encoding: None,
+        durable: vec![(0, 100_000)],
+    };
+    let result = download_resumable(
+        &curl_loop(),
+        &s.url("f.bin"),
+        &dest,
+        OPTIONS,
+        Some(&Resume::Checkpoint { checkpoint }),
+        &Control::default(),
+    );
+    let Err(DownloadError::Transfer(e)) = result else {
+        panic!("a 403 fails the download: {result:?}");
+    };
+    assert_eq!(
+        e.message,
+        "The download link expired (403). Get a fresh link from the browser."
+    );
+    assert!(!e.retryable);
+    assert_eq!(s.counters().gets, 1, "never retried");
+}

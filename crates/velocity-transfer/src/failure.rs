@@ -62,6 +62,19 @@ pub(crate) fn status_failure(status: u16) -> Option<TransferError> {
     Some(TransferError::new(class, Some(status), &message))
 }
 
+/// [`status_failure`] for an answer after a download's first: a `403` there means a signed link
+/// that worked has expired, which needs a fresh link from the browser (report section 5.3, #45).
+pub(crate) fn later_status_failure(status: u16) -> Option<TransferError> {
+    if status == 403 {
+        return Some(TransferError::new(
+            FailureClass::Permanent,
+            Some(403),
+            "The download link expired (403). Get a fresh link from the browser.",
+        ));
+    }
+    status_failure(status)
+}
+
 /// A libcurl-side failure.
 pub(crate) fn fetch_failure(e: FetchError) -> TransferError {
     match e {
