@@ -220,7 +220,9 @@ fn the_engine_allowance_holds_a_download_below_its_ask() {
 
 /// The report's ramp with shorter windows, so a test runs in seconds (#47).
 const FAST_RAMP: AdaptivePolicy = AdaptivePolicy {
-    min_window: Duration::from_millis(500),
+    // 1 s windows: each measurement averages twice the bytes of 500 ms ones, which misjudged
+    // gains on CI's slower runners.
+    min_window: Duration::from_secs(1),
     ..AdaptivePolicy::DEFAULT
 };
 
@@ -296,9 +298,11 @@ fn adaptive_connections_ramp_up_while_each_helps() {
 
 #[test]
 fn adaptive_connections_stop_below_the_cap_when_more_stop_helping() {
-    // Per-IP throttle: 1 MiB/s per connection but 3 MiB/s in all, so a 4th brings nothing.
+    // Per-IP throttle: 1 MiB/s per connection but 2.5 MiB/s in all, so 3 connections fill it and
+    // a 4th brings nothing. A cap of exactly 3 MiB/s let a 4th look like a 10% gain on CI, as 3
+    // never quite reach it while a new lease starts.
     let data = seeded_bytes(24 * MIB, 53);
-    let server = throttled_server(&data, MIB as u64, Some(3 * MIB as u64));
+    let server = throttled_server(&data, MIB as u64, Some(5 * MIB as u64 / 2));
     let dir = Dir::new("per-ip");
     let control = Arc::new(Control::default());
     let download = run(&server, &dir, ADAPTIVE, &control);
