@@ -12,3 +12,4 @@ serde_json.workspace = true
 dirs.workspace = true
 rusqlite.workspace = true
 rusqlite_migration.workspace = true
+jiff.workspace = true

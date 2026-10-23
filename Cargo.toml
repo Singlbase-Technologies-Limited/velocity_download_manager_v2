@@ -37,6 +37,9 @@ fastrand = "=2.5.0"
 sha2 = { version = "=0.11.1", default-features = false }
 sha1 = { version = "=0.11.0", default-features = false }
 md-5 = { version = "=0.11.0", default-features = false }
+# Local time for the download schedule (PO-approved on #50, 2026-10-23): the system time zone,
+# with summer time. Default features: the system zone, and on Windows a bundled time-zone database.
+jiff = "=0.2.38"
 # libcurl's C API, for crates/velocity-curl only (PO-approved on #35, 2026-10-22). Its bundled
 # build never runs: .cargo/config.toml overrides it, and velocity-curl links the Velocity-built
 # libcurl (docs/BUILDING_NATIVE.md). No default features, so it pulls in no openssl-sys.

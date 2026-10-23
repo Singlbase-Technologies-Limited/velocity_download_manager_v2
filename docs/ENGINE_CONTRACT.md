@@ -80,15 +80,16 @@ Tests check that every command, reply and event round-trips through JSON, and th
 
 ## The manager's side
 
-[`crates/velocity-core/src/manager.rs`](../crates/velocity-core/src/manager.rs) is the first slice of the manager. It:
+[`crates/velocity-core/src/manager.rs`](../crates/velocity-core/src/manager.rs) is the manager. It:
 
 - gives each download its own app id (`d-0001`), never the engine's id;
 - refuses torrent kinds and protocols missing from `capabilities()` with `Unsupported`, before calling the engine;
 - checks the record's status before sending a command, so a forbidden command never reaches the engine;
-- changes a record's status only when the engine reports it, never optimistically;
+- changes the status of a download the engine runs only when the engine reports it, never optimistically. A download the engine isn't running is Queued while it waits for a slot or the schedule, and Paused when the user paused it;
+- owns the queue (#50): it gives the engine a download only when a slot is free, at most `QueueSettings::max_concurrent_downloads` at once, in queue order (`move_download`), and runs scheduled downloads only while the window is open (`tick` reads the local time). `pause_all`, `resume_all` and new settings apply at once;
 - treats engine events as untrusted: it ignores events for unknown or forgotten transfers, and shows a torrent-only status from a direct engine as `Unknown`.
 
-Persistence (#26), the queue and settings (#30) build on it later.
+Loading the saved queue and records when the app starts is #58, and saving the queue settings is #30.
 
 ## The fake engine for tests
 
