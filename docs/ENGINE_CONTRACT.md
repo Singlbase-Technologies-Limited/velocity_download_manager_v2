@@ -2,13 +2,13 @@
 
 The manager talks to a direct-download engine (HTTP, FTP, SFTP, Metalink) only through the `DirectTransfer` contract in [`crates/velocity-core/src/transfer.rs`](../crates/velocity-core/src/transfer.rs) (#36, [ADR-0002](decisions/0002-engine-crate-layout.md)). The manager never sees libcurl types, engine-internal ids or aria2 vocabulary. Torrent operations (trackers, peers, file priorities, seeding, magnet metadata) are not part of this contract; they belong to the torrent bridge (research report section 4.2).
 
-Contract version: `TRANSFER_CONTRACT_VERSION = 6`. Raise it with any incompatible change to a command, reply, event or type. Version 2 added checkpoints (#43), version 3 the global speed limit (#49), version 4 the connection detail in snapshots (#47), version 5 the checkpoint's `contentEncoding` (#45), and version 6 integrity (#46): checked checksums with SHA-224 and SHA-384, `pieces` in the spec, and `verification` in snapshots.
+Contract version: `TRANSFER_CONTRACT_VERSION = 6`. Raise it with any incompatible change to a command, reply, event or type. Version 2 added checkpoints (#43), version 3 the global speed limit (#49), version 4 the connection detail in snapshots (#47), version 5 the checkpoint's `contentEncoding` (#45), version 6 integrity (#46): checked checksums with SHA-224 and SHA-384, `pieces` in the spec, and `verification` in snapshots, and version 7 the performance profile (#57): `set_engine_limits`, and capabilities per protocol.
 
 ## Commands
 
 | Method | Allowed when the transfer is | Result |
 |---|---|---|
-| `capabilities()` | always | What the engine really supports: protocols, live connection changes, validator-checked resume, Metalink, the connection cap per host |
+| `capabilities()` | always | What the engine really supports: each protocol with whether it is segmented, resumes, checks validators and uses HTTP/2; live connection changes; Metalink; and the connection cap per host in force |
 | `add(TransferSpec)` | — | A new `TransferId`. The transfer starts as Queued |
 | `pause(id)` | Queued, Connecting, Downloading, Retrying, Stalled or Verifying | Paused, progress kept |
 | `resume(id)` | Paused | Queued again, continuing from durable progress |
@@ -16,6 +16,7 @@ Contract version: `TRANSFER_CONTRACT_VERSION = 6`. Raise it with any incompatibl
 | `remove(id)` | finished: Completed, Failed or Removed | The engine forgets the transfer and its checkpoint, and sends `Removed`. Files are kept |
 | `set_limits(id, Limits)` | known transfer | The transfer's own speed limit (`None` = unlimited), applied while it runs. The lower of it and the global limit applies |
 | `set_global_limits(Limits)` | always | The limit all transfers share (`None` = unlimited), applied while they run. Its allowance goes to whichever transfers are active |
+| `set_engine_limits(EngineLimits)` | always | The performance profile's limits (#57, [SETTINGS.md](SETTINGS.md#performance)): `maxConnectionsPerHost` (1 to 16) and `minSegmentBytes` (1 MiB to 1 GiB), `InvalidInput` outside them. A lower cap holds running transfers back at once (`perHostCap`); the smallest piece applies to transfers that start after it. The engine starts at Balanced's 8 and 1 MiB, and the supervisor gives a restarted engine the limits its predecessor had |
 | `set_connections(id, n)` | known transfer | The count actually applied: at least 1, at most `max_connections_per_host`. It is the most the transfer may use, applied while it runs without a restart, or when a paused one resumes. Within it, the engine shares connections between transfers and ramps up while each helps; `connectionDetail` says what holds a transfer below it ([ENGINE_INTERNALS.md](ENGINE_INTERNALS.md#connections-47)) |
 | `snapshot()` | always | The state of every transfer the engine knows |
 | `subscribe()` | always | A receiver that gets every event from then on |
