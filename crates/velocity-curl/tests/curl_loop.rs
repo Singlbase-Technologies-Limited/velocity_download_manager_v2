@@ -421,3 +421,30 @@ fn a_changed_limit_applies_while_the_fetch_runs() {
         "took {secs:.2} s, expected {expected:.2} s"
     );
 }
+
+#[test]
+fn the_per_host_cap_queues_fetches_past_it() {
+    // #47: CURLMOPT_MAX_HOST_CONNECTIONS is the backstop under the engine's own budget. Each
+    // response takes about 200 ms, so the four would overlap without the cap.
+    let (s, data) = serve(
+        "a.bin",
+        200_000,
+        ServerOptions {
+            throttle_bytes_per_sec: Some(1_000_000),
+            ..ServerOptions::default()
+        },
+    );
+    let l = start_loop(LoopOptions {
+        max_connections_per_host: 2,
+        ..LoopOptions::default()
+    });
+    let fetches: Vec<Fetch> = (0..4)
+        .map(|_| l.fetch(FetchRequest::get(s.url("a.bin")), accept_all))
+        .collect();
+    for f in &fetches {
+        let o = collect(f, None);
+        assert!(o.done.is_ok(), "{:?}", o.done);
+        assert!(o.data == data);
+    }
+    assert_eq!(s.counters().peak_answering, 2);
+}

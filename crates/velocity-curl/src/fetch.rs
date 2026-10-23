@@ -205,15 +205,21 @@ pub struct LoopOptions {
     /// How long a fetch may take to connect (`CURLOPT_CONNECTTIMEOUT_MS`). There is no limit on
     /// the whole transfer: a large file may take hours, and stalls are caught by the downloader.
     pub connect_timeout: Duration,
+    /// The most connections open to one host name and port at once
+    /// (`CURLMOPT_MAX_HOST_CONNECTIONS`). Fetches past it wait for a free connection. The engine's
+    /// own budget keeps below it; this is the backstop (#47).
+    pub max_connections_per_host: usize,
 }
 
 impl Default for LoopOptions {
     fn default() -> Self {
         // Starting values, not requirements: the buffer from report section 5.5, measured later
-        // (#49); the connect timeout from V1's `connect_timeout_secs` (PO decision on #48).
+        // (#49); the connect timeout from V1's `connect_timeout_secs` (PO decision on #48); 8
+        // connections per host from report section 5.5 (PO decision on #47).
         LoopOptions {
             buffer_bytes_per_fetch: 1024 * 1024,
             connect_timeout: Duration::from_secs(30),
+            max_connections_per_host: 8,
         }
     }
 }
@@ -277,12 +283,13 @@ impl CurlLoop {
         let (waker_tx, waker_rx) = mpsc::channel();
         let thread = thread::Builder::new()
             .name("velocity-curl-multi".into())
-            .spawn(move || run_loop(inbox, waker_tx))
+            .spawn(move || run_loop(inbox, waker_tx, options))
             .map_err(|e| LoopError(e.to_string()))?;
         // The Multi is created on the loop thread (it isn't Send); only its waker comes back.
         let waker = waker_rx
             .recv()
-            .map_err(|_| LoopError("the loop thread ended while starting".into()))?;
+            .map_err(|_| LoopError("the loop thread ended while starting".into()))?
+            .map_err(LoopError)?;
         Ok(CurlLoop {
             commands,
             waker,
@@ -582,9 +589,17 @@ fn curl_error(e: &curl::Error) -> FetchError {
 }
 
 /// The loop thread: owns the `Multi`, starts and stops transfers, and reports how each ended.
-fn run_loop(inbox: Receiver<Command>, waker_tx: Sender<MultiWaker>) {
-    let multi = Multi::new();
-    if waker_tx.send(multi.waker()).is_err() {
+fn run_loop(
+    inbox: Receiver<Command>,
+    waker_tx: Sender<Result<MultiWaker, String>>,
+    options: LoopOptions,
+) {
+    let mut multi = Multi::new();
+    if let Err(e) = multi.set_max_host_connections(options.max_connections_per_host) {
+        let _ = waker_tx.send(Err(format!("CURLMOPT_MAX_HOST_CONNECTIONS: {e}")));
+        return;
+    }
+    if waker_tx.send(Ok(multi.waker())).is_err() {
         return;
     }
     let mut active: HashMap<usize, Easy2Handle<Collector>> = HashMap::new();
