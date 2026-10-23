@@ -5,6 +5,7 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::Receiver;
+use std::sync::{Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
 use velocity_core::domain::{
@@ -421,6 +422,7 @@ fn time_to_complete(events: &Receiver<TransferEvent>, id: TransferId) -> Duratio
 
 #[test]
 fn speed_limits_are_checked_and_applied_live() {
+    let _speed = one_speed_test_at_a_time();
     // #49: a limit in the spec paces the transfer, set_limits changes it while it runs, and the
     // global limit applies to every transfer. 512 KiB at 256 KiB/s takes about 2 s.
     let data = seeded_bytes(512 * 1024, 32);
@@ -510,6 +512,7 @@ fn wait_until(timeout: Duration, what: &str, done: impl Fn() -> bool) {
 
 #[test]
 fn connections_change_live_within_the_cap() {
+    let _speed = one_speed_test_at_a_time();
     // #47: 1 MiB/s per connection, so each added connection helps, and a 48 MiB file is still
     // running while the engine ramps up to a raised count, one connection per 2 s window.
     let data = seeded_bytes(48 << 20, 47);
@@ -634,6 +637,17 @@ fn all_completed(
     }
 }
 
+/// The tests that measure speed hold this for their whole run, so they run one at a time: at once,
+/// on a 2-vCPU machine, they slowed each other enough to fail (#154). The others still overlap
+/// them; a failed one doesn't block the rest.
+static SPEED_TESTS: Mutex<()> = Mutex::new(());
+
+fn one_speed_test_at_a_time() -> MutexGuard<'static, ()> {
+    SPEED_TESTS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
 /// Jain's fairness index: 1 when all are equal, 1/n when one gets everything.
 fn jain(xs: &[f64]) -> f64 {
     let sum: f64 = xs.iter().sum();
@@ -643,9 +657,11 @@ fn jain(xs: &[f64]) -> f64 {
 
 #[test]
 fn downloads_from_one_host_share_its_cap_fairly() {
+    let _speed = one_speed_test_at_a_time();
     // #47: 4 downloads each ask for 8 from one host with a cap of 8, so each is allowed 2. At
-    // 2 MiB/s per connection, a 24 MiB file takes about 6 s.
-    let data = seeded_bytes(24 << 20, 50);
+    // 2 MiB/s per connection, a 48 MiB file takes about 12 s, so each is still running when the
+    // last one has ramped up to its 2, however far apart they started (#154).
+    let data = seeded_bytes(48 << 20, 50);
     for (mode, mut engine) in engines() {
         let server = TestServer::start(
             vec![("f.bin".into(), data.clone())],
@@ -671,10 +687,14 @@ fn downloads_from_one_host_share_its_cap_fairly() {
         };
         let mut latest = HashMap::new();
         let deadline = Instant::now() + WAIT;
+        // Settled once each downloads on its 2: the allowance alone is set before a download has
+        // connected, and measuring then compared downloads still connecting (#154).
         while !ids.iter().all(|id| {
-            latest
-                .get(id)
-                .is_some_and(|s: &TransferSnapshot| s.progress.connection_detail == Some(shared))
+            latest.get(id).is_some_and(|s: &TransferSnapshot| {
+                s.progress.connection_detail == Some(shared)
+                    && s.status == DownloadStatus::Downloading
+                    && s.progress.connections == shared.allowed
+            })
         }) {
             assert!(Instant::now() < deadline, "{mode}: {latest:?}");
             latest_until(

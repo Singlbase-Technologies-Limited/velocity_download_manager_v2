@@ -104,6 +104,10 @@ fn downloads_with_several_connections_when_ranges_work() {
     // The probe finishes first, then the rest runs as four segments at once: five fetches, but
     // never more than four connections.
     assert_eq!(report.fetches, 5, "the probe, then four segments");
+    assert_eq!(
+        report.peak_requests, 4,
+        "never more requests open than connections"
+    );
     assert_eq!(s.counters().gets, 5);
     assert!(
         s.counters().connections <= 4,
