@@ -196,3 +196,17 @@ export function diagnosticsMarkdown(diagnostics) {
     '',
   ].join('\n');
 }
+
+/**
+ * Each job's report from its newest attempt. A re-run of failed jobs leaves the earlier attempts'
+ * reports in the run, so without this a job that passed when re-run still counted as failed. A
+ * report without an attempt (written before #46) counts as the first.
+ */
+export function latestReports(list) {
+  const latest = {};
+  for (const r of list) {
+    const kept = latest[r.job];
+    if (!kept || (r.attempt ?? 1) > (kept.attempt ?? 1)) latest[r.job] = r;
+  }
+  return latest;
+}
