@@ -95,10 +95,9 @@ fn reports_its_capabilities_honestly() {
             vec![DownloadKind::Http],
             "{mode}: only HTTP(S) in the prototype"
         );
-        assert!(
-            !c.live_connection_changes && !c.validator_resume && !c.metalink,
-            "{mode}"
-        );
+        // Live connection changes came with #47.
+        assert!(c.live_connection_changes, "{mode}");
+        assert!(!c.validator_resume && !c.metalink, "{mode}");
         assert!(c.max_connections_per_host >= 1, "{mode}");
     }
 }
@@ -475,5 +474,101 @@ fn speed_limits_are_checked_and_applied_live() {
         let mut bad = spec(server.url("f.bin"), dir.0.join("bad.bin"));
         bad.limits = too_low;
         assert_eq!(engine.add(bad), Err(ErrorCode::InvalidInput), "{mode}");
+    }
+}
+
+/// Waits for a snapshot of `id` that satisfies `done`.
+fn wait_for_snapshot(
+    events: &Receiver<TransferEvent>,
+    id: TransferId,
+    done: impl Fn(&TransferSnapshot) -> bool,
+) -> TransferSnapshot {
+    let deadline = Instant::now() + WAIT;
+    loop {
+        let left = deadline.saturating_duration_since(Instant::now());
+        match events.recv_timeout(left).expect("an event in time") {
+            TransferEvent::Changed { snapshot } if snapshot.id == id && done(&snapshot) => {
+                return snapshot
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Polls `done` every 20 ms; panics with `what` after `timeout`.
+fn wait_until(timeout: Duration, what: &str, done: impl Fn() -> bool) {
+    let deadline = Instant::now() + timeout;
+    while !done() {
+        assert!(Instant::now() < deadline, "timed out waiting until {what}");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+#[test]
+fn connections_change_live_within_the_cap() {
+    // #47: 4 MiB/s per connection, so a 32 MiB file is still running when the count changes.
+    let data = seeded_bytes(32 << 20, 47);
+    for (mode, mut engine) in engines() {
+        let server = TestServer::start(
+            vec![("f.bin".into(), data.clone())],
+            ServerOptions {
+                throttle_bytes_per_sec: Some(4 << 20),
+                ..ServerOptions::default()
+            },
+        );
+        let cap = engine.capabilities().max_connections_per_host;
+        let dir = Dir::new(&format!("connections-{}", mode.replace(' ', "-")));
+        let dest = dir.0.join("f.bin");
+        let events = engine.subscribe();
+        let mut one = spec(server.url("f.bin"), dest.clone());
+        one.max_connections = 1;
+        let id = engine.add(one).expect("add");
+
+        // The probe, then one range at a time.
+        wait_until(WAIT, "a range follows the probe", || {
+            server.counters().gets >= 2
+        });
+        assert_eq!(engine.set_connections(id, 4), Ok(4), "{mode}");
+        wait_until(Duration::from_secs(5), "4 responses run at once", || {
+            server.counters().answering == 4
+        });
+        wait_for_snapshot(&events, id, |s| s.progress.connections == 4);
+
+        assert_eq!(engine.set_connections(id, 1000), Ok(cap), "{mode}");
+        wait_for_snapshot(&events, id, |s| s.progress.connections == cap);
+        assert_eq!(
+            engine.set_connections(TransferId(999), 2),
+            Err(ErrorCode::NotFound),
+            "{mode}"
+        );
+
+        let done = wait_for(&events, id, |s| {
+            matches!(s, DownloadStatus::Completed | DownloadStatus::Failed)
+        });
+        assert_eq!(
+            done.status,
+            DownloadStatus::Completed,
+            "{mode}: {:?}",
+            done.error
+        );
+        assert!(
+            std::fs::read(&dest).unwrap() == data,
+            "{mode}: the file is the source"
+        );
+        let c = server.counters();
+        assert!(
+            c.peak_answering <= cap,
+            "{mode}: {} over the cap",
+            c.peak_answering
+        );
+        let from_zero = c
+            .ranges
+            .iter()
+            .filter(|r| r.as_deref().is_some_and(|r| r.starts_with("bytes=0-")))
+            .count();
+        assert_eq!(
+            from_zero, 1,
+            "{mode}: only the probe asked for byte 0: no restart"
+        );
     }
 }

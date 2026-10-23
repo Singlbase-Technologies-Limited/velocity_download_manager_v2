@@ -10,8 +10,8 @@
 //!   shows Retrying while it waits and Stalled while no bytes come.
 //! - **Speed limits** (#49): each transfer has its own limit, and all of them share the global
 //!   one; both can change while transfers run.
-//! - What it can't do yet is refused, not faked: live connection changes need #47, so that
-//!   command returns `Unsupported` and `capabilities()` says so.
+//! - **Connections** (#47): `set_connections` changes the count a transfer uses while it runs,
+//!   without restarting it; a paused transfer uses the new count when it resumes.
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -207,7 +207,6 @@ fn check_url(url: &str) -> Result<(), ErrorCode> {
 fn progress_reporter(
     shared: &Arc<Shared>,
     id: TransferId,
-    connections: u32,
 ) -> impl Fn(u64, Option<u64>) + Send + Sync + 'static {
     let shared = Arc::clone(shared);
     // (bytes at the last event, when it was sent)
@@ -226,13 +225,17 @@ fn progress_reporter(
             0
         };
         *last = (written, Instant::now());
-        update(&shared, id, |s| {
+        let mut state = lock(&shared.state);
+        if let Some(entry) = state.transfers.get_mut(&id) {
+            let s = &mut entry.snapshot;
             s.status = DownloadStatus::Downloading;
             s.progress.completed_bytes = written;
             s.progress.total_bytes = total;
             s.progress.download_speed_bps = speed;
-            s.progress.connections = connections;
-        });
+            // The count asked for, which may have changed since the worker started (#47).
+            s.progress.connections = entry.job.connections;
+            state.changed(id);
+        }
     }
 }
 
@@ -240,7 +243,7 @@ impl DirectTransfer for InProcessEngine {
     fn capabilities(&self) -> Capabilities {
         Capabilities {
             protocols: vec![DownloadKind::Http],
-            live_connection_changes: false,
+            live_connection_changes: true,
             validator_resume: false,
             metalink: false,
             max_connections_per_host: MAX_CONNECTIONS,
@@ -376,9 +379,18 @@ impl DirectTransfer for InProcessEngine {
         Ok(())
     }
 
-    fn set_connections(&mut self, id: TransferId, _connections: u32) -> Result<u32, ErrorCode> {
-        drop(self.known(id)?);
-        Err(ErrorCode::Unsupported)
+    fn set_connections(&mut self, id: TransferId, connections: u32) -> Result<u32, ErrorCode> {
+        let mut state = self.known(id)?;
+        let applied = connections.clamp(1, MAX_CONNECTIONS);
+        let entry = state.transfers.get_mut(&id).expect("known");
+        // A running worker sees it at its next step; a later worker starts with it.
+        entry.job.connections = applied;
+        entry.control.set_connections(applied);
+        if entry.running {
+            entry.snapshot.progress.connections = applied;
+            state.changed(id);
+        }
+        Ok(applied)
     }
 
     fn snapshot(&self) -> Result<Vec<TransferSnapshot>, ErrorCode> {
@@ -405,7 +417,7 @@ fn start_worker(shared: &Arc<Shared>, id: TransferId, resume: Option<Resume>) {
             return;
         };
         let reporter = Arc::clone(shared);
-        let control = Control::with_progress(progress_reporter(shared, id, entry.job.connections))
+        let control = Control::with_progress(progress_reporter(shared, id))
             .with_status(status_reporter(shared, id))
             .with_limits(vec![entry.limit.clone(), shared.global.clone()])
             .with_checkpoints(move |checkpoint| {
