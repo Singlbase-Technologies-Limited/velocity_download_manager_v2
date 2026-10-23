@@ -69,7 +69,7 @@ The UI and the native side share engine-neutral types: download records, statuse
 This is the target flow. The details are designed and tested in the issues named in each step.
 
 1. **Add.** The UI sends the request. The core validates the URL (scheme allowlist, IDN handling, credentials moved out of the URL), the destination and the name, then stores the record and queues it (#31, #50, #58, #67).
-2. **Start.** When the queue allows, the manager passes a transfer spec through the `DirectTransfer` contract (#36).
+2. **Start.** When the queue allows, the manager passes a transfer spec through the `DirectTransfer` contract (#36). The queue is the manager's own (#50): at most `maxConcurrentDownloads` run at once (3 by default), waiting downloads start in queue order, and scheduled ones run only while the schedule's window is open in local time. A paused or finished download frees its slot. The engine is never given a download before its turn, so it has no queue of its own.
 3. **Probe.** The first request is a bounded range request whose bytes are kept. The response shows whether the server supports ranges, without a wasted full transfer (#41).
 4. **Transfer.** Segments are assigned as exclusive leases. Free workers split the largest remaining lease. Every byte is accepted only from the lease that owns it (#42, #47). Retries, back-off, stall detection and speed limits apply per transfer and globally (#48, #49).
 5. **Checkpoint.** Progress becomes durable only after the data is flushed to disk, so a crash resumes from trusted coverage (#43). Every range request carries the strong validator in `If-Range`, so a file that changed on the server is never mixed with the old one (#45).

@@ -33,8 +33,10 @@ Terms used across V2's documents, issues and code, in alphabetical order. Where 
 | **Piece hashes** | Trusted digests of a file's fixed-size pieces, such as a Metalink file's `<pieces>`. Each piece is checked once it is covered, and a bad one is fetched again on its own (report §5.3; #46, #54) |
 | **PO** | The Product Owner, who decides scope, architecture, dependencies, licensing, security, repository settings, merges and releases |
 | **Probe** | The first request of a download: a bounded range request whose bytes are kept. Its response decides between ranges, sequential ranges and a single stream, without a wasted full transfer. V2 doesn't use HEAD as proof of range support (report §5.1; #41) |
+| **Queue** | The manager's order of unfinished downloads and its limit on how many run at once (3 by default). A download is given to the engine only on its turn; a paused or finished one frees its slot. `move_download` reorders the waiting ones (#50) |
 | **Ranges lost** | The state when a server that accepted ranges stops honouring them: a `200` for a later range, or a second *anomaly*. The rest comes as one stream that writes only the bytes not yet covered (report §5.1; #41) |
 | **Sequential ranges** | A server that honours ranges but gives no total (`bytes 0-b/*`). The rest is fetched as one open range at a time, without parallel segments, until a `416` marks the end (report §5.1; #41) |
+| **Schedule window** | The local-time window in which scheduled downloads run: from `startTime` on an enabled day to `stopTime`, which may fall on the next day. Opening starts them, closing pauses them (#50, V1's rules) |
 | **Sidecar** | A helper program shipped with the app and started by it, such as the child-process engine ([ADR-0012](decisions/0012-engine-child-process.md)) |
 | **Sparse file** | A file whose unwritten ranges take no space and are never filled with zeros. V2's part files are sparse on Windows, because NTFS otherwise zero-fills the gap in front of a write far into a new file (#42's measurement, #43) |
 | **Single stream** | Downloading over one connection from byte 0, used when the server ignores ranges (report §5.1) |
