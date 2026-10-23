@@ -9,6 +9,9 @@
 //!   its reader hasn't taken yet. When that is reached, the write callback pauses the transfer
 //!   (`CURL_WRITEFUNC_PAUSE`) instead of blocking or growing, and the reader resumes it once it has
 //!   caught up (report section 5.2; #49).
+//! - **Speed limits:** a fetch draws from the [`RateLimit`]s in its request. The write callback
+//!   pauses a transfer whose limit has no tokens, and the loop thread resumes it once all its
+//!   limits have tokens again (`rate.rs`, #49).
 //! - **Safe defaults:** only `http`, `https` and `ftp`, redirects only to `http` and `https`, an
 //!   explicitly empty proxy so `http_proxy` and the like are ignored (ADR-0008), no
 //!   `Accept-Encoding`, and TLS verification as libcurl's default (on).
@@ -24,6 +27,7 @@ use std::time::Duration;
 use curl::easy::{Easy2, Handler, WriteError};
 use curl::multi::{Easy2Handle, Multi, MultiWaker};
 
+use crate::rate::{self, RateLimit};
 use crate::runtime::Libcurl;
 
 /// Protocols a fetch may use, and the ones a redirect may lead to. SFTP joins when #53 builds it.
@@ -33,6 +37,8 @@ const MAX_REDIRECTS: u32 = 10;
 /// The longest the loop waits for sockets before checking commands and timers again. Commands also
 /// wake it at once; this only bounds a missed wakeup.
 const POLL_CAP: Duration = Duration::from_millis(100);
+/// How often the loop checks whether transfers paused by a speed limit may go on (#49).
+const RATE_CHECK: Duration = Duration::from_millis(10);
 /// `CURLOPT_PROTOCOLS_STR` and `CURLOPT_REDIR_PROTOCOLS_STR` (curl.h of curl 8.23.0:
 /// `CURLOPTTYPE_STRINGPOINT` + 318 and + 319). curl-sys 0.4.91 doesn't define them.
 const CURLOPT_PROTOCOLS_STR: curl_sys::CURLoption = 10_318;
@@ -44,18 +50,31 @@ pub struct FetchRequest {
     pub url: String,
     /// An inclusive byte range: `(start, None)` is `start-`.
     pub range: Option<(u64, Option<u64>)>,
+    /// The speed limits the fetch draws from, such as its download's and the global one (#49).
+    pub limits: Vec<RateLimit>,
 }
 
 impl FetchRequest {
     pub fn get(url: String) -> Self {
-        FetchRequest { url, range: None }
+        FetchRequest {
+            url,
+            range: None,
+            limits: Vec::new(),
+        }
     }
 
     pub fn range(url: String, start: u64, end: Option<u64>) -> Self {
         FetchRequest {
             url,
             range: Some((start, end)),
+            limits: Vec::new(),
         }
+    }
+
+    /// The same request, drawing from `limits`.
+    pub fn limited(mut self, limits: &[RateLimit]) -> Self {
+        self.limits = limits.to_vec();
+        self
     }
 }
 
@@ -216,6 +235,8 @@ struct Flow {
     buffered: AtomicUsize,
     peak: AtomicUsize,
     paused: AtomicBool,
+    /// Paused because a speed limit had no tokens; the loop thread resumes it (#49).
+    rate_paused: AtomicBool,
     /// The most body bytes the transfer may deliver ([`Fetch::stop_at`]).
     limit: AtomicU64,
 }
@@ -226,6 +247,7 @@ impl Default for Flow {
             buffered: AtomicUsize::new(0),
             peak: AtomicUsize::new(0),
             paused: AtomicBool::new(false),
+            rate_paused: AtomicBool::new(false),
             limit: AtomicU64::new(u64::MAX),
         }
     }
@@ -284,6 +306,7 @@ impl CurlLoop {
             gate: Box::new(gate),
             flow: Arc::clone(&flow),
             cap: self.options.buffer_bytes_per_fetch,
+            limits: request.limits.clone(),
             lines: Vec::new(),
             accepted: false,
             abort: None,
@@ -416,6 +439,8 @@ struct Collector {
     gate: Box<dyn Fn(&ResponseHead) -> Gate + Send>,
     flow: Arc<Flow>,
     cap: usize,
+    /// The speed limits this fetch draws from.
+    limits: Vec<RateLimit>,
     /// Header lines of the response being received.
     lines: Vec<String>,
     accepted: bool,
@@ -475,6 +500,11 @@ impl Handler for Collector {
         let buffered = self.flow.buffered.load(Ordering::Acquire);
         if take > 0 && buffered > 0 && buffered + take > self.cap {
             self.flow.paused.store(true, Ordering::Release);
+            return Err(WriteError::Pause);
+        }
+        if take > 0 && !rate::take(&self.limits, take) {
+            // Out of tokens: libcurl keeps these bytes and offers them again once resumed.
+            self.flow.rate_paused.store(true, Ordering::Release);
             return Err(WriteError::Pause);
         }
         if take > 0 {
@@ -617,6 +647,19 @@ fn run_loop(inbox: Receiver<Command>, waker_tx: Sender<MultiWaker>) {
         if active.is_empty() {
             continue;
         }
+        // Transfers paused by a speed limit go on once all their limits have tokens again.
+        let mut rate_paused = false;
+        for handle in active.values() {
+            let collector = handle.get_ref();
+            if collector.flow.rate_paused.load(Ordering::Acquire) {
+                if rate::ready(&collector.limits) {
+                    collector.flow.rate_paused.store(false, Ordering::Release);
+                    let _ = handle.unpause_write();
+                } else {
+                    rate_paused = true;
+                }
+            }
+        }
         let _ = multi.perform();
         let mut ended = Vec::new();
         multi.messages(|m| {
@@ -640,11 +683,12 @@ fn run_loop(inbox: Receiver<Command>, waker_tx: Sender<MultiWaker>) {
                 finish(&multi, handle, outcome);
             }
         }
+        let cap = if rate_paused { RATE_CHECK } else { POLL_CAP };
         let wait = multi
             .get_timeout()
             .ok()
             .flatten()
-            .map_or(POLL_CAP, |t| t.min(POLL_CAP));
+            .map_or(cap, |t| t.min(cap));
         let _ = multi.poll(&mut [], wait);
     }
 }

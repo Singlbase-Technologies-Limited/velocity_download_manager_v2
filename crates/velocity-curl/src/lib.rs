@@ -3,6 +3,7 @@
 
 mod capabilities;
 mod fetch;
+mod rate;
 mod runtime;
 
 pub use capabilities::{
@@ -13,4 +14,5 @@ pub use fetch::{
     CurlFailure, CurlLoop, Fetch, FetchError, FetchEvent, FetchLimit, FetchRequest, Gate,
     LoopError, LoopOptions, ResponseHead,
 };
+pub use rate::RateLimit;
 pub use runtime::{Libcurl, StartError};

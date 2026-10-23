@@ -4,7 +4,7 @@ use std::time::{Duration, Instant};
 
 use velocity_curl::{
     CurlFailure, CurlLoop, Fetch, FetchError, FetchEvent, FetchRequest, Gate, Libcurl, LoopOptions,
-    ResponseHead,
+    RateLimit, ResponseHead,
 };
 use velocity_test_http::{seeded_bytes, RangeMode, ServerOptions, TestServer};
 
@@ -375,4 +375,49 @@ fn a_refused_connection_is_a_connect_failure() {
         Err(FetchError::Curl { kind, .. }) => assert_eq!(kind, CurlFailure::Connect),
         other => panic!("expected a connect failure, got {other:?}"),
     }
+}
+
+/// Reads a whole fetch and returns how long it took.
+fn timed(fetch: &Fetch) -> (Outcome, Duration) {
+    let started = Instant::now();
+    let o = collect(fetch, None);
+    (o, started.elapsed())
+}
+
+#[test]
+fn a_limited_fetch_holds_its_speed() {
+    // #49: 2 MiB at 1 MiB/s takes about 2 s, within 10%.
+    let (s, data) = serve("a.bin", 2 << 20, ServerOptions::default());
+    let l = start_loop(LoopOptions::default());
+    let limit = RateLimit::new(Some(1 << 20));
+    let request = FetchRequest::get(s.url("a.bin")).limited(&[limit]);
+    let (o, took) = timed(&l.fetch(request, accept_all));
+    assert_eq!(o.done, Ok(()));
+    assert!(o.data == data, "the body differs from the source");
+    let secs = took.as_secs_f64();
+    assert!((1.8..=2.2).contains(&secs), "took {secs:.2} s");
+}
+
+#[test]
+fn a_changed_limit_applies_while_the_fetch_runs() {
+    // 256 KiB/s for 1 s, then 2 MiB/s for the remaining 2.75 MiB: about 2.4 s in all.
+    let (s, data) = serve("a.bin", 3 << 20, ServerOptions::default());
+    let l = start_loop(LoopOptions::default());
+    let limit = RateLimit::new(Some(256 << 10));
+    let request = FetchRequest::get(s.url("a.bin")).limited(std::slice::from_ref(&limit));
+    let fetch = l.fetch(request, accept_all);
+    let changer = std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_secs(1));
+        limit.set(Some(2 << 20));
+    });
+    let (o, took) = timed(&fetch);
+    changer.join().unwrap();
+    assert_eq!(o.done, Ok(()));
+    assert!(o.data == data, "the body differs from the source");
+    let expected = 1.0 + (3.0 - 0.25) / 2.0;
+    let secs = took.as_secs_f64();
+    assert!(
+        (secs - expected).abs() <= expected * 0.1,
+        "took {secs:.2} s, expected {expected:.2} s"
+    );
 }
