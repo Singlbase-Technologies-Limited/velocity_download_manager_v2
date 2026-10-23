@@ -95,6 +95,36 @@ fn sends_the_requested_range_and_no_accept_encoding() {
     assert_eq!(head.header("content-range"), Some("bytes 100-199/50000"));
     assert_eq!(o.data, &data[100..200]);
     assert_eq!(s.counters().ranges, vec![Some("bytes=100-199".to_owned())]);
+    assert_eq!(s.counters().if_ranges, vec![None]);
+}
+
+#[test]
+fn sends_if_range_with_the_range_when_given_a_validator() {
+    let (s, _) = serve("a.bin", 50_000, ServerOptions::default());
+    let l = start_loop(LoopOptions::default());
+    let validators = ["\"v1\"", "Sun, 06 Nov 1994 08:49:37 GMT"];
+    for validator in validators {
+        let request = FetchRequest::range(s.url("a.bin"), 100, Some(199))
+            .if_range(Some(validator.to_owned()));
+        assert_eq!(collect(&l.fetch(request, accept_all), None).done, Ok(()));
+    }
+    let c = s.counters();
+    assert_eq!(c.ranges, vec![Some("bytes=100-199".to_owned()); 2]);
+    assert_eq!(c.if_ranges, validators.map(|v| Some(v.to_owned())));
+}
+
+#[test]
+fn refuses_an_if_range_value_that_would_break_the_request() {
+    // A validator comes from a server: a line break in it must never add a header.
+    let (s, _) = serve("a.bin", 50_000, ServerOptions::default());
+    let l = start_loop(LoopOptions::default());
+    for bad in ["\"v1\"\r\nX-Injected: 1", "\"v1\"\n", "\"v\0\""] {
+        let request =
+            FetchRequest::range(s.url("a.bin"), 0, Some(9)).if_range(Some(bad.to_owned()));
+        let done = collect(&l.fetch(request, accept_all), None).done;
+        assert!(done.is_err(), "{bad:?}: {done:?}");
+    }
+    assert_eq!(s.counters().gets, 0, "nothing was sent");
 }
 
 #[test]

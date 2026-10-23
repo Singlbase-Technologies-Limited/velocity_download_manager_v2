@@ -24,7 +24,7 @@ use std::sync::Arc;
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
-use curl::easy::{Easy2, Handler, WriteError};
+use curl::easy::{Easy2, Handler, List, WriteError};
 use curl::multi::{Easy2Handle, Multi, MultiWaker};
 
 use crate::rate::{self, RateLimit};
@@ -55,6 +55,9 @@ pub struct FetchRequest {
     /// Opens a connection of its own, closed when the fetch ends, instead of sharing one as an
     /// HTTP/2 stream (`CURLOPT_FRESH_CONNECT`, `CURLOPT_FORBID_REUSE`; #47).
     pub own_connection: bool,
+    /// A strong validator sent as `If-Range` with the range (#45): a server whose file no longer
+    /// matches it answers the whole new file as `200` instead (RFC 9110 §13.1.5).
+    pub if_range: Option<String>,
 }
 
 impl FetchRequest {
@@ -64,16 +67,21 @@ impl FetchRequest {
             range: None,
             limits: Vec::new(),
             own_connection: false,
+            if_range: None,
         }
     }
 
     pub fn range(url: String, start: u64, end: Option<u64>) -> Self {
         FetchRequest {
-            url,
             range: Some((start, end)),
-            limits: Vec::new(),
-            own_connection: false,
+            ..FetchRequest::get(url)
         }
+    }
+
+    /// The same request, sending `validator` as `If-Range` (#45).
+    pub fn if_range(mut self, validator: Option<String>) -> Self {
+        self.if_range = validator;
+        self
     }
 
     /// The same request, on a connection of its own (#47).
@@ -575,6 +583,16 @@ fn configure(
             Some(end) => format!("{start}-{end}"),
             None => format!("{start}-"),
         })?;
+    }
+    if let Some(validator) = &request.if_range {
+        // The value comes from a server: a control character could end the header line and add
+        // another header, so such a value is refused and nothing is sent.
+        if validator.bytes().any(|b| b.is_ascii_control()) {
+            return Err(curl::Error::new(curl_sys::CURLE_BAD_FUNCTION_ARGUMENT));
+        }
+        let mut headers = List::new();
+        headers.append(&format!("If-Range: {validator}"))?;
+        easy.http_headers(headers)?;
     }
     easy.follow_location(true)?;
     easy.max_redirections(MAX_REDIRECTS)?;

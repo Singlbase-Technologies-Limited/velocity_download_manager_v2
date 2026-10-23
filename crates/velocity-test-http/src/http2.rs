@@ -153,6 +153,11 @@ async fn serve_stream(
         .get(header::RANGE)
         .and_then(|v| v.to_str().ok())
         .map(str::to_owned);
+    let if_range = request
+        .headers()
+        .get(header::IF_RANGE)
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_owned);
     {
         let mut c = counters.lock().unwrap();
         if head {
@@ -160,6 +165,7 @@ async fn serve_stream(
         } else {
             c.gets += 1;
             c.ranges.push(range_header.clone());
+            c.if_ranges.push(if_range.clone());
             c.request_times.push(Instant::now());
         }
     }

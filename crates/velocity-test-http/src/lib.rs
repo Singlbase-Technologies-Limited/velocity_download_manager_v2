@@ -101,6 +101,8 @@ pub struct Counters {
     pub body_bytes_sent: u64,
     /// The `Range` header of each GET, in arrival order (`None` without one).
     pub ranges: Vec<Option<String>>,
+    /// The `If-Range` header of each GET, in the same order (#45).
+    pub if_ranges: Vec<Option<String>>,
     /// Responses that carried a limited misbehaviour, such as [`RangeMode::MalformedLaterRanges`].
     pub faults: u32,
     /// Whether the response that [`ServerOptions::throttle_first_later_range`] slows was sent.
@@ -452,6 +454,7 @@ fn serve_connection(
             } else {
                 c.gets += 1;
                 c.ranges.push(req.header("Range").map(str::to_owned));
+                c.if_ranges.push(req.header("If-Range").map(str::to_owned));
                 c.request_times.push(Instant::now());
             }
         }
