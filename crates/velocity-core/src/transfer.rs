@@ -125,16 +125,18 @@ impl PieceHashes {
     /// The fewest bytes a piece may have: a smaller one would make the list larger than the file
     /// it describes. Metalink pieces are typically 256 KiB or more.
     pub const MIN_LENGTH: u64 = 1024;
-    /// The most pieces a list may have: 16 TiB in 16 MiB pieces, about 64 MiB of SHA-512 digests.
-    pub const MAX_PIECES: usize = 1 << 20;
+    /// The most hexadecimal characters a list's digests may have in all: 2 MiB, so a spec that
+    /// carries them fits in one message to the engine's child process (4 MiB, ENGINE_PROTOCOL.md)
+    /// with room for the rest. 32,768 SHA-256 digests: 32 GiB of file in 1 MiB pieces.
+    pub const MAX_HEX_BYTES: usize = 2 << 20;
 
     /// The list with its digests in lowercase, or `InvalidInput` when a digest isn't hexadecimal
     /// or doesn't have its algorithm's length, the pieces are smaller than [`Self::MIN_LENGTH`],
-    /// or there are none or more than [`Self::MAX_PIECES`].
+    /// or there are none, or more digests than [`Self::MAX_HEX_BYTES`] holds.
     pub fn normalized(&self) -> Result<PieceHashes, ErrorCode> {
         if self.length < Self::MIN_LENGTH
             || self.hex.is_empty()
-            || self.hex.len() > Self::MAX_PIECES
+            || self.hex.len() > Self::MAX_HEX_BYTES / self.algorithm.hex_len()
         {
             return Err(ErrorCode::InvalidInput);
         }
@@ -523,7 +525,10 @@ mod tests {
             ("no pieces", pieces(1024, Vec::new())),
             (
                 "too many pieces",
-                pieces(1024, vec!["ab".repeat(32); PieceHashes::MAX_PIECES + 1]),
+                pieces(
+                    1024,
+                    vec!["ab".repeat(32); PieceHashes::MAX_HEX_BYTES / 64 + 1],
+                ),
             ),
         ] {
             assert_eq!(bad.normalized(), Err(ErrorCode::InvalidInput), "{why}");
