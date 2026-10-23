@@ -2,7 +2,7 @@
 
 The manager talks to a direct-download engine (HTTP, FTP, SFTP, Metalink) only through the `DirectTransfer` contract in [`crates/velocity-core/src/transfer.rs`](../crates/velocity-core/src/transfer.rs) (#36, [ADR-0002](decisions/0002-engine-crate-layout.md)). The manager never sees libcurl types, engine-internal ids or aria2 vocabulary. Torrent operations (trackers, peers, file priorities, seeding, magnet metadata) are not part of this contract; they belong to the torrent bridge (research report section 4.2).
 
-Contract version: `TRANSFER_CONTRACT_VERSION = 3`. Raise it with any incompatible change to a command, reply, event or type. Version 2 added checkpoints (#43), and version 3 the global speed limit (#49).
+Contract version: `TRANSFER_CONTRACT_VERSION = 4`. Raise it with any incompatible change to a command, reply, event or type. Version 2 added checkpoints (#43), version 3 the global speed limit (#49), and version 4 the connection detail in snapshots (#47).
 
 ## Commands
 

@@ -14,6 +14,11 @@
   "kind": "http",
   "progress": {
     "completedBytes": 1048576,
+    "connectionDetail": {
+      "allowed": 4,
+      "limitedBy": "serverThrottling",
+      "requested": 8
+    },
     "connections": 0,
     "downloadSpeedBps": 0,
     "totalBytes": 4194304,

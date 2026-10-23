@@ -5,7 +5,7 @@
 import { z } from 'zod';
 
 /** Must equal `velocity_core::COMMAND_API_VERSION`; the app refuses to start on a mismatch. */
-export const COMMAND_API_VERSION = 1;
+export const COMMAND_API_VERSION = 2;
 
 const bytes = z.number().int().nonnegative();
 
@@ -40,12 +40,23 @@ export const TransferErrorSchema = z.strictObject({
 });
 export type TransferError = z.infer<typeof TransferErrorSchema>;
 
+export const ConnectionLimitSchema = z.enum(['perHostCap', 'sharedBudget', 'serverThrottling', 'fileSize']);
+export type ConnectionLimit = z.infer<typeof ConnectionLimitSchema>;
+
+export const ConnectionDetailSchema = z.strictObject({
+  requested: z.number().int().positive(),
+  allowed: z.number().int().positive(),
+  limitedBy: ConnectionLimitSchema.nullable(),
+});
+export type ConnectionDetail = z.infer<typeof ConnectionDetailSchema>;
+
 export const ProgressSchema = z.strictObject({
   completedBytes: bytes,
   totalBytes: bytes.nullable(),
   downloadSpeedBps: bytes,
   uploadSpeedBps: bytes,
   connections: z.number().int().nonnegative(),
+  connectionDetail: ConnectionDetailSchema.nullable(),
 });
 export type Progress = z.infer<typeof ProgressSchema>;
 

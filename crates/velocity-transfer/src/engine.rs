@@ -275,6 +275,7 @@ impl DirectTransfer for InProcessEngine {
                 download_speed_bps: 0,
                 upload_speed_bps: 0,
                 connections: 0,
+                connection_detail: None,
             },
             wasted_bytes: 0,
             error: None,

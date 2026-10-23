@@ -19,7 +19,8 @@ use std::sync::mpsc::Receiver;
 /// incompatibly; an engine in a child process reports the version it speaks (#39).
 /// Version 2 (#43) added checkpoints: [`TransferSpec::resume`] and [`TransferEvent::Checkpoint`].
 /// Version 3 (#49) added the global speed limit: [`DirectTransfer::set_global_limits`].
-pub const TRANSFER_CONTRACT_VERSION: u32 = 3;
+/// Version 4 (#47) added [`crate::domain::Progress::connection_detail`] to snapshots.
+pub const TRANSFER_CONTRACT_VERSION: u32 = 4;
 
 /// An engine's id for one transfer. Assigned by the engine, never reused, and never shown as the
 /// app's download id.
@@ -371,6 +372,7 @@ mod tests {
                 download_speed_bps: 0,
                 upload_speed_bps: 0,
                 connections: 0,
+                connection_detail: None,
             },
             wasted_bytes: 3,
             error: Some(TransferError::new(

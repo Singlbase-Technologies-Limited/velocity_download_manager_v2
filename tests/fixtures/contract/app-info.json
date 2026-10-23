@@ -1,5 +1,5 @@
 {
-  "commandApiVersion": 1,
+  "commandApiVersion": 2,
   "name": "Velocity Download Manager (dev)",
   "version": "0.1.0"
 }

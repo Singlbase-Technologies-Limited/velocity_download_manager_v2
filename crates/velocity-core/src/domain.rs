@@ -112,7 +112,38 @@ pub struct Progress {
     pub total_bytes: Option<u64>,
     pub download_speed_bps: u64,
     pub upload_speed_bps: u64,
+    /// Connections in use now.
     pub connections: u32,
+    /// How a direct download's connection count came about (#47). `None` for torrents, and while
+    /// no engine reports it.
+    pub connection_detail: Option<ConnectionDetail>,
+}
+
+/// A direct download's connections: what was asked for, what the engine allows, and what holds
+/// it back (#47, V1 #44's semantics). The connections in use now are [`Progress::connections`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ConnectionDetail {
+    /// What the user or the download's settings asked for.
+    pub requested: u32,
+    /// What the engine allows now: at least 1, and never more than `requested`.
+    pub allowed: u32,
+    /// Why `allowed` is below `requested`; `None` when it isn't.
+    pub limited_by: Option<ConnectionLimit>,
+}
+
+/// What holds a direct download's connections below what it asked for (#47).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ConnectionLimit {
+    /// The most connections the engine opens to one host.
+    PerHostCap,
+    /// The connections shared by all downloads; the others have their fair share.
+    SharedBudget,
+    /// The server answered `429` or `503`, so the download uses fewer connections.
+    ServerThrottling,
+    /// The rest of the file is too small to split between more connections.
+    FileSize,
 }
 
 /// One download as the UI sees it.
@@ -251,6 +282,11 @@ impl DownloadRecord {
                 download_speed_bps: 0,
                 upload_speed_bps: 0,
                 connections: 0,
+                connection_detail: Some(ConnectionDetail {
+                    requested: 8,
+                    allowed: 4,
+                    limited_by: Some(ConnectionLimit::ServerThrottling),
+                }),
             },
             error: Some(TransferError::new(
                 FailureClass::Throttled,
@@ -351,6 +387,32 @@ mod tests {
         assert_eq!(
             json,
             r#"{"class":"throttled","httpStatus":503,"message":"Service unavailable","retryable":true}"#
+        );
+    }
+
+    #[test]
+    fn connection_detail_serialises_in_camel_case() {
+        let detail = ConnectionDetail {
+            requested: 8,
+            allowed: 4,
+            limited_by: Some(ConnectionLimit::SharedBudget),
+        };
+        assert_eq!(
+            serde_json::to_string(&detail).unwrap(),
+            r#"{"requested":8,"allowed":4,"limitedBy":"sharedBudget"}"#
+        );
+        let limits: Vec<_> = [
+            ConnectionLimit::PerHostCap,
+            ConnectionLimit::SharedBudget,
+            ConnectionLimit::ServerThrottling,
+            ConnectionLimit::FileSize,
+        ]
+        .iter()
+        .map(|l| serde_json::to_value(l).unwrap())
+        .collect();
+        assert_eq!(
+            limits,
+            ["perHostCap", "sharedBudget", "serverThrottling", "fileSize"]
         );
     }
 
