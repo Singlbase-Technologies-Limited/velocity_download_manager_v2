@@ -2,7 +2,7 @@
 
 The manager talks to a direct-download engine (HTTP, FTP, SFTP, Metalink) only through the `DirectTransfer` contract in [`crates/velocity-core/src/transfer.rs`](../crates/velocity-core/src/transfer.rs) (#36, [ADR-0002](decisions/0002-engine-crate-layout.md)). The manager never sees libcurl types, engine-internal ids or aria2 vocabulary. Torrent operations (trackers, peers, file priorities, seeding, magnet metadata) are not part of this contract; they belong to the torrent bridge (research report section 4.2).
 
-Contract version: `TRANSFER_CONTRACT_VERSION = 2`. Raise it with any incompatible change to a command, reply, event or type. Version 2 added checkpoints (#43).
+Contract version: `TRANSFER_CONTRACT_VERSION = 3`. Raise it with any incompatible change to a command, reply, event or type. Version 2 added checkpoints (#43), and version 3 the global speed limit (#49).
 
 ## Commands
 
@@ -14,12 +14,13 @@ Contract version: `TRANSFER_CONTRACT_VERSION = 2`. Raise it with any incompatibl
 | `resume(id)` | Paused | Queued again, continuing from durable progress |
 | `cancel(id)` | unfinished (any of the above, or Paused) | Removed. The part file is discarded; the destination file is never touched |
 | `remove(id)` | finished: Completed, Failed or Removed | The engine forgets the transfer and its checkpoint, and sends `Removed`. Files are kept |
-| `set_limits(id, Limits)` | known transfer | The speed limit (`None` = unlimited) |
+| `set_limits(id, Limits)` | known transfer | The transfer's own speed limit (`None` = unlimited), applied while it runs. The lower of it and the global limit applies |
+| `set_global_limits(Limits)` | always | The limit all transfers share (`None` = unlimited), applied while they run. Its allowance goes to whichever transfers are active |
 | `set_connections(id, n)` | known transfer | The count actually applied: at least 1, at most `max_connections_per_host` |
 | `snapshot()` | always | The state of every transfer the engine knows |
 | `subscribe()` | always | A receiver that gets every event from then on |
 
-Commands fail with an `ErrorCode` ([CONTRACTS.md](CONTRACTS.md)): `NotFound` for an unknown id, `InvalidState` when the status doesn't allow the command, `EngineUnavailable` when the engine can't be reached. **A failed download is not a failed command:** it arrives as an event whose snapshot has status Failed and a `TransferError { class, httpStatus, message, retryable }`.
+A limit below 1 KiB/s (`Limits::MIN_BPS`), in a spec or a command, is refused with `InvalidInput`. Commands fail with an `ErrorCode` ([CONTRACTS.md](CONTRACTS.md)): `NotFound` for an unknown id, `InvalidState` when the status doesn't allow the command, `EngineUnavailable` when the engine can't be reached. **A failed download is not a failed command:** it arrives as an event whose snapshot has status Failed and a `TransferError { class, httpStatus, message, retryable }`.
 
 ## Types
 

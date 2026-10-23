@@ -12,6 +12,7 @@
 //!   leave the engine unavailable until [`SupervisedEngine::restart`] is called, the "Restart
 //!   transfer engine" action. An engine that is missing or doesn't match the app is unavailable
 //!   at once, since restarting it can't help.
+//! - **Limits:** the global speed limit last set is given to every new engine (#49).
 //! - **Ids:** a new engine starts its ids after the highest one an earlier engine assigned, so an
 //!   id never names two transfers. The supervisor answers for the transfers an earlier engine had
 //!   until they are removed.
@@ -120,6 +121,8 @@ struct State {
     /// answers for them until they are removed.
     orphans: BTreeMap<TransferId, TransferSnapshot>,
     highest_id: u64,
+    /// The global speed limit last set, given to every new engine (#49).
+    global_limits: Limits,
     crashes: VecDeque<Instant>,
     subscribers: Vec<Sender<TransferEvent>>,
     health_subscribers: Vec<Sender<EngineHealth>>,
@@ -207,6 +210,13 @@ impl Shared {
 
     /// Makes `engine` the running engine, and forwards its events until its stdout ends.
     fn install(self: &Arc<Self>, engine: ChildProcessEngine) -> Result<(), ErrorCode> {
+        // A new engine starts unlimited: it gets the global limit its predecessor had.
+        let global = self.state().global_limits;
+        if global != Limits::default() {
+            engine
+                .set_global_limits(global)
+                .map_err(|_| ErrorCode::EngineStartFailed)?;
+        }
         let events = engine.subscribe();
         let capabilities = engine.capabilities();
         let engine = Arc::new(engine);
@@ -420,6 +430,7 @@ impl SupervisedEngine {
                 current: BTreeMap::new(),
                 orphans: BTreeMap::new(),
                 highest_id: 0,
+                global_limits: Limits::default(),
                 crashes: VecDeque::new(),
                 subscribers: Vec::new(),
                 health_subscribers: Vec::new(),
@@ -528,6 +539,12 @@ impl DirectTransfer for SupervisedEngine {
 
     fn set_connections(&mut self, id: TransferId, connections: u32) -> Result<u32, ErrorCode> {
         self.running(id)?.set_connections(id, connections)
+    }
+
+    fn set_global_limits(&mut self, limits: Limits) -> Result<(), ErrorCode> {
+        self.engine()?.0.set_global_limits(limits)?;
+        self.shared.state().global_limits = limits;
+        Ok(())
     }
 
     fn snapshot(&self) -> Result<Vec<TransferSnapshot>, ErrorCode> {

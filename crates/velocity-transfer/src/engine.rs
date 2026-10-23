@@ -8,8 +8,10 @@
 //! - **Retries** (#48): the downloader retries its own requests; a download that still fails in a
 //!   way worth retrying is started again by its worker, up to the policy's limit, and the snapshot
 //!   shows Retrying while it waits and Stalled while no bytes come.
-//! - What it can't do yet is refused, not faked: limits need #49, and live connection changes need
-//!   #47, so those commands return `Unsupported` and `capabilities()` says so.
+//! - **Speed limits** (#49): each transfer has its own limit, and all of them share the global
+//!   one; both can change while transfers run.
+//! - What it can't do yet is refused, not faked: live connection changes need #47, so that
+//!   command returns `Unsupported` and `capabilities()` says so.
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -25,7 +27,7 @@ use velocity_core::transfer::{
     Checkpoint, DirectTransfer, Limits, Resume, TransferEvent, TransferId, TransferSnapshot,
     TransferSpec,
 };
-use velocity_curl::{CurlLoop, Libcurl, LoopOptions};
+use velocity_curl::{CurlLoop, Libcurl, LoopOptions, RateLimit};
 
 use crate::download::{
     download_resumable, part_path, wait_out, Cadence, Control, DownloadError, DownloadOptions,
@@ -50,6 +52,8 @@ struct Shared {
     state: Mutex<State>,
     /// When downloads retry and wait (#48); the user's settings once #30 passes them.
     retry: RetryPolicy,
+    /// The limit all transfers share (#49).
+    global: RateLimit,
 }
 
 #[derive(Default)]
@@ -63,6 +67,8 @@ struct Entry {
     snapshot: TransferSnapshot,
     control: Arc<Control>,
     job: Job,
+    /// This transfer's own speed limit; it outlives its workers (#49).
+    limit: RateLimit,
     /// The last checkpoint the worker sent, to resume from after a pause.
     last_checkpoint: Option<Checkpoint>,
     /// A worker thread is running the download.
@@ -135,6 +141,7 @@ impl InProcessEngine {
                     ..State::default()
                 }),
                 retry,
+                global: RateLimit::new(None),
             }),
         })
     }
@@ -246,13 +253,10 @@ impl DirectTransfer for InProcessEngine {
         if spec.destination.as_os_str().is_empty() {
             return Err(ErrorCode::InvalidPath);
         }
+        spec.limits.check()?;
         // What the prototype can't honour is refused, never silently dropped: credentials and
-        // headers (#70), checksums (#46) and limits (#49).
-        if spec.credentials.is_some()
-            || !spec.headers.is_empty()
-            || spec.checksum.is_some()
-            || spec.limits != Limits::default()
-        {
+        // headers (#70), and checksums (#46).
+        if spec.credentials.is_some() || !spec.headers.is_empty() || spec.checksum.is_some() {
             return Err(ErrorCode::Unsupported);
         }
         let connections = spec.max_connections.clamp(1, MAX_CONNECTIONS);
@@ -282,6 +286,7 @@ impl DirectTransfer for InProcessEngine {
                     destination: spec.destination.clone(),
                     connections,
                 },
+                limit: RateLimit::new(spec.limits.max_download_bps),
                 last_checkpoint: None,
                 running: false,
             },
@@ -357,9 +362,18 @@ impl DirectTransfer for InProcessEngine {
         Ok(())
     }
 
-    fn set_limits(&mut self, id: TransferId, _limits: Limits) -> Result<(), ErrorCode> {
-        drop(self.known(id)?);
-        Err(ErrorCode::Unsupported)
+    fn set_limits(&mut self, id: TransferId, limits: Limits) -> Result<(), ErrorCode> {
+        let state = self.known(id)?;
+        limits.check()?;
+        // A running worker's requests see it at their next write.
+        state.transfers[&id].limit.set(limits.max_download_bps);
+        Ok(())
+    }
+
+    fn set_global_limits(&mut self, limits: Limits) -> Result<(), ErrorCode> {
+        limits.check()?;
+        self.shared.global.set(limits.max_download_bps);
+        Ok(())
     }
 
     fn set_connections(&mut self, id: TransferId, _connections: u32) -> Result<u32, ErrorCode> {
@@ -393,6 +407,7 @@ fn start_worker(shared: &Arc<Shared>, id: TransferId, resume: Option<Resume>) {
         let reporter = Arc::clone(shared);
         let control = Control::with_progress(progress_reporter(shared, id, entry.job.connections))
             .with_status(status_reporter(shared, id))
+            .with_limits(vec![entry.limit.clone(), shared.global.clone()])
             .with_checkpoints(move |checkpoint| {
                 let mut state = lock(&reporter.state);
                 if let Some(entry) = state.transfers.get_mut(&id) {

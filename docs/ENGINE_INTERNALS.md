@@ -128,6 +128,43 @@ All of them are starting values to tune by measurement, not requirements (PO dec
 
 `Control::with_status` reports Retrying while a download waits, Stalled while no byte comes, and Downloading when bytes come again, each change once. The engine puts them in the snapshot. An engine that hangs without exiting is the supervisor's ([ENGINE_PROTOCOL.md](ENGINE_PROTOCOL.md#supervisor)).
 
+## Speed limits and back-pressure (#49)
+
+### Speed limits
+
+- **Two limits per transfer:** each transfer has its own limit (`TransferSpec::limits`, changed by `set_limits`), and every transfer also draws from the engine's global limit (`set_global_limits`). The lower of the two applies.
+- **Sharing:** whatever the global allowance a transfer doesn't use goes to the others. With a global 4 MiB/s and one download held to 1 MiB/s, another download gets the remaining 3 MiB/s.
+- **Token buckets** ([`rate.rs`](../crates/velocity-curl/src/rate.rs)): each limit is a token bucket, `RateLimit`. It refills at its rate, and keeps at most 250 ms of unused allowance (a starting value).
+  - Each request of a download draws from its download's bucket and the global one.
+  - When a bucket has no tokens, libcurl's write callback pauses the transfer (`CURL_WRITEFUNC_PAUSE`), and libcurl keeps the bytes.
+  - The libcurl loop thread checks every 10 ms, and resumes the transfer once all its buckets have tokens again.
+  - A write is taken whole while a bucket has any tokens. So a bucket owes at most one write (16 KiB), and later writes wait until it is paid back.
+- **Fair turns:** resuming a transfer hands it libcurl's kept bytes at once. So the order of resuming turns each round, and no transfer always comes last to a shared bucket.
+- **Live changes:** a limit's rate changes at once. The next write sees it, so a change applies within one loop round (10 ms).
+- **Why not libcurl's own cap:** `CURLOPT_MAX_RECV_SPEED_LARGE` is "not an exact science" by its own documentation, and its documentation doesn't say whether it can change during a transfer (report open question 3).
+- **The smallest limit is 1 KiB/s,** V1's unit. A lower one is refused with `INVALID_INPUT`. A low limit is bursty, as data arrives in writes of up to 16 KiB, but its average holds.
+- **HTTP/2:** a paused stream may still receive up to one stream window of data, which libcurl keeps (curl_easy_pause documentation). The HTTP/2 policy is #47.
+- **After a restart:** the supervisor gives every new engine the global limit the old one had. A transfer's own limit is in its spec, which the app passes again when it resumes the transfer.
+
+**Measured** on the local test server (Windows 11, `tests/limits.rs`):
+
+| Case | Expected | Measured |
+|---|---|---|
+| Global 4 MiB/s, 3 downloads, over 10 s, 8 runs | 4.00 MiB/s | 3.997 to 4.003 MiB/s |
+| The same over 30 s, by hand | 4.00 MiB/s | 4.000 MiB/s |
+| 0.5 MiB/s raised to 4 MiB/s, the 2 s after the change, 5 runs | 4.00 MiB/s | 3.975 to 3.983 MiB/s |
+| 1 MiB/s download under a global 4 MiB/s, 5 runs | 1.00 MiB/s | 1.022 to 1.031 MiB/s |
+| The other download, 5 runs | 3.00 MiB/s | 2.972 to 2.978 MiB/s |
+
+### Back-pressure
+
+A slow disk slows the network instead of growing memory. This was built in #37 and #38 and is now measured:
+
+- **Per request:** each request holds at most `LoopOptions::buffer_bytes_per_fetch` (1 MiB) for the writer. When that buffer is full, libcurl's write callback pauses the transfer, and the reader resumes it once half is free.
+- **The queue:** at most 2 events per connection wait between the requests and the writer.
+- **Measured:** `DownloadReport::peak_buffered_bytes` reports the most one request held at a time. The slow-writer test stalls the writer for 2 s, and checks that each buffer filled and never went past its cap by more than one 16 KiB write.
+- **The kernel's share:** the sockets' own buffers belong to the kernel. They hold more, depending on the system, and on Windows they kept growing during a pause (#147, #150). Only Velocity's own buffers are checked exactly.
+
 ## Persistence and recovery (#43)
 
 A download survives a pause, an app restart, an engine crash and a power loss without a corrupt or falsely finished file. The rules are in the [persistence rule](../.claude/rules/persistence.md); the PO decisions are on #43.
@@ -248,7 +285,8 @@ Run it with `cargo run --release -p velocity-transfer --example high_offset_writ
   - a cancel during a wait ends at once.
 
   `tests/engine_retries.rs` covers starting a whole download again, giving up after the restarts, never restarting a permanent failure, a cancel during the wait, and Stalled in the snapshot. `tests/supervisor.rs` freezes a real engine process and checks it is restarted.
-- **Unit tests:** the tests in `probe.rs`, `failure.rs`, `retry.rs`, `scheduler.rs`, `files.rs` and the libcurl layer's `tests/curl_loop.rs` (`FetchLimit`) cover each rule on its own.
+- **Limit fixtures:** `tests/limits.rs` measures the bytes written over a window: a global 4 MiB/s across 3 downloads, a change taking effect within 2 s, and a download limit under a higher global one, each within ±10% over 10 s. `VELOCITY_LIMIT_SECONDS=30 cargo test -p velocity-transfer --test limits -- --nocapture` runs the 30 s window of #49 by hand (PO decision on #49). `tests/engine_contract.rs` checks limits in both engine modes, and `tests/supervisor.rs` checks that the global limit survives a restart.
+- **Unit tests:** the tests in `probe.rs`, `failure.rs`, `retry.rs`, the libcurl layer's `rate.rs`, `scheduler.rs`, `files.rs` and the libcurl layer's `tests/curl_loop.rs` (`FetchLimit`) cover each rule on its own.
 
 ## Not yet
 
