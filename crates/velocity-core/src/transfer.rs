@@ -180,6 +180,51 @@ impl Limits {
     }
 }
 
+/// How far an engine may go for every transfer it runs (#57): set by the performance profile
+/// ([`crate::performance::PerformanceSettings::engine_limits`]). Within them the engine still
+/// adds connections one at a time, only while each helps (#47).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct EngineLimits {
+    /// The most connections to one server, for one download and for all of them together.
+    pub max_connections_per_host: u32,
+    /// The smallest piece a download is split into.
+    pub min_segment_bytes: u64,
+}
+
+impl EngineLimits {
+    /// The most connections to one server any profile allows (V1's Maximum).
+    pub const MAX_CONNECTIONS_PER_HOST: u32 = 16;
+    /// The smallest and largest pieces a profile may set: 1 MiB to 1 GiB.
+    pub const MIN_SEGMENT_BYTES: u64 = 1 << 20;
+    pub const MAX_SEGMENT_BYTES: u64 = 1 << 30;
+    /// Today's engine values, and the Balanced profile's: 8 per server, 1 MiB pieces.
+    pub const DEFAULT: EngineLimits = EngineLimits {
+        max_connections_per_host: 8,
+        min_segment_bytes: 1 << 20,
+    };
+
+    /// `InvalidInput` unless 1 to [`Self::MAX_CONNECTIONS_PER_HOST`] connections per server and a
+    /// smallest piece from [`Self::MIN_SEGMENT_BYTES`] to [`Self::MAX_SEGMENT_BYTES`].
+    pub fn check(&self) -> Result<(), ErrorCode> {
+        let hosts = 1..=Self::MAX_CONNECTIONS_PER_HOST;
+        let segments = Self::MIN_SEGMENT_BYTES..=Self::MAX_SEGMENT_BYTES;
+        if hosts.contains(&self.max_connections_per_host)
+            && segments.contains(&self.min_segment_bytes)
+        {
+            Ok(())
+        } else {
+            Err(ErrorCode::InvalidInput)
+        }
+    }
+}
+
+impl Default for EngineLimits {
+    fn default() -> Self {
+        Self::DEFAULT
+    }
+}
+
 /// Everything an engine needs to start one direct transfer. The manager builds it from a
 /// validated download record; the engine still treats it as untrusted input.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -532,6 +577,24 @@ mod tests {
             ),
         ] {
             assert_eq!(bad.normalized(), Err(ErrorCode::InvalidInput), "{why}");
+        }
+    }
+
+    #[test]
+    fn engine_limits_are_bounded() {
+        assert_eq!(EngineLimits::DEFAULT.check(), Ok(()));
+        let with = |host: u32, segment: u64| EngineLimits {
+            max_connections_per_host: host,
+            min_segment_bytes: segment,
+        };
+        assert_eq!(with(16, 1 << 30).check(), Ok(()));
+        for bad in [
+            with(0, 1 << 20),
+            with(17, 1 << 20),
+            with(8, (1 << 20) - 1),
+            with(8, (1 << 30) + 1),
+        ] {
+            assert_eq!(bad.check(), Err(ErrorCode::InvalidInput), "{bad:?}");
         }
     }
 

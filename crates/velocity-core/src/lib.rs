@@ -8,6 +8,7 @@ pub mod database;
 pub mod domain;
 pub mod manager;
 pub mod paths;
+pub mod performance;
 pub mod queue;
 pub mod transfer;
 
