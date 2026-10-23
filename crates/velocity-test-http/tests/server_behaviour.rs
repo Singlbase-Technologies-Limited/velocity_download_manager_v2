@@ -356,3 +356,30 @@ fn counts_the_responses_it_sends_at_once() {
     assert_eq!(c.peak_answering, 2);
     assert_eq!(c.answering, 0, "both responses ended");
 }
+
+#[test]
+fn throttles_all_connections_together() {
+    // 1 MB/s for the whole server: two 200 kB responses at once take about 400 ms, not 200.
+    let s = TestServer::start(
+        vec![("f".into(), seeded_bytes(200_000, 3))],
+        ServerOptions {
+            throttle_total_bytes_per_sec: Some(1_000_000),
+            ..ServerOptions::default()
+        },
+    );
+    let started = std::time::Instant::now();
+    let clients: Vec<_> = (0..2)
+        .map(|_| {
+            let mut stream = connect(&s);
+            std::thread::spawn(move || request(&mut stream, "GET", "/f", &[]).body.len())
+        })
+        .collect();
+    for c in clients {
+        assert_eq!(c.join().unwrap(), 200_000);
+    }
+    assert!(
+        started.elapsed() >= Duration::from_millis(350),
+        "{:?}",
+        started.elapsed()
+    );
+}

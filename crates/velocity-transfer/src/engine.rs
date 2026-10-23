@@ -30,6 +30,7 @@ use velocity_core::transfer::{
 };
 use velocity_curl::{CurlLoop, Libcurl, LoopOptions, RateLimit};
 
+use crate::adaptive::{AdaptivePolicy, Tuning};
 use crate::budget::{self, Demand, Share};
 use crate::download::{
     download_resumable, part_path, wait_out, Cadence, ConnectionsNow, Control, DownloadError,
@@ -148,13 +149,20 @@ impl State {
 }
 
 /// A running transfer's connection detail (#47): what it asked for, what it may use, and the
-/// tightest of the engine's share, a throttling server and the file's size.
+/// tightest of the engine's share, a throttling server, the adaptive ramp and the file's size.
 fn detail(requested: u32, share: Share, now: ConnectionsNow) -> ConnectionDetail {
     let mut allowed = requested.min(share.allowed);
     let mut limited_by = share.limited_by;
     if let Some(t) = now.throttled_to.filter(|t| *t < allowed) {
         allowed = t;
         limited_by = Some(ConnectionLimit::ServerThrottling);
+    }
+    if let Some((t, why)) = now.tuned.filter(|(t, _)| *t < allowed) {
+        allowed = t;
+        limited_by = Some(match why {
+            Tuning::RampingUp => ConnectionLimit::RampingUp,
+            Tuning::NoGain => ConnectionLimit::NoGain,
+        });
     }
     if now.file_bound && now.active < allowed {
         allowed = now.active.max(1);
@@ -561,6 +569,8 @@ fn run(shared: &Shared, id: TransferId, job: &Job, resume: Option<&Resume>, cont
         leases: Sizes::DEFAULT,
         checkpoints: Cadence::DEFAULT,
         retry: shared.retry,
+        // The asked-for count is a ceiling, not a must (PO decision on #47).
+        adaptive: Some(AdaptivePolicy::DEFAULT),
     };
     let mut resume = resume.cloned();
     let mut restarts = 0;
@@ -743,6 +753,7 @@ mod tests {
             active,
             throttled_to,
             file_bound,
+            tuned: None,
         }
     }
 

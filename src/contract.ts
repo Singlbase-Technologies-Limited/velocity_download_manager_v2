@@ -40,7 +40,14 @@ export const TransferErrorSchema = z.strictObject({
 });
 export type TransferError = z.infer<typeof TransferErrorSchema>;
 
-export const ConnectionLimitSchema = z.enum(['perHostCap', 'sharedBudget', 'serverThrottling', 'fileSize']);
+export const ConnectionLimitSchema = z.enum([
+  'perHostCap',
+  'sharedBudget',
+  'serverThrottling',
+  'rampingUp',
+  'noGain',
+  'fileSize',
+]);
 export type ConnectionLimit = z.infer<typeof ConnectionLimitSchema>;
 
 export const ConnectionDetailSchema = z.strictObject({

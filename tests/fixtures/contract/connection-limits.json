@@ -1,0 +1,8 @@
+[
+  "perHostCap",
+  "sharedBudget",
+  "serverThrottling",
+  "rampingUp",
+  "noGain",
+  "fileSize"
+]

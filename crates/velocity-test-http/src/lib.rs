@@ -53,6 +53,9 @@ pub struct ServerOptions {
     pub range_mode: RangeMode,
     /// Limits every connection to this many body bytes per second.
     pub throttle_bytes_per_sec: Option<u64>,
+    /// Limits all connections together to this many body bytes per second, the way a server that
+    /// throttles per client IP does (#47).
+    pub throttle_total_bytes_per_sec: Option<u64>,
     /// Limits only the first response to a range after byte 0 to this many body bytes per second,
     /// so that one connection is slower than the others (a range split, #42).
     pub throttle_first_later_range: Option<u64>,
@@ -147,6 +150,7 @@ impl TestServer {
             Arc::new(files.into_iter().map(|(n, d)| (n, Arc::new(d))).collect());
         let counters = Arc::new(Mutex::new(Counters::default()));
         let stop = Arc::new(AtomicBool::new(false));
+        let pace = Arc::new(Pace::new(options.throttle_total_bytes_per_sec));
         let acceptor = {
             let (counters, stop) = (Arc::clone(&counters), Arc::clone(&stop));
             thread::spawn(move || {
@@ -156,9 +160,15 @@ impl TestServer {
                     }
                     let Ok(stream) = stream else { continue };
                     counters.lock().unwrap().connections += 1;
-                    let (files, counters, options) =
-                        (Arc::clone(&files), Arc::clone(&counters), options.clone());
-                    thread::spawn(move || serve_connection(stream, &files, &counters, &options));
+                    let (files, counters, options, pace) = (
+                        Arc::clone(&files),
+                        Arc::clone(&counters),
+                        options.clone(),
+                        Arc::clone(&pace),
+                    );
+                    thread::spawn(move || {
+                        serve_connection(stream, &files, &counters, &options, &pace)
+                    });
                 }
             })
         };
@@ -375,11 +385,47 @@ fn parse_range(value: &str) -> Option<(u64, Option<u64>)> {
     Some((start, end))
 }
 
+/// Paces the body bytes of all connections together ([`ServerOptions::throttle_total_bytes_per_sec`]).
+struct Pace {
+    rate: Option<u64>,
+    /// When the current run of sending started, and the bytes reserved since.
+    run: Mutex<(Instant, u64)>,
+}
+
+impl Pace {
+    fn new(rate: Option<u64>) -> Self {
+        Pace {
+            rate: rate.filter(|r| *r > 0),
+            run: Mutex::new((Instant::now(), 0)),
+        }
+    }
+
+    /// Waits until `bytes` more may be sent. Reservations are taken in turn, so connections share
+    /// the rate; an idle server doesn't save up a burst.
+    fn wait(&self, bytes: usize) {
+        let Some(rate) = self.rate else { return };
+        let due = {
+            let mut run = self.run.lock().unwrap();
+            let now = Instant::now();
+            if run.0 + Duration::from_secs_f64(run.1 as f64 / rate as f64) < now {
+                *run = (now, 0);
+            }
+            let due = run.0 + Duration::from_secs_f64(run.1 as f64 / rate as f64);
+            run.1 += bytes as u64;
+            due
+        };
+        if let Some(wait) = due.checked_duration_since(Instant::now()) {
+            thread::sleep(wait);
+        }
+    }
+}
+
 fn serve_connection(
     stream: TcpStream,
     files: &HashMap<String, Arc<Vec<u8>>>,
     counters: &Mutex<Counters>,
     options: &ServerOptions,
+    pace: &Pace,
 ) {
     let Ok(read_half) = stream.try_clone() else {
         return;
@@ -539,6 +585,7 @@ fn serve_connection(
                 &body[..cut],
                 options.throttle_bytes_per_sec,
                 counters,
+                Some(pace),
             );
             return;
         }
@@ -551,7 +598,7 @@ fn serve_connection(
             };
             if first {
                 let cut = (freeze.after as usize).min(body.len());
-                if write_body(&mut out, &body[..cut], None, counters).is_ok() {
+                if write_body(&mut out, &body[..cut], None, counters, None).is_ok() {
                     thread::sleep(freeze.hold);
                 }
                 return;
@@ -565,7 +612,7 @@ fn serve_connection(
                 rate = Some(slow);
             }
         }
-        if !head && write_body(&mut out, body, rate, counters).is_err() {
+        if !head && write_body(&mut out, body, rate, counters, Some(pace)).is_err() {
             return;
         }
         if close {
@@ -617,12 +664,14 @@ fn write_chunked(
     out.flush()
 }
 
-/// Writes `body` in 16 KiB chunks, pacing them to `rate` bytes per second when set.
+/// Writes `body` in 16 KiB chunks, pacing them to `rate` bytes per second when set, and to the
+/// server-wide `pace` when given.
 fn write_body(
     out: &mut TcpStream,
     body: &[u8],
     rate: Option<u64>,
     counters: &Mutex<Counters>,
+    pace: Option<&Pace>,
 ) -> std::io::Result<()> {
     const CHUNK: usize = 16 * 1024;
     let started = Instant::now();
@@ -633,6 +682,9 @@ fn write_body(
             if let Some(wait) = due.checked_sub(started.elapsed()) {
                 thread::sleep(wait);
             }
+        }
+        if let Some(pace) = pace {
+            pace.wait(chunk.len());
         }
         // Counted before the write, so a client that has read these bytes always sees them
         // counted; counting after let a test read the counter first (#38). A failed write takes

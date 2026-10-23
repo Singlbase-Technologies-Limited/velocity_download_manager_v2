@@ -4,6 +4,7 @@ import { describe, expect, it } from 'vitest';
 import {
   AppInfoSchema,
   CapabilitiesSchema,
+  ConnectionLimitSchema,
   COMMAND_API_VERSION,
   DownloadRecordSchema,
   DownloadStatusSchema,
@@ -19,6 +20,10 @@ const fixture = (name: string): unknown =>
 describe('contract fixtures generated from Rust', () => {
   it('statuses: exactly the values the schema knows, in order', () => {
     expect(fixture('statuses.json')).toEqual(DownloadStatusSchema.options);
+  });
+
+  it('connection limits: exactly the values the schema knows, in order', () => {
+    expect(fixture('connection-limits.json')).toEqual(ConnectionLimitSchema.options);
   });
 
   it('error codes: exactly the codes the schema knows, each with a user-facing message', () => {

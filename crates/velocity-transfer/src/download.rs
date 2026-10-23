@@ -32,6 +32,7 @@ use velocity_curl::{
     ResponseHead,
 };
 
+use crate::adaptive::{AdaptivePolicy, Ramp, Tuning};
 use crate::failure::{self, fetch_failure};
 use crate::files;
 use crate::probe::{
@@ -82,6 +83,8 @@ pub struct Control {
     throttled_to: AtomicU32,
     /// The rest of the file was too small to split for another connection.
     file_bound: AtomicBool,
+    /// The adaptive ramp's count, when it is below what the download may use, and why.
+    tuned: Mutex<Option<(u32, Tuning)>>,
 }
 
 /// The connections a download runs now, and what of its own holds it back (#47).
@@ -93,6 +96,8 @@ pub struct ConnectionsNow {
     pub throttled_to: Option<u32>,
     /// The rest of the file is too small to split between more connections.
     pub file_bound: bool,
+    /// The adaptive ramp's count, when it is below what the download may use, and why.
+    pub tuned: Option<(u32, Tuning)>,
 }
 
 impl Control {
@@ -182,6 +187,11 @@ impl Control {
         self.file_bound.store(file_bound, Ordering::Release);
     }
 
+    /// Records the adaptive ramp's count when it is below what the download may use.
+    fn tune(&self, tuned: Option<(u32, Tuning)>) {
+        *self.tuned.lock().expect("the tuning lock") = tuned;
+    }
+
     /// What the download runs now (#47).
     pub fn connections_now(&self) -> ConnectionsNow {
         ConnectionsNow {
@@ -191,6 +201,7 @@ impl Control {
                 n => Some(n),
             },
             file_bound: self.file_bound.load(Ordering::Acquire),
+            tuned: *self.tuned.lock().expect("the tuning lock"),
         }
     }
 
@@ -240,6 +251,9 @@ pub struct DownloadOptions {
     pub checkpoints: Cadence,
     /// When to retry, wait and give up (#48); [`RetryPolicy::DEFAULT`] outside tests.
     pub retry: RetryPolicy,
+    /// Adaptive connections (#47): start with one and add while each helps, up to `connections`.
+    /// `None` uses `connections` from the start, as the CLI does to compare fixed counts.
+    pub adaptive: Option<AdaptivePolicy>,
 }
 
 /// How often the part file is synced and a checkpoint taken: after this many new bytes or this
@@ -954,6 +968,8 @@ struct Active {
     /// Stopped because the download now uses fewer connections (#47): it ends at its next write,
     /// and the rest of its lease is leased again.
     retiring: bool,
+    /// When the request was made, to measure the round trip to its answer (#47).
+    asked: Instant,
 }
 
 type SegmentVerdict = Arc<Mutex<Option<Result<u64, SegmentRejection>>>>;
@@ -1027,6 +1043,7 @@ fn request(
         retry_after,
         quiet: false,
         retiring: false,
+        asked: Instant::now(),
     }
 }
 
@@ -1043,7 +1060,9 @@ fn request(
 ///   and the rest of its lease is leased again after it (#48). A throttling server halves the
 ///   connections this download uses;
 /// - the connections asked for may change while it runs ([`Control::set_connections`], #47): more
-///   take new leases at once, and fewer stop the newest requests, whose rest is leased again.
+///   take new leases at once, and fewer stop the newest requests, whose rest is leased again;
+/// - with [`DownloadOptions::adaptive`], it starts with one connection and adds one per window
+///   while each helps, up to what it may use ([`Ramp`], #47).
 ///
 /// Returns the fetches made, the splits and the mode.
 fn fetch_ranges(
@@ -1075,6 +1094,11 @@ fn fetch_ranges(
     let mut ranges_ignored = false;
     let mut failure: Option<TransferError> = None;
     let mut changed: Option<TransferError> = None;
+    let mut ramp = options.adaptive.map(Ramp::new);
+    // Body bytes received, written or not, and the shortest wait for an answer: the ramp's
+    // measures (#47).
+    let mut received = 0u64;
+    let mut rtt: Option<Duration> = None;
     loop {
         let now = Instant::now();
         waiting.retain(|until| *until > now);
@@ -1082,18 +1106,30 @@ fn fetch_ranges(
             // The download ends; nothing waits to be retried.
             waiting.clear();
         }
-        // What was asked for, within the engine's budget and what a throttling server left.
-        let connections = control
-            .connections(options.connections)
-            .min(control.allowed())
-            .min(throttled_to);
-        // Fewer connections asked for: the newest requests stop.
         let mut live: Vec<LeaseId> = active
             .iter()
             .filter(|(_, a)| !a.retiring)
             .map(|(id, _)| *id)
             .collect();
         live.sort_unstable_by_key(|id| id.0);
+        // What was asked for, within the engine's budget and what a throttling server left; with
+        // adaptive connections, what helps within that.
+        let ceiling = control
+            .connections(options.connections)
+            .min(control.allowed())
+            .min(throttled_to);
+        let connections = match ramp.as_mut() {
+            Some(r) => {
+                r.step(now, received, ceiling, live.len() as u32, rtt);
+                r.target()
+            }
+            None => ceiling,
+        };
+        control.tune(
+            ramp.as_ref()
+                .and_then(|r| r.why(ceiling).map(|why| (r.target(), why))),
+        );
+        // Fewer connections than run now: the newest requests stop.
         for id in live.iter().skip(connections as usize) {
             let a = active.get_mut(id).expect("a live request");
             a.retiring = true;
@@ -1189,14 +1225,16 @@ fn fetch_ranges(
                 }
             }
             Segment::Fetch(FetchEvent::Head(_)) => {
-                if active
-                    .get(&id)
-                    .is_some_and(|a| answered_end(&a.verdict).is_some())
-                {
-                    sched.start(id);
+                if let Some(a) = active.get(&id) {
+                    let waited = a.asked.elapsed();
+                    rtt = Some(rtt.map_or(waited, |r| r.min(waited)));
+                    if answered_end(&a.verdict).is_some() {
+                        sched.start(id);
+                    }
                 }
             }
             Segment::Fetch(FetchEvent::Data(chunk)) => {
+                received += chunk.len() as u64;
                 let Some(a) = active.get_mut(&id) else {
                     continue;
                 };

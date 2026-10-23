@@ -509,13 +509,14 @@ fn wait_until(timeout: Duration, what: &str, done: impl Fn() -> bool) {
 
 #[test]
 fn connections_change_live_within_the_cap() {
-    // #47: 4 MiB/s per connection, so a 32 MiB file is still running when the count changes.
-    let data = seeded_bytes(32 << 20, 47);
+    // #47: 1 MiB/s per connection, so each added connection helps, and a 48 MiB file is still
+    // running while the engine ramps up to a raised count, one connection per 2 s window.
+    let data = seeded_bytes(48 << 20, 47);
     for (mode, mut engine) in engines() {
         let server = TestServer::start(
             vec![("f.bin".into(), data.clone())],
             ServerOptions {
-                throttle_bytes_per_sec: Some(4 << 20),
+                throttle_bytes_per_sec: Some(1 << 20),
                 ..ServerOptions::default()
             },
         );
@@ -532,13 +533,25 @@ fn connections_change_live_within_the_cap() {
             server.counters().gets >= 2
         });
         assert_eq!(engine.set_connections(id, 4), Ok(4), "{mode}");
-        wait_until(Duration::from_secs(5), "4 responses run at once", || {
-            server.counters().answering == 4
+        // Raised, it ramps up to 4 rather than jumping (PO decision on #47), and says so.
+        wait_for_snapshot(&events, id, |s| {
+            s.progress.connection_detail.is_some_and(|d| {
+                d.requested == 4 && d.limited_by == Some(ConnectionLimit::RampingUp)
+            })
         });
+        wait_until(
+            Duration::from_secs(20),
+            &format!("{mode}: 4 responses run at once"),
+            || server.counters().answering == 4,
+        );
         wait_for_snapshot(&events, id, |s| s.progress.connections == 4);
 
         assert_eq!(engine.set_connections(id, 1000), Ok(cap), "{mode}");
-        wait_for_snapshot(&events, id, |s| s.progress.connections == cap);
+        wait_for_snapshot(&events, id, |s| {
+            s.progress
+                .connection_detail
+                .is_some_and(|d| d.requested == cap)
+        });
         assert_eq!(
             engine.set_connections(TransferId(999), 2),
             Err(ErrorCode::NotFound),

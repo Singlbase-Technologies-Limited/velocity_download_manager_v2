@@ -63,6 +63,7 @@ const OPTIONS: DownloadOptions = DownloadOptions {
     leases: Sizes::DEFAULT,
     checkpoints: Cadence::DEFAULT,
     retry: RetryPolicy::DEFAULT,
+    adaptive: None,
 };
 
 /// A running download whose written bytes are counted as they are written.

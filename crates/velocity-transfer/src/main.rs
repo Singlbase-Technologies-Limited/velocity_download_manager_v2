@@ -48,6 +48,7 @@ fn parse_get(args: &[String]) -> Result<(String, PathBuf, DownloadOptions), Stri
         leases: Sizes::DEFAULT,
         checkpoints: Cadence::DEFAULT,
         retry: RetryPolicy::DEFAULT,
+        adaptive: None,
     };
     let mut rest = args.iter();
     while let Some(arg) = rest.next() {

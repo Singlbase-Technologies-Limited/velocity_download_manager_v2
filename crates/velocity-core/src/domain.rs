@@ -142,8 +142,24 @@ pub enum ConnectionLimit {
     SharedBudget,
     /// The server answered `429` or `503`, so the download uses fewer connections.
     ServerThrottling,
+    /// Adaptive connections: it is still adding one at a time while each makes it faster.
+    RampingUp,
+    /// Adaptive connections: more connections stopped making it faster.
+    NoGain,
     /// The rest of the file is too small to split between more connections.
     FileSize,
+}
+
+impl ConnectionLimit {
+    /// Every value, in contract order (the fixture shared with `src/contract.ts`).
+    pub const ALL: [ConnectionLimit; 6] = [
+        ConnectionLimit::PerHostCap,
+        ConnectionLimit::SharedBudget,
+        ConnectionLimit::ServerThrottling,
+        ConnectionLimit::RampingUp,
+        ConnectionLimit::NoGain,
+        ConnectionLimit::FileSize,
+    ];
 }
 
 /// One download as the UI sees it.
@@ -401,18 +417,20 @@ mod tests {
             serde_json::to_string(&detail).unwrap(),
             r#"{"requested":8,"allowed":4,"limitedBy":"sharedBudget"}"#
         );
-        let limits: Vec<_> = [
-            ConnectionLimit::PerHostCap,
-            ConnectionLimit::SharedBudget,
-            ConnectionLimit::ServerThrottling,
-            ConnectionLimit::FileSize,
-        ]
-        .iter()
-        .map(|l| serde_json::to_value(l).unwrap())
-        .collect();
+        let limits: Vec<_> = ConnectionLimit::ALL
+            .iter()
+            .map(|l| serde_json::to_value(l).unwrap())
+            .collect();
         assert_eq!(
             limits,
-            ["perHostCap", "sharedBudget", "serverThrottling", "fileSize"]
+            [
+                "perHostCap",
+                "sharedBudget",
+                "serverThrottling",
+                "rampingUp",
+                "noGain",
+                "fileSize"
+            ]
         );
     }
 
@@ -480,6 +498,14 @@ mod tests {
             check(
                 "statuses.json",
                 serde_json::to_value(DownloadStatus::ALL).unwrap(),
+            );
+        }
+
+        #[test]
+        fn contract_connection_limits() {
+            check(
+                "connection-limits.json",
+                serde_json::to_value(ConnectionLimit::ALL).unwrap(),
             );
         }
 

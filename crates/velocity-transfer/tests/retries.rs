@@ -66,6 +66,7 @@ const OPTIONS: DownloadOptions = DownloadOptions {
     leases: Sizes::DEFAULT,
     checkpoints: Cadence::DEFAULT,
     retry: FAST,
+    adaptive: None,
 };
 
 const LEN: usize = 1_000_000;
