@@ -7,6 +7,7 @@ use std::io;
 use std::time::{Duration, SystemTime};
 
 use velocity_core::domain::{FailureClass, TransferError};
+use velocity_core::transfer::HashAlgorithm;
 use velocity_curl::{CurlFailure, FetchError, ResponseHead};
 
 /// The failure an error status stands for, or `None` for a status that isn't one here (`416` is
@@ -73,6 +74,28 @@ pub(crate) fn later_status_failure(status: u16) -> Option<TransferError> {
         ));
     }
     status_failure(status)
+}
+
+/// A whole file that doesn't match its checksum (#46, report section 5.3). Worth a retry by hand,
+/// which downloads it again, so not `Permanent`; the engine doesn't restart it on its own, so the
+/// part file stays for inspection.
+pub(crate) fn checksum_mismatch(algorithm: HashAlgorithm, got: &str) -> TransferError {
+    let name = match algorithm {
+        HashAlgorithm::Md5 => "MD5",
+        HashAlgorithm::Sha1 => "SHA-1",
+        HashAlgorithm::Sha224 => "SHA-224",
+        HashAlgorithm::Sha256 => "SHA-256",
+        HashAlgorithm::Sha384 => "SHA-384",
+        HashAlgorithm::Sha512 => "SHA-512",
+    };
+    TransferError::new(
+        FailureClass::Transient,
+        None,
+        &format!(
+            "The downloaded file doesn't match its {name} checksum (the file's is {got}). It was \
+             kept as a .vdmpart file, not renamed; retrying downloads it again."
+        ),
+    )
 }
 
 /// A libcurl-side failure.

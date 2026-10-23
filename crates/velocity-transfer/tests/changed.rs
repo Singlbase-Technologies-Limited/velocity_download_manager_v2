@@ -281,6 +281,7 @@ fn a_resume_of_a_file_whose_etag_changed_starts_over() {
         &dest,
         OPTIONS,
         Some(&Resume::Checkpoint { checkpoint }),
+        None,
         &Control::default(),
     )
     .expect("it starts over");
@@ -397,6 +398,7 @@ fn a_resume_needs_the_encoding_its_checkpoint_recorded() {
             &dest,
             OPTIONS,
             Some(&Resume::Checkpoint { checkpoint }),
+            None,
             &Control::default(),
         )
         .expect("it finishes");
@@ -432,6 +434,7 @@ fn a_link_that_stops_working_after_the_first_answer_has_expired() {
         &dest,
         OPTIONS,
         Some(&Resume::Checkpoint { checkpoint }),
+        None,
         &Control::default(),
     );
     let Err(DownloadError::Transfer(e)) = result else {

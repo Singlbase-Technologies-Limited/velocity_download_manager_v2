@@ -25,8 +25,8 @@ use velocity_core::domain::{
     FailureClass, Progress, TransferError,
 };
 use velocity_core::transfer::{
-    Checkpoint, DirectTransfer, Limits, Resume, TransferEvent, TransferId, TransferSnapshot,
-    TransferSpec,
+    Checkpoint, Checksum, DirectTransfer, Limits, Resume, TransferEvent, TransferId,
+    TransferSnapshot, TransferSpec,
 };
 use velocity_curl::{CurlLoop, Libcurl, LoopOptions, RateLimit};
 
@@ -92,6 +92,8 @@ struct Job {
     url: String,
     destination: PathBuf,
     connections: u32,
+    /// Checked before the file is renamed into place (#46); its digest is lowercase.
+    checksum: Option<Checksum>,
 }
 
 impl State {
@@ -364,12 +366,14 @@ impl DirectTransfer for InProcessEngine {
             return Err(ErrorCode::InvalidPath);
         }
         spec.limits.check()?;
-        if let Some(checksum) = &spec.checksum {
-            checksum.normalized()?;
-        }
+        let checksum = spec
+            .checksum
+            .as_ref()
+            .map(Checksum::normalized)
+            .transpose()?;
         // What the prototype can't honour is refused, never silently dropped: credentials and
-        // headers (#70), and checksums until the engine verifies them (#46).
-        if spec.credentials.is_some() || !spec.headers.is_empty() || spec.checksum.is_some() {
+        // headers (#70).
+        if spec.credentials.is_some() || !spec.headers.is_empty() {
             return Err(ErrorCode::Unsupported);
         }
         let connections = spec.max_connections.clamp(1, MAX_CONNECTIONS);
@@ -399,6 +403,7 @@ impl DirectTransfer for InProcessEngine {
                     url,
                     destination: spec.destination.clone(),
                     connections,
+                    checksum,
                 },
                 limit: RateLimit::new(spec.limits.max_download_bps),
                 last_checkpoint: None,
@@ -585,6 +590,7 @@ fn run(shared: &Shared, id: TransferId, job: &Job, resume: Option<&Resume>, cont
             &job.destination,
             options,
             resume.as_ref(),
+            job.checksum.as_ref(),
             control,
         );
         let Err(DownloadError::Transfer(e)) = &result else {
@@ -635,7 +641,8 @@ fn run(shared: &Shared, id: TransferId, job: &Job, resume: Option<&Resume>, cont
             Err(
                 DownloadError::Transfer(e)
                 | DownloadError::Changed(e)
-                | DownloadError::EncodingChanged(e),
+                | DownloadError::EncodingChanged(e)
+                | DownloadError::ChecksumMismatch(e),
             ) => {
                 s.status = DownloadStatus::Failed;
                 s.error = Some(e);

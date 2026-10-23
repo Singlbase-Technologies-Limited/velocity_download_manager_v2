@@ -151,6 +151,61 @@ fn downloads_a_file_and_reports_completion() {
 }
 
 #[test]
+fn checks_a_checksum_before_reporting_completion() {
+    use sha2::{Digest, Sha256};
+    let data = seeded_bytes(400_000, 46);
+    let server = TestServer::start(
+        vec![("f.bin".into(), data.clone())],
+        ServerOptions::default(),
+    );
+    let digest: String = Sha256::digest(&data)
+        .iter()
+        .map(|b| format!("{b:02X}"))
+        .collect();
+    for (mode, mut engine) in engines() {
+        let dir = Dir::new(&format!("checksum-{}", mode.replace(' ', "-")));
+        let events = engine.subscribe();
+
+        let dest = dir.0.join("ok.bin");
+        let mut ok = spec(server.url("f.bin"), dest.clone());
+        // Uppercase, as a user may paste it.
+        ok.checksum = Some(Checksum {
+            algorithm: HashAlgorithm::Sha256,
+            hex: digest.clone(),
+        });
+        let id = engine.add(ok).expect("add");
+        let done = wait_for(&events, id, |s| {
+            matches!(s, DownloadStatus::Completed | DownloadStatus::Failed)
+        });
+        assert_eq!(done.status, DownloadStatus::Completed, "{mode}: {done:?}");
+        assert!(std::fs::read(&dest).unwrap() == data, "{mode}");
+
+        let dest = dir.0.join("bad.bin");
+        let mut bad = spec(server.url("f.bin"), dest.clone());
+        bad.checksum = Some(Checksum {
+            algorithm: HashAlgorithm::Sha256,
+            hex: "0".repeat(64),
+        });
+        let id = engine.add(bad).expect("add");
+        let seen = std::cell::RefCell::new(Vec::new());
+        let done = wait_for(&events, id, |s| {
+            seen.borrow_mut().push(s);
+            matches!(s, DownloadStatus::Completed | DownloadStatus::Failed)
+        });
+        let seen = seen.into_inner();
+        assert_eq!(done.status, DownloadStatus::Failed, "{mode}: {done:?}");
+        let message = done.error.map(|e| e.message).unwrap_or_default();
+        assert!(message.contains("SHA-256 checksum"), "{mode}: {message}");
+        assert!(
+            !seen.contains(&DownloadStatus::Retrying),
+            "{mode}: not restarted on its own: {seen:?}"
+        );
+        assert!(!dest.exists(), "{mode}: not renamed");
+        assert!(part_of(&dest).exists(), "{mode}: kept for inspection");
+    }
+}
+
+#[test]
 fn reports_a_failure_with_its_status() {
     let server = TestServer::start(vec![], ServerOptions::default());
     for (mode, mut engine) in engines() {

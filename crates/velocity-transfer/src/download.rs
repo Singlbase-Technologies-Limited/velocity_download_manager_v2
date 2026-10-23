@@ -27,7 +27,7 @@ use std::thread;
 use std::time::{Duration, Instant, SystemTime};
 
 use velocity_core::domain::{DownloadStatus, FailureClass, TransferError};
-use velocity_core::transfer::{Checkpoint, Resume, CHECKPOINT_FORMAT};
+use velocity_core::transfer::{Checkpoint, Checksum, HashAlgorithm, Resume, CHECKPOINT_FORMAT};
 use velocity_curl::{
     CurlLoop, Fetch, FetchError, FetchEvent, FetchLimit, FetchRequest, Gate, RateLimit,
     ResponseHead,
@@ -36,6 +36,7 @@ use velocity_curl::{
 use crate::adaptive::{AdaptivePolicy, Ramp, Tuning};
 use crate::failure::{self, fetch_failure};
 use crate::files;
+use crate::integrity::HashFrontier;
 use crate::probe::{
     check_continuation, check_segment, classify_probe, is_multipart, Continuation, ProbeOutcome,
     SegmentRejection,
@@ -347,6 +348,9 @@ pub enum DownloadError {
     /// download starts over once as one stream; this escapes only if that start-over isn't
     /// possible.
     EncodingChanged(TransferError),
+    /// The whole file doesn't match its checksum (#46). The part file is kept for inspection and
+    /// not renamed, and the engine doesn't restart the download on its own.
+    ChecksumMismatch(TransferError),
 }
 
 impl From<TransferError> for DownloadError {
@@ -380,6 +384,7 @@ pub fn download_resumable(
     destination: &Path,
     options: DownloadOptions,
     resume: Option<&Resume>,
+    checksum: Option<&Checksum>,
     control: &Control,
 ) -> Result<DownloadReport, DownloadError> {
     // symlink_metadata doesn't follow a link: a dangling link at the destination still counts.
@@ -408,6 +413,9 @@ pub fn download_resumable(
         Some(p) => p,
         None => PartFile::create(path)?,
     };
+    if let Some(checksum) = checksum {
+        part.hash_with(checksum.algorithm)?;
+    }
 
     let mut ck = Checkpointer::new(options.checkpoints, url);
     let mut resumed_bytes = 0;
@@ -465,7 +473,18 @@ pub fn download_resumable(
     match outcome {
         Ok(fetched) => {
             let (written, wasted, sparse) = (part.written, part.wasted, part.sparse);
-            part.finish(fetched.total, destination)?;
+            match part.finish(fetched.total, destination, checksum, control) {
+                Err(DownloadError::ChecksumMismatch(e)) => {
+                    // None of its bytes can be trusted now: a resume from the last checkpoint
+                    // would check the same bytes again, so the last one trusts none, and a retry
+                    // downloads the whole file again (report section 5.3).
+                    if ck.sent > 0 {
+                        ck.send(fetched.total, &Coverage::default(), written, control);
+                    }
+                    return Err(DownloadError::ChecksumMismatch(e));
+                }
+                other => other?,
+            }
             Ok(DownloadReport {
                 mode: fetched.mode,
                 total: fetched.total,
@@ -512,7 +531,7 @@ pub fn download_with(
     options: DownloadOptions,
     control: &Control,
 ) -> Result<DownloadReport, DownloadError> {
-    download_resumable(lp, url, destination, options, None, control)
+    download_resumable(lp, url, destination, options, None, None, control)
 }
 
 /// How the file was fetched, before it is finished.
@@ -707,7 +726,7 @@ impl Checkpointer {
     ) -> Result<(), DownloadError> {
         part.sync()?;
         sched.synced();
-        self.send(sched.total(), sched.durable(), part, control);
+        self.send(sched.total(), sched.durable(), part.written, control);
         Ok(())
     }
 
@@ -720,11 +739,12 @@ impl Checkpointer {
         control: &Control,
     ) -> Result<(), DownloadError> {
         part.sync()?;
-        self.send(total, &part.coverage, part, control);
+        self.send(total, &part.coverage, part.written, control);
         Ok(())
     }
 
-    fn send(&mut self, total: u64, durable: &Coverage, part: &PartFile, control: &Control) {
+    /// Sends a checkpoint of `durable`; `written` is what the part file holds so far.
+    fn send(&mut self, total: u64, durable: &Coverage, written: u64, control: &Control) {
         control.checkpoint(Checkpoint {
             format: CHECKPOINT_FORMAT,
             source: self.source.clone(),
@@ -736,7 +756,7 @@ impl Checkpointer {
         });
         self.sent += 1;
         self.last_at = Instant::now();
-        self.written_at_last = part.written;
+        self.written_at_last = written;
     }
 }
 
@@ -1911,6 +1931,8 @@ struct PartFile {
     keep: bool,
     /// This run created it sparse (`files::create_part`).
     sparse: bool,
+    /// Hashes the covered prefix when the download has a checksum (#46).
+    frontier: Option<(HashAlgorithm, HashFrontier)>,
 }
 
 impl PartFile {
@@ -1926,6 +1948,7 @@ impl PartFile {
             wasted: 0,
             keep: false,
             sparse: new.sparse,
+            frontier: None,
         })
     }
 
@@ -1939,11 +1962,35 @@ impl PartFile {
             wasted: 0,
             keep: false,
             sparse: false,
+            frontier: None,
+        }
+    }
+
+    /// Starts hashing the file with `algorithm` from byte 0, on a thread of its own (#46). What
+    /// is covered already, such as a resume's durable ranges, is read back.
+    fn hash_with(&mut self, algorithm: HashAlgorithm) -> Result<(), DownloadError> {
+        // Stops the old frontier's thread first, if there is one.
+        self.frontier = None;
+        let file = self.file.as_ref().expect("the part file is open");
+        let frontier = file
+            .try_clone()
+            .and_then(|f| HashFrontier::start(f, algorithm))
+            .map_err(|e| io_error("start hashing", &self.path, &e))?;
+        frontier.advance(self.coverage.prefix());
+        self.frontier = Some((algorithm, frontier));
+        Ok(())
+    }
+
+    /// Tells the frontier how far the covered prefix reaches now.
+    fn advance_frontier(&self) {
+        if let Some((_, frontier)) = &self.frontier {
+            frontier.advance(self.coverage.prefix());
         }
     }
 
     /// Discards what is in the part file and starts again with an empty one.
     fn start_over(&mut self) -> Result<(), DownloadError> {
+        let algorithm = self.frontier.take().map(|(algorithm, _)| algorithm);
         drop(self.file.take());
         discard(&self.path)?;
         let new = new_part(&self.path)?;
@@ -1951,6 +1998,9 @@ impl PartFile {
         self.coverage = Coverage::default();
         self.written = 0;
         self.sparse = new.sparse;
+        if let Some(algorithm) = algorithm {
+            self.hash_with(algorithm)?;
+        }
         Ok(())
     }
 
@@ -1994,6 +2044,7 @@ impl PartFile {
         .map_err(|e| io_error("write to", &self.path, &e))?;
         self.coverage.insert(offset, offset + bytes.len() as u64);
         self.written += bytes.len() as u64;
+        self.advance_frontier();
         Ok(())
     }
 
@@ -2010,12 +2061,21 @@ impl PartFile {
         }
         self.written += fresh;
         self.wasted += chunk.len() as u64 - fresh;
+        self.advance_frontier();
         Ok(())
     }
 
-    /// Checks coverage, syncs the file to disk, and links it to `destination` without replacing an
-    /// existing file. Removes the part file either way.
-    fn finish(mut self, total: u64, destination: &Path) -> Result<(), DownloadError> {
+    /// The completion gate (report section 5.3), in order: coverage is `[0, total)`, the length
+    /// is `total`, the whole-file hash matches `checksum` when there is one, the file is synced to
+    /// disk, and it is renamed to `destination` without replacing an existing file. Removes the
+    /// part file either way, except after a wrong checksum: then it is kept for inspection.
+    fn finish(
+        mut self,
+        total: u64,
+        destination: &Path,
+        checksum: Option<&Checksum>,
+        control: &Control,
+    ) -> Result<(), DownloadError> {
         if !self.coverage.covers(0, total) {
             return Err(TransferError::new(
                 FailureClass::Transient,
@@ -2024,9 +2084,30 @@ impl PartFile {
             )
             .into());
         }
-        let file = self.file.take().expect("the part file is open");
-        file.set_len(total)
+        self.file
+            .as_ref()
+            .expect("the part file is open")
+            .set_len(total)
             .map_err(|e| io_error("size", &self.path, &e))?;
+        if let Some(checksum) = checksum {
+            // Normally the frontier ran during the download; without one, the whole file is
+            // hashed now. A checksum is never skipped.
+            if self.frontier.as_ref().map(|(a, _)| *a) != Some(checksum.algorithm) {
+                self.hash_with(checksum.algorithm)?;
+            }
+            let (algorithm, frontier) = self.frontier.take().expect("the frontier started");
+            control.show(DownloadStatus::Verifying);
+            let got = frontier
+                .finish(total)
+                .map_err(|e| io_error("hash", &self.path, &e))?;
+            if !got.eq_ignore_ascii_case(&checksum.hex) {
+                self.keep = true;
+                return Err(DownloadError::ChecksumMismatch(failure::checksum_mismatch(
+                    algorithm, &got,
+                )));
+            }
+        }
+        let file = self.file.take().expect("the part file is open");
         file.sync_all()
             .map_err(|e| io_error("sync", &self.path, &e))?;
         drop(file);
