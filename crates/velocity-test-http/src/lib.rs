@@ -1,7 +1,9 @@
 //! A local HTTP/1.1 server for V2's engine tests (#37). It serves seeded files over keep-alive
 //! connections and misbehaves on demand, the way real servers do (research report section 5.4),
 //! and counts what it sends so a test can prove, for example, that no second full transfer was
-//! made. Standard library only. Test code: it trusts its callers and isn't hardened.
+//! made. It can also freeze a process, for the supervisor's hang test (#48). Standard library
+//! only, plus `windows-sys` on Windows for that. Test code: it trusts its callers and isn't
+//! hardened.
 
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Write};

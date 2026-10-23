@@ -81,7 +81,11 @@ For example:
 - **Health:** `health()` and `subscribe_health()` report `Running`, `Restarting { attempt }` and `Unavailable { code }`.
 - **Ids:** a new engine is told, in `start`, to assign ids after the highest one it has seen, so an id never names two transfers.
 - **No lock held across I/O:** a command takes its own reference to the running engine before talking to it, so no lock is held while waiting for the engine.
-- **Not detected:** an engine that hangs without exiting isn't restarted. Its commands time out after 10 seconds with `ENGINE_UNAVAILABLE`. Killing a slow engine would also kill one that is waiting on a stalled disk (#48, #49).
+- **Hangs** (#48): an engine that hangs without exiting is noticed and restarted.
+  - Every 5 seconds the supervisor asks it for a snapshot. When 2 checks in a row get no answer within 5 seconds, it kills the engine and handles it like a crash. The values are starting values.
+  - Its transfers fail as retryable, with "the transfer engine stopped responding and was restarted", and the hang counts towards the cap.
+  - A stalled disk doesn't look like a hang. The engine answers commands on its own thread, and its workers write and sync without holding the engine's state. One exception: cancelling a *paused* transfer deletes its part file while the state is held.
+  - A command that is still waiting times out after 10 seconds with `ENGINE_UNAVAILABLE`, as before.
 
 ## Engine log
 

@@ -18,10 +18,11 @@ The probe is the download's first request and also its first segment, so its byt
 | `206` `multipart/byteranges` | Aborts, and retries once without `Range` | `SingleStream` after the retry |
 | `200` | Keeps this response as the whole file: no second request, nothing wasted | `SingleStream` |
 | `416` with `bytes */0` | An empty file | `Empty` |
-| `401`, `407` | Fails: the server needs credentials. Not retryable | — |
-| `429`, `503` | Fails as throttled, retryable. Waiting and honouring `Retry-After` are #48 | — |
-| Other `4xx` | Fails, not retryable | — |
-| Other `5xx` | Fails, retryable | — |
+| `401`, `407` | Fails: the server or proxy requires authentication. Never retried | — |
+| `429`, `503` | Throttled: retried after the wait `Retry-After` asks for ([retries](#retries-waits-and-stalls-48)) | — |
+| Other `4xx` | Fails, never retried (`408` is retried) | — |
+| Other `5xx` | Retried after a wait | — |
+| No answer: the connection failed | Retried after a wait | — |
 | A malformed `Content-Range`, a `Content-Length` that disagrees with it, a start other than 0, an end past the request or the total, an unrequested encoding | Fails before writing, not retryable | — |
 
 ## Later segments: the range scheduler (#42)
@@ -66,7 +67,7 @@ Each answer is checked in the header callback (`check_segment`):
 
   The first anomaly is tolerated, and the lease's rest is leased again. At the **second** on the same download (`MAX_ANOMALIES`), no more leases are handed out, and the rest comes as one stream that writes only the missing bytes (`RangesLost`).
 - **Short answers:** a `206` with fewer bytes than asked is honest (RFC 9110 §14.2). Its lease fails, and only the remainder is leased again.
-- **Failure:** an error status, or a different total, which means the file changed (#45).
+- **Failure:** an error status, or a different total, which means the file changed (#45). An error status worth retrying frees the connection for a wait, and the rest of the lease is leased again after it ([retries](#retries-waits-and-stalls-48)).
 
 ### Invariants
 
@@ -83,6 +84,49 @@ Checked after every change in debug builds (`Scheduler::check`), and by the prop
 ## Accounting
 
 Every received byte is either written into the part file once, or counted in `wasted_bytes`. That includes bytes past a lease's end, bytes for a lease that isn't live, bytes the single stream sends again, and bytes already covered. Progress counts written bytes only. A server that ignores ranges costs exactly one GET with no wasted bytes, which a fixture test checks.
+
+## Retries, waits and stalls (#48)
+
+A failure is classified first ([`failure.rs`](../crates/velocity-transfer/src/failure.rs)), and the retry policy then decides from its class alone ([`retry.rs`](../crates/velocity-transfer/src/retry.rs)). The messages use V1's words where V1 had them.
+
+| Class | Examples | What happens |
+|---|---|---|
+| Transient | No answer, or a connection broken during the request; a name that doesn't resolve; a refused connection; the 30 s connect timeout; a failed TLS handshake; `408`; other `5xx`; a stall | Retried after a wait |
+| Throttled | `429`, `503` | Retried after at least what `Retry-After` asks for (seconds or an HTTP date), up to 10 minutes. Without `Retry-After`, at least 60 s, as in V1. The download's connections are halved, down to one |
+| Permanent | `401`, `403`, `404`, `410`, other `4xx`; an untrusted certificate; too many redirects; a protocol outside the allowlist; an answer that contradicts itself; a full disk | Never retried |
+
+### Inside a download
+
+- **What is retried:** the probe, each range segment, each sequential range and the single stream.
+- **A failed segment** frees its connection for the wait. A new lease then takes the rest, under a new id. The other connections go on in the meantime.
+- **The wait:** it doubles from 1 s up to 60 s, with full jitter, which means a random wait between zero and that value (`fastrand`).
+- **Bounded:** a download gives up after 5 failures in a row with no new byte in between. A retry that brings new bytes starts the count again, so every retry either makes progress or brings the end closer.
+- **The probe:** a probe whose answer gave the file's total and was then cut off isn't retried. Its bytes are kept, and the range scheduler fetches the rest.
+- **A connection cut mid-body** still counts as an anomaly (#41), and two anomalies switch the download to one stream. A stall and a connection that fails before any answer count as failures, not anomalies.
+
+### Stalls
+
+- **The rule:** a stall is time with no byte from the network. It is never a speed limit, so a slow but steady transfer is never reset.
+- **Stalled after 15 s:** with no byte, the download shows Stalled. With several connections, it shows Stalled only when none of them brings bytes.
+- **Reset after 30 s:** with no byte, the request is cancelled and retried like any failure. These replace the prototype's fixed 60 s limit.
+- **Disk waits don't count:** each segment's forwarder starts its clock only while it waits for libcurl, and the single-stream reader starts it after each write. Time spent waiting for a slow disk is never taken for a stall ([engine-mode-costs.md](research/engine-mode-costs.md) measured disk stalls of up to 57 s).
+
+### The whole download
+
+A download that still fails in a way worth retrying is started again by the engine (V1's `app_retries`):
+- at most 2 times;
+- after 5 s and then 10 s, or 60 s and then 120 s when the server was throttling, never more than 15 minutes;
+- from its last checkpoint when it has one (its part file was kept), otherwise from the start.
+
+While it waits, the snapshot shows Retrying, with the failure's message and "Retrying automatically (1 of 2).". Once bytes come again, the error is cleared. A cancel during the wait removes the kept part file. A permanent failure is never started again. Retrying by hand is the manager's (#58).
+
+### The values
+
+All of them are starting values to tune by measurement, not requirements (PO decision on #48). `RetryPolicy::DEFAULT` holds them, and the connect timeout is `LoopOptions::connect_timeout`. Settings will make them the user's (#30). The engine in the app's process takes another policy with `InProcessEngine::start_with`. The child process uses the defaults, because the contract doesn't carry a policy.
+
+### Statuses
+
+`Control::with_status` reports Retrying while a download waits, Stalled while no byte comes, and Downloading when bytes come again, each change once. The engine puts them in the snapshot. An engine that hangs without exiting is the supervisor's ([ENGINE_PROTOCOL.md](ENGINE_PROTOCOL.md#supervisor)).
 
 ## Persistence and recovery (#43)
 
@@ -124,7 +168,7 @@ The app hands back what it saved, in `TransferSpec::resume`:
 
 - **Pause:** the requests stop, a last checkpoint is taken, and the part file stays. **Resume** starts a new worker from that checkpoint. Cancelling a paused transfer deletes its part file.
 - **When the app goes away,** or closes the engine's pipe, the engine pauses every transfer and keeps their part files, so the app can resume them when it starts again. It no longer cancels them, as #39 did.
-- **A failure:** one worth retrying, after a checkpoint was taken, keeps the part file for a retry (#48). Any other failure deletes it.
+- **A failure:** one worth retrying, after a checkpoint was taken, keeps the part file, and the engine starts the download again from that checkpoint ([the whole download](#the-whole-download)). Any other failure deletes it.
 - **A crash** (`kill -9`, a power loss) leaves the part file and the last checkpoint the app saved. Nothing that looks finished exists until the rename.
 
 ### Finishing
@@ -194,11 +238,22 @@ Run it with `cargo run --release -p velocity-transfer --example high_offset_writ
   - the bytes fetched twice are at most that plus what was in flight.
 
   CI runs 3 trials. The full 100 run by hand with `VELOCITY_CRASH_TRIALS=100 cargo test -p velocity-transfer --test crash_recovery -- --nocapture` (PO decision on #43), and `VELOCITY_CRASH_SEED` repeats a run.
-- **Unit tests:** the tests in `probe.rs`, `scheduler.rs`, `files.rs` and the libcurl layer's `tests/curl_loop.rs` (`FetchLimit`) cover each rule on its own.
+- **Retry fixtures:** `tests/retries.rs` covers #48's acceptance fixtures:
+  - a `429` with `Retry-After: 5` gets no request before 5 s;
+  - a reset storm backs off within its bounds and recovers, and one that doesn't end fails after 5 tries;
+  - a 20 KiB/s server is never reset;
+  - a frozen connection shows Stalled, then is reset and retried;
+  - a name that doesn't resolve is transient;
+  - a `404` is permanent with its message;
+  - a cancel during a wait ends at once.
+
+  `tests/engine_retries.rs` covers starting a whole download again, giving up after the restarts, never restarting a permanent failure, a cancel during the wait, and Stalled in the snapshot. `tests/supervisor.rs` freezes a real engine process and checks it is restarted.
+- **Unit tests:** the tests in `probe.rs`, `failure.rs`, `retry.rs`, `scheduler.rs`, `files.rs` and the libcurl layer's `tests/curl_loop.rs` (`FetchLimit`) cover each rule on its own.
 
 ## Not yet
 
 - **HTTP/2:** the fixtures run over HTTP/1.1. The HTTP/2 fixtures, including the split's stream reset, need the HTTPS test server, and are #47 (PO decisions on #41 and #42). libcurl gives the engine the same final status and headers over either version.
-- **Retries and waits** for errors, throttling and stalls: #48.
+- **Per-host and global connection budgets:** throttling halves the connections of one download only. Budgets shared across downloads and hosts are #47.
+- **Retry settings:** the values are engine defaults until the settings model passes the user's (#30).
 - **Validators and changed files:** a changed `Content-Encoding` between responses is an anomaly for now. Treating it, a changed total and changed validators as a changed object, with `new_epoch`, is #45.
 - **Saving checkpoints in the app:** the manager saves the engine's checkpoint events in the database and resumes unfinished downloads at startup with `StoredDownload::resume` (#58).

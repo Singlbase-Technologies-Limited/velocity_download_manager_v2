@@ -29,6 +29,9 @@ Commands fail with an `ErrorCode` ([CONTRACTS.md](CONTRACTS.md)): `NotFound` for
 
 A direct engine reports only these statuses: Queued, Connecting, Downloading, Retrying, Stalled, Paused, Verifying, Completed, Failed and Removed. "Cancelled" in the research report is Removed here.
 
+- **Retrying:** the transfer waits before trying again (#48). When the engine starts a failed download again, `error` holds the failure it waits after, with "Retrying automatically (n of 2)." The error is cleared once bytes come again.
+- **Stalled:** no byte has come from the network for a while. The transfer isn't failed, and goes back to Downloading when bytes come.
+
 ## Checkpoints and resuming (#43)
 
 - **`TransferEvent::Checkpoint { id, checkpoint }`:** the engine synced the transfer's part file, and the checkpoint's durable byte ranges are on disk. The app saves it.
