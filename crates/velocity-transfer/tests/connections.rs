@@ -123,3 +123,94 @@ fn the_connection_count_follows_live_changes_without_a_restart() {
     assert_eq!(from_zero, 1, "only the probe asked for byte 0: no restart");
     assert_eq!(report.wasted_bytes, 0, "no byte was dropped");
 }
+
+/// A download of `data` from a server throttled per connection, run on its own thread.
+fn start_throttled(
+    data: &[u8],
+    rate: u64,
+    options: DownloadOptions,
+    control: &Arc<Control>,
+    name: &str,
+) -> (TestServer, Dir, std::thread::JoinHandle<()>) {
+    let server = TestServer::start(
+        vec![("f.bin".into(), data.to_vec())],
+        ServerOptions {
+            throttle_bytes_per_sec: Some(rate),
+            ..ServerOptions::default()
+        },
+    );
+    let dir = Dir::new(name);
+    let (lp, url, dest, c) = (
+        curl_loop(),
+        server.url("f.bin"),
+        dir.0.join("f.bin"),
+        Arc::clone(control),
+    );
+    let download = std::thread::spawn(move || {
+        download_with(&lp, &url, &dest, options, &c).expect("the download completes");
+    });
+    (server, dir, download)
+}
+
+const EIGHT: DownloadOptions = DownloadOptions {
+    connections: 8,
+    probe_bytes: 64 * 1024,
+    leases: Sizes::DEFAULT,
+    checkpoints: Cadence::DEFAULT,
+    retry: RetryPolicy::DEFAULT,
+};
+
+#[test]
+fn the_downloader_reports_its_requests_and_when_the_file_is_too_small_for_more() {
+    // 2 MiB in 8 leases of about 256 KiB, at 256 KiB/s each: once the first ends, the rest is
+    // too small to split (a split needs twice the 1 MiB minimum).
+    let control = Arc::new(Control::default());
+    let (_server, _dir, download) = start_throttled(
+        &seeded_bytes(2 * MIB, 48),
+        256 * 1024,
+        EIGHT,
+        &control,
+        "report",
+    );
+    wait_until(Duration::from_secs(5), "8 requests run", || {
+        control.connections_now().active == 8
+    });
+    wait_until(
+        Duration::from_secs(10),
+        "the file is too small for more",
+        || {
+            let now = control.connections_now();
+            now.file_bound && now.active < 8
+        },
+    );
+    assert_eq!(control.connections_now().throttled_to, None);
+    download.join().unwrap();
+}
+
+#[test]
+fn the_engine_allowance_holds_a_download_below_its_ask() {
+    let control = Arc::new(Control::default());
+    control.allow(2);
+    let (server, _dir, download) = start_throttled(
+        &seeded_bytes(16 * MIB, 49),
+        MIB as u64,
+        EIGHT,
+        &control,
+        "allow",
+    );
+    wait_until(Duration::from_secs(5), "2 responses run", || {
+        server.counters().answering == 2
+    });
+    std::thread::sleep(Duration::from_millis(300));
+    assert_eq!(
+        server.counters().peak_answering,
+        2,
+        "never more than allowed"
+    );
+    control.allow(4);
+    wait_until(Duration::from_secs(5), "4 responses run", || {
+        server.counters().answering == 4
+    });
+    control.allow(8);
+    download.join().unwrap();
+}

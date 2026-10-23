@@ -74,6 +74,25 @@ pub struct Control {
     /// The connections asked for while the download runs (#47). 0 until
     /// [`Control::set_connections`] is called; [`DownloadOptions::connections`] applies until then.
     connections: AtomicU32,
+    /// The most connections the engine's budget allows it (#47); 0 for no limit.
+    allowed: AtomicU32,
+    /// What the download runs now, for the engine to report (#47).
+    active: AtomicU32,
+    /// The most connections a throttling server left it; 0 when none did.
+    throttled_to: AtomicU32,
+    /// The rest of the file was too small to split for another connection.
+    file_bound: AtomicBool,
+}
+
+/// The connections a download runs now, and what of its own holds it back (#47).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ConnectionsNow {
+    /// Requests open now, including ones being stopped.
+    pub active: u32,
+    /// The most connections a throttling server left it (#48).
+    pub throttled_to: Option<u32>,
+    /// The rest of the file is too small to split between more connections.
+    pub file_bound: bool,
 }
 
 impl Control {
@@ -140,6 +159,38 @@ impl Control {
         match self.connections.load(Ordering::Acquire) {
             0 => initial.max(1),
             n => n,
+        }
+    }
+
+    /// Caps the connections at what the engine's budget allows, at least 1, while the download
+    /// runs (#47).
+    pub fn allow(&self, connections: u32) {
+        self.allowed.store(connections.max(1), Ordering::Release);
+    }
+
+    /// The engine's cap from [`Control::allow`]; no limit until it is called.
+    fn allowed(&self) -> u32 {
+        match self.allowed.load(Ordering::Acquire) {
+            0 => u32::MAX,
+            n => n,
+        }
+    }
+
+    /// Records the requests open now, and whether the file is too small for more.
+    fn running(&self, active: u32, file_bound: bool) {
+        self.active.store(active, Ordering::Release);
+        self.file_bound.store(file_bound, Ordering::Release);
+    }
+
+    /// What the download runs now (#47).
+    pub fn connections_now(&self) -> ConnectionsNow {
+        ConnectionsNow {
+            active: self.active.load(Ordering::Acquire),
+            throttled_to: match self.throttled_to.load(Ordering::Acquire) {
+                0 => None,
+                n => Some(n),
+            },
+            file_bound: self.file_bound.load(Ordering::Acquire),
         }
     }
 
@@ -329,6 +380,8 @@ pub fn download_resumable(
 
     let mut ck = Checkpointer::new(options.checkpoints, url);
     let mut resumed_bytes = 0;
+    // One request until the ranges start: the probe, or the first lease of a resume.
+    control.running(1, false);
     let mut outcome = match from {
         Some(checkpoint) => {
             resumed_bytes = part.coverage.len();
@@ -361,6 +414,7 @@ pub fn download_resumable(
         resumed_bytes = 0;
         outcome = fetch_fresh(lp, url, options, &mut part, &mut ck, control);
     }
+    control.running(0, false);
     match outcome {
         Ok(fetched) => {
             let (written, wasted, sparse) = (part.written, part.wasted, part.sparse);
@@ -1028,7 +1082,11 @@ fn fetch_ranges(
             // The download ends; nothing waits to be retried.
             waiting.clear();
         }
-        let connections = control.connections(options.connections).min(throttled_to);
+        // What was asked for, within the engine's budget and what a throttling server left.
+        let connections = control
+            .connections(options.connections)
+            .min(control.allowed())
+            .min(throttled_to);
         // Fewer connections asked for: the newest requests stop.
         let mut live: Vec<LeaseId> = active
             .iter()
@@ -1042,6 +1100,7 @@ fn fetch_ranges(
             a.limit.stop_at(0);
         }
         // Fill the free connections, unless ranges stopped working for this download.
+        let mut file_bound = false;
         while failure.is_none()
             && changed.is_none()
             && !ranges_ignored
@@ -1059,7 +1118,11 @@ fn fetch_ranges(
                     splits += 1;
                     new
                 }
-                None => break,
+                None => {
+                    // Nothing unassigned, and no remainder large enough to split.
+                    file_bound = true;
+                    break;
+                }
             };
             fetches += 1;
             active.insert(
@@ -1067,6 +1130,7 @@ fn fetch_ranges(
                 request(lp, url, total, lease, tx.clone(), policy, control),
             );
         }
+        control.running(active.len() as u32, file_bound);
         if active.is_empty() {
             if waiting.is_empty() {
                 break;
@@ -1098,6 +1162,7 @@ fn fetch_ranges(
                     waiting.push(Instant::now() + wait);
                     if t.class == FailureClass::Throttled {
                         throttled_to = retry::after_throttling(connections);
+                        control.throttled_to.store(throttled_to, Ordering::Release);
                     }
                 }
                 None => failure = failure.take().or(Some(t)),
@@ -1227,6 +1292,7 @@ fn fetch_sequential(
     control: &Control,
     policy: &RetryPolicy,
 ) -> Result<(u32, u64, Mode), DownloadError> {
+    control.running(1, false);
     let mut fetches = 0;
     let mut anomalies = 0;
     let mut cursor = start;
@@ -1336,6 +1402,7 @@ fn stream_gaps(
     control: &Control,
     policy: &RetryPolicy,
 ) -> Result<(u64, u32), DownloadError> {
+    control.running(1, false);
     let mut retrier = Retrier::new(*policy);
     let mut fetches = 0;
     loop {

@@ -2,11 +2,14 @@
 //! (#37, #38): in the app's process, and as a child process speaking the framed protocol over
 //! stdio (#39). One test function per behaviour runs against both, so they can't drift apart.
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::Receiver;
 use std::time::{Duration, Instant};
 
-use velocity_core::domain::{DownloadKind, DownloadStatus, ErrorCode};
+use velocity_core::domain::{
+    ConnectionDetail, ConnectionLimit, DownloadKind, DownloadStatus, ErrorCode,
+};
 use velocity_core::transfer::{
     Checkpoint, DirectTransfer, Limits, TransferEvent, TransferId, TransferSnapshot, TransferSpec,
 };
@@ -569,6 +572,129 @@ fn connections_change_live_within_the_cap() {
         assert_eq!(
             from_zero, 1,
             "{mode}: only the probe asked for byte 0: no restart"
+        );
+    }
+}
+
+/// Reads events until `until`, keeping each transfer's latest snapshot.
+fn latest_until(
+    events: &Receiver<TransferEvent>,
+    latest: &mut HashMap<TransferId, TransferSnapshot>,
+    until: Instant,
+) {
+    while let Some(left) = until.checked_duration_since(Instant::now()) {
+        match events.recv_timeout(left) {
+            Ok(TransferEvent::Changed { snapshot }) => {
+                latest.insert(snapshot.id, snapshot);
+            }
+            Ok(_) => {}
+            Err(_) => return,
+        }
+    }
+}
+
+/// Jain's fairness index: 1 when all are equal, 1/n when one gets everything.
+fn jain(xs: &[f64]) -> f64 {
+    let sum: f64 = xs.iter().sum();
+    let squares: f64 = xs.iter().map(|x| x * x).sum();
+    sum * sum / (xs.len() as f64 * squares)
+}
+
+#[test]
+fn downloads_from_one_host_share_its_cap_fairly() {
+    // #47: 4 downloads each ask for 8 from one host with a cap of 8, so each is allowed 2. At
+    // 2 MiB/s per connection, a 24 MiB file takes about 6 s.
+    let data = seeded_bytes(24 << 20, 50);
+    for (mode, mut engine) in engines() {
+        let server = TestServer::start(
+            vec![("f.bin".into(), data.clone())],
+            ServerOptions {
+                throttle_bytes_per_sec: Some(2 << 20),
+                ..ServerOptions::default()
+            },
+        );
+        let cap = engine.capabilities().max_connections_per_host;
+        let dir = Dir::new(&format!("fair-{}", mode.replace(' ', "-")));
+        let events = engine.subscribe();
+        let ids: Vec<TransferId> = (0..4)
+            .map(|i| {
+                let mut s = spec(server.url("f.bin"), dir.0.join(format!("f{i}.bin")));
+                s.max_connections = cap;
+                engine.add(s).expect("add")
+            })
+            .collect();
+        let shared = ConnectionDetail {
+            requested: cap,
+            allowed: cap / 4,
+            limited_by: Some(ConnectionLimit::PerHostCap),
+        };
+        let mut latest = HashMap::new();
+        let deadline = Instant::now() + WAIT;
+        while !ids.iter().all(|id| {
+            latest
+                .get(id)
+                .is_some_and(|s: &TransferSnapshot| s.progress.connection_detail == Some(shared))
+        }) {
+            assert!(Instant::now() < deadline, "{mode}: {latest:?}");
+            latest_until(
+                &events,
+                &mut latest,
+                Instant::now() + Duration::from_millis(50),
+            );
+        }
+
+        // Settled: measure each download's bytes over 2 s.
+        latest_until(
+            &events,
+            &mut latest,
+            Instant::now() + Duration::from_millis(500),
+        );
+        let before: Vec<u64> = ids
+            .iter()
+            .map(|id| latest[id].progress.completed_bytes)
+            .collect();
+        latest_until(
+            &events,
+            &mut latest,
+            Instant::now() + Duration::from_secs(2),
+        );
+        let rates: Vec<f64> = ids
+            .iter()
+            .zip(&before)
+            .map(|(id, b)| (latest[id].progress.completed_bytes - b) as f64)
+            .collect();
+        let index = jain(&rates);
+        eprintln!("{mode}: bytes in 2 s {rates:?}, Jain's index {index:.3}");
+        assert!(
+            index >= 0.9,
+            "{mode}: Jain's index {index:.3} for {rates:?}"
+        );
+
+        // The events read so far may already hold some of the ends.
+        let ended = |s: &TransferSnapshot| {
+            matches!(s.status, DownloadStatus::Completed | DownloadStatus::Failed)
+        };
+        while !ids.iter().all(|id| ended(&latest[id])) {
+            assert!(Instant::now() < deadline, "{mode}: {latest:?}");
+            latest_until(
+                &events,
+                &mut latest,
+                Instant::now() + Duration::from_millis(50),
+            );
+        }
+        for id in &ids {
+            let done = &latest[id];
+            assert_eq!(
+                done.status,
+                DownloadStatus::Completed,
+                "{mode}: {:?}",
+                done.error
+            );
+        }
+        let peak = server.counters().peak_answering;
+        assert!(
+            peak <= cap,
+            "{mode}: {peak} responses at once, over the cap of {cap}"
         );
     }
 }

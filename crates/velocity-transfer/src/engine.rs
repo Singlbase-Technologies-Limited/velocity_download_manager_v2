@@ -21,7 +21,8 @@ use std::thread;
 use std::time::Instant;
 
 use velocity_core::domain::{
-    Capabilities, DownloadKind, DownloadStatus, ErrorCode, FailureClass, Progress, TransferError,
+    Capabilities, ConnectionDetail, ConnectionLimit, DownloadKind, DownloadStatus, ErrorCode,
+    FailureClass, Progress, TransferError,
 };
 use velocity_core::transfer::{
     Checkpoint, DirectTransfer, Limits, Resume, TransferEvent, TransferId, TransferSnapshot,
@@ -29,15 +30,22 @@ use velocity_core::transfer::{
 };
 use velocity_curl::{CurlLoop, Libcurl, LoopOptions, RateLimit};
 
+use crate::budget::{self, Demand, Share};
 use crate::download::{
-    download_resumable, part_path, wait_out, Cadence, Control, DownloadError, DownloadOptions,
+    download_resumable, part_path, wait_out, Cadence, ConnectionsNow, Control, DownloadError,
+    DownloadOptions,
 };
 use crate::files;
 use crate::retry::RetryPolicy;
 use crate::scheduler::Sizes;
 
-/// The most connections one transfer may use. A starting value for #47 to tune, not a requirement.
+/// The most connections to one host, which its transfers share, and so the most one transfer may
+/// use. Report section 5.5's starting value (8, at most 16; PO decision on #47), not a
+/// requirement; #30 makes it a setting.
 pub const MAX_CONNECTIONS: u32 = 8;
+/// The connections all transfers share, max-min fairly (V1's 48; PO decision on #47). A starting
+/// value; #30 makes it a setting.
+pub const CONNECTION_BUDGET: u32 = 48;
 /// The probe's size: the research report's hypothesis S = 4 MiB (section 5.1), to be measured.
 pub const PROBE_BYTES: u64 = 4 * 1024 * 1024;
 /// A progress event is sent at most once per this many new bytes (plus every status change).
@@ -73,6 +81,8 @@ struct Entry {
     last_checkpoint: Option<Checkpoint>,
     /// A worker thread is running the download.
     running: bool,
+    /// Its share of the connections while it runs (#47).
+    share: Share,
 }
 
 /// What a transfer downloads, kept to start a worker again after a pause.
@@ -97,6 +107,89 @@ impl State {
             self.emit(event);
         }
     }
+
+    /// Shares the connections between the running transfers again (#47), after one starts, ends
+    /// or asks for a different count. Each worker sees its new allowance at its next step; a
+    /// snapshot whose connection detail changed is announced.
+    fn rebalance(&mut self) {
+        let running: Vec<(TransferId, String, u32)> = self
+            .transfers
+            .iter()
+            .filter(|(_, e)| e.running)
+            .map(|(id, e)| (*id, host_of(&e.job.url), e.job.connections))
+            .collect();
+        let demands: Vec<Demand<'_>> = running
+            .iter()
+            .map(|(_, host, wants)| Demand {
+                host,
+                wants: *wants,
+            })
+            .collect();
+        let shares = budget::share(&demands, MAX_CONNECTIONS, CONNECTION_BUDGET);
+        let mut changed = Vec::new();
+        for ((id, _, _), share) in running.iter().zip(shares) {
+            let entry = self.transfers.get_mut(id).expect("running");
+            entry.share = share;
+            entry.control.allow(share.allowed);
+            let detail = Some(detail(
+                entry.job.connections,
+                share,
+                entry.control.connections_now(),
+            ));
+            if entry.snapshot.progress.connection_detail != detail {
+                entry.snapshot.progress.connection_detail = detail;
+                changed.push(*id);
+            }
+        }
+        for id in changed {
+            self.changed(id);
+        }
+    }
+}
+
+/// A running transfer's connection detail (#47): what it asked for, what it may use, and the
+/// tightest of the engine's share, a throttling server and the file's size.
+fn detail(requested: u32, share: Share, now: ConnectionsNow) -> ConnectionDetail {
+    let mut allowed = requested.min(share.allowed);
+    let mut limited_by = share.limited_by;
+    if let Some(t) = now.throttled_to.filter(|t| *t < allowed) {
+        allowed = t;
+        limited_by = Some(ConnectionLimit::ServerThrottling);
+    }
+    if now.file_bound && now.active < allowed {
+        allowed = now.active.max(1);
+        limited_by = Some(ConnectionLimit::FileSize);
+    }
+    ConnectionDetail {
+        requested,
+        allowed,
+        limited_by: limited_by.filter(|_| allowed < requested),
+    }
+}
+
+/// The host name and port a URL's connections go to, as libcurl's per-host cap counts them
+/// (`CURLMOPT_MAX_HOST_CONNECTIONS`: "a host name + port number pair"). The URL was checked by
+/// [`check_url`].
+fn host_of(url: &str) -> String {
+    let (scheme, rest) = url.split_once("://").unwrap_or(("", url));
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or("");
+    let host = authority
+        .rsplit_once('@')
+        .map_or(authority, |(_, host)| host)
+        .to_ascii_lowercase();
+    // A port follows the last colon, unless that colon is inside an IPv6 literal.
+    if host
+        .rsplit_once(':')
+        .is_some_and(|(_, port)| !port.contains(']'))
+    {
+        return host;
+    }
+    let port = if scheme.eq_ignore_ascii_case("https") {
+        443
+    } else {
+        80
+    };
+    format!("{host}:{port}")
 }
 
 fn finished(status: DownloadStatus) -> bool {
@@ -132,7 +225,11 @@ impl InProcessEngine {
 
     fn start_with_policy(first: TransferId, retry: RetryPolicy) -> Result<Self, String> {
         let libcurl = Libcurl::start().map_err(|e| e.to_string())?;
-        let curl = CurlLoop::start(&libcurl, LoopOptions::default()).map_err(|e| e.to_string())?;
+        let options = LoopOptions {
+            max_connections_per_host: MAX_CONNECTIONS as usize,
+            ..LoopOptions::default()
+        };
+        let curl = CurlLoop::start(&libcurl, options).map_err(|e| e.to_string())?;
         Ok(InProcessEngine {
             shared: Arc::new(Shared {
                 curl,
@@ -227,13 +324,14 @@ fn progress_reporter(
         *last = (written, Instant::now());
         let mut state = lock(&shared.state);
         if let Some(entry) = state.transfers.get_mut(&id) {
+            let now = entry.control.connections_now();
             let s = &mut entry.snapshot;
             s.status = DownloadStatus::Downloading;
             s.progress.completed_bytes = written;
             s.progress.total_bytes = total;
             s.progress.download_speed_bps = speed;
-            // The count asked for, which may have changed since the worker started (#47).
-            s.progress.connections = entry.job.connections;
+            s.progress.connections = now.active;
+            s.progress.connection_detail = Some(detail(entry.job.connections, entry.share, now));
             state.changed(id);
         }
     }
@@ -293,6 +391,10 @@ impl DirectTransfer for InProcessEngine {
                 limit: RateLimit::new(spec.limits.max_download_bps),
                 last_checkpoint: None,
                 running: false,
+                share: Share {
+                    allowed: connections,
+                    limited_by: None,
+                },
             },
         );
         state.changed(id);
@@ -387,10 +489,7 @@ impl DirectTransfer for InProcessEngine {
         // A running worker sees it at its next step; a later worker starts with it.
         entry.job.connections = applied;
         entry.control.set_connections(applied);
-        if entry.running {
-            entry.snapshot.progress.connections = applied;
-            state.changed(id);
-        }
+        state.rebalance();
         Ok(applied)
     }
 
@@ -430,7 +529,9 @@ fn start_worker(shared: &Arc<Shared>, id: TransferId, resume: Option<Resume>) {
             });
         entry.control = Arc::new(control);
         entry.running = true;
-        (entry.job.clone(), Arc::clone(&entry.control))
+        let job = (entry.job.clone(), Arc::clone(&entry.control));
+        state.rebalance();
+        job
     };
     let (job, control) = job;
     let worker = Arc::clone(shared);
@@ -592,10 +693,13 @@ fn ended(shared: &Shared, id: TransferId, change: impl FnOnce(&mut TransferSnaps
     if let Some(entry) = state.transfers.get_mut(&id) {
         change(&mut entry.snapshot);
         entry.running = false;
+        entry.snapshot.progress.connection_detail = None;
         if entry.snapshot.status != DownloadStatus::Paused {
             entry.last_checkpoint = None;
         }
         state.changed(id);
+        // Its connections go to the others.
+        state.rebalance();
     }
 }
 
@@ -622,5 +726,66 @@ mod tests {
             Err(ErrorCode::InvalidUrl)
         );
         assert_eq!(check_url("ht tp://example.com"), Err(ErrorCode::InvalidUrl));
+    }
+
+    #[test]
+    fn hosts_are_counted_by_name_and_port_as_libcurl_does() {
+        assert_eq!(host_of("https://Example.com/a.zip"), "example.com:443");
+        assert_eq!(host_of("http://example.com"), "example.com:80");
+        assert_eq!(host_of("http://example.com:8080/a"), "example.com:8080");
+        assert_eq!(host_of("https://user:pw@example.com/a"), "example.com:443");
+        assert_eq!(host_of("http://[::1]/a"), "[::1]:80");
+        assert_eq!(host_of("http://[::1]:8080/a"), "[::1]:8080");
+    }
+
+    fn now(active: u32, throttled_to: Option<u32>, file_bound: bool) -> ConnectionsNow {
+        ConnectionsNow {
+            active,
+            throttled_to,
+            file_bound,
+        }
+    }
+
+    fn share(allowed: u32, limited_by: Option<ConnectionLimit>) -> Share {
+        Share {
+            allowed,
+            limited_by,
+        }
+    }
+
+    #[test]
+    fn the_detail_names_the_tightest_limit() {
+        let detail_of = |requested, s, n| {
+            let d = detail(requested, s, n);
+            (d.allowed, d.limited_by)
+        };
+        assert_eq!(detail_of(4, share(4, None), now(4, None, false)), (4, None));
+        assert_eq!(
+            detail_of(
+                8,
+                share(4, Some(ConnectionLimit::PerHostCap)),
+                now(4, None, false)
+            ),
+            (4, Some(ConnectionLimit::PerHostCap))
+        );
+        // A throttling server below the share binds instead.
+        assert_eq!(
+            detail_of(
+                8,
+                share(4, Some(ConnectionLimit::SharedBudget)),
+                now(2, Some(2), false)
+            ),
+            (2, Some(ConnectionLimit::ServerThrottling))
+        );
+        // A file too small to split binds below both.
+        assert_eq!(
+            detail_of(8, share(8, None), now(3, Some(4), true)),
+            (3, Some(ConnectionLimit::FileSize))
+        );
+        // Throttled to more than was asked for: nothing holds it back.
+        assert_eq!(
+            detail_of(2, share(2, None), now(2, Some(4), false)),
+            (2, None)
+        );
     }
 }
