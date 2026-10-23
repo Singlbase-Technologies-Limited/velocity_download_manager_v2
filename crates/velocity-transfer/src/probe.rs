@@ -6,6 +6,8 @@
 use velocity_core::domain::{FailureClass, TransferError};
 use velocity_curl::ResponseHead;
 
+use crate::validator::Representation;
+
 /// What the probe's response says about the server.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ProbeOutcome {
@@ -28,9 +30,10 @@ pub enum SegmentRejection {
     /// disagrees with it, a multipart body, an unrequested encoding). Worth one more request; a
     /// second anomaly on the same download ends ranges for it (report section 5.1, step 7).
     Anomaly(TransferError),
-    /// A different total, or a `416` for a range inside the old total: the file on the server
-    /// isn't the one this download started (report section 5.3). Its old bytes are never mixed with
-    /// new ones; a resumed download starts over (#43), and validators extend this in #45.
+    /// A different total, a `416` for a range inside the old total, or another ETag or strong date
+    /// than the first answer gave, or none where it gave one (#45): the file on the server isn't
+    /// the one this download started (report section 5.3). Its old bytes are never mixed with new
+    /// ones.
     Changed(TransferError),
     /// An error status, or an answer that can't be used. The retry policy decides from its class
     /// (#48).
@@ -50,6 +53,7 @@ pub enum Continuation {
 pub fn check_continuation(
     head: &ResponseHead,
     start: u64,
+    file: &Representation,
 ) -> Result<Continuation, SegmentRejection> {
     status_error(head).map_err(SegmentRejection::Invalid)?;
     if head.status == 416 {
@@ -64,6 +68,9 @@ pub fn check_continuation(
         };
     }
     identity_encoding(head).map_err(SegmentRejection::Anomaly)?;
+    if matches!(head.status, 200 | 206) {
+        same_file(head, file)?;
+    }
     match head.status {
         200 => Err(SegmentRejection::RangesIgnored),
         206 => {
@@ -152,9 +159,15 @@ pub fn check_segment(
     start: u64,
     end: u64,
     total: u64,
+    file: &Representation,
 ) -> Result<u64, SegmentRejection> {
     status_error(head).map_err(SegmentRejection::Invalid)?;
     identity_encoding(head).map_err(SegmentRejection::Anomaly)?;
+    if matches!(head.status, 200 | 206) {
+        // A 200 to If-Range with other validators is the new file (RFC 9110 §13.1.5); with the
+        // same ones, the server stopped honouring ranges.
+        same_file(head, file)?;
+    }
     if head.status == 200 {
         return Err(SegmentRejection::RangesIgnored);
     }
@@ -189,6 +202,17 @@ pub fn check_segment(
     }
     check_length(head, got_start, got_end).map_err(SegmentRejection::Anomaly)?;
     Ok(got_end)
+}
+
+/// Refuses an answer about another file than the first answer was (report section 5.3, #45).
+fn same_file(head: &ResponseHead, file: &Representation) -> Result<(), SegmentRejection> {
+    file.check(head).map_err(|why| {
+        SegmentRejection::Changed(TransferError::new(
+            FailureClass::Permanent,
+            Some(head.status),
+            &why,
+        ))
+    })
 }
 
 /// Error statuses, classified with their messages (`failure::status_failure`, #48).
@@ -288,6 +312,11 @@ mod tests {
                 .collect(),
             http2: false,
         }
+    }
+
+    /// A file the first answer gave no validator for.
+    fn none() -> Representation {
+        Representation::default()
     }
 
     fn error(r: Result<ProbeOutcome, TransferError>) -> TransferError {
@@ -458,7 +487,7 @@ mod tests {
                 ("Content-Length", "1000"),
             ],
         );
-        assert_eq!(check_segment(&ok, 1000, 1999, 5000), Ok(1999));
+        assert_eq!(check_segment(&ok, 1000, 1999, 5000, &none()), Ok(1999));
         let short = head(
             206,
             &[
@@ -466,13 +495,19 @@ mod tests {
                 ("Content-Length", "500"),
             ],
         );
-        assert_eq!(check_segment(&short, 1000, 1999, 5000), Ok(1499));
+        assert_eq!(check_segment(&short, 1000, 1999, 5000, &none()), Ok(1499));
     }
 
     #[test]
     fn a_200_for_a_later_segment_means_ranges_were_lost() {
         assert_eq!(
-            check_segment(&head(200, &[("Content-Length", "5000")]), 1000, 1999, 5000),
+            check_segment(
+                &head(200, &[("Content-Length", "5000")]),
+                1000,
+                1999,
+                5000,
+                &none()
+            ),
             Err(SegmentRejection::RangesIgnored)
         );
     }
@@ -491,6 +526,7 @@ mod tests {
                 1000,
                 1999,
                 5000,
+                &none(),
             );
             assert!(
                 matches!(r, Err(SegmentRejection::Anomaly(_))),
@@ -499,7 +535,7 @@ mod tests {
         }
         let multipart = head(206, &[("Content-Type", "multipart/byteranges; boundary=x")]);
         assert!(matches!(
-            check_segment(&multipart, 1000, 1999, 5000),
+            check_segment(&multipart, 1000, 1999, 5000, &none()),
             Err(SegmentRejection::Anomaly(_))
         ));
     }
@@ -519,6 +555,7 @@ mod tests {
             1000,
             1999,
             5000,
+            &none(),
         );
         assert!(matches!(r, Err(SegmentRejection::Changed(_))), "{r:?}");
         let shorter = check_segment(
@@ -526,12 +563,13 @@ mod tests {
             1000,
             1999,
             5000,
+            &none(),
         );
         assert!(
             matches!(shorter, Err(SegmentRejection::Changed(_))),
             "{shorter:?}"
         );
-        let r = check_segment(&head(404, &[]), 1000, 1999, 5000);
+        let r = check_segment(&head(404, &[]), 1000, 1999, 5000, &none());
         assert!(
             matches!(
                 r,
@@ -548,7 +586,7 @@ mod tests {
     fn a_continuation_without_a_total_goes_on_until_a_416() {
         let more = head(206, &[("Content-Range", "bytes 1000-4999/*")]);
         assert_eq!(
-            check_continuation(&more, 1000),
+            check_continuation(&more, 1000, &none()),
             Ok(Continuation::More {
                 end: 4999,
                 total: None
@@ -556,7 +594,7 @@ mod tests {
         );
         let known = head(206, &[("Content-Range", "bytes 1000-4999/5000")]);
         assert_eq!(
-            check_continuation(&known, 1000),
+            check_continuation(&known, 1000, &none()),
             Ok(Continuation::More {
                 end: 4999,
                 total: Some(5000)
@@ -567,29 +605,91 @@ mod tests {
             head(416, &[("Content-Range", "bytes */1000")]),
             head(416, &[]),
         ] {
-            assert_eq!(check_continuation(&h, 1000), Ok(Continuation::End));
+            assert_eq!(check_continuation(&h, 1000, &none()), Ok(Continuation::End));
         }
     }
 
     #[test]
     fn a_continuation_that_doesnt_answer_its_start_is_refused() {
         assert!(matches!(
-            check_continuation(&head(206, &[("Content-Range", "bytes 0-999/*")]), 1000),
+            check_continuation(
+                &head(206, &[("Content-Range", "bytes 0-999/*")]),
+                1000,
+                &none()
+            ),
             Err(SegmentRejection::Anomaly(_))
         ));
         // A 416 that says the file is longer than where the request started contradicts itself.
         assert!(matches!(
-            check_continuation(&head(416, &[("Content-Range", "bytes */9000")]), 1000),
+            check_continuation(
+                &head(416, &[("Content-Range", "bytes */9000")]),
+                1000,
+                &none()
+            ),
             Err(SegmentRejection::Anomaly(_))
         ));
         assert_eq!(
-            check_continuation(&head(200, &[]), 1000),
+            check_continuation(&head(200, &[]), 1000, &none()),
             Err(SegmentRejection::RangesIgnored)
         );
         assert!(matches!(
-            check_continuation(&head(503, &[]), 1000),
+            check_continuation(&head(503, &[]), 1000, &none()),
             Err(SegmentRejection::Invalid(_))
         ));
+    }
+
+    /// A file whose first answer gave the strong ETag `"v1"`.
+    fn v1() -> Representation {
+        Representation::recorded(Some("\"v1\""), None)
+    }
+
+    #[test]
+    fn a_later_segment_of_another_file_is_changed() {
+        let range = [
+            ("Content-Range", "bytes 1000-1999/5000"),
+            ("Content-Length", "1000"),
+        ];
+        let with = |etag: Option<&str>| {
+            let mut headers = range.to_vec();
+            headers.extend(etag.map(|e| ("ETag", e)));
+            check_segment(&head(206, &headers), 1000, 1999, 5000, &v1())
+        };
+        assert_eq!(with(Some("\"v1\"")), Ok(1999));
+        for etag in [Some("\"v2\""), None] {
+            let r = with(etag);
+            assert!(
+                matches!(r, Err(SegmentRejection::Changed(_))),
+                "{etag:?}: {r:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_200_to_if_range_is_changed_unless_it_is_the_same_file() {
+        // RFC 9110 §13.1.5: a server whose file no longer matches If-Range answers 200 with the new
+        // one. A 200 with the same validator is a server that stopped honouring ranges.
+        let full = |etag: &str| head(200, &[("Content-Length", "5000"), ("ETag", etag)]);
+        let r = check_segment(&full("\"v2\""), 1000, 1999, 5000, &v1());
+        assert!(matches!(r, Err(SegmentRejection::Changed(_))), "{r:?}");
+        assert_eq!(
+            check_segment(&full("\"v1\""), 1000, 1999, 5000, &v1()),
+            Err(SegmentRejection::RangesIgnored)
+        );
+        let r = check_continuation(&full("\"v2\""), 1000, &v1());
+        assert!(matches!(r, Err(SegmentRejection::Changed(_))), "{r:?}");
+    }
+
+    #[test]
+    fn a_continuation_of_another_file_is_changed() {
+        let more = |etag: &str| {
+            head(
+                206,
+                &[("Content-Range", "bytes 1000-4999/*"), ("ETag", etag)],
+            )
+        };
+        assert!(check_continuation(&more("\"v1\""), 1000, &v1()).is_ok());
+        let r = check_continuation(&more("\"v2\""), 1000, &v1());
+        assert!(matches!(r, Err(SegmentRejection::Changed(_))), "{r:?}");
     }
 
     #[test]

@@ -41,6 +41,7 @@ use crate::probe::{
 };
 use crate::retry::{self, RetryPolicy};
 use crate::scheduler::{Assignment, Coverage, Lease, LeaseId, Scheduler, Sizes};
+use crate::validator::Representation;
 
 /// How often a waiting download checks whether it was cancelled.
 const CANCEL_CHECK: Duration = Duration::from_millis(100);
@@ -1032,7 +1033,7 @@ fn request(
     .limited(&control.limits);
     let fetch = lp.fetch(fetch_request, move |head: &ResponseHead| {
         asked.note(head);
-        let result = check_segment(head, a, b, total);
+        let result = check_segment(head, a, b, total, &Representation::default());
         let gate = match &result {
             Ok(_) => Gate::Accept,
             Err(SegmentRejection::RangesIgnored) => {
@@ -1402,7 +1403,7 @@ fn fetch_sequential(
             FetchRequest::range(url.to_owned(), from, None).limited(&control.limits),
             move |head: &ResponseHead| {
                 asked.note(head);
-                let result = check_continuation(head, from);
+                let result = check_continuation(head, from, &Representation::default());
                 let gate = match &result {
                     Ok(_) => Gate::Accept,
                     Err(SegmentRejection::RangesIgnored) => {

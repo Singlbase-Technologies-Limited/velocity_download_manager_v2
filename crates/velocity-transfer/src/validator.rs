@@ -37,6 +37,82 @@ pub fn choose(head: &ResponseHead) -> Option<Validator> {
     strong.then(|| Validator::LastModified(modified.to_owned()))
 }
 
+/// What the first answer said about the file, which every later answer of the download must agree
+/// with (report section 5.3). Validators belong to the file, not to the URL, so an answer that a
+/// redirect brought from elsewhere is held to the same.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Representation {
+    /// The entity tag, strong or weak, as sent.
+    pub etag: Option<String>,
+    /// The strong validator, sent as `If-Range`.
+    pub validator: Option<Validator>,
+}
+
+impl Representation {
+    /// What `head`, the first answer, says.
+    pub fn of(head: &ResponseHead) -> Self {
+        Representation {
+            etag: head
+                .header("etag")
+                .and_then(EntityTag::parse)
+                .map(|t| t.as_sent()),
+            validator: choose(head),
+        }
+    }
+
+    /// What a checkpoint recorded: its ETag, and its `Last-Modified`, which a checkpoint holds only
+    /// when it was the strong validator.
+    pub fn recorded(etag: Option<&str>, last_modified: Option<&str>) -> Self {
+        let tag = etag.and_then(EntityTag::parse);
+        let validator = match &tag {
+            Some(EntityTag { weak: false, tag }) => Some(Validator::ETag((*tag).to_owned())),
+            Some(EntityTag { weak: true, .. }) => None,
+            None => last_modified.map(|m| Validator::LastModified(m.to_owned())),
+        };
+        Representation {
+            etag: tag.map(|t| t.as_sent()),
+            validator,
+        }
+    }
+
+    /// The `If-Range` value: the strong validator, if there is one.
+    pub fn if_range(&self) -> Option<String> {
+        self.validator.as_ref().map(|v| match v {
+            Validator::ETag(tag) => tag.clone(),
+            Validator::LastModified(date) => date.clone(),
+        })
+    }
+
+    /// The `Last-Modified` date a checkpoint keeps: only a strong one.
+    pub fn last_modified(&self) -> Option<&str> {
+        match &self.validator {
+            Some(Validator::LastModified(date)) => Some(date),
+            _ => None,
+        }
+    }
+
+    /// Whether `head`, a later answer, is about the same file: `Err` says what changed.
+    pub fn check(&self, head: &ResponseHead) -> Result<(), String> {
+        if let Some(etag) = &self.etag {
+            // Compared as sent, so a weak tag never matches a strong one (RFC 9110 §8.8.3.2).
+            match head.header("etag").map(str::trim) {
+                Some(now) if now == etag => {}
+                Some(now) => return Err(format!("the file's ETag changed from {etag} to {now}")),
+                // Report section 5.3: conservative, as the server can no longer show it's the same.
+                None => return Err(format!("the server stopped sending the file's ETag {etag}")),
+            }
+        }
+        if let Some(date) = self.last_modified() {
+            match head.header("last-modified").map(str::trim) {
+                Some(now) if now == date => {}
+                Some(now) => return Err(format!("the file's date changed from {date} to {now}")),
+                None => return Err(format!("the server stopped sending the file's date {date}")),
+            }
+        }
+        Ok(())
+    }
+}
+
 /// An `ETag` value (RFC 9110 §8.8.3): `"opaque"` or `W/"opaque"`.
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) struct EntityTag<'a> {
@@ -59,6 +135,15 @@ impl<'a> EntityTag<'a> {
             .bytes()
             .all(|b| b == 0x21 || (0x23..=0x7E).contains(&b) || b >= 0x80);
         valid.then_some(EntityTag { weak, tag })
+    }
+
+    /// The tag as a server sends it, `W/` included when weak.
+    fn as_sent(&self) -> String {
+        if self.weak {
+            format!("W/{}", self.tag)
+        } else {
+            self.tag.to_owned()
+        }
     }
 }
 
@@ -140,5 +225,68 @@ mod tests {
     #[test]
     fn no_validator_without_either_header() {
         assert_eq!(choose(&head(&[])), None);
+    }
+
+    const LATER: &str = "Sun, 06 Nov 1994 09:00:00 GMT";
+
+    #[test]
+    fn a_later_answer_with_another_etag_is_another_file() {
+        let first = Representation::of(&head(&[("ETag", "\"v1\"")]));
+        assert_eq!(first.if_range().as_deref(), Some("\"v1\""));
+        assert_eq!(first.check(&head(&[("ETag", "\"v1\"")])), Ok(()));
+        assert_eq!(first.check(&head(&[("ETag", " \"v1\" ")])), Ok(()));
+        for other in ["\"v2\"", "W/\"v1\"", "garbage"] {
+            let e = first.check(&head(&[("ETag", other)])).expect_err(other);
+            assert!(e.contains("ETag"), "{other}: {e}");
+        }
+    }
+
+    #[test]
+    fn a_dropped_etag_counts_as_another_file() {
+        // Report section 5.3: conservative, as the server can no longer show it's the same.
+        let first = Representation::of(&head(&[("ETag", "\"v1\"")]));
+        let e = first.check(&head(&[])).expect_err("dropped");
+        assert!(e.contains("ETag"), "{e}");
+        // A weak tag can't go in If-Range, but a change or a drop still shows another file.
+        let weak = Representation::of(&head(&[("ETag", "W/\"v1\"")]));
+        assert_eq!(weak.if_range(), None);
+        assert_eq!(weak.check(&head(&[("ETag", "W/\"v1\"")])), Ok(()));
+        assert!(weak.check(&head(&[("ETag", "W/\"v2\"")])).is_err());
+        assert!(weak.check(&head(&[])).is_err());
+    }
+
+    #[test]
+    fn a_later_answer_with_another_strong_date_is_another_file() {
+        let first = Representation::of(&head(&[("Last-Modified", MODIFIED), ("Date", LATER)]));
+        assert_eq!(first.if_range().as_deref(), Some(MODIFIED));
+        assert_eq!(first.last_modified(), Some(MODIFIED));
+        assert_eq!(first.check(&head(&[("Last-Modified", MODIFIED)])), Ok(()));
+        let other = "Mon, 07 Nov 1994 08:49:37 GMT";
+        assert!(first.check(&head(&[("Last-Modified", other)])).is_err());
+        assert!(first.check(&head(&[])).is_err());
+    }
+
+    #[test]
+    fn without_a_validator_any_later_answer_agrees() {
+        // ADR-0010: only the total is left to compare, which the segment checks do.
+        let weak_date = Representation::of(&head(&[("Last-Modified", MODIFIED)]));
+        assert_eq!(weak_date, Representation::default());
+        assert_eq!(weak_date.last_modified(), None);
+        let later = head(&[("ETag", "\"new\""), ("Last-Modified", LATER)]);
+        assert_eq!(weak_date.check(&later), Ok(()));
+    }
+
+    #[test]
+    fn a_checkpoint_restores_what_the_first_answer_said() {
+        let strong = Representation::of(&head(&[("ETag", "\"v1\"")]));
+        assert_eq!(Representation::recorded(Some("\"v1\""), None), strong);
+        let weak = Representation::of(&head(&[("ETag", "W/\"v1\"")]));
+        assert_eq!(Representation::recorded(Some("W/\"v1\""), None), weak);
+        let dated = Representation::of(&head(&[("Last-Modified", MODIFIED), ("Date", LATER)]));
+        assert_eq!(Representation::recorded(None, Some(MODIFIED)), dated);
+        assert_eq!(
+            Representation::recorded(None, None),
+            Representation::default()
+        );
     }
 }
