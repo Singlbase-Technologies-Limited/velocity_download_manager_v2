@@ -5,7 +5,9 @@ use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpStream;
 use std::time::Duration;
 
-use velocity_test_http::{seeded_bytes, RangeMode, ServerOptions, TestServer};
+use velocity_test_http::{
+    seeded_bytes, FirstStatuses, Freeze, RangeMode, ServerOptions, TestServer,
+};
 
 /// One parsed HTTP/1.1 response.
 struct Response {
@@ -238,4 +240,95 @@ fn redirects_a_configured_path() {
     let r = request(&mut connect(&s), "GET", "/go", &[]);
     assert_eq!(r.status, 302);
     assert_eq!(r.header("Location"), Some("file:///etc/passwd"));
+}
+
+fn server_with(options: ServerOptions) -> (TestServer, Vec<u8>) {
+    let data = seeded_bytes(SIZE, 7);
+    (
+        TestServer::start(vec![("file.bin".into(), data.clone())], options),
+        data,
+    )
+}
+
+#[test]
+fn answers_the_first_requests_with_a_status_and_its_retry_after() {
+    let (s, data) = server_with(ServerOptions {
+        first_statuses: Some(FirstStatuses {
+            status: 429,
+            count: 2,
+            retry_after: Some("5".into()),
+        }),
+        ..ServerOptions::default()
+    });
+    let mut c = connect(&s);
+    for _ in 0..2 {
+        let r = request(&mut c, "GET", "/file.bin", &[]);
+        assert_eq!((r.status, r.header("Retry-After")), (429, Some("5")));
+    }
+    let r = request(&mut c, "GET", "/file.bin", &[]);
+    assert_eq!(r.status, 200);
+    assert!(r.body == data);
+    let counters = s.counters();
+    assert_eq!(counters.request_times.len(), 3);
+    assert!(counters.request_times.windows(2).all(|w| w[0] <= w[1]));
+}
+
+#[test]
+fn drops_the_first_connections_without_answering() {
+    let (s, _) = server_with(ServerOptions {
+        drop_first: 1,
+        ..ServerOptions::default()
+    });
+    let mut c = connect(&s);
+    c.write_all(b"GET /file.bin HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n")
+        .unwrap();
+    let mut buf = [0u8; 16];
+    // Closed without a byte of answer: end of stream, or a reset on some systems.
+    assert!(matches!(c.read(&mut buf), Ok(0) | Err(_)));
+    assert_eq!(
+        request(&mut connect(&s), "GET", "/file.bin", &[]).status,
+        200
+    );
+    assert_eq!((s.counters().dropped, s.counters().gets), (1, 2));
+}
+
+#[test]
+fn freezes_the_first_later_range_after_some_bytes() {
+    let hold = Duration::from_millis(800);
+    let (s, data) = server_with(ServerOptions {
+        freeze_later_range: Some(Freeze { after: 1000, hold }),
+        ..ServerOptions::default()
+    });
+    let mut c = connect(&s);
+    c.write_all(b"GET /file.bin HTTP/1.1\r\nHost: 127.0.0.1\r\nRange: bytes=5000-\r\n\r\n")
+        .unwrap();
+    let started = std::time::Instant::now();
+    let mut got = Vec::new();
+    let mut buf = [0u8; 4096];
+    loop {
+        match c.read(&mut buf) {
+            Ok(0) | Err(_) => break,
+            Ok(n) => got.extend_from_slice(&buf[..n]),
+        }
+    }
+    assert!(started.elapsed() >= hold, "{:?}", started.elapsed());
+    let body_at = got
+        .windows(4)
+        .position(|w| w == [13, 10, 13, 10]) // the CRLF CRLF that ends the head
+        .expect("a head")
+        + 4;
+    assert!(got.starts_with(b"HTTP/1.1 206"), "{:?}", &got[..12]);
+    assert!(
+        got[body_at..] == data[5000..6000],
+        "only the first 1000 bytes, then nothing"
+    );
+    assert!(s.counters().frozen);
+    // Only the first later range freezes.
+    let r = request(
+        &mut connect(&s),
+        "GET",
+        "/file.bin",
+        &[("Range", "bytes=5000-")],
+    );
+    assert!(r.body == data[5000..]);
 }

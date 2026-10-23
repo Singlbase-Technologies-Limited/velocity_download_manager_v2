@@ -6,5 +6,10 @@ edition.workspace = true
 publish.workspace = true
 rust-version.workspace = true
 
-# Standard library only, so the engine's correctness tests need no new dependency (#37).
+# Standard library only, so the engine's correctness tests need no new dependency (#37); on
+# Windows also windows-sys, already approved, to freeze a process in the hung-engine test (PO
+# decision on #48, 2026-10-23).
 [dependencies]
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { workspace = true, features = ["Win32_System_Diagnostics_Debug"] }

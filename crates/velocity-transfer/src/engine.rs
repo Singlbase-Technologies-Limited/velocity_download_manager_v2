@@ -5,6 +5,9 @@
 //!
 //! - **Pause** stops the worker and keeps the part file, after a last checkpoint; **resume** starts
 //!   a new worker from that checkpoint (#43).
+//! - **Retries** (#48): the downloader retries its own requests; a download that still fails in a
+//!   way worth retrying is started again by its worker, up to the policy's limit, and the snapshot
+//!   shows Retrying while it waits and Stalled while no bytes come.
 //! - What it can't do yet is refused, not faked: limits need #49, and live connection changes need
 //!   #47, so those commands return `Unsupported` and `capabilities()` says so.
 
@@ -25,9 +28,10 @@ use velocity_core::transfer::{
 use velocity_curl::{CurlLoop, Libcurl, LoopOptions};
 
 use crate::download::{
-    download_resumable, part_path, Cadence, Control, DownloadError, DownloadOptions,
+    download_resumable, part_path, wait_out, Cadence, Control, DownloadError, DownloadOptions,
 };
 use crate::files;
+use crate::retry::RetryPolicy;
 use crate::scheduler::Sizes;
 
 /// The most connections one transfer may use. A starting value for #47 to tune, not a requirement.
@@ -44,6 +48,8 @@ pub struct InProcessEngine {
 struct Shared {
     curl: CurlLoop,
     state: Mutex<State>,
+    /// When downloads retry and wait (#48); the user's settings once #30 passes them.
+    retry: RetryPolicy,
 }
 
 #[derive(Default)]
@@ -110,6 +116,15 @@ impl InProcessEngine {
     /// Starts the engine with `first` as the first transfer id it assigns. A child process gets
     /// it from the app, so a restarted engine never reuses an earlier engine's ids (#39).
     pub fn start_from(first: TransferId) -> Result<Self, String> {
+        Self::start_with_policy(first, RetryPolicy::DEFAULT)
+    }
+
+    /// Starts the engine with `retry` in place of [`RetryPolicy::DEFAULT`].
+    pub fn start_with(retry: RetryPolicy) -> Result<Self, String> {
+        Self::start_with_policy(TransferId(1), retry)
+    }
+
+    fn start_with_policy(first: TransferId, retry: RetryPolicy) -> Result<Self, String> {
         let libcurl = Libcurl::start().map_err(|e| e.to_string())?;
         let curl = CurlLoop::start(&libcurl, LoopOptions::default()).map_err(|e| e.to_string())?;
         Ok(InProcessEngine {
@@ -119,6 +134,7 @@ impl InProcessEngine {
                     next_id: first.0.saturating_sub(1),
                     ..State::default()
                 }),
+                retry,
             }),
         })
     }
@@ -318,20 +334,12 @@ impl DirectTransfer for InProcessEngine {
             return Ok(());
         }
         // Paused: no worker holds the part file, so it is discarded here.
-        let part = part_path(&entry.job.destination);
-        match files::remove_part(&part) {
-            Ok(()) => {}
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-            Err(e) => {
-                entry.snapshot.status = DownloadStatus::Failed;
-                entry.snapshot.error = Some(TransferError::new(
-                    FailureClass::Permanent,
-                    None,
-                    &format!("couldn't remove {}: {e}", part.display()),
-                ));
-                state.changed(id);
-                return Ok(());
-            }
+        if let Err(DownloadError::Io(message)) = discard_part(&entry.job.destination) {
+            entry.snapshot.status = DownloadStatus::Failed;
+            entry.snapshot.error =
+                Some(TransferError::new(FailureClass::Permanent, None, &message));
+            state.changed(id);
+            return Ok(());
         }
         entry.snapshot.status = DownloadStatus::Removed;
         entry.last_checkpoint = None;
@@ -384,6 +392,7 @@ fn start_worker(shared: &Arc<Shared>, id: TransferId, resume: Option<Resume>) {
         };
         let reporter = Arc::clone(shared);
         let control = Control::with_progress(progress_reporter(shared, id, entry.job.connections))
+            .with_status(status_reporter(shared, id))
             .with_checkpoints(move |checkpoint| {
                 let mut state = lock(&reporter.state);
                 if let Some(entry) = state.transfers.get_mut(&id) {
@@ -412,7 +421,9 @@ fn start_worker(shared: &Arc<Shared>, id: TransferId, resume: Option<Resume>) {
     }
 }
 
-/// A transfer's worker: runs the download and reports how it ended.
+/// A transfer's worker: runs the download and reports how it ended. A download that fails in a
+/// way worth retrying is started again after a wait, at most [`RetryPolicy::download_retries`]
+/// times (V1's `app_retries`, #48), from its last checkpoint when it has one.
 fn run(shared: &Shared, id: TransferId, job: &Job, resume: Option<&Resume>, control: &Control) {
     update(shared, id, |s| s.status = DownloadStatus::Connecting);
     let options = DownloadOptions {
@@ -420,15 +431,52 @@ fn run(shared: &Shared, id: TransferId, job: &Job, resume: Option<&Resume>, cont
         probe_bytes: PROBE_BYTES,
         leases: Sizes::DEFAULT,
         checkpoints: Cadence::DEFAULT,
+        retry: shared.retry,
     };
-    let result = download_resumable(
-        &shared.curl,
-        &job.url,
-        &job.destination,
-        options,
-        resume,
-        control,
-    );
+    let mut resume = resume.cloned();
+    let mut restarts = 0;
+    let result = loop {
+        let result = download_resumable(
+            &shared.curl,
+            &job.url,
+            &job.destination,
+            options,
+            resume.as_ref(),
+            control,
+        );
+        let Err(DownloadError::Transfer(e)) = &result else {
+            break result;
+        };
+        restarts += 1;
+        let Some(wait) = shared.retry.download_wait(e.class, restarts) else {
+            break result;
+        };
+        let mut waiting = e.clone();
+        waiting.message = format!(
+            "{} Retrying automatically ({restarts} of {}).",
+            e.message, shared.retry.download_retries
+        );
+        update(shared, id, |s| {
+            s.status = DownloadStatus::Retrying;
+            s.error = Some(waiting);
+            s.progress.download_speed_bps = 0;
+        });
+        if let Err(stopped) = wait_out(control, wait) {
+            if matches!(stopped, DownloadError::Cancelled) {
+                // A failure that had a checkpoint kept the part file for this restart.
+                if let Err(e) = discard_part(&job.destination) {
+                    break Err(e);
+                }
+            }
+            break Err(stopped);
+        }
+        // From the last checkpoint; without one, the part file is this transfer's own and the
+        // download starts over (PO decision on #43).
+        resume = Some(match last_checkpoint(shared, id) {
+            Some(checkpoint) => Resume::Checkpoint { checkpoint },
+            None => Resume::DiscardPartFile {},
+        });
+    };
     ended(shared, id, |s| {
         s.progress.download_speed_bps = 0;
         s.progress.connections = 0;
@@ -459,6 +507,46 @@ fn run(shared: &Shared, id: TransferId, job: &Job, resume: Option<&Resume>, cont
             }
         }
     });
+}
+
+/// The last checkpoint transfer `id` sent.
+fn last_checkpoint(shared: &Shared, id: TransferId) -> Option<Checkpoint> {
+    lock(&shared.state)
+        .transfers
+        .get(&id)
+        .and_then(|e| e.last_checkpoint.clone())
+}
+
+/// Removes the part file of a download whose worker is stopping; there may be none.
+fn discard_part(destination: &std::path::Path) -> Result<(), DownloadError> {
+    let part = part_path(destination);
+    match files::remove_part(&part) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(DownloadError::Io(format!(
+            "couldn't remove {}: {e}",
+            part.display()
+        ))),
+    }
+}
+
+/// Turns the downloader's status changes into snapshots: Retrying and Stalled carry no speed, and
+/// Downloading again clears the error of a wait that is over.
+fn status_reporter(
+    shared: &Arc<Shared>,
+    id: TransferId,
+) -> impl Fn(DownloadStatus) + Send + Sync + 'static {
+    let shared = Arc::clone(shared);
+    move |status| {
+        update(&shared, id, |s| {
+            s.status = status;
+            if status == DownloadStatus::Downloading {
+                s.error = None;
+            } else {
+                s.progress.download_speed_bps = 0;
+            }
+        })
+    }
 }
 
 /// Applies `change` to a transfer's snapshot and announces it, unless the transfer was removed.

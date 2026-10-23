@@ -4,6 +4,10 @@
 //! - **Crashes:** when the engine's stdout ends, the supervisor reports every transfer that was
 //!   running as Failed with a retryable error, and starts a new engine after a backoff. The part
 //!   files stay on disk for checkpoints to resume from (#43).
+//! - **Hangs** (#48): an engine that stops answering, without exiting, is checked every few
+//!   seconds; after a few checks in a row go unanswered, it is killed and handled like a crash.
+//!   A worker waiting on a slow disk doesn't hold up the answers: the engine answers commands on
+//!   its own thread, and its workers write without holding the engine's state.
 //! - **The cap:** more than [`SupervisorOptions::max_restarts`] crashes within the restart window
 //!   leave the engine unavailable until [`SupervisedEngine::restart`] is called, the "Restart
 //!   transfer engine" action. An engine that is missing or doesn't match the app is unavailable
@@ -33,17 +37,27 @@ use crate::stdio::{ChildProcessEngine, SpawnOptions};
 
 /// What a transfer that a crash lost fails with.
 const CRASH_MESSAGE: &str = "the transfer engine stopped unexpectedly";
+/// What a transfer fails with when its engine stopped responding and was killed.
+const HUNG_MESSAGE: &str = "the transfer engine stopped responding and was restarted";
+/// How often a watchdog checks whether its engine was replaced.
+const WATCH_STEP: Duration = Duration::from_millis(50);
 /// What a transfer fails with when the engine is restarted by hand.
 const RESTART_MESSAGE: &str = "the transfer engine was restarted";
 
 /// How the supervisor restarts the engine. The defaults are V1's: at most 5 restarts within 5
-/// minutes, waiting 1, 2, 4, 8 and 16 seconds before each (up to 32).
+/// minutes, waiting 1, 2, 4, 8 and 16 seconds before each (up to 32). An engine that stops
+/// answering is restarted too (#48): it is asked for its state every `check_every`, and after
+/// `missed_checks` checks in a row without an answer within `check_timeout`, it is killed. The
+/// check values are starting values (PO decision on #48).
 #[derive(Debug, Clone)]
 pub struct SupervisorOptions {
     pub max_restarts: usize,
     pub restart_window: Duration,
     pub first_backoff: Duration,
     pub max_backoff: Duration,
+    pub check_every: Duration,
+    pub check_timeout: Duration,
+    pub missed_checks: u32,
 }
 
 impl Default for SupervisorOptions {
@@ -53,6 +67,9 @@ impl Default for SupervisorOptions {
             restart_window: Duration::from_secs(300),
             first_backoff: Duration::from_secs(1),
             max_backoff: Duration::from_secs(32),
+            check_every: Duration::from_secs(5),
+            check_timeout: Duration::from_secs(5),
+            missed_checks: 2,
         }
     }
 }
@@ -60,10 +77,8 @@ impl Default for SupervisorOptions {
 impl SupervisorOptions {
     /// The wait before restart number `attempt` (from 1): doubling from the first backoff.
     fn backoff(&self, attempt: usize) -> Duration {
-        let doublings = attempt.saturating_sub(1).min(16) as u32;
-        self.first_backoff
-            .saturating_mul(1 << doublings)
-            .min(self.max_backoff)
+        let step = u32::try_from(attempt).unwrap_or(u32::MAX);
+        crate::retry::doubled(self.first_backoff, step).min(self.max_backoff)
     }
 }
 
@@ -86,6 +101,8 @@ pub enum EngineHealth {
 enum Signal {
     /// The engine of this generation stopped: its stdout ended or broke the protocol.
     Stopped(u64),
+    /// The engine of this generation stopped answering.
+    Hung(u64),
     Restart,
     Stop,
 }
@@ -216,8 +233,45 @@ impl Shared {
             self.retire(Some(generation), CRASH_MESSAGE);
             return Err(ErrorCode::EngineStartFailed);
         }
+        self.watch(generation, engine);
         self.state().set_health(EngineHealth::Running);
         Ok(())
+    }
+
+    /// Checks the engine of `generation` every `check_every` until it is replaced, and reports
+    /// it as hung after `missed_checks` checks in a row go unanswered.
+    fn watch(self: &Arc<Self>, generation: u64, engine: Arc<ChildProcessEngine>) {
+        let shared = Arc::clone(self);
+        let watchdog = thread::Builder::new()
+            .name("velocity-engine-watchdog".into())
+            .spawn(move || {
+                let options = &shared.options;
+                let mut missed = 0;
+                loop {
+                    let next = Instant::now() + options.check_every;
+                    while Instant::now() < next {
+                        if shared.state().generation != generation {
+                            return;
+                        }
+                        thread::sleep(WATCH_STEP.min(options.check_every));
+                    }
+                    if engine.answers_within(options.check_timeout) {
+                        missed = 0;
+                        continue;
+                    }
+                    missed += 1;
+                    if missed >= options.missed_checks.max(1) {
+                        // The supervisor may have stopped already; then nobody needs to know.
+                        let _ = shared.control.send(Signal::Hung(generation));
+                        return;
+                    }
+                }
+            });
+        if watchdog.is_err() {
+            // Not fatal: crashes are still noticed, only a hang isn't. Said in the engine's log.
+            self.log
+                .push("the engine watchdog couldn't start; a hung engine won't be restarted");
+        }
     }
 
     fn forward(&self, generation: u64, event: TransferEvent) {
@@ -289,7 +343,7 @@ impl Shared {
                 match signals.recv_timeout(self.options.backoff(attempt)) {
                     Ok(Signal::Stop) | Err(RecvTimeoutError::Disconnected) => return false,
                     Ok(Signal::Restart) => self.state().crashes.clear(),
-                    Ok(Signal::Stopped(_)) | Err(RecvTimeoutError::Timeout) => {}
+                    Ok(Signal::Stopped(_) | Signal::Hung(_)) | Err(RecvTimeoutError::Timeout) => {}
                 }
             }
             match self.spawn().and_then(|engine| self.install(engine)) {
@@ -311,6 +365,15 @@ impl Shared {
                 Ok(Signal::Stop) | Err(_) => return,
                 Ok(Signal::Stopped(generation)) => {
                     if !self.retire(Some(generation), CRASH_MESSAGE) {
+                        continue;
+                    }
+                    self.state().crashes.push_back(Instant::now());
+                    self.recover(&signals)
+                }
+                // Stopping it kills it, as it can't answer a request to exit. Its stdout then
+                // ends too, but that stop signal belongs to a retired generation and is ignored.
+                Ok(Signal::Hung(generation)) => {
+                    if !self.retire(Some(generation), HUNG_MESSAGE) {
                         continue;
                     }
                     self.state().crashes.push_back(Instant::now());

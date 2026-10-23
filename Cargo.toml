@@ -27,6 +27,11 @@ libc = "=0.2.191"
 # Property tests for the range scheduler, test-only (PO-approved on #42, 2026-10-23). 1.11.0 over
 # 1.12.0, released 2026-10-10. Without default features: no fork or timeout support.
 proptest = { version = "=1.11.0", default-features = false, features = ["std"] }
+# HTTP dates in `Retry-After` for the engine (PO-approved on #48, 2026-10-23). No dependencies of its own.
+httpdate = "=1.0.3"
+# Random spread (jitter) for the engine's retry waits (PO-approved on #48, 2026-10-23). Not for
+# anything security-related. The same version Tauri's build already brought.
+fastrand = "=2.5.0"
 # libcurl's C API, for crates/velocity-curl only (PO-approved on #35, 2026-10-22). Its bundled
 # build never runs: .cargo/config.toml overrides it, and velocity-curl links the Velocity-built
 # libcurl (docs/BUILDING_NATIVE.md). No default features, so it pulls in no openssl-sys.
