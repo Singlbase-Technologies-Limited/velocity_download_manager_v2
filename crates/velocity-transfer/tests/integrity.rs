@@ -7,10 +7,10 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use sha2::{Digest, Sha256};
-use velocity_core::domain::{DownloadStatus, FailureClass};
-use velocity_core::transfer::{Checkpoint, Checksum, HashAlgorithm, Resume};
+use velocity_core::domain::{DownloadStatus, FailureClass, Verification};
+use velocity_core::transfer::{Checkpoint, Checksum, HashAlgorithm, Resume, CHECKPOINT_FORMAT};
 use velocity_curl::{CurlLoop, Libcurl, LoopOptions};
-use velocity_test_http::{seeded_bytes, RangeMode, ServerOptions, TestServer};
+use velocity_test_http::{seeded_bytes, FileHeaders, RangeMode, ServerOptions, TestServer};
 use velocity_transfer::download::{
     download_resumable, Cadence, Control, DownloadError, DownloadOptions, DownloadReport, Mode,
 };
@@ -138,6 +138,7 @@ fn a_correct_checksum_completes_a_download_whose_segments_arrive_out_of_order() 
         Some(&sha256(&data)),
     );
     let report = run.result.expect("the download completes");
+    assert_eq!(report.verification, Verification::Verified);
     assert_eq!(report.mode, Mode::Ranges);
     assert!(
         report.splits >= 1,
@@ -222,6 +223,7 @@ fn after_a_wrong_checksum_a_retry_downloads_the_file_again() {
         Some(&sha256(&data)),
     );
     let report = retried.result.expect("the retry completes");
+    assert_eq!(report.verification, Verification::Verified);
     assert_eq!(
         report.resumed_bytes, 0,
         "no byte of the failed file is trusted"
@@ -251,6 +253,7 @@ fn a_checksum_is_checked_on_a_single_stream_and_on_an_empty_file() {
         .result
         .expect("the stream completes");
     assert_eq!(report.mode, Mode::SingleStream);
+    assert_eq!(report.verification, Verification::Verified);
     assert!(std::fs::read(&ok).unwrap() == data);
 
     let bad = dir.0.join("bad.bin");
@@ -273,4 +276,85 @@ fn a_checksum_is_checked_on_a_single_stream_and_on_an_empty_file() {
         .result
         .expect("an empty file matches the digest of nothing");
     assert_eq!(std::fs::read(&empty).unwrap(), b"");
+}
+
+/// A part file holding the first half of `data` in place, and a checkpoint that trusts it, with
+/// `etag` as the file's recorded validator.
+fn half_done(url: &str, dest: &Path, data: &[u8], etag: Option<&str>) -> Resume {
+    let half = data.len() / 2;
+    let mut part = vec![0; data.len()];
+    part[..half].copy_from_slice(&data[..half]);
+    std::fs::write(part_of(dest), part).unwrap();
+    Resume::Checkpoint {
+        checkpoint: Checkpoint {
+            format: CHECKPOINT_FORMAT,
+            source: Checkpoint::source_of(url),
+            total: data.len() as u64,
+            etag: etag.map(str::to_owned),
+            last_modified: None,
+            content_encoding: None,
+            durable: vec![(0, half as u64)],
+        },
+    }
+}
+
+#[test]
+fn the_report_says_what_was_proven_about_the_bytes() {
+    // ADR-0010: a resume without a strong validator is "not verified", unless a checksum is
+    // checked; anything else complete without a checksum is "size verified".
+    const LEN: usize = 300_000;
+    let data = seeded_bytes(LEN, 50);
+    let plain = TestServer::start(
+        vec![("f.bin".into(), data.clone())],
+        ServerOptions::default(),
+    );
+    let tagged = TestServer::start(
+        vec![("f.bin".into(), data.clone())],
+        ServerOptions {
+            file_headers: FileHeaders {
+                etag: Some("\"v1\"".to_owned()),
+                ..FileHeaders::default()
+            },
+            ..ServerOptions::default()
+        },
+    );
+    let dir = Dir::new("proven");
+    let digest = sha256(&data);
+    let verification = |url: &str, name: &str, resume: Option<&Resume>, checksum| {
+        let dest = dir.0.join(name);
+        let report = run(url, &dest, OPTIONS, resume, checksum)
+            .result
+            .unwrap_or_else(|e| panic!("{name}: {e:?}"));
+        assert!(std::fs::read(&dest).unwrap() == data, "{name}");
+        let trusted = if resume.is_some() { LEN as u64 / 2 } else { 0 };
+        assert_eq!(
+            report.resumed_bytes, trusted,
+            "{name}: resumed from the half on disk"
+        );
+        report.verification
+    };
+    let url = plain.url("f.bin");
+    assert_eq!(
+        verification(&url, "fresh.bin", None, None),
+        Verification::SizeVerified
+    );
+
+    let r = half_done(&url, &dir.0.join("resumed.bin"), &data, None);
+    assert_eq!(
+        verification(&url, "resumed.bin", Some(&r), None),
+        Verification::NotVerified
+    );
+
+    let r = half_done(&url, &dir.0.join("checked.bin"), &data, None);
+    assert_eq!(
+        verification(&url, "checked.bin", Some(&r), Some(&digest)),
+        Verification::Verified
+    );
+
+    let url = tagged.url("f.bin");
+    let r = half_done(&url, &dir.0.join("tagged.bin"), &data, Some("\"v1\""));
+    assert_eq!(
+        verification(&url, "tagged.bin", Some(&r), None),
+        Verification::SizeVerified
+    );
 }

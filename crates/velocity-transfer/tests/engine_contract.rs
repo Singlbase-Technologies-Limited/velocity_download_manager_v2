@@ -9,7 +9,7 @@ use std::sync::{Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
 use velocity_core::domain::{
-    ConnectionDetail, ConnectionLimit, DownloadKind, DownloadStatus, ErrorCode,
+    ConnectionDetail, ConnectionLimit, DownloadKind, DownloadStatus, ErrorCode, Verification,
 };
 use velocity_core::transfer::{
     Checkpoint, Checksum, DirectTransfer, HashAlgorithm, Limits, TransferEvent, TransferId,
@@ -136,6 +136,11 @@ fn downloads_a_file_and_reports_completion() {
             (800_000, Some(800_000)),
             "{mode}"
         );
+        assert_eq!(
+            done.verification,
+            Some(Verification::SizeVerified),
+            "{mode}: complete without a checksum"
+        );
         assert!(
             std::fs::read(&dest).unwrap() == data,
             "{mode}: the file differs from the source"
@@ -178,6 +183,7 @@ fn checks_a_checksum_before_reporting_completion() {
             matches!(s, DownloadStatus::Completed | DownloadStatus::Failed)
         });
         assert_eq!(done.status, DownloadStatus::Completed, "{mode}: {done:?}");
+        assert_eq!(done.verification, Some(Verification::Verified), "{mode}");
         assert!(std::fs::read(&dest).unwrap() == data, "{mode}");
 
         let dest = dir.0.join("bad.bin");
@@ -194,6 +200,7 @@ fn checks_a_checksum_before_reporting_completion() {
         });
         let seen = seen.into_inner();
         assert_eq!(done.status, DownloadStatus::Failed, "{mode}: {done:?}");
+        assert_eq!(done.verification, None, "{mode}");
         let message = done.error.map(|e| e.message).unwrap_or_default();
         assert!(message.contains("SHA-256 checksum"), "{mode}: {message}");
         assert!(

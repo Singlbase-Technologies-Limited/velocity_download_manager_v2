@@ -26,7 +26,7 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime};
 
-use velocity_core::domain::{DownloadStatus, FailureClass, TransferError};
+use velocity_core::domain::{DownloadStatus, FailureClass, TransferError, Verification};
 use velocity_core::transfer::{Checkpoint, Checksum, HashAlgorithm, Resume, CHECKPOINT_FORMAT};
 use velocity_curl::{
     CurlLoop, Fetch, FetchError, FetchEvent, FetchLimit, FetchRequest, Gate, RateLimit,
@@ -327,6 +327,8 @@ pub struct DownloadReport {
     /// The most requests it had open at once, ones being stopped included (#154). A server can
     /// count one more for a moment: it writes a stopped request's tail until it sees the close.
     pub peak_requests: u32,
+    /// What was proven about the file's bytes (#46, ADR-0010).
+    pub verification: Verification,
 }
 
 #[derive(Debug)]
@@ -498,6 +500,15 @@ pub fn download_resumable(
                 peak_buffered_bytes: control.peak_buffered.load(Ordering::Acquire),
                 own_connections: control.own_connections.load(Ordering::Acquire),
                 peak_requests: control.peak_requests.load(Ordering::Acquire),
+                verification: if checksum.is_some() {
+                    // `finish` checked it.
+                    Verification::Verified
+                } else if resumed_bytes > 0 && ck.file.validator.is_none() {
+                    // Bytes from an earlier attempt, kept on the length alone (ADR-0010).
+                    Verification::NotVerified
+                } else {
+                    Verification::SizeVerified
+                },
             })
         }
         Err(e) => {

@@ -163,6 +163,29 @@ impl ConnectionLimit {
     ];
 }
 
+/// What was proven about a completed download's bytes (#46, research report section 5.3,
+/// ADR-0010).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum Verification {
+    /// Its whole-file hash matched a checksum the user or a trusted source gave.
+    Verified,
+    /// Every byte arrived and the length matched; no hash was checked.
+    SizeVerified,
+    /// It resumed from bytes on disk without a strong validator, so a file that changed on the
+    /// server at the same length could have mixed two versions (ADR-0010).
+    NotVerified,
+}
+
+impl Verification {
+    /// Every value, in contract order (the fixture shared with `src/contract.ts`).
+    pub const ALL: [Verification; 3] = [
+        Verification::Verified,
+        Verification::SizeVerified,
+        Verification::NotVerified,
+    ];
+}
+
 /// One download as the UI sees it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -178,6 +201,8 @@ pub struct DownloadRecord {
     pub status: DownloadStatus,
     pub progress: Progress,
     pub error: Option<TransferError>,
+    /// What was proven about its bytes, once it completed; `None` until then (#46).
+    pub verification: Option<Verification>,
     /// Milliseconds since the Unix epoch.
     pub created_at_ms: u64,
     pub completed_at_ms: Option<u64>,
@@ -310,6 +335,7 @@ impl DownloadRecord {
                 Some(503),
                 "Service unavailable",
             )),
+            verification: None,
             created_at_ms: 1_792_600_000_000,
             completed_at_ms: None,
         }
@@ -507,6 +533,14 @@ mod tests {
             check(
                 "connection-limits.json",
                 serde_json::to_value(ConnectionLimit::ALL).unwrap(),
+            );
+        }
+
+        #[test]
+        fn contract_verifications() {
+            check(
+                "verifications.json",
+                serde_json::to_value(Verification::ALL).unwrap(),
             );
         }
 

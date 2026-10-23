@@ -182,7 +182,7 @@ mod tests {
         };
         assert_eq!(
             serde_json::to_string(&start).unwrap(),
-            r#"{"type":"start","protocol":2,"contract":5,"firstTransferId":12}"#
+            r#"{"type":"start","protocol":2,"contract":6,"firstTransferId":12}"#
         );
         let refused = FromChild::Reply {
             seq: 7,

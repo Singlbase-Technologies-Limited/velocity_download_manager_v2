@@ -90,6 +90,7 @@ impl Manager {
                 connection_detail: None,
             },
             error: None,
+            verification: None,
             created_at_ms: now_ms,
             completed_at_ms: None,
         };
@@ -166,6 +167,7 @@ impl Manager {
                 };
                 record.progress = snapshot.progress;
                 record.error = snapshot.error;
+                record.verification = snapshot.verification;
                 if record.status == DownloadStatus::Completed && record.completed_at_ms.is_none() {
                     record.completed_at_ms = Some(now_ms);
                 }
@@ -190,7 +192,7 @@ impl Manager {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::{Capabilities, FailureClass, TransferError};
+    use crate::domain::{Capabilities, FailureClass, TransferError, Verification};
     use crate::transfer::fake::{FakeControl, FakeTransfer};
     use crate::transfer::{Limits, TransferSnapshot};
     use std::path::PathBuf;
@@ -307,6 +309,7 @@ mod tests {
         assert_eq!(r.status, DownloadStatus::Completed);
         assert_eq!(r.progress.completed_bytes, 100);
         assert_eq!(r.completed_at_ms, Some(T0 + 5));
+        assert_eq!(r.verification, Some(Verification::SizeVerified));
         control.complete(TransferId(1));
         m.pump(T0 + 9);
         assert_eq!(m.get(&id).unwrap().completed_at_ms, Some(T0 + 5));
@@ -353,6 +356,7 @@ mod tests {
             progress: m.get(&id).unwrap().progress.clone(),
             wasted_bytes: 0,
             error: None,
+            verification: None,
         };
         stray.progress.completed_bytes = 999;
         control.emit(TransferEvent::Changed { snapshot: stray });

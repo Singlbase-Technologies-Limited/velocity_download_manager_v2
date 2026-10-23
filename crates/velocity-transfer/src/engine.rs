@@ -393,6 +393,7 @@ impl DirectTransfer for InProcessEngine {
             },
             wasted_bytes: 0,
             error: None,
+            verification: None,
         };
         state.transfers.insert(
             id,
@@ -635,6 +636,7 @@ fn run(shared: &Shared, id: TransferId, job: &Job, resume: Option<&Resume>, cont
                 s.progress.completed_bytes = report.total;
                 s.progress.total_bytes = Some(report.total);
                 s.wasted_bytes = report.wasted_bytes;
+                s.verification = Some(report.verification);
             }
             Err(DownloadError::Cancelled) => s.status = DownloadStatus::Removed,
             Err(DownloadError::Paused) => s.status = DownloadStatus::Paused,

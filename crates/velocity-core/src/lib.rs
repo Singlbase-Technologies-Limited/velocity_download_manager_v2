@@ -16,7 +16,8 @@ use serde::Serialize;
 /// Raise it whenever a command or a shared type changes incompatibly; the UI refuses to start
 /// against a native side with a different version (`COMMAND_API_VERSION` in `src/contract.ts`).
 /// Version 2 (#47) added [`domain::Progress::connection_detail`].
-pub const COMMAND_API_VERSION: u32 = 2;
+/// Version 3 (#46) added [`domain::DownloadRecord::verification`].
+pub const COMMAND_API_VERSION: u32 = 3;
 
 /// Name, version and contract version of the running application.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]

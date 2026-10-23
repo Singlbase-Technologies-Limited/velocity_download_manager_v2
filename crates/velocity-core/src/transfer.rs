@@ -9,7 +9,9 @@
 #[cfg(test)]
 pub(crate) mod fake;
 
-use crate::domain::{Capabilities, DownloadStatus, ErrorCode, Progress, TransferError};
+use crate::domain::{
+    Capabilities, DownloadStatus, ErrorCode, Progress, TransferError, Verification,
+};
 use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::path::PathBuf;
@@ -21,7 +23,9 @@ use std::sync::mpsc::Receiver;
 /// Version 3 (#49) added the global speed limit: [`DirectTransfer::set_global_limits`].
 /// Version 4 (#47) added [`crate::domain::Progress::connection_detail`] to snapshots.
 /// Version 5 (#45) added [`Checkpoint::content_encoding`].
-pub const TRANSFER_CONTRACT_VERSION: u32 = 5;
+/// Version 6 (#46) added [`TransferSnapshot::verification`], and SHA-224 and SHA-384 to
+/// [`HashAlgorithm`]; engines now check a [`TransferSpec::checksum`].
+pub const TRANSFER_CONTRACT_VERSION: u32 = 6;
 
 /// An engine's id for one transfer. Assigned by the engine, never reused, and never shown as the
 /// app's download id.
@@ -210,6 +214,8 @@ pub struct TransferSnapshot {
     /// Bytes received but not accepted: revoked leases, overruns, rejected responses.
     pub wasted_bytes: u64,
     pub error: Option<TransferError>,
+    /// What was proven about the file's bytes once it completed; `None` until then (#46).
+    pub verification: Option<Verification>,
 }
 
 /// Something that happened to a transfer, pushed by the engine.
@@ -465,6 +471,7 @@ mod tests {
                 Some(404),
                 "Not found",
             )),
+            verification: None,
         }
     }
 
