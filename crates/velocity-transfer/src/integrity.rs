@@ -22,7 +22,7 @@ use velocity_core::transfer::{HashAlgorithm, PieceHashes};
 use crate::scheduler::Coverage;
 
 /// One running digest of any algorithm a checksum can use.
-pub(crate) enum Hasher {
+pub enum Hasher {
     Md5(md5::Md5),
     Sha1(sha1::Sha1),
     Sha224(sha2::Sha224),
@@ -32,7 +32,7 @@ pub(crate) enum Hasher {
 }
 
 impl Hasher {
-    pub(crate) fn new(algorithm: HashAlgorithm) -> Self {
+    pub fn new(algorithm: HashAlgorithm) -> Self {
         match algorithm {
             HashAlgorithm::Md5 => Hasher::Md5(Digest::new()),
             HashAlgorithm::Sha1 => Hasher::Sha1(Digest::new()),
@@ -43,7 +43,7 @@ impl Hasher {
         }
     }
 
-    pub(crate) fn update(&mut self, bytes: &[u8]) {
+    pub fn update(&mut self, bytes: &[u8]) {
         match self {
             Hasher::Md5(h) => h.update(bytes),
             Hasher::Sha1(h) => h.update(bytes),
@@ -55,7 +55,7 @@ impl Hasher {
     }
 
     /// The digest in lowercase hexadecimal.
-    pub(crate) fn finish_hex(self) -> String {
+    pub fn finish_hex(self) -> String {
         match self {
             Hasher::Md5(h) => hex(&h.finalize()),
             Hasher::Sha1(h) => hex(&h.finalize()),
@@ -89,14 +89,14 @@ struct Goal {
 type Shared = Arc<(Mutex<Goal>, Condvar)>;
 
 /// Hashes the part file's covered prefix on a thread of its own.
-pub(crate) struct HashFrontier {
+pub struct HashFrontier {
     shared: Shared,
     thread: Option<JoinHandle<io::Result<String>>>,
 }
 
 impl HashFrontier {
     /// Starts hashing `file`, a handle to the part file, from byte 0.
-    pub(crate) fn start(file: File, algorithm: HashAlgorithm) -> io::Result<Self> {
+    pub fn start(file: File, algorithm: HashAlgorithm) -> io::Result<Self> {
         let shared = Shared::default();
         let theirs = Arc::clone(&shared);
         let thread = thread::Builder::new()
@@ -109,13 +109,13 @@ impl HashFrontier {
     }
 
     /// The bytes before `upto` are written and won't change. Never waits for the hashing.
-    pub(crate) fn advance(&self, upto: u64) {
+    pub fn advance(&self, upto: u64) {
         self.update(|g| g.upto = g.upto.max(upto));
     }
 
     /// The digest of the file's first `total` bytes, once they are all written. Waits for the
     /// thread to hash what it hasn't yet.
-    pub(crate) fn finish(mut self, total: u64) -> io::Result<String> {
+    pub fn finish(mut self, total: u64) -> io::Result<String> {
         self.update(|g| g.end = Some(total));
         let thread = self.thread.take().expect("the frontier's thread runs");
         thread

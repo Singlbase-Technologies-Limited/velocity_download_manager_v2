@@ -30,6 +30,7 @@ Terms used across V2's documents, issues and code, in alphabetical order. Where 
 | **Native lock file** | `scripts/native/deps.lock`: the pinned version, source URL, SHA-256, signing key and licence of every native library V2 builds (#35; [DEPENDENCIES.md](DEPENDENCIES.md#lock-file)) |
 | **No-clobber finalisation** | Completing a download by renaming its part file to the final name without replacing an existing file (report §5.3; #43) |
 | **Part file** | The file being downloaded, `<destination>.vdmpart`, until it is complete and renamed into place without replacing an existing file. Sparse on Windows (#43) |
+| **Piece hashes** | Trusted digests of a file's fixed-size pieces, such as a Metalink file's `<pieces>`. Each piece is checked once it is covered, and a bad one is fetched again on its own (report §5.3; #46, #54) |
 | **PO** | The Product Owner, who decides scope, architecture, dependencies, licensing, security, repository settings, merges and releases |
 | **Probe** | The first request of a download: a bounded range request whose bytes are kept. Its response decides between ranges, sequential ranges and a single stream, without a wasted full transfer. V2 doesn't use HEAD as proof of range support (report §5.1; #41) |
 | **Ranges lost** | The state when a server that accepted ranges stops honouring them: a `200` for a later range, or a second *anomaly*. The rest comes as one stream that writes only the bytes not yet covered (report §5.1; #41) |
@@ -46,6 +47,7 @@ Terms used across V2's documents, issues and code, in alphabetical order. Where 
 | **V1** | The original Velocity Download Manager (`Singlbase-Technologies-Limited/velocity-download-manager`). A reference for features and benchmarks only. Never modified from V2 work |
 | **V2** | This application. It replaces V1 under the name Velocity Download Manager, and runs beside it during development (#11) |
 | **Validator** | A response header that identifies one version of a file, either an ETag or Last-Modified. It is used to detect a changed object between requests (report §5.3). See also *strong validator* |
+| **Verification (Verified, Size verified, Not verified)** | What was proven about a completed download: *Verified* when a checksum or trusted piece hashes matched, *Size verified* when every byte arrived and the length matched, *Not verified* when it resumed from bytes on disk without a strong validator. "Verified" is shown only when a hash was checked (report §5.3; ADR-0010; #46) |
 | **Verification levels (L1–L5)** | The test levels: L1 fast local checks, L2 focused tests, L3 pre-merge selection, L4 expensive suites, L5 production acceptance. See [TESTING.md](TESTING.md) and #15 |
 | **Version floor** | The oldest libcurl V2 accepts, today 8.23.0. A build below it fails, and the engine refuses to start (report §8.1; #35) |
 | **Wasted bytes** | Bytes received but not accepted into coverage, such as from a revoked lease, an overrun or a rejected response. Counted and reported, never hidden (report §5.1) |

@@ -9,7 +9,7 @@ pub mod engine;
 pub mod engine_log;
 mod failure;
 pub mod files;
-mod integrity;
+pub mod integrity;
 pub mod probe;
 pub mod protocol;
 pub mod retry;

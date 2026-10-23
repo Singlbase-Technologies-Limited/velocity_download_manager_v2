@@ -2,8 +2,8 @@
 //! and decides between ranges, sequential ranges and one stream (docs/ENGINE_INTERNALS.md), static
 //! parallel segments when ranges work, retries with waits and stall detection (#48), and a finish
 //! that never replaces an existing file. Every answer after the first must be about the same file
-//! (#45): a changed file starts the download over once. What it doesn't do yet is the rest of R5:
-//! whole-file hashes (#46) and adaptive connections (#47).
+//! (#45): a changed file starts the download over once. Connections are adaptive (#47), and a
+//! checksum or trusted piece hashes are checked before the file is renamed into place (#46).
 //!
 //! The byte rules (`.claude/rules/transfer-engine.md`, research report sections 5.1 and 5.2):
 //! - a byte is accepted only from the segment that owns it, at its own offset, once;
