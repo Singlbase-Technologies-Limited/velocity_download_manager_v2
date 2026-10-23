@@ -23,7 +23,8 @@ use std::time::{Duration, Instant};
 use velocity_core::domain::{FailureClass, TransferError};
 use velocity_core::transfer::{Checkpoint, Resume, CHECKPOINT_FORMAT};
 use velocity_curl::{
-    CurlLoop, Fetch, FetchError, FetchEvent, FetchLimit, FetchRequest, Gate, ResponseHead,
+    CurlFailure, CurlLoop, Fetch, FetchError, FetchEvent, FetchLimit, FetchRequest, Gate,
+    ResponseHead,
 };
 
 use crate::files;
@@ -1013,6 +1014,7 @@ fn forward<T: Copy + Send + 'static>(fetch: Fetch, tag: T, tx: mpsc::SyncSender<
         let event = fetch
             .next_event(SILENCE_LIMIT)
             .unwrap_or(FetchEvent::Done(Err(FetchError::Curl {
+                kind: CurlFailure::Timeout,
                 code: -1,
                 message: format!("no data for {} s", SILENCE_LIMIT.as_secs()),
             })));
@@ -1047,6 +1049,7 @@ fn drain(
             }
             fetch.cancel();
             return Ok(Err(FetchError::Curl {
+                kind: CurlFailure::Timeout,
                 code: -1,
                 message: format!("no data for {} s", SILENCE_LIMIT.as_secs()),
             }));
@@ -1067,7 +1070,7 @@ fn fetch_failure(e: FetchError) -> TransferError {
         FetchError::Cancelled => {
             TransferError::new(FailureClass::Permanent, None, "the transfer was cancelled")
         }
-        FetchError::Curl { code, message } => TransferError::new(
+        FetchError::Curl { code, message, .. } => TransferError::new(
             FailureClass::Transient,
             None,
             &format!("libcurl error {code}: {message}"),

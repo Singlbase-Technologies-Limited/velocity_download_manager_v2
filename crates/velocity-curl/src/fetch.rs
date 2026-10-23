@@ -91,11 +91,84 @@ pub enum FetchError {
     Aborted(String),
     /// The caller cancelled the fetch.
     Cancelled,
-    /// libcurl reported an error (`CURLcode` and its description). The code is an `i64` because
-    /// `CURLcode` is `u32` on Linux and `i32` on Windows; `i64` holds either without a cast.
-    Curl { code: i64, message: String },
+    /// libcurl reported an error: what kind it is, and its `CURLcode` and description for
+    /// diagnostics. The code is an `i64` because `CURLcode` is `u32` on Linux and `i32` on
+    /// Windows; `i64` holds either without a cast.
+    Curl {
+        kind: CurlFailure,
+        code: i64,
+        message: String,
+    },
     /// The loop stopped before the fetch finished.
     LoopStopped,
+}
+
+/// What kind of failure libcurl reported, so that callers can decide about retries without
+/// knowing libcurl's codes (#48).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CurlFailure {
+    /// The host name didn't resolve.
+    Resolve,
+    /// The connection couldn't be made, or was refused.
+    Connect,
+    /// libcurl's own timeout passed (the connect timeout).
+    Timeout,
+    /// The connection broke while the request or the response was under way.
+    Interrupted,
+    /// The TLS handshake failed.
+    TlsHandshake,
+    /// The server's certificate wasn't trusted. Verification is never turned off (#69).
+    Certificate,
+    /// More redirects than allowed.
+    TooManyRedirects,
+    /// A URL or redirect outside the protocol allowlist, or a malformed URL.
+    Refused,
+    /// The server's answer broke the protocol.
+    Protocol,
+    /// A local problem: memory, or the write side.
+    Local,
+    /// Any other code.
+    Other,
+}
+
+impl CurlFailure {
+    fn of(e: &curl::Error) -> Self {
+        if e.is_couldnt_resolve_host() || e.is_couldnt_resolve_proxy() {
+            CurlFailure::Resolve
+        } else if e.is_couldnt_connect() {
+            CurlFailure::Connect
+        } else if e.is_operation_timedout() {
+            CurlFailure::Timeout
+        } else if e.is_got_nothing()
+            || e.is_send_error()
+            || e.is_recv_error()
+            || e.is_partial_file()
+            || e.is_http2_error()
+            || e.is_http2_stream_error()
+        {
+            CurlFailure::Interrupted
+        } else if e.is_ssl_connect_error() {
+            CurlFailure::TlsHandshake
+        } else if e.is_peer_failed_verification()
+            || e.is_ssl_cacert_badfile()
+            || e.is_ssl_certproblem()
+            || e.is_ssl_issuer_error()
+        {
+            CurlFailure::Certificate
+        } else if e.is_too_many_redirects() {
+            CurlFailure::TooManyRedirects
+        } else if e.is_unsupported_protocol() || e.is_url_malformed() {
+            CurlFailure::Refused
+        } else if e.code() == curl_sys::CURLE_FTP_WEIRD_SERVER_REPLY || e.is_bad_content_encoding()
+        {
+            // curl-sys names code 8 by its old FTP name; libcurl uses it for any protocol.
+            CurlFailure::Protocol
+        } else if e.is_out_of_memory() || e.is_write_error() {
+            CurlFailure::Local
+        } else {
+            CurlFailure::Other
+        }
+    }
 }
 
 /// One step of a fetch, in order: at most one `Head`, any number of `Data`, then one `Done`.
@@ -110,13 +183,18 @@ pub enum FetchEvent {
 pub struct LoopOptions {
     /// The most body bytes one fetch keeps for its reader before it pauses the transfer.
     pub buffer_bytes_per_fetch: usize,
+    /// How long a fetch may take to connect (`CURLOPT_CONNECTTIMEOUT_MS`). There is no limit on
+    /// the whole transfer: a large file may take hours, and stalls are caught by the downloader.
+    pub connect_timeout: Duration,
 }
 
 impl Default for LoopOptions {
     fn default() -> Self {
-        // A starting value, not a requirement (report section 5.5): measured later (#49).
+        // Starting values, not requirements: the buffer from report section 5.5, measured later
+        // (#49); the connect timeout from V1's `connect_timeout_secs` (PO decision on #48).
         LoopOptions {
             buffer_bytes_per_fetch: 1024 * 1024,
+            connect_timeout: Duration::from_secs(30),
         }
     }
 }
@@ -221,7 +299,7 @@ impl CurlLoop {
             waker: self.waker.clone(),
             done: AtomicBool::new(false),
         };
-        match configure(collector, &request) {
+        match configure(collector, &request, &self.options) {
             Ok(easy) => self.send(Command::Start(token, Box::new(easy))),
             Err(e) => {
                 let _ = events_tx.send(FetchEvent::Done(Err(curl_error(&e))));
@@ -426,9 +504,11 @@ fn parse_head(lines: &[String]) -> Option<ResponseHead> {
 fn configure(
     collector: Collector,
     request: &FetchRequest,
+    options: &LoopOptions,
 ) -> Result<Easy2<Collector>, curl::Error> {
     let mut easy = Easy2::new(collector);
     easy.url(&request.url)?;
+    easy.connect_timeout(options.connect_timeout)?;
     easy.get(true)?;
     if let Some((start, end)) = request.range {
         easy.range(&match end {
@@ -465,6 +545,7 @@ fn set_string(
 
 fn curl_error(e: &curl::Error) -> FetchError {
     FetchError::Curl {
+        kind: CurlFailure::of(e),
         code: i64::from(e.code()),
         message: e.description().to_owned(),
     }
@@ -507,6 +588,7 @@ fn run_loop(inbox: Receiver<Command>, waker_tx: Sender<MultiWaker>) {
                         }
                         Err((code, message)) => {
                             let _ = events.send(FetchEvent::Done(Err(FetchError::Curl {
+                                kind: CurlFailure::Local,
                                 code,
                                 message: format!("the transfer couldn't start: {message}"),
                             })));
@@ -576,10 +658,68 @@ fn finish(multi: &Multi, handle: Easy2Handle<Collector>, outcome: Result<(), Fet
     let outcome = match multi.remove2(handle) {
         Ok(_) => outcome,
         Err(e) => outcome.and(Err(FetchError::Curl {
+            kind: CurlFailure::Local,
             code: i64::from(e.code()),
             message: format!("the transfer couldn't be removed: {e}"),
         })),
     };
     // The reader may have dropped its Fetch; then nobody is waiting for this event.
     let _ = events.send(FetchEvent::Done(outcome));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn kind(code: curl_sys::CURLcode) -> CurlFailure {
+        CurlFailure::of(&curl::Error::new(code))
+    }
+
+    #[test]
+    fn libcurl_codes_map_to_failure_kinds() {
+        let cases = [
+            (curl_sys::CURLE_COULDNT_RESOLVE_HOST, CurlFailure::Resolve),
+            (curl_sys::CURLE_COULDNT_RESOLVE_PROXY, CurlFailure::Resolve),
+            (curl_sys::CURLE_COULDNT_CONNECT, CurlFailure::Connect),
+            (curl_sys::CURLE_OPERATION_TIMEDOUT, CurlFailure::Timeout),
+            (curl_sys::CURLE_GOT_NOTHING, CurlFailure::Interrupted),
+            (curl_sys::CURLE_SEND_ERROR, CurlFailure::Interrupted),
+            (curl_sys::CURLE_RECV_ERROR, CurlFailure::Interrupted),
+            (curl_sys::CURLE_PARTIAL_FILE, CurlFailure::Interrupted),
+            (curl_sys::CURLE_HTTP2, CurlFailure::Interrupted),
+            (curl_sys::CURLE_HTTP2_STREAM, CurlFailure::Interrupted),
+            (curl_sys::CURLE_SSL_CONNECT_ERROR, CurlFailure::TlsHandshake),
+            (
+                curl_sys::CURLE_PEER_FAILED_VERIFICATION,
+                CurlFailure::Certificate,
+            ),
+            (curl_sys::CURLE_SSL_CACERT_BADFILE, CurlFailure::Certificate),
+            (curl_sys::CURLE_SSL_ISSUER_ERROR, CurlFailure::Certificate),
+            (
+                curl_sys::CURLE_TOO_MANY_REDIRECTS,
+                CurlFailure::TooManyRedirects,
+            ),
+            (curl_sys::CURLE_UNSUPPORTED_PROTOCOL, CurlFailure::Refused),
+            (curl_sys::CURLE_URL_MALFORMAT, CurlFailure::Refused),
+            (
+                curl_sys::CURLE_FTP_WEIRD_SERVER_REPLY,
+                CurlFailure::Protocol,
+            ),
+            (curl_sys::CURLE_BAD_CONTENT_ENCODING, CurlFailure::Protocol),
+            (curl_sys::CURLE_OUT_OF_MEMORY, CurlFailure::Local),
+            (curl_sys::CURLE_WRITE_ERROR, CurlFailure::Local),
+            (curl_sys::CURLE_FAILED_INIT, CurlFailure::Other),
+        ];
+        for (code, expected) in cases {
+            assert_eq!(kind(code), expected, "CURLcode {code}");
+        }
+    }
+
+    #[test]
+    fn the_connect_timeout_defaults_to_30_seconds() {
+        assert_eq!(
+            LoopOptions::default().connect_timeout,
+            Duration::from_secs(30)
+        );
+    }
 }

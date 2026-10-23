@@ -10,7 +10,7 @@ pub use capabilities::{
     REQUIRED_FEATURES, REQUIRED_PROTOCOLS,
 };
 pub use fetch::{
-    CurlLoop, Fetch, FetchError, FetchEvent, FetchLimit, FetchRequest, Gate, LoopError,
-    LoopOptions, ResponseHead,
+    CurlFailure, CurlLoop, Fetch, FetchError, FetchEvent, FetchLimit, FetchRequest, Gate,
+    LoopError, LoopOptions, ResponseHead,
 };
 pub use runtime::{Libcurl, StartError};

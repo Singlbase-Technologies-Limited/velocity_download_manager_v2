@@ -3,7 +3,8 @@
 use std::time::{Duration, Instant};
 
 use velocity_curl::{
-    CurlLoop, Fetch, FetchError, FetchEvent, FetchRequest, Gate, Libcurl, LoopOptions, ResponseHead,
+    CurlFailure, CurlLoop, Fetch, FetchError, FetchEvent, FetchRequest, Gate, Libcurl, LoopOptions,
+    ResponseHead,
 };
 use velocity_test_http::{seeded_bytes, RangeMode, ServerOptions, TestServer};
 
@@ -168,6 +169,7 @@ fn a_slow_reader_bounds_the_buffered_bytes() {
     let cap = 64 * 1024;
     let l = start_loop(LoopOptions {
         buffer_bytes_per_fetch: cap,
+        ..LoopOptions::default()
     });
     let f = l.fetch(FetchRequest::get(s.url("a.bin")), accept_all);
     let o = collect(&f, Some(Duration::from_millis(1)));
@@ -329,9 +331,48 @@ fn a_redirect_to_ftp_is_refused_by_the_redirect_allowlist() {
     let l = start_loop(LoopOptions::default());
     let o = collect(&l.fetch(FetchRequest::get(s.url("go")), accept_all), None);
     match o.done {
-        Err(FetchError::Curl { code, .. }) => {
-            assert_eq!(code, 1, "expected CURLE_UNSUPPORTED_PROTOCOL")
+        Err(FetchError::Curl { kind, code, .. }) => {
+            assert_eq!(code, 1, "expected CURLE_UNSUPPORTED_PROTOCOL");
+            assert_eq!(kind, CurlFailure::Refused);
         }
         other => panic!("expected a refused redirect, got {other:?}"),
+    }
+}
+
+/// `.invalid` never resolves (RFC 6761 §6.4), so this needs no network.
+#[test]
+fn a_host_that_does_not_resolve_is_a_resolve_failure() {
+    let l = start_loop(LoopOptions::default());
+    let o = collect(
+        &l.fetch(
+            FetchRequest::get("http://velocity-v2-test.invalid/a.bin".into()),
+            accept_all,
+        ),
+        None,
+    );
+    match o.done {
+        Err(FetchError::Curl { kind, .. }) => assert_eq!(kind, CurlFailure::Resolve),
+        other => panic!("expected a resolve failure, got {other:?}"),
+    }
+}
+
+#[test]
+fn a_refused_connection_is_a_connect_failure() {
+    // A port that was just free and has nothing listening on it.
+    let port = std::net::TcpListener::bind("127.0.0.1:0")
+        .and_then(|l| l.local_addr())
+        .expect("a free port")
+        .port();
+    let l = start_loop(LoopOptions::default());
+    let o = collect(
+        &l.fetch(
+            FetchRequest::get(format!("http://127.0.0.1:{port}/a.bin")),
+            accept_all,
+        ),
+        None,
+    );
+    match o.done {
+        Err(FetchError::Curl { kind, .. }) => assert_eq!(kind, CurlFailure::Connect),
+        other => panic!("expected a connect failure, got {other:?}"),
     }
 }
