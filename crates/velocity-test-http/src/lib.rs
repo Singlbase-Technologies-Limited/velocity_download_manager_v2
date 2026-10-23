@@ -73,6 +73,34 @@ pub struct ServerOptions {
     /// Freezes the first response to a range after byte 0: it sends `after` body bytes, then
     /// nothing for `hold`, then closes the connection (#48).
     pub freeze_later_range: Option<Freeze>,
+    /// Headers sent with every file: validators (#45).
+    pub file_headers: FileHeaders,
+    /// The file changes on the server part way, once per entry, in order of `after` (#45).
+    pub changes: Vec<Change>,
+    /// Closes the connection after this many body bytes of the first GET's answer, although its
+    /// `Content-Length` promised more (#45).
+    pub cut_first: Option<u64>,
+}
+
+/// Headers the server sends with a file, each as given and only when set (#45).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct FileHeaders {
+    /// `"v1"` or `W/"v1"`.
+    pub etag: Option<String>,
+    pub last_modified: Option<String>,
+    pub date: Option<String>,
+    /// Sent as `Content-Encoding`, without encoding anything: the bytes are what the client stores.
+    pub content_encoding: Option<String>,
+}
+
+/// After the first `after` GETs, every GET is answered from `data` with `headers` instead, whatever
+/// file it asks for. Another ETag is a changed file; the same bytes without one, a dropped ETag; other
+/// bytes with the same ETag, a dishonest server (#45).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Change {
+    pub after: u32,
+    pub data: Vec<u8>,
+    pub headers: FileHeaders,
 }
 
 /// The first `count` requests are answered with `status` and an empty body, with this
@@ -101,6 +129,8 @@ pub struct Counters {
     pub body_bytes_sent: u64,
     /// The `Range` header of each GET, in arrival order (`None` without one).
     pub ranges: Vec<Option<String>>,
+    /// The `If-Range` header of each GET, in the same order (#45).
+    pub if_ranges: Vec<Option<String>>,
     /// Responses that carried a limited misbehaviour, such as [`RangeMode::MalformedLaterRanges`].
     pub faults: u32,
     /// Whether the response that [`ServerOptions::throttle_first_later_range`] slows was sent.
@@ -445,16 +475,18 @@ fn serve_connection(
     let mut out = stream;
     while let Some(req) = read_request(&mut reader) {
         let head = req.method == "HEAD";
-        {
+        let gets = {
             let mut c = counters.lock().unwrap();
             if head {
                 c.heads += 1;
             } else {
                 c.gets += 1;
                 c.ranges.push(req.header("Range").map(str::to_owned));
+                c.if_ranges.push(req.header("If-Range").map(str::to_owned));
                 c.request_times.push(Instant::now());
             }
-        }
+            c.gets
+        };
         let close = req
             .header("Connection")
             .is_some_and(|v| v.eq_ignore_ascii_case("close"));
@@ -497,10 +529,20 @@ fn serve_connection(
             }
             continue;
         };
+        let (data, file_headers) = match options.changes.iter().rfind(|c| gets > u64::from(c.after))
+        {
+            Some(change) => (&change.data, &change.headers),
+            None => (&**data, &options.file_headers),
+        };
         let range = req.header("Range").and_then(parse_range);
         let mode = options.range_mode;
         let fault = takes_fault(mode, range, counters);
-        let answer = answer(data, range, mode, fault);
+        let served = Served {
+            data,
+            headers: file_headers,
+            if_range: req.header("If-Range"),
+        };
+        let answer = answer(&served, range, mode, fault);
         let status = format!("{} {}", answer.status, answer.reason);
         let extra: String = answer
             .headers
@@ -535,6 +577,11 @@ fn serve_connection(
             body.len()
         );
         if out.write_all(header.as_bytes()).is_err() {
+            return;
+        }
+        if let (Some(after), 1, false) = (options.cut_first, gets, head) {
+            let cut = (after as usize).min(body.len());
+            let _ = write_body(&mut out, &body[..cut], None, counters, None);
             return;
         }
         if let (RangeMode::CutLaterBodies { after, .. }, true) = (mode, fault) {
@@ -635,15 +682,40 @@ pub(crate) struct Answer<'a> {
     pub body: &'a [u8],
 }
 
-/// The answer to a request for `data` with `range` (inclusive, `(start, None)` is `start-`), in
-/// `mode`; `fault` is whether this response carries the mode's limited misbehaviour.
-pub(crate) fn answer(
-    data: &[u8],
+/// A file as one request gets it: its bytes and headers, and the request's `If-Range`.
+pub(crate) struct Served<'a> {
+    pub data: &'a [u8],
+    pub headers: &'a FileHeaders,
+    pub if_range: Option<&'a str>,
+}
+
+impl Served<'_> {
+    /// Whether `If-Range` lets a range through (RFC 9110 §13.1.5): a strong ETag equal to the
+    /// file's own, or the file's exact `Last-Modified`. A weak tag never matches.
+    fn if_range_holds(&self) -> bool {
+        let Some(condition) = self.if_range.map(str::trim) else {
+            return true;
+        };
+        if condition.starts_with('"') {
+            self.headers.etag.as_deref() == Some(condition)
+        } else {
+            !condition.starts_with("W/") && self.headers.last_modified.as_deref() == Some(condition)
+        }
+    }
+}
+
+/// The answer to a request for `served` with `range` (inclusive, `(start, None)` is `start-`),
+/// in `mode`; `fault` is whether this response carries the mode's limited misbehaviour. A range
+/// whose `If-Range` doesn't hold gets the whole file as `200`.
+pub(crate) fn answer<'a>(
+    served: &Served<'a>,
     range: Option<(u64, Option<u64>)>,
     mode: RangeMode,
     fault: bool,
-) -> Answer<'_> {
+) -> Answer<'a> {
+    let data = served.data;
     let total = data.len() as u64;
+    let range = range.filter(|_| served.if_range_holds());
     if let RangeMode::Status(code) = mode {
         let mut headers = Vec::new();
         if matches!(code, 429 | 503) {
@@ -660,6 +732,15 @@ pub(crate) fn answer(
     if mode != RangeMode::Ignore {
         headers.push(("Accept-Ranges", "bytes".to_owned()));
     }
+    let file = served.headers;
+    headers.extend(file.etag.clone().map(|v| ("ETag", v)));
+    headers.extend(file.last_modified.clone().map(|v| ("Last-Modified", v)));
+    headers.extend(file.date.clone().map(|v| ("Date", v)));
+    headers.extend(
+        file.content_encoding
+            .clone()
+            .map(|v| ("Content-Encoding", v)),
+    );
     let (status, reason, body): (u16, &'static str, &[u8]) = match (mode, range) {
         (RangeMode::Ignore, _) | (_, None) => (200, "OK", data),
         (RangeMode::FullBodyForNonZeroStart, Some((start, _))) if start > 0 => (200, "OK", data),

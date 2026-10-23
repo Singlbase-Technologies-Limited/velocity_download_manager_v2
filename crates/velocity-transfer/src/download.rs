@@ -1,8 +1,9 @@
 //! The downloader (#37, #41): one file over HTTP(S), with a probe that is also the first segment
 //! and decides between ranges, sequential ranges and one stream (docs/ENGINE_INTERNALS.md), static
 //! parallel segments when ranges work, retries with waits and stall detection (#48), and a finish
-//! that never replaces an existing file. What it doesn't do yet is the rest of R5: validators
-//! (#45), whole-file hashes (#46) and adaptive connections (#47).
+//! that never replaces an existing file. Every answer after the first must be about the same file
+//! (#45): a changed file starts the download over once. What it doesn't do yet is the rest of R5:
+//! whole-file hashes (#46) and adaptive connections (#47).
 //!
 //! The byte rules (`.claude/rules/transfer-engine.md`, research report sections 5.1 and 5.2):
 //! - a byte is accepted only from the segment that owns it, at its own offset, once;
@@ -41,6 +42,7 @@ use crate::probe::{
 };
 use crate::retry::{self, RetryPolicy};
 use crate::scheduler::{Assignment, Coverage, Lease, LeaseId, Scheduler, Sizes};
+use crate::validator::Representation;
 
 /// How often a waiting download checks whether it was cancelled.
 const CANCEL_CHECK: Duration = Duration::from_millis(100);
@@ -338,9 +340,13 @@ pub enum DownloadError {
     Cancelled,
     /// [`Control::pause`] stopped it; its part file is kept.
     Paused,
-    /// The file on the server isn't the one this download started (another total): its bytes
-    /// are never mixed with the old ones (report section 5.3).
+    /// The file on the server isn't the one this download started (another total or validator):
+    /// its bytes are never mixed with the old ones (report section 5.3).
     Changed(TransferError),
+    /// The server's `Content-Encoding` changed between answers (#45), so ranges can't go on. The
+    /// download starts over once as one stream; this escapes only if that start-over isn't
+    /// possible.
+    EncodingChanged(TransferError),
 }
 
 impl From<TransferError> for DownloadError {
@@ -410,8 +416,7 @@ pub fn download_resumable(
     let mut outcome = match from {
         Some(checkpoint) => {
             resumed_bytes = part.coverage.len();
-            ck.etag.clone_from(&checkpoint.etag);
-            ck.last_modified.clone_from(&checkpoint.last_modified);
+            ck.file = Representation::recorded(checkpoint);
             ck.resumed = true;
             fetch_ranges(
                 lp,
@@ -431,13 +436,30 @@ pub fn download_resumable(
         }
         None => fetch_fresh(lp, url, options, &mut part, &mut ck, control),
     };
-    if from.is_some() && matches!(outcome, Err(DownloadError::Changed(_))) {
-        // The file changed on the server since the checkpoint: its old bytes are never mixed with
-        // the new ones (report section 5.3).
+    let start_over = match &outcome {
+        Err(DownloadError::Changed(_)) => Some(false),
+        Err(DownloadError::EncodingChanged(_)) => Some(true),
+        _ => None,
+    };
+    if let Some(one_stream) = start_over {
+        // The file changed on the server, during the download or since its checkpoint: its old
+        // bytes are never mixed with the new ones, and it starts over once with the new file;
+        // after an encoding change, as one stream. A second change ends it; the user may retry
+        // (report section 5.3, #45).
         part.start_over()?;
         ck = Checkpointer::new(options.checkpoints, url);
         resumed_bytes = 0;
-        outcome = fetch_fresh(lp, url, options, &mut part, &mut ck, control);
+        outcome = if one_stream {
+            fetch_whole(lp, url, &mut part, control, &options.retry)
+        } else {
+            fetch_fresh(lp, url, options, &mut part, &mut ck, control)
+        }
+        .map_err(|e| match e {
+            DownloadError::Changed(t) | DownloadError::EncodingChanged(t) => {
+                DownloadError::Changed(changed_again(&t))
+            }
+            other => other,
+        });
     }
     control.running(0, false);
     match outcome {
@@ -467,6 +489,19 @@ pub fn download_resumable(
             Err(e)
         }
     }
+}
+
+/// What a download fails with when its file changed again after it started over: worth retrying
+/// by hand, so not `Permanent`; the engine doesn't restart it on its own.
+fn changed_again(t: &TransferError) -> TransferError {
+    TransferError::new(
+        FailureClass::Transient,
+        t.http_status,
+        &format!(
+            "The file changed on the server during download, twice: {}.",
+            t.message
+        ),
+    )
 }
 
 /// [`download`], followed and stoppable through `control`.
@@ -504,11 +539,9 @@ fn fetch_fresh(
     let request = FetchRequest::range(url.to_owned(), 0, Some(probe_end));
     let (probed, retries) = probe_retrying(lp, &request, probe_end, part, ck, control, retry)?;
     fetches += retries;
-    let (outcome, cursor, validators) = match probed {
-        Probed::Outcome(outcome, cursor, validators) => (outcome, cursor, validators),
-        Probed::Paused(total, validators) => {
-            return paused_in_probe(total, validators, part, ck, control)
-        }
+    let (outcome, cursor, file) = match probed {
+        Probed::Outcome(outcome, cursor, file) => (outcome, cursor, file),
+        Probed::Paused(total, file) => return paused_in_probe(total, file, part, ck, control),
         // Report 5.1: a multipart answer to one range is retried once without Range.
         Probed::Multipart => {
             fetches += 1;
@@ -517,9 +550,9 @@ fn fetch_fresh(
                 probe_retrying(lp, &request, probe_end, part, ck, control, retry)?;
             fetches += retries;
             match probed {
-                Probed::Outcome(outcome, cursor, validators) => (outcome, cursor, validators),
-                Probed::Paused(total, validators) => {
-                    return paused_in_probe(total, validators, part, ck, control)
+                Probed::Outcome(outcome, cursor, file) => (outcome, cursor, file),
+                Probed::Paused(total, file) => {
+                    return paused_in_probe(total, file, part, ck, control)
                 }
                 Probed::Multipart => {
                     return Err(TransferError::new(
@@ -532,7 +565,7 @@ fn fetch_fresh(
             }
         }
     };
-    (ck.etag, ck.last_modified) = validators;
+    ck.file = file;
 
     let (mode, total) = match outcome {
         ProbeOutcome::Empty => (Mode::Empty, 0),
@@ -549,7 +582,7 @@ fn fetch_fresh(
         }
         ProbeOutcome::SequentialRanges { received_end } => {
             let (n, total, mode) =
-                fetch_sequential(lp, url, received_end + 1, part, control, retry)?;
+                fetch_sequential(lp, url, received_end + 1, &ck.file, part, control, retry)?;
             fetches += n;
             (mode, total)
         }
@@ -568,18 +601,36 @@ fn fetch_fresh(
     })
 }
 
+/// The whole file as one stream, from the start, in whatever encoding it comes (#45): after the
+/// encoding changed between answers, ranges can't be trusted.
+fn fetch_whole(
+    lp: &CurlLoop,
+    url: &str,
+    part: &mut PartFile,
+    control: &Control,
+    policy: &RetryPolicy,
+) -> Result<Fetched, DownloadError> {
+    let (total, fetches) = stream_gaps(lp, url, None, None, part, control, policy)?;
+    Ok(Fetched {
+        mode: Mode::SingleStream,
+        total,
+        fetches,
+        splits: 0,
+    })
+}
+
 /// A pause while the probe ran. When the probe's answer gave the file's total, ranges work, so
 /// its bytes are synced and checkpointed like any others; otherwise there is nothing to resume
 /// from, and a resume starts over.
 fn paused_in_probe(
     total: Option<u64>,
-    validators: Validators,
+    file: Representation,
     part: &mut PartFile,
     ck: &mut Checkpointer,
     control: &Control,
 ) -> Result<Fetched, DownloadError> {
     if let Some(total) = total {
-        (ck.etag, ck.last_modified) = validators;
+        ck.file = file;
         ck.take_probe(part, total, control)?;
     }
     Err(DownloadError::Paused)
@@ -620,8 +671,8 @@ fn discard(path: &Path) -> Result<(), DownloadError> {
 struct Checkpointer {
     cadence: Cadence,
     source: String,
-    etag: Option<String>,
-    last_modified: Option<String>,
+    /// What the first answer said about the file, recorded with each checkpoint.
+    file: Representation,
     last_at: Instant,
     written_at_last: u64,
     sent: u32,
@@ -634,8 +685,7 @@ impl Checkpointer {
         Checkpointer {
             cadence,
             source: Checkpoint::source_of(url),
-            etag: None,
-            last_modified: None,
+            file: Representation::default(),
             last_at: Instant::now(),
             written_at_last: 0,
             sent: 0,
@@ -679,8 +729,9 @@ impl Checkpointer {
             format: CHECKPOINT_FORMAT,
             source: self.source.clone(),
             total,
-            etag: self.etag.clone(),
-            last_modified: self.last_modified.clone(),
+            etag: self.file.etag.clone(),
+            last_modified: self.file.last_modified().map(str::to_owned),
+            content_encoding: self.file.encoding.clone(),
             durable: durable.intervals().to_vec(),
         });
         self.sent += 1;
@@ -696,34 +747,66 @@ pub(crate) fn part_path(destination: &Path) -> PathBuf {
     PathBuf::from(p)
 }
 
-/// An answer's validators: its ETag and Last-Modified, as sent.
-type Validators = (Option<String>, Option<String>);
-
 /// What the probe found.
 enum Probed {
-    /// Its outcome, how far its bytes reached, and its answer's validators.
-    Outcome(ProbeOutcome, u64, Validators),
+    /// Its outcome, how far its bytes reached, and what its answer said about the file.
+    Outcome(ProbeOutcome, u64, Representation),
     /// A `multipart/byteranges` answer, aborted before any byte was written.
     Multipart,
-    /// Paused while the probe ran; the file's total, if its answer gave one, and its validators.
-    Paused(Option<u64>, Validators),
+    /// Paused while the probe ran; the file's total, if its answer gave one, and what its answer
+    /// said about the file.
+    Paused(Option<u64>, Representation),
 }
 
 /// A failure worth retrying, and how long the server asked to wait, if it did.
 struct Retryable {
     error: TransferError,
     retry_after: Option<Duration>,
+    /// What the failed probe's answer said, if it answered with the file.
+    answered: Option<Answered>,
+}
+
+/// What a probe's answer said about the file: a retry that writes after its bytes must agree
+/// (#45).
+#[derive(Clone)]
+struct Answered {
+    file: Representation,
+    /// The length a `200` gave.
+    length: Option<u64>,
+}
+
+impl Answered {
+    /// Whether `head`, whose outcome is `outcome`, is about the same file: `Err` says what changed.
+    fn check(&self, head: &ResponseHead, outcome: &ProbeOutcome) -> Result<(), String> {
+        self.file.check(head)?;
+        self.file.same_encoding(head)?;
+        match (self.length, single_stream_length(outcome)) {
+            (Some(was), Some(now)) if was != now => {
+                Err(format!("the file's length changed from {was} to {now}"))
+            }
+            _ => Ok(()),
+        }
+    }
+}
+
+fn single_stream_length(outcome: &ProbeOutcome) -> Option<u64> {
+    match outcome {
+        ProbeOutcome::SingleStream { length } => *length,
+        _ => None,
+    }
 }
 
 /// `error` as a [`Retryable`] when it is worth retrying, or as the download's end otherwise.
 fn retryable(
     error: TransferError,
     retry_after: &RetryAfter,
+    answered: Option<Answered>,
 ) -> Result<Result<Probed, Retryable>, DownloadError> {
     if error.retryable {
         Ok(Err(Retryable {
             error,
             retry_after: retry_after.get(),
+            answered,
         }))
     } else {
         Err(error.into())
@@ -743,10 +826,21 @@ fn probe_retrying(
 ) -> Result<(Probed, u32), DownloadError> {
     let mut retrier = Retrier::new(*policy);
     let mut retries = 0;
+    // The answer whose bytes were kept: every retry must be about the same file (#45).
+    let mut earlier: Option<Answered> = None;
     loop {
-        match probe(lp, request.clone(), probe_end, part, ck, control, policy)? {
+        let ask = ProbeAsk {
+            request: request.clone(),
+            end: probe_end,
+            earlier: earlier.as_ref(),
+        };
+        let attempt = probe(lp, ask, part, ck, control, policy)?;
+        match attempt {
             Ok(probed) => return Ok((probed, retries)),
             Err(failed) => {
+                if earlier.is_none() && part.written > 0 {
+                    earlier = failed.answered;
+                }
                 let wait = retrier
                     .wait(&failed.error, failed.retry_after, part.written)
                     .ok_or(failed.error)?;
@@ -757,42 +851,65 @@ fn probe_retrying(
     }
 }
 
+/// One probe attempt: its request, the last byte it asks for, and the earlier answer whose bytes
+/// were kept, which its answer must agree with (#45).
+struct ProbeAsk<'a> {
+    request: FetchRequest,
+    end: u64,
+    earlier: Option<&'a Answered>,
+}
+
 /// Runs the probe, or its retry without `Range`, and writes the bytes it may keep. The outcome is
 /// decided in the header callback, before the first byte. A failure worth retrying comes back as
 /// [`Retryable`]; a probe whose answer gave the file's total and was then cut off returns its
 /// outcome, and the range scheduler fetches the rest.
 fn probe(
     lp: &CurlLoop,
-    request: FetchRequest,
-    probe_end: u64,
+    ask: ProbeAsk,
     part: &mut PartFile,
     ck: &mut Checkpointer,
     control: &Control,
     policy: &RetryPolicy,
 ) -> Result<Result<Probed, Retryable>, DownloadError> {
+    let ProbeAsk {
+        request,
+        end: probe_end,
+        earlier,
+    } = ask;
     let probe_verdict = Arc::new(Mutex::new(None));
     let multipart = Arc::new(AtomicBool::new(false));
-    let validators: Arc<Mutex<Validators>> = Arc::new(Mutex::new((None, None)));
+    let validators: Arc<Mutex<Option<Answered>>> = Arc::default();
+    let changed: Arc<Mutex<Option<TransferError>>> = Arc::default();
     let retry_after = RetryAfter::default();
-    let (verdict, saw_multipart, seen, asked) = (
+    let (verdict, saw_multipart, seen, other, asked) = (
         Arc::clone(&probe_verdict),
         Arc::clone(&multipart),
         Arc::clone(&validators),
+        Arc::clone(&changed),
         retry_after.clone(),
     );
+    let earlier = earlier.cloned();
     let fetch = lp.fetch(
         request.limited(&control.limits),
         move |head: &ResponseHead| {
             asked.note(head);
-            *seen.lock().expect("the validators lock") = (
-                head.header("etag").map(str::to_owned),
-                head.header("last-modified").map(str::to_owned),
-            );
             if is_multipart(head) {
                 saw_multipart.store(true, Ordering::Release);
                 return Gate::Abort("a multipart/byteranges answer to one range".to_owned());
             }
             let result = classify_probe(head, probe_end);
+            if let Ok(outcome) = &result {
+                if let Some(Err(why)) = earlier.as_ref().map(|e| e.check(head, outcome)) {
+                    // The bytes written so far are another answer's (#45).
+                    let e = TransferError::new(FailureClass::Permanent, Some(head.status), &why);
+                    *other.lock().expect("the changed lock") = Some(e);
+                    return Gate::Abort(why);
+                }
+                *seen.lock().expect("the validators lock") = Some(Answered {
+                    file: Representation::of(head),
+                    length: single_stream_length(outcome),
+                });
+            }
             let gate = match &result {
                 Ok(_) => Gate::Accept,
                 Err(e) => Gate::Abort(e.message.clone()),
@@ -831,7 +948,7 @@ fn probe(
             _ => None,
         };
         if let (Some(total), true) = (total, ck.due(part)) {
-            (ck.etag, ck.last_modified) = validators.lock().expect("the validators lock").clone();
+            ck.file = answered_file(&validators);
             ck.take_probe(part, total, control)?;
         }
         Ok(())
@@ -845,30 +962,43 @@ fn probe(
             Some(Ok(ProbeOutcome::RangesOk { total, .. })) => Some(*total),
             _ => None,
         };
-        let validators = validators.lock().expect("the validators lock").clone();
-        return Ok(Ok(Probed::Paused(total, validators)));
+        return Ok(Ok(Probed::Paused(total, answered_file(&validators))));
     }
     let probe_done = drained?;
+    if let Some(e) = changed.lock().expect("the changed lock").take() {
+        return Err(DownloadError::Changed(e));
+    }
+    let answered = validators.lock().expect("the validators lock").clone();
     if multipart.load(Ordering::Acquire) {
         return Ok(Ok(Probed::Multipart));
     }
     let outcome = match probe_verdict.lock().expect("the probe verdict lock").take() {
         Some(Ok(o)) => o,
-        Some(Err(e)) => return retryable(e, &retry_after),
+        Some(Err(e)) => return retryable(e, &retry_after, answered),
         None => {
             let e = probe_done.failure(policy).unwrap_or_else(loop_stopped);
-            return retryable(e, &retry_after);
+            return retryable(e, &retry_after, answered);
         }
     };
     if let Some(e) = probe_done.failure(policy) {
         // Cut off. With the file's total, the scheduler fetches what is missing; otherwise the
         // probe is tried again (it writes only the bytes not yet covered).
         if !matches!(outcome, ProbeOutcome::RangesOk { .. }) {
-            return retryable(e, &retry_after);
+            return retryable(e, &retry_after, answered);
         }
     }
-    let validators = validators.lock().expect("the validators lock").clone();
-    Ok(Ok(Probed::Outcome(outcome, cursor, validators)))
+    let file = answered.map(|a| a.file).unwrap_or_default();
+    Ok(Ok(Probed::Outcome(outcome, cursor, file)))
+}
+
+/// What the probe's answer said about the file, or nothing before it answered with the file.
+fn answered_file(answered: &Mutex<Option<Answered>>) -> Representation {
+    answered
+        .lock()
+        .expect("the validators lock")
+        .as_ref()
+        .map(|a| a.file.clone())
+        .unwrap_or_default()
 }
 
 /// The wait a `429` or `503` asked for in `Retry-After`, noted in a header callback.
@@ -1017,11 +1147,18 @@ fn answered_end(verdict: &SegmentVerdict) -> Option<u64> {
     }
 }
 
+/// What every segment request of one download is made from, and what its answer is checked
+/// against: the file's total and what the first answer said about it (#45).
+struct Asking<'a> {
+    base: &'a FetchRequest,
+    total: u64,
+    file: &'a Representation,
+}
+
 /// Starts the request for `lease`, `Range: bytes=start-(end−1)`, checked in the header callback.
 fn request(
     lp: &CurlLoop,
-    base: &FetchRequest,
-    total: u64,
+    asking: &Asking,
     lease: Lease,
     tx: mpsc::SyncSender<(LeaseId, Segment)>,
     policy: &RetryPolicy,
@@ -1034,12 +1171,14 @@ fn request(
     let (a, b) = (lease.start, lease.end - 1);
     let fetch_request = FetchRequest {
         range: Some((a, Some(b))),
-        ..base.clone()
+        ..asking.base.clone()
     }
+    .if_range(asking.file.if_range())
     .limited(&control.limits);
+    let (total, file) = (asking.total, asking.file.clone());
     let fetch = lp.fetch(fetch_request, move |head: &ResponseHead| {
         asked.note(head);
-        let result = check_segment(head, a, b, total);
+        let result = check_segment(head, a, b, total, &file);
         let gate = match &result {
             Ok(_) => Gate::Accept,
             Err(SegmentRejection::RangesIgnored) => {
@@ -1048,7 +1187,8 @@ fn request(
             Err(
                 SegmentRejection::Invalid(e)
                 | SegmentRejection::Anomaly(e)
-                | SegmentRejection::Changed(e),
+                | SegmentRejection::Changed(e)
+                | SegmentRejection::EncodingChanged(e),
             ) => Gate::Abort(e.message.clone()),
         };
         *v.lock().expect("the segment verdict lock") = Some(result);
@@ -1122,6 +1262,7 @@ fn fetch_ranges(
     let mut ranges_ignored = false;
     let mut failure: Option<TransferError> = None;
     let mut changed: Option<TransferError> = None;
+    let mut encoding_changed: Option<TransferError> = None;
     let mut ramp = options.adaptive.map(Ramp::new);
     // Answers came over HTTP/2, and how its streams are used (#47).
     let mut h2 = false;
@@ -1133,7 +1274,7 @@ fn fetch_ranges(
     loop {
         let now = Instant::now();
         waiting.retain(|until| *until > now);
-        if failure.is_some() || changed.is_some() {
+        if failure.is_some() || changed.is_some() || encoding_changed.is_some() {
             // The download ends; nothing waits to be retried.
             waiting.clear();
         }
@@ -1201,6 +1342,7 @@ fn fetch_ranges(
         let mut file_bound = false;
         while failure.is_none()
             && changed.is_none()
+            && encoding_changed.is_none()
             && !ranges_ignored
             && anomalies < MAX_ANOMALIES
             && ((active.len() + waiting.len()) as u32) < connections
@@ -1225,7 +1367,18 @@ fn fetch_ranges(
             fetches += 1;
             active.insert(
                 lease.id,
-                request(lp, &base, total, lease, tx.clone(), policy, control),
+                request(
+                    lp,
+                    &Asking {
+                        base: &base,
+                        total,
+                        file: &ck.file,
+                    },
+                    lease,
+                    tx.clone(),
+                    policy,
+                    control,
+                ),
             );
         }
         control.running(active.len() as u32, file_bound);
@@ -1325,9 +1478,13 @@ fn fetch_ranges(
                 let verdict = a.verdict.lock().expect("the segment verdict lock").take();
                 let unfinished = sched.lease(id).is_some_and(|l| l.cursor < l.end);
                 if a.retiring {
-                    // Stopped on purpose: only a changed file still matters.
-                    if let Some(Err(SegmentRejection::Changed(t))) = verdict {
-                        changed = changed.or(Some(t));
+                    // Stopped on purpose: only a changed file or encoding still matters.
+                    match verdict {
+                        Some(Err(SegmentRejection::Changed(t))) => changed = changed.or(Some(t)),
+                        Some(Err(SegmentRejection::EncodingChanged(t))) => {
+                            encoding_changed = encoding_changed.or(Some(t));
+                        }
+                        _ => {}
                     }
                     sched.ended(id);
                     continue;
@@ -1339,6 +1496,9 @@ fn fetch_ranges(
                         retry_later(t, a.retry_after.get(), part.written)
                     }
                     (Some(Err(SegmentRejection::Changed(t))), _) => changed = changed.or(Some(t)),
+                    (Some(Err(SegmentRejection::EncodingChanged(t))), _) => {
+                        encoding_changed = encoding_changed.or(Some(t));
+                    }
                     // Accepted, then cut off: the rest of the lease is leased again.
                     (Some(Ok(_)), Err(_)) => anomalies += 1,
                     // Complete by its own account, but it stopped before the end its Content-Range
@@ -1361,6 +1521,9 @@ fn fetch_ranges(
     if let Some(t) = changed {
         return Err(DownloadError::Changed(t));
     }
+    if let Some(t) = encoding_changed {
+        return Err(DownloadError::EncodingChanged(t));
+    }
     if let Some(e) = failure {
         return Err(e.into());
     }
@@ -1368,7 +1531,7 @@ fn fetch_ranges(
         return Ok((fetches, splits, Mode::Ranges));
     }
     if ranges_ignored || anomalies >= MAX_ANOMALIES {
-        let n = stream_gaps(lp, url, Some(total), part, control, policy)?.1;
+        let n = stream_gaps(lp, url, Some(total), Some(&ck.file), part, control, policy)?.1;
         return Ok((fetches + n, splits, Mode::RangesLost));
     }
     // C, the live leases and the unassigned bytes always make up the file, so with no lease left
@@ -1389,6 +1552,7 @@ fn fetch_sequential(
     lp: &CurlLoop,
     url: &str,
     start: u64,
+    file: &Representation,
     part: &mut PartFile,
     control: &Control,
     policy: &RetryPolicy,
@@ -1405,11 +1569,14 @@ fn fetch_sequential(
         let v = Arc::clone(&verdict);
         let retry_after = RetryAfter::default();
         let asked = retry_after.clone();
+        let same = file.clone();
         let fetch = lp.fetch(
-            FetchRequest::range(url.to_owned(), from, None).limited(&control.limits),
+            FetchRequest::range(url.to_owned(), from, None)
+                .if_range(file.if_range())
+                .limited(&control.limits),
             move |head: &ResponseHead| {
                 asked.note(head);
-                let result = check_continuation(head, from);
+                let result = check_continuation(head, from, &same);
                 let gate = match &result {
                     Ok(_) => Gate::Accept,
                     Err(SegmentRejection::RangesIgnored) => {
@@ -1418,7 +1585,8 @@ fn fetch_sequential(
                     Err(
                         SegmentRejection::Invalid(e)
                         | SegmentRejection::Anomaly(e)
-                        | SegmentRejection::Changed(e),
+                        | SegmentRejection::Changed(e)
+                        | SegmentRejection::EncodingChanged(e),
                     ) => Gate::Abort(e.message.clone()),
                 };
                 *v.lock().expect("the continuation verdict lock") = Some(result);
@@ -1467,7 +1635,7 @@ fn fetch_sequential(
                 }
             }
             (Some(Err(SegmentRejection::RangesIgnored)), _) => {
-                let (length, n) = stream_gaps(lp, url, None, part, control, policy)?;
+                let (length, n) = stream_gaps(lp, url, None, Some(file), part, control, policy)?;
                 return Ok((fetches + n, length, Mode::RangesLost));
             }
             (Some(Err(SegmentRejection::Anomaly(_))), _) => anomalies += 1,
@@ -1476,6 +1644,9 @@ fn fetch_sequential(
                 continue;
             }
             (Some(Err(SegmentRejection::Changed(t))), _) => return Err(DownloadError::Changed(t)),
+            (Some(Err(SegmentRejection::EncodingChanged(t))), _) => {
+                return Err(DownloadError::EncodingChanged(t))
+            }
             // Never answered: the connection itself failed.
             (None, done) => {
                 retry(done.failure(policy).unwrap_or_else(loop_stopped), None)?;
@@ -1486,7 +1657,7 @@ fn fetch_sequential(
             anomalies += 1;
         }
         if anomalies >= MAX_ANOMALIES {
-            let (length, n) = stream_gaps(lp, url, None, part, control, policy)?;
+            let (length, n) = stream_gaps(lp, url, None, Some(file), part, control, policy)?;
             return Ok((fetches + n, length, Mode::RangesLost));
         }
     }
@@ -1499,6 +1670,7 @@ fn stream_gaps(
     lp: &CurlLoop,
     url: &str,
     total: Option<u64>,
+    file: Option<&Representation>,
     part: &mut PartFile,
     control: &Control,
     policy: &RetryPolicy,
@@ -1512,6 +1684,7 @@ fn stream_gaps(
         let r = Arc::clone(&refusal);
         let retry_after = RetryAfter::default();
         let asked = retry_after.clone();
+        let same = file.cloned();
         let fetch = lp.fetch(
             FetchRequest::get(url.to_owned()).limited(&control.limits),
             move |head: &ResponseHead| {
@@ -1519,14 +1692,35 @@ fn stream_gaps(
                 let length = head
                     .header("content-length")
                     .and_then(|v| v.trim().parse::<u64>().ok());
-                let identity = head
-                    .header("content-encoding")
-                    .is_none_or(|e| e.trim() == "identity");
-                if head.status == 200 && identity && (total.is_none() || length == total) {
+                if let (200, Some(same)) = (head.status, &same) {
+                    // Its bytes fill the gaps between the earlier ones: another file, or bytes
+                    // in another encoding, must never (report section 5.3, #45).
+                    let refused = |e: fn(TransferError) -> DownloadError, why: String| {
+                        let t = TransferError::new(FailureClass::Permanent, Some(200), &why);
+                        *r.lock().expect("the refusal lock") = Some(e(t));
+                        Gate::Abort(why)
+                    };
+                    let other = match same.check(head) {
+                        Err(why) => Some(why),
+                        Ok(()) => match (total, length) {
+                            (Some(t), Some(len)) if t != len => {
+                                Some(format!("the file's total changed from {t} to {len}"))
+                            }
+                            _ => None,
+                        },
+                    };
+                    if let Some(why) = other {
+                        return refused(DownloadError::Changed, why);
+                    }
+                    if let Err(why) = same.same_encoding(head) {
+                        return refused(DownloadError::EncodingChanged, why);
+                    }
+                }
+                if head.status == 200 && (total.is_none() || length == total) {
                     return Gate::Accept;
                 }
                 // An error status keeps its own class; any other answer isn't the same file.
-                let e = failure::status_failure(head.status).unwrap_or_else(|| {
+                let e = failure::later_status_failure(head.status).unwrap_or_else(|| {
                     TransferError::new(
                         FailureClass::Permanent,
                         Some(head.status),
@@ -1537,7 +1731,7 @@ fn stream_gaps(
                     )
                 });
                 let msg = e.message.clone();
-                *r.lock().expect("the refusal lock") = Some(e);
+                *r.lock().expect("the refusal lock") = Some(DownloadError::Transfer(e));
                 Gate::Abort(msg)
             },
         );
@@ -1548,8 +1742,10 @@ fn stream_gaps(
             control.report(part.written, total);
             Ok(())
         })?;
-        let failed = match refusal.lock().expect("the refusal lock").take() {
-            Some(e) => e,
+        let refused = refusal.lock().expect("the refusal lock").take();
+        let failed = match refused {
+            Some(DownloadError::Transfer(e)) => e,
+            Some(other) => return Err(other),
             None => match done.failure(policy) {
                 None => return Ok((offset, fetches)),
                 Some(e) => e,

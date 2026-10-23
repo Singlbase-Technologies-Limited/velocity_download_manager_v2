@@ -410,8 +410,9 @@ impl Scheduler {
         self.debug_check();
     }
 
-    /// Starts a new epoch (a changed file, #45): every live lease is revoked, C and D are emptied,
-    /// and the whole file is unassigned.
+    /// Starts a new epoch: every live lease is revoked, C and D are emptied, and the whole file is
+    /// unassigned. A changed file (#45) starts over with a new probe and scheduler instead, as the
+    /// new file's total may differ.
     pub fn new_epoch(&mut self) {
         for l in self.leases.values_mut().filter(|l| l.state.is_live()) {
             l.state = LeaseState::Revoked;

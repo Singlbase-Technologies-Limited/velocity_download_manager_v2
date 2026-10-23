@@ -350,7 +350,8 @@ impl DirectTransfer for InProcessEngine {
         Capabilities {
             protocols: vec![DownloadKind::Http],
             live_connection_changes: true,
-            validator_resume: false,
+            // With a strong validator, resume sends it in If-Range (#45).
+            validator_resume: true,
             metalink: false,
             max_connections_per_host: MAX_CONNECTIONS,
         }
@@ -628,7 +629,11 @@ fn run(shared: &Shared, id: TransferId, job: &Job, resume: Option<&Resume>, cont
             }
             Err(DownloadError::Cancelled) => s.status = DownloadStatus::Removed,
             Err(DownloadError::Paused) => s.status = DownloadStatus::Paused,
-            Err(DownloadError::Transfer(e) | DownloadError::Changed(e)) => {
+            Err(
+                DownloadError::Transfer(e)
+                | DownloadError::Changed(e)
+                | DownloadError::EncodingChanged(e),
+            ) => {
                 s.status = DownloadStatus::Failed;
                 s.error = Some(e);
             }

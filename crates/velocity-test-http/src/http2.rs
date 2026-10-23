@@ -19,7 +19,9 @@ use http::{header, Method, Request, Response};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::runtime::Runtime;
 
-use crate::{answer, parse_range, takes_fault, Answering, Counters, Pace, RangeMode};
+use crate::{
+    answer, parse_range, takes_fault, Answering, Counters, FileHeaders, Pace, RangeMode, Served,
+};
 
 /// What the HTTP/2 server does, beyond serving its files.
 #[derive(Clone, Debug, Default)]
@@ -153,6 +155,11 @@ async fn serve_stream(
         .get(header::RANGE)
         .and_then(|v| v.to_str().ok())
         .map(str::to_owned);
+    let if_range = request
+        .headers()
+        .get(header::IF_RANGE)
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_owned);
     {
         let mut c = counters.lock().unwrap();
         if head {
@@ -160,6 +167,7 @@ async fn serve_stream(
         } else {
             c.gets += 1;
             c.ranges.push(range_header.clone());
+            c.if_ranges.push(if_range.clone());
             c.request_times.push(Instant::now());
         }
     }
@@ -178,7 +186,12 @@ async fn serve_stream(
     let range = range_header.as_deref().and_then(parse_range);
     let mode = options.range_mode;
     let fault = takes_fault(mode, range, &counters);
-    let answer = answer(&data, range, mode, fault);
+    let served = Served {
+        data: &data[..],
+        headers: &FileHeaders::default(),
+        if_range: if_range.as_deref(),
+    };
+    let answer = answer(&served, range, mode, fault);
     let mut response = Response::builder()
         .status(answer.status)
         .header(header::CONTENT_LENGTH, answer.body.len());

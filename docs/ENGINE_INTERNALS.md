@@ -7,7 +7,7 @@ How the direct-download engine in `crates/velocity-transfer` fetches a file. The
 The probe is the download's first request and also its first segment, so its bytes are kept. It is `GET` with `Range: bytes=0-(S−1)`, where S is `DownloadOptions::probe_bytes`. That's 4 MiB in the engine, the report's starting value for #47 to tune.
 
 - **No HEAD:** a HEAD request is never sent, and `Accept-Ranges` is never taken as proof of range support.
-- **No encoding:** no `Accept-Encoding` is sent. A body with any other encoding than identity isn't the file's own bytes.
+- **No encoding asked for:** no `Accept-Encoding` is sent. An encoding the server applies anyway is kept, its bytes stored as sent ([changed files](#changed-files-45)).
 - **Decided before any byte:** the final response is classified in libcurl's header callback ([`probe.rs`](../crates/velocity-transfer/src/probe.rs)). An answer the engine refuses is aborted there, so none of its body is written.
 
 | Final response | What the engine does | `Mode` |
@@ -23,7 +23,7 @@ The probe is the download's first request and also its first segment, so its byt
 | Other `4xx` | Fails, never retried (`408` is retried) | — |
 | Other `5xx` | Retried after a wait | — |
 | No answer: the connection failed | Retried after a wait | — |
-| A malformed `Content-Range`, a `Content-Length` that disagrees with it, a start other than 0, an end past the request or the total, an unrequested encoding | Fails before writing, not retryable | — |
+| A malformed `Content-Range`, a `Content-Length` that disagrees with it, a start other than 0, an end past the request or the total | Fails before writing, not retryable | — |
 
 ## Later segments: the range scheduler (#42)
 
@@ -67,7 +67,7 @@ Each answer is checked in the header callback (`check_segment`):
 
   The first anomaly is tolerated, and the lease's rest is leased again. At the **second** on the same download (`MAX_ANOMALIES`), no more leases are handed out, and the rest comes as one stream that writes only the missing bytes (`RangesLost`).
 - **Short answers:** a `206` with fewer bytes than asked is honest (RFC 9110 §14.2). Its lease fails, and only the remainder is leased again.
-- **Failure:** an error status, or a different total, which means the file changed (#45). An error status worth retrying frees the connection for a wait, and the rest of the lease is leased again after it ([retries](#retries-waits-and-stalls-48)).
+- **Failure:** an error status, or an answer about another file ([changed files](#changed-files-45)). An error status worth retrying frees the connection for a wait, and the rest of the lease is leased again after it ([retries](#retries-waits-and-stalls-48)).
 
 ### Invariants
 
@@ -76,7 +76,7 @@ Checked after every change in debug builds (`Scheduler::check`), and by the prop
 - **I1 Partition:** the coverage C, the live leases' `[cursor, end)` and the unassigned bytes U are disjoint and make up `[0, T)`.
 - **I2 Exclusivity:** no two live leases overlap, and none overlaps C.
 - **I3 Acceptance:** a byte at offset p is written only by the live lease whose cursor is p.
-- **I4 Monotonic coverage:** C only grows within an epoch; `new_epoch` (a changed file, #45) starts again from an empty C.
+- **I4 Monotonic coverage:** C only grows within an epoch; `new_epoch` starts again from an empty C.
 - **I5 Durability:** the durable coverage D is part of C and was synced before it was recorded (`synced`). Saving D in a checkpoint is #43.
 - **I6 Completion:** C covers the file and no lease is live (`is_complete`).
 - **I7 Conservation:** bytes received = growth of C + wasted bytes.
@@ -84,6 +84,52 @@ Checked after every change in debug builds (`Scheduler::check`), and by the prop
 ## Accounting
 
 Every received byte is either written into the part file once, or counted in `wasted_bytes`. That includes bytes past a lease's end, bytes for a lease that isn't live, bytes the single stream sends again, and bytes already covered. Progress counts written bytes only. A server that ignores ranges costs exactly one GET with no wasted bytes, which a fixture test checks.
+
+## Changed files (#45)
+
+Every answer after the first must be about the file the first answer described (report section 5.3, [`validator.rs`](../crates/velocity-transfer/src/validator.rs)). Validators belong to the file, not to its URL, so an answer that a redirect brought from elsewhere is held to the same.
+
+### The validator
+
+| The first answer gives | Sent as `If-Range` on every later range request |
+|---|---|
+| A strong ETag, such as `"v1"` | The ETag |
+| A weak ETag, such as `W/"v1"`, with or without a Last-Modified | Nothing. RFC 9110 §13.1.5 forbids a weak tag in `If-Range`, and a date while an entity tag exists |
+| No ETag, and a Last-Modified at least 1 s before the answer's own `Date` | The date. 1 s is RFC 9110 §8.8.2.2's rule for a client (`STRONG_DATE_MARGIN`); the report keeps a larger margin as a hypothesis to test |
+| Anything else, a malformed ETag included | Nothing. Only the total is compared, and a resume follows [ADR-0010](decisions/0010-resume-without-validator.md) |
+
+The report's fixture table says a weak ETag still allows a strong Last-Modified. The RFC's text doesn't, and the engine follows the RFC.
+
+### What every later answer is checked for
+
+In the header callback, before any byte is written, an answer is about another file if it has:
+
+- **another ETag,** compared as sent, so a weak tag never equals a strong one, or **no ETag** where the first answer had one (the report's conservative rule);
+- **another strong date,** or none;
+- **another total,** or a `416` for a range inside the old total;
+- **another `Content-Encoding`,** which is its own case below.
+
+A `200` to a range that carried `If-Range` is the new file when its validators differ (RFC 9110 §13.1.5), and ranges lost when they match. The same checks apply to the stream that fills the gaps after ranges are lost, and to a probe asked for again after it was cut off, whose bytes so far are the earlier answer's. That retry must also give the same length.
+
+### What a change does
+
+- **Another file:** every request stops, the part file is emptied, and the download starts over once from a new probe, which gives the new validator. Old and new bytes are never mixed. A resume whose file changed since its checkpoint does the same.
+- **Another encoding:** ranges count encoded bytes, so the download starts over once as one stream (`Mode::SingleStream`).
+- **A second change** after the start-over ends the download: "The file changed on the server during download, twice: …". It is Transient and retryable, so the user can retry it, but the engine doesn't restart it on its own. The part file is deleted.
+
+The start-over uses a new scheduler and a new probe, not `Scheduler::new_epoch`, because the new file's total and validator come from the new probe.
+
+### Content encoding
+
+A server may apply an encoding nobody asked for, such as a `.tar.gz` served with `Content-Encoding: gzip`. The engine stores the bytes exactly as sent and never decodes them (PO decision on #45, replacing #41's refusal). Ranges work while every answer has the same encoding, which the checkpoint records (`contentEncoding`) so that a resume can check it. The rare cost: a file that a server compressed on the fly is saved compressed.
+
+### Expired links
+
+A `403` on any answer after the first fails with "The download link expired (403). Get a fresh link from the browser." (PO decision on #45: a message, with no new failure kind). A `403` on the first answer keeps "Access was denied by the server (403). The link may have expired.", as it may be a real refusal.
+
+### What can't be detected
+
+A server that changes the file but keeps its ETag, its date and its length looks unchanged. Only a checksum catches it (#46). Without any validator, only the total is compared ([ADR-0010](decisions/0010-resume-without-validator.md)).
 
 ## Retries, waits and stalls (#48)
 
@@ -262,7 +308,7 @@ A download survives a pause, an app restart, an engine crash and a power loss wi
   - a format version (`CHECKPOINT_FORMAT`);
   - the source without its login, query and fragment, so no token;
   - the total;
-  - the ETag and Last-Modified of the first answer (recorded; #45 uses them);
+  - what the first answer said about the file: its ETag, its Last-Modified only when that was the strong validator, and its `Content-Encoding` ([changed files](#changed-files-45));
   - D as half-open byte ranges.
 
   Leases are never saved.
@@ -275,7 +321,7 @@ The app hands back what it saved, in `TransferSpec::resume`:
 
 | `resume` | The engine |
 |---|---|
-| `checkpoint` | Trusts the checkpoint only if it fits: this format, this download's source, and ranges that are sorted, disjoint, non-empty and inside the total. If it fits, the part file is reopened (never through a link), only D is trusted, and only the rest is fetched. A changed total, or a `416` inside the old one, means the file on the server changed: the old bytes are discarded and the download starts over. If it doesn't fit, or the part file is gone, the download starts over |
+| `checkpoint` | Trusts the checkpoint only if it fits: this format, this download's source, and ranges that are sorted, disjoint, non-empty and inside the total. If it fits, the part file is reopened (never through a link), only D is trusted, and only the rest is fetched, with the recorded validator in `If-Range`. Another validator, total or encoding, or a `416` inside the old total, means the file on the server changed: the old bytes are discarded and the download [starts over once](#what-a-change-does). If it doesn't fit, or the part file is gone, the download starts over |
 | `discardPartFile` | The part file is the download's own but has no usable checkpoint: it is deleted and the download starts over (PO decision). A link, or anything that isn't a plain file, is refused and never touched |
 | none | A new download. An existing part file is never reused: the download fails |
 
@@ -355,6 +401,15 @@ Run it with `cargo run --release -p velocity-transfer --example high_offset_writ
   - the bytes fetched twice are at most that plus what was in flight.
 
   CI runs 3 trials. The full 100 run by hand with `VELOCITY_CRASH_TRIALS=100 cargo test -p velocity-transfer --test crash_recovery -- --nocapture` (PO decision on #43), and `VELOCITY_CRASH_SEED` repeats a run.
+- **Changed-object fixtures (#45):** `tests/changed.rs` checks every request's `Range` and `If-Range` against a server whose file changes after a set number of GETs:
+  - a new strong ETag starts over once and ends as the new file;
+  - a dropped ETag counts as a change;
+  - a weak ETag is never sent, and a strong date is;
+  - a second change fails as retryable, with no part file left;
+  - a resume whose ETag changed starts over;
+  - the gap stream after ranges were lost, and a retried probe, are checked too;
+  - an unasked encoding is stored as sent, a changed one starts over as one stream, and a resume needs its checkpoint's encoding;
+  - a `403` after the first answer says the link expired.
 - **Retry fixtures:** `tests/retries.rs` covers #48's acceptance fixtures:
   - a `429` with `Retry-After: 5` gets no request before 5 s;
   - a reset storm backs off within its bounds and recovers, and one that doesn't end fails after 5 tries;
@@ -373,7 +428,7 @@ Run it with `cargo run --release -p velocity-transfer --example high_offset_writ
   - the ramp fixtures check "never more than asked" with the engine's own count, `DownloadReport::peak_requests`. A server counts a stopped request for a moment longer, because it writes the request's tail until it sees the connection close;
   - the fairness fixture measures once every download is downloading on its 2 connections. A download's allowance alone is set before it connects.
 - **HTTP/2 fixtures (#47):** `tests/http2.rs` runs against the cleartext HTTP/2 server: #41's probe fixtures, #42's split that resets only its stream, and the multiplex policy against a server throttling each TCP connection and one throttling each stream. They need the `test-h2c` feature, which only test builds have ([TESTING.md](TESTING.md#fixture-servers-v2-needs)).
-- **Unit tests:** the tests in `probe.rs`, `failure.rs`, `retry.rs`, `adaptive.rs`, `budget.rs`, the libcurl layer's `rate.rs`, `scheduler.rs`, `files.rs` and the libcurl layer's `tests/curl_loop.rs` (`FetchLimit`, the per-host cap) and `tests/http2.rs` cover each rule on its own.
+- **Unit tests:** the tests in `probe.rs`, `validator.rs`, `failure.rs`, `retry.rs`, `adaptive.rs`, `budget.rs`, the libcurl layer's `rate.rs`, `scheduler.rs`, `files.rs` and the libcurl layer's `tests/curl_loop.rs` (`FetchLimit`, the per-host cap) and `tests/http2.rs` cover each rule on its own.
 
 ## Not yet
 
@@ -382,5 +437,5 @@ Run it with `cargo run --release -p velocity-transfer --example high_offset_writ
 - **Learning per host:** what a host allowed isn't remembered between downloads (a non-goal of #47).
 - **Throttling across downloads:** a `429` or `503` halves the connections of the download that got it, not of the other downloads to that host.
 - **Retry settings:** the values are engine defaults until the settings model passes the user's (#30).
-- **Validators and changed files:** a changed `Content-Encoding` between responses is an anomaly for now. Treating it, a changed total and changed validators as a changed object, with `new_epoch`, is #45.
+- **"Not verified":** marking a download resumed without a validator as "not verified" ([ADR-0010](decisions/0010-resume-without-validator.md)) is #46.
 - **Saving checkpoints in the app:** the manager saves the engine's checkpoint events in the database and resumes unfinished downloads at startup with `StoredDownload::resume` (#58).

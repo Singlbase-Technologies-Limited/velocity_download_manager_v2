@@ -73,11 +73,12 @@ pub enum DownloadKind {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum FailureClass {
-    /// Worth retrying soon: a reset connection, a timeout, a 5xx other than 503.
+    /// Worth retrying soon: a reset connection, a timeout, a 5xx other than 503, a file that
+    /// changed on the server again after its download started over (#45).
     Transient,
     /// The server asked to slow down: 429, 503, `Retry-After`.
     Throttled,
-    /// Retrying won't help without a change: 404, 401, a changed object, a full disk.
+    /// Retrying won't help without a change: 404, 401, an expired link, a full disk.
     Permanent,
 }
 

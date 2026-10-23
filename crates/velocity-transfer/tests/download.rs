@@ -630,6 +630,7 @@ fn a_resume_of_a_file_that_changed_on_the_server_starts_over() {
         total: 400_000,
         etag: None,
         last_modified: None,
+        content_encoding: None,
         durable: vec![(0, 100_000)],
     };
     let resume = Resume::Checkpoint { checkpoint };
@@ -667,6 +668,7 @@ fn a_checkpoint_that_does_not_fit_its_file_is_not_trusted() {
             total: 300_000,
             etag: None,
             last_modified: None,
+            content_encoding: None,
             durable,
         };
         let resume = Resume::Checkpoint { checkpoint };
@@ -695,6 +697,7 @@ fn a_resume_whose_part_file_is_gone_starts_over() {
         total: 300_000,
         etag: None,
         last_modified: None,
+        content_encoding: None,
         durable: vec![(0, 100_000)],
     };
     let resume = Resume::Checkpoint { checkpoint };

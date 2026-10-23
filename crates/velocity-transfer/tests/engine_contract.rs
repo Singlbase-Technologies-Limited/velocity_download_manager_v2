@@ -99,9 +99,10 @@ fn reports_its_capabilities_honestly() {
             vec![DownloadKind::Http],
             "{mode}: only HTTP(S) in the prototype"
         );
-        // Live connection changes came with #47.
-        assert!(c.live_connection_changes, "{mode}");
-        assert!(!c.validator_resume && !c.metalink, "{mode}");
+        // Live connection changes came with #47, resume checked against a strong validator with
+        // #45.
+        assert!(c.live_connection_changes && c.validator_resume, "{mode}");
+        assert!(!c.metalink, "{mode}");
         assert!(c.max_connections_per_host >= 1, "{mode}");
     }
 }

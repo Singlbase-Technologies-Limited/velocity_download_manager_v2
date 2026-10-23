@@ -20,7 +20,8 @@ use std::sync::mpsc::Receiver;
 /// Version 2 (#43) added checkpoints: [`TransferSpec::resume`] and [`TransferEvent::Checkpoint`].
 /// Version 3 (#49) added the global speed limit: [`DirectTransfer::set_global_limits`].
 /// Version 4 (#47) added [`crate::domain::Progress::connection_detail`] to snapshots.
-pub const TRANSFER_CONTRACT_VERSION: u32 = 4;
+/// Version 5 (#45) added [`Checkpoint::content_encoding`].
+pub const TRANSFER_CONTRACT_VERSION: u32 = 5;
 
 /// An engine's id for one transfer. Assigned by the engine, never reused, and never shown as the
 /// app's download id.
@@ -125,9 +126,14 @@ pub struct Checkpoint {
     pub source: String,
     /// The file's total size. A resumed answer with another total means another file.
     pub total: u64,
-    /// The validators the first answer gave, recorded for #45: an ETag and a Last-Modified date.
+    /// What the first answer said about the file (#45): its ETag, strong or weak, and its
+    /// `Last-Modified` only when that was the strong validator. Every later answer must agree.
     pub etag: Option<String>,
     pub last_modified: Option<String>,
+    /// The `Content-Encoding` the server applied, which V2 never asks for; `None` for none. Ranges
+    /// count the encoded bytes, so a resume needs the same one (#45). Absent in checkpoints saved
+    /// before it existed, which had none.
+    pub content_encoding: Option<String>,
     /// The byte ranges synced to disk, as half-open `[start, end)` pairs, sorted and disjoint.
     /// Only these are trusted after a crash.
     pub durable: Vec<(u64, u64)>,
@@ -358,8 +364,21 @@ mod tests {
             total: 1000,
             etag: Some("\"v1\"".to_owned()),
             last_modified: None,
+            content_encoding: None,
             durable: vec![(0, 400), (600, 800)],
         }
+    }
+
+    #[test]
+    fn a_checkpoint_saved_before_content_encoding_reads_as_none() {
+        let saved = r#"{"format":1,"source":"https://example.com/a.zip","total":1000,"etag":"\"v1\"","lastModified":null,"durable":[[0,400],[600,800]]}"#;
+        let read: Checkpoint = serde_json::from_str(saved).expect("an older checkpoint reads");
+        assert_eq!(read, checkpoint());
+        let gzip = Checkpoint {
+            content_encoding: Some("gzip".to_owned()),
+            ..checkpoint()
+        };
+        round_trip(&gzip);
     }
 
     fn snapshot() -> TransferSnapshot {
