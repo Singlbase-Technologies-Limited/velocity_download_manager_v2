@@ -174,6 +174,7 @@ fn a_weak_etag_is_never_sent_in_if_range() {
             etag: Some("W/\"v1\"".to_owned()),
             last_modified: Some(MODIFIED.to_owned()),
             date: Some(LATER.to_owned()),
+            content_encoding: None,
         },
         Vec::new(),
         RangeMode::Honour,
@@ -195,6 +196,7 @@ fn a_strong_last_modified_is_sent_in_if_range_without_an_etag() {
             etag: None,
             last_modified: Some(MODIFIED.to_owned()),
             date: Some(LATER.to_owned()),
+            content_encoding: None,
         },
         Vec::new(),
         RangeMode::Honour,
@@ -270,6 +272,7 @@ fn a_resume_of_a_file_whose_etag_changed_starts_over() {
         total: LEN as u64,
         etag: Some("\"v1\"".to_owned()),
         last_modified: None,
+        content_encoding: None,
         durable: vec![(0, 100_000)],
     };
     let report = download_resumable(
@@ -324,4 +327,85 @@ fn a_single_stream_after_ranges_were_lost_is_checked_too() {
             None,
         ]
     );
+}
+
+fn encoded(encoding: &str) -> FileHeaders {
+    FileHeaders {
+        content_encoding: Some(encoding.to_owned()),
+        ..FileHeaders::default()
+    }
+}
+
+#[test]
+fn a_file_with_an_encoding_nobody_asked_for_is_saved_as_sent() {
+    // PO decision on #45: a .tar.gz served with Content-Encoding: gzip is stored byte for byte,
+    // never decoded, with ranges while every answer has the same encoding.
+    let s = serve(encoded("gzip"), Vec::new(), RangeMode::Honour);
+    let dir = Dir::new("gzip");
+    let dest = dir.file("out.bin");
+    let report = download(&curl_loop(), &s.url("f.bin"), &dest, OPTIONS).expect("it downloads");
+    assert!(
+        std::fs::read(&dest).unwrap() == version(1),
+        "stored as sent"
+    );
+    assert_eq!(report.mode, Mode::Ranges);
+}
+
+#[test]
+fn an_encoding_that_changes_between_answers_starts_over_as_one_stream() {
+    // Report 5.4: "Content-Encoding changes between responses: ranges stop; restart as a single
+    // stream". Ranges count encoded bytes, so none of the earlier ones are kept.
+    let s = serve(
+        FileHeaders::default(),
+        vec![Change {
+            after: 1,
+            data: version(1),
+            headers: encoded("gzip"),
+        }],
+        RangeMode::Honour,
+    );
+    let dir = Dir::new("encoding-changed");
+    let dest = dir.file("out.bin");
+    let report = download(&curl_loop(), &s.url("f.bin"), &dest, OPTIONS).expect("it starts over");
+    assert!(std::fs::read(&dest).unwrap() == version(1));
+    assert_eq!(report.mode, Mode::SingleStream);
+    assert_eq!(
+        asked(&s.counters()),
+        [(Some(PROBE), None), (Some(REST), None), (None, None)]
+    );
+}
+
+#[test]
+fn a_resume_needs_the_encoding_its_checkpoint_recorded() {
+    let s = serve(encoded("gzip"), Vec::new(), RangeMode::Honour);
+    let resume = |name: &str, encoding: Option<&str>| {
+        let dir = Dir::new(name);
+        let dest = dir.file("out.bin");
+        std::fs::write(part_of(&dest), &version(1)[..100_000]).unwrap();
+        let checkpoint = Checkpoint {
+            format: CHECKPOINT_FORMAT,
+            source: s.url("f.bin"),
+            total: LEN as u64,
+            etag: None,
+            last_modified: None,
+            content_encoding: encoding.map(str::to_owned),
+            durable: vec![(0, 100_000)],
+        };
+        let report = download_resumable(
+            &curl_loop(),
+            &s.url("f.bin"),
+            &dest,
+            OPTIONS,
+            Some(&Resume::Checkpoint { checkpoint }),
+            &Control::default(),
+        )
+        .expect("it finishes");
+        assert!(std::fs::read(&dest).unwrap() == version(1), "{name}");
+        report
+    };
+    let same = resume("resume-gzip", Some("gzip"));
+    assert_eq!((same.resumed_bytes, same.mode), (100_000, Mode::Ranges));
+    // Saved before the server applied an encoding: the old bytes can't be trusted.
+    let other = resume("resume-identity", None);
+    assert_eq!((other.resumed_bytes, other.mode), (0, Mode::SingleStream));
 }

@@ -628,7 +628,11 @@ fn run(shared: &Shared, id: TransferId, job: &Job, resume: Option<&Resume>, cont
             }
             Err(DownloadError::Cancelled) => s.status = DownloadStatus::Removed,
             Err(DownloadError::Paused) => s.status = DownloadStatus::Paused,
-            Err(DownloadError::Transfer(e) | DownloadError::Changed(e)) => {
+            Err(
+                DownloadError::Transfer(e)
+                | DownloadError::Changed(e)
+                | DownloadError::EncodingChanged(e),
+            ) => {
                 s.status = DownloadStatus::Failed;
                 s.error = Some(e);
             }

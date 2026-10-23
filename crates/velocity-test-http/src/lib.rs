@@ -86,6 +86,8 @@ pub struct FileHeaders {
     pub etag: Option<String>,
     pub last_modified: Option<String>,
     pub date: Option<String>,
+    /// Sent as `Content-Encoding`, without encoding anything: the bytes are what the client stores.
+    pub content_encoding: Option<String>,
 }
 
 /// After the first `after` GETs, every GET is answered from `data` with `headers` instead, whatever
@@ -524,10 +526,7 @@ fn serve_connection(
             }
             continue;
         };
-        let (data, file_headers) = match options
-            .changes
-            .iter()
-            .rfind(|c| gets > u64::from(c.after))
+        let (data, file_headers) = match options.changes.iter().rfind(|c| gets > u64::from(c.after))
         {
             Some(change) => (&change.data, &change.headers),
             None => (&**data, &options.file_headers),
@@ -729,6 +728,11 @@ pub(crate) fn answer<'a>(
     headers.extend(file.etag.clone().map(|v| ("ETag", v)));
     headers.extend(file.last_modified.clone().map(|v| ("Last-Modified", v)));
     headers.extend(file.date.clone().map(|v| ("Date", v)));
+    headers.extend(
+        file.content_encoding
+            .clone()
+            .map(|v| ("Content-Encoding", v)),
+    );
     let (status, reason, body): (u16, &'static str, &[u8]) = match (mode, range) {
         (RangeMode::Ignore, _) | (_, None) => (200, "OK", data),
         (RangeMode::FullBodyForNonZeroStart, Some((start, _))) if start > 0 => (200, "OK", data),

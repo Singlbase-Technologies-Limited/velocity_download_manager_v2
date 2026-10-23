@@ -3,6 +3,7 @@
 
 use std::time::Duration;
 
+use velocity_core::transfer::Checkpoint;
 use velocity_curl::ResponseHead;
 
 /// How much later than `Last-Modified` the answer's `Date` must be for the date to be strong. RFC
@@ -46,6 +47,10 @@ pub struct Representation {
     pub etag: Option<String>,
     /// The strong validator, sent as `If-Range`.
     pub validator: Option<Validator>,
+    /// The `Content-Encoding` the server applied, in lower case; `None` for none (`identity`).
+    /// V2 never asks for one and stores the bytes as sent; ranges count encoded bytes, so every
+    /// answer must have the same one (report section 5.3, PO decision on #45).
+    pub encoding: Option<String>,
 }
 
 impl Representation {
@@ -57,22 +62,41 @@ impl Representation {
                 .and_then(EntityTag::parse)
                 .map(|t| t.as_sent()),
             validator: choose(head),
+            encoding: encoding(head.header("content-encoding")),
         }
     }
 
-    /// What a checkpoint recorded: its ETag, and its `Last-Modified`, which a checkpoint holds only
-    /// when it was the strong validator.
-    pub fn recorded(etag: Option<&str>, last_modified: Option<&str>) -> Self {
-        let tag = etag.and_then(EntityTag::parse);
+    /// What a checkpoint recorded: its ETag, its `Last-Modified`, which a checkpoint holds only
+    /// when it was the strong validator, and its encoding.
+    pub fn recorded(checkpoint: &Checkpoint) -> Self {
+        let tag = checkpoint.etag.as_deref().and_then(EntityTag::parse);
         let validator = match &tag {
             Some(EntityTag { weak: false, tag }) => Some(Validator::ETag((*tag).to_owned())),
             Some(EntityTag { weak: true, .. }) => None,
-            None => last_modified.map(|m| Validator::LastModified(m.to_owned())),
+            None => checkpoint
+                .last_modified
+                .as_ref()
+                .map(|m| Validator::LastModified(m.clone())),
         };
         Representation {
             etag: tag.map(|t| t.as_sent()),
             validator,
+            encoding: encoding(checkpoint.content_encoding.as_deref()),
         }
+    }
+
+    /// Whether `head`, a later answer, has the same `Content-Encoding`: `Err` says what changed.
+    pub fn same_encoding(&self, head: &ResponseHead) -> Result<(), String> {
+        let now = encoding(head.header("content-encoding"));
+        if now == self.encoding {
+            return Ok(());
+        }
+        let name = |e: &Option<String>| e.clone().unwrap_or_else(|| "none".to_owned());
+        Err(format!(
+            "the server's Content-Encoding changed from {} to {}",
+            name(&self.encoding),
+            name(&now)
+        ))
     }
 
     /// The `If-Range` value: the strong validator, if there is one.
@@ -111,6 +135,12 @@ impl Representation {
         }
         Ok(())
     }
+}
+
+/// A `Content-Encoding` value in lower case, or `None` for none: absent or `identity`.
+fn encoding(value: Option<&str>) -> Option<String> {
+    let value = value?.trim().to_ascii_lowercase();
+    (!value.is_empty() && value != "identity").then_some(value)
 }
 
 /// An `ETag` value (RFC 9110 §8.8.3): `"opaque"` or `W/"opaque"`.
@@ -276,17 +306,68 @@ mod tests {
         assert_eq!(weak_date.check(&later), Ok(()));
     }
 
+    fn recorded(
+        etag: Option<&str>,
+        last_modified: Option<&str>,
+        encoding: Option<&str>,
+    ) -> Representation {
+        Representation::recorded(&Checkpoint {
+            format: velocity_core::transfer::CHECKPOINT_FORMAT,
+            source: "http://example.com/f.bin".to_owned(),
+            total: 1000,
+            etag: etag.map(str::to_owned),
+            last_modified: last_modified.map(str::to_owned),
+            content_encoding: encoding.map(str::to_owned),
+            durable: Vec::new(),
+        })
+    }
+
     #[test]
     fn a_checkpoint_restores_what_the_first_answer_said() {
         let strong = Representation::of(&head(&[("ETag", "\"v1\"")]));
-        assert_eq!(Representation::recorded(Some("\"v1\""), None), strong);
+        assert_eq!(recorded(Some("\"v1\""), None, None), strong);
         let weak = Representation::of(&head(&[("ETag", "W/\"v1\"")]));
-        assert_eq!(Representation::recorded(Some("W/\"v1\""), None), weak);
+        assert_eq!(recorded(Some("W/\"v1\""), None, None), weak);
         let dated = Representation::of(&head(&[("Last-Modified", MODIFIED), ("Date", LATER)]));
-        assert_eq!(Representation::recorded(None, Some(MODIFIED)), dated);
+        assert_eq!(recorded(None, Some(MODIFIED), None), dated);
+        assert_eq!(recorded(None, None, None), Representation::default());
+        let gzip = Representation::of(&head(&[("Content-Encoding", "gzip")]));
+        assert_eq!(recorded(None, None, Some("gzip")), gzip);
+    }
+
+    #[test]
+    fn the_first_answer_s_encoding_is_recorded_in_lower_case() {
+        let of = |value: &str| Representation::of(&head(&[("Content-Encoding", value)])).encoding;
+        assert_eq!(of("gzip"), Some("gzip".to_owned()));
+        assert_eq!(of(" GZip "), Some("gzip".to_owned()));
+        assert_eq!(of("identity"), None);
+        assert_eq!(of("Identity"), None);
+        assert_eq!(Representation::of(&head(&[])).encoding, None);
+    }
+
+    #[test]
+    fn every_later_answer_must_have_the_same_encoding() {
+        let gzip = Representation::of(&head(&[("Content-Encoding", "gzip")]));
         assert_eq!(
-            Representation::recorded(None, None),
-            Representation::default()
+            gzip.same_encoding(&head(&[("Content-Encoding", "GZIP")])),
+            Ok(())
         );
+        for other in [
+            &[("Content-Encoding", "br")][..],
+            &[("Content-Encoding", "identity")],
+            &[],
+        ] {
+            assert!(gzip.same_encoding(&head(other)).is_err(), "{other:?}");
+        }
+        let none = Representation::default();
+        assert_eq!(none.same_encoding(&head(&[])), Ok(()));
+        assert_eq!(
+            none.same_encoding(&head(&[("Content-Encoding", "identity")])),
+            Ok(())
+        );
+        let e = none
+            .same_encoding(&head(&[("Content-Encoding", "gzip")]))
+            .expect_err("gzip after none");
+        assert!(e.contains("gzip"), "{e}");
     }
 }

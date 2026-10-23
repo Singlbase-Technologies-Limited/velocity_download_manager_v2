@@ -35,6 +35,9 @@ pub enum SegmentRejection {
     /// the one this download started (report section 5.3). Its old bytes are never mixed with new
     /// ones.
     Changed(TransferError),
+    /// Another `Content-Encoding` than the first answer's (#45): ranges count encoded bytes, so
+    /// they can't go on; the download starts over as one stream.
+    EncodingChanged(TransferError),
     /// An error status, or an answer that can't be used. The retry policy decides from its class
     /// (#48).
     Invalid(TransferError),
@@ -67,7 +70,7 @@ pub fn check_continuation(
             ))),
         };
     }
-    identity_encoding(head).map_err(SegmentRejection::Anomaly)?;
+    one_range(head).map_err(SegmentRejection::Anomaly)?;
     if matches!(head.status, 200 | 206) {
         same_file(head, file)?;
     }
@@ -109,7 +112,7 @@ pub fn classify_probe(
     requested_end: u64,
 ) -> Result<ProbeOutcome, TransferError> {
     status_error(head)?;
-    identity_encoding(head)?;
+    one_range(head)?;
     match head.status {
         200 => Ok(ProbeOutcome::SingleStream {
             length: content_length(head)?,
@@ -162,7 +165,7 @@ pub fn check_segment(
     file: &Representation,
 ) -> Result<u64, SegmentRejection> {
     status_error(head).map_err(SegmentRejection::Invalid)?;
-    identity_encoding(head).map_err(SegmentRejection::Anomaly)?;
+    one_range(head).map_err(SegmentRejection::Anomaly)?;
     if matches!(head.status, 200 | 206) {
         // A 200 to If-Range with other validators is the new file (RFC 9110 §13.1.5); with the
         // same ones, the server stopped honouring ranges.
@@ -204,15 +207,14 @@ pub fn check_segment(
     Ok(got_end)
 }
 
-/// Refuses an answer about another file than the first answer was (report section 5.3, #45).
+/// Refuses an answer about another file than the first answer was, or in another encoding (report
+/// section 5.3, #45).
 fn same_file(head: &ResponseHead, file: &Representation) -> Result<(), SegmentRejection> {
-    file.check(head).map_err(|why| {
-        SegmentRejection::Changed(TransferError::new(
-            FailureClass::Permanent,
-            Some(head.status),
-            &why,
-        ))
-    })
+    let error = |why: String| TransferError::new(FailureClass::Permanent, Some(head.status), &why);
+    file.check(head)
+        .map_err(|why| SegmentRejection::Changed(error(why)))?;
+    file.same_encoding(head)
+        .map_err(|why| SegmentRejection::EncodingChanged(error(why)))
 }
 
 /// Error statuses, classified with their messages (`failure::status_failure`, #48).
@@ -223,17 +225,8 @@ fn status_error(head: &ResponseHead) -> Result<(), TransferError> {
     }
 }
 
-/// No `Accept-Encoding` is sent, so any encoding but identity isn't the file's own bytes.
-fn identity_encoding(head: &ResponseHead) -> Result<(), TransferError> {
-    match head.header("content-encoding").map(str::trim) {
-        None | Some("identity") => {}
-        Some(other) => {
-            return Err(dishonest(
-                head,
-                &format!("an unrequested Content-Encoding: {other}"),
-            ))
-        }
-    }
+/// A single range never gets a `multipart/byteranges` answer.
+fn one_range(head: &ResponseHead) -> Result<(), TransferError> {
     if is_multipart(head) {
         return Err(dishonest(
             head,
@@ -449,16 +442,59 @@ mod tests {
     }
 
     #[test]
-    fn refuses_an_encoding_it_didnt_ask_for() {
-        // No Accept-Encoding is sent, so a compressed body isn't the file's bytes.
+    fn keeps_an_encoding_it_didnt_ask_for() {
+        // PO decision on #45, replacing #41's refusal: no Accept-Encoding is sent, and an encoding
+        // the server applies anyway is kept, its bytes stored as sent (a .tar.gz served as gzip).
         let h = head(
             200,
             &[("Content-Encoding", "gzip"), ("Content-Length", "300")],
         );
-        assert!(error(classify_probe(&h, 999)).message.contains("gzip"));
         assert_eq!(
-            classify_probe(&head(200, &[("Content-Encoding", "identity")]), 999),
-            Ok(ProbeOutcome::SingleStream { length: None })
+            classify_probe(&h, 999),
+            Ok(ProbeOutcome::SingleStream { length: Some(300) })
+        );
+        let ranged = head(
+            206,
+            &[
+                ("Content-Encoding", "gzip"),
+                ("Content-Range", "bytes 0-999/5000"),
+                ("Content-Length", "1000"),
+            ],
+        );
+        assert_eq!(
+            classify_probe(&ranged, 999),
+            Ok(ProbeOutcome::RangesOk {
+                received_end: 999,
+                total: 5000
+            })
+        );
+    }
+
+    #[test]
+    fn a_later_answer_with_another_encoding_is_refused_as_such() {
+        // Report 5.4: ranges count encoded bytes, so they stop when the encoding changes.
+        let gzip = Representation::of(&head(206, &[("Content-Encoding", "gzip")]));
+        let segment = |encoding: Option<&str>, file: &Representation| {
+            let mut headers = vec![
+                ("Content-Range", "bytes 1000-1999/5000"),
+                ("Content-Length", "1000"),
+            ];
+            headers.extend(encoding.map(|e| ("Content-Encoding", e)));
+            check_segment(&head(206, &headers), 1000, 1999, 5000, file)
+        };
+        assert_eq!(segment(Some("gzip"), &gzip), Ok(1999));
+        for (encoding, file) in [(None, &gzip), (Some("br"), &gzip), (Some("gzip"), &none())] {
+            let r = segment(encoding, file);
+            assert!(
+                matches!(r, Err(SegmentRejection::EncodingChanged(_))),
+                "{encoding:?}: {r:?}"
+            );
+        }
+        let more = head(206, &[("Content-Range", "bytes 1000-4999/*")]);
+        let r = check_continuation(&more, 1000, &gzip);
+        assert!(
+            matches!(r, Err(SegmentRejection::EncodingChanged(_))),
+            "{r:?}"
         );
     }
 
@@ -640,7 +676,7 @@ mod tests {
 
     /// A file whose first answer gave the strong ETag `"v1"`.
     fn v1() -> Representation {
-        Representation::recorded(Some("\"v1\""), None)
+        Representation::of(&head(206, &[("ETag", "\"v1\"")]))
     }
 
     #[test]

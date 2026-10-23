@@ -492,6 +492,7 @@ mod tests {
             total: 10_000,
             etag: None,
             last_modified: None,
+            content_encoding: None,
             durable: vec![(0, 4000)],
         }
     }

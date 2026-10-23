@@ -334,9 +334,13 @@ pub enum DownloadError {
     Cancelled,
     /// [`Control::pause`] stopped it; its part file is kept.
     Paused,
-    /// The file on the server isn't the one this download started (another total): its bytes
-    /// are never mixed with the old ones (report section 5.3).
+    /// The file on the server isn't the one this download started (another total or validator):
+    /// its bytes are never mixed with the old ones (report section 5.3).
     Changed(TransferError),
+    /// The server's `Content-Encoding` changed between answers (#45), so ranges can't go on. The
+    /// download starts over once as one stream; this escapes only if that start-over isn't
+    /// possible.
+    EncodingChanged(TransferError),
 }
 
 impl From<TransferError> for DownloadError {
@@ -406,10 +410,7 @@ pub fn download_resumable(
     let mut outcome = match from {
         Some(checkpoint) => {
             resumed_bytes = part.coverage.len();
-            ck.file = Representation::recorded(
-                checkpoint.etag.as_deref(),
-                checkpoint.last_modified.as_deref(),
-            );
+            ck.file = Representation::recorded(checkpoint);
             ck.resumed = true;
             fetch_ranges(
                 lp,
@@ -429,15 +430,28 @@ pub fn download_resumable(
         }
         None => fetch_fresh(lp, url, options, &mut part, &mut ck, control),
     };
-    if matches!(outcome, Err(DownloadError::Changed(_))) {
+    let start_over = match &outcome {
+        Err(DownloadError::Changed(_)) => Some(false),
+        Err(DownloadError::EncodingChanged(_)) => Some(true),
+        _ => None,
+    };
+    if let Some(one_stream) = start_over {
         // The file changed on the server, during the download or since its checkpoint: its old
-        // bytes are never mixed with the new ones, and it starts over once with the new file. A
-        // second change ends it; the user may retry (report section 5.3, #45).
+        // bytes are never mixed with the new ones, and it starts over once with the new file;
+        // after an encoding change, as one stream. A second change ends it; the user may retry
+        // (report section 5.3, #45).
         part.start_over()?;
         ck = Checkpointer::new(options.checkpoints, url);
         resumed_bytes = 0;
-        outcome = fetch_fresh(lp, url, options, &mut part, &mut ck, control).map_err(|e| match e {
-            DownloadError::Changed(t) => DownloadError::Changed(changed_again(&t)),
+        outcome = if one_stream {
+            fetch_whole(lp, url, &mut part, control, &options.retry)
+        } else {
+            fetch_fresh(lp, url, options, &mut part, &mut ck, control)
+        }
+        .map_err(|e| match e {
+            DownloadError::Changed(t) | DownloadError::EncodingChanged(t) => {
+                DownloadError::Changed(changed_again(&t))
+            }
             other => other,
         });
     }
@@ -580,6 +594,24 @@ fn fetch_fresh(
     })
 }
 
+/// The whole file as one stream, from the start, in whatever encoding it comes (#45): after the
+/// encoding changed between answers, ranges can't be trusted.
+fn fetch_whole(
+    lp: &CurlLoop,
+    url: &str,
+    part: &mut PartFile,
+    control: &Control,
+    policy: &RetryPolicy,
+) -> Result<Fetched, DownloadError> {
+    let (total, fetches) = stream_gaps(lp, url, None, None, part, control, policy)?;
+    Ok(Fetched {
+        mode: Mode::SingleStream,
+        total,
+        fetches,
+        splits: 0,
+    })
+}
+
 /// A pause while the probe ran. When the probe's answer gave the file's total, ranges work, so
 /// its bytes are synced and checkpointed like any others; otherwise there is nothing to resume
 /// from, and a resume starts over.
@@ -692,6 +724,7 @@ impl Checkpointer {
             total,
             etag: self.file.etag.clone(),
             last_modified: self.file.last_modified().map(str::to_owned),
+            content_encoding: self.file.encoding.clone(),
             durable: durable.intervals().to_vec(),
         });
         self.sent += 1;
@@ -1057,7 +1090,8 @@ fn request(
             Err(
                 SegmentRejection::Invalid(e)
                 | SegmentRejection::Anomaly(e)
-                | SegmentRejection::Changed(e),
+                | SegmentRejection::Changed(e)
+                | SegmentRejection::EncodingChanged(e),
             ) => Gate::Abort(e.message.clone()),
         };
         *v.lock().expect("the segment verdict lock") = Some(result);
@@ -1131,6 +1165,7 @@ fn fetch_ranges(
     let mut ranges_ignored = false;
     let mut failure: Option<TransferError> = None;
     let mut changed: Option<TransferError> = None;
+    let mut encoding_changed: Option<TransferError> = None;
     let mut ramp = options.adaptive.map(Ramp::new);
     // Answers came over HTTP/2, and how its streams are used (#47).
     let mut h2 = false;
@@ -1142,7 +1177,7 @@ fn fetch_ranges(
     loop {
         let now = Instant::now();
         waiting.retain(|until| *until > now);
-        if failure.is_some() || changed.is_some() {
+        if failure.is_some() || changed.is_some() || encoding_changed.is_some() {
             // The download ends; nothing waits to be retried.
             waiting.clear();
         }
@@ -1210,6 +1245,7 @@ fn fetch_ranges(
         let mut file_bound = false;
         while failure.is_none()
             && changed.is_none()
+            && encoding_changed.is_none()
             && !ranges_ignored
             && anomalies < MAX_ANOMALIES
             && ((active.len() + waiting.len()) as u32) < connections
@@ -1343,9 +1379,13 @@ fn fetch_ranges(
                 let verdict = a.verdict.lock().expect("the segment verdict lock").take();
                 let unfinished = sched.lease(id).is_some_and(|l| l.cursor < l.end);
                 if a.retiring {
-                    // Stopped on purpose: only a changed file still matters.
-                    if let Some(Err(SegmentRejection::Changed(t))) = verdict {
-                        changed = changed.or(Some(t));
+                    // Stopped on purpose: only a changed file or encoding still matters.
+                    match verdict {
+                        Some(Err(SegmentRejection::Changed(t))) => changed = changed.or(Some(t)),
+                        Some(Err(SegmentRejection::EncodingChanged(t))) => {
+                            encoding_changed = encoding_changed.or(Some(t));
+                        }
+                        _ => {}
                     }
                     sched.ended(id);
                     continue;
@@ -1357,6 +1397,9 @@ fn fetch_ranges(
                         retry_later(t, a.retry_after.get(), part.written)
                     }
                     (Some(Err(SegmentRejection::Changed(t))), _) => changed = changed.or(Some(t)),
+                    (Some(Err(SegmentRejection::EncodingChanged(t))), _) => {
+                        encoding_changed = encoding_changed.or(Some(t));
+                    }
                     // Accepted, then cut off: the rest of the lease is leased again.
                     (Some(Ok(_)), Err(_)) => anomalies += 1,
                     // Complete by its own account, but it stopped before the end its Content-Range
@@ -1379,6 +1422,9 @@ fn fetch_ranges(
     if let Some(t) = changed {
         return Err(DownloadError::Changed(t));
     }
+    if let Some(t) = encoding_changed {
+        return Err(DownloadError::EncodingChanged(t));
+    }
     if let Some(e) = failure {
         return Err(e.into());
     }
@@ -1386,7 +1432,7 @@ fn fetch_ranges(
         return Ok((fetches, splits, Mode::Ranges));
     }
     if ranges_ignored || anomalies >= MAX_ANOMALIES {
-        let n = stream_gaps(lp, url, Some(total), &ck.file, part, control, policy)?.1;
+        let n = stream_gaps(lp, url, Some(total), Some(&ck.file), part, control, policy)?.1;
         return Ok((fetches + n, splits, Mode::RangesLost));
     }
     // C, the live leases and the unassigned bytes always make up the file, so with no lease left
@@ -1440,7 +1486,8 @@ fn fetch_sequential(
                     Err(
                         SegmentRejection::Invalid(e)
                         | SegmentRejection::Anomaly(e)
-                        | SegmentRejection::Changed(e),
+                        | SegmentRejection::Changed(e)
+                        | SegmentRejection::EncodingChanged(e),
                     ) => Gate::Abort(e.message.clone()),
                 };
                 *v.lock().expect("the continuation verdict lock") = Some(result);
@@ -1489,7 +1536,7 @@ fn fetch_sequential(
                 }
             }
             (Some(Err(SegmentRejection::RangesIgnored)), _) => {
-                let (length, n) = stream_gaps(lp, url, None, file, part, control, policy)?;
+                let (length, n) = stream_gaps(lp, url, None, Some(file), part, control, policy)?;
                 return Ok((fetches + n, length, Mode::RangesLost));
             }
             (Some(Err(SegmentRejection::Anomaly(_))), _) => anomalies += 1,
@@ -1498,6 +1545,9 @@ fn fetch_sequential(
                 continue;
             }
             (Some(Err(SegmentRejection::Changed(t))), _) => return Err(DownloadError::Changed(t)),
+            (Some(Err(SegmentRejection::EncodingChanged(t))), _) => {
+                return Err(DownloadError::EncodingChanged(t))
+            }
             // Never answered: the connection itself failed.
             (None, done) => {
                 retry(done.failure(policy).unwrap_or_else(loop_stopped), None)?;
@@ -1508,7 +1558,7 @@ fn fetch_sequential(
             anomalies += 1;
         }
         if anomalies >= MAX_ANOMALIES {
-            let (length, n) = stream_gaps(lp, url, None, file, part, control, policy)?;
+            let (length, n) = stream_gaps(lp, url, None, Some(file), part, control, policy)?;
             return Ok((fetches + n, length, Mode::RangesLost));
         }
     }
@@ -1521,7 +1571,7 @@ fn stream_gaps(
     lp: &CurlLoop,
     url: &str,
     total: Option<u64>,
-    file: &Representation,
+    file: Option<&Representation>,
     part: &mut PartFile,
     control: &Control,
     policy: &RetryPolicy,
@@ -1535,7 +1585,7 @@ fn stream_gaps(
         let r = Arc::clone(&refusal);
         let retry_after = RetryAfter::default();
         let asked = retry_after.clone();
-        let same = file.clone();
+        let same = file.cloned();
         let fetch = lp.fetch(
             FetchRequest::get(url.to_owned()).limited(&control.limits),
             move |head: &ResponseHead| {
@@ -1543,12 +1593,14 @@ fn stream_gaps(
                 let length = head
                     .header("content-length")
                     .and_then(|v| v.trim().parse::<u64>().ok());
-                let identity = head
-                    .header("content-encoding")
-                    .is_none_or(|e| e.trim() == "identity");
-                if head.status == 200 {
-                    // Its bytes fill the gaps between the earlier ones: another file must never
-                    // (report section 5.3, #45).
+                if let (200, Some(same)) = (head.status, &same) {
+                    // Its bytes fill the gaps between the earlier ones: another file, or bytes
+                    // in another encoding, must never (report section 5.3, #45).
+                    let refused = |e: fn(TransferError) -> DownloadError, why: String| {
+                        let t = TransferError::new(FailureClass::Permanent, Some(200), &why);
+                        *r.lock().expect("the refusal lock") = Some(e(t));
+                        Gate::Abort(why)
+                    };
                     let other = match same.check(head) {
                         Err(why) => Some(why),
                         Ok(()) => match (total, length) {
@@ -1559,12 +1611,13 @@ fn stream_gaps(
                         },
                     };
                     if let Some(why) = other {
-                        let e = TransferError::new(FailureClass::Permanent, Some(200), &why);
-                        *r.lock().expect("the refusal lock") = Some(DownloadError::Changed(e));
-                        return Gate::Abort(why);
+                        return refused(DownloadError::Changed, why);
+                    }
+                    if let Err(why) = same.same_encoding(head) {
+                        return refused(DownloadError::EncodingChanged, why);
                     }
                 }
-                if head.status == 200 && identity && (total.is_none() || length == total) {
+                if head.status == 200 && (total.is_none() || length == total) {
                     return Gate::Accept;
                 }
                 // An error status keeps its own class; any other answer isn't the same file.
