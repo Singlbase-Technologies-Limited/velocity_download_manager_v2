@@ -1,18 +1,25 @@
-//! Whole-file integrity (#46, research report section 5.3): the hash frontier.
+//! Integrity (#46, research report section 5.3): the hash frontier and the piece verifier.
 //!
 //! Hashes don't compose, so a file that arrives in parallel segments can't be hashed as it
 //! arrives. The frontier hashes the covered prefix from byte 0 instead: whenever the bytes from
 //! 0 reach further, its own thread reads the new ones back from the part file and hashes them.
 //! At completion it hashes whatever is left. It never runs on the network or downloader thread.
 //! Its state isn't saved, so after a crash it starts again from byte 0.
+//!
+//! Trusted piece hashes (Metalink `<pieces>`, #54) are checked one piece at a time, as soon as each
+//! piece is covered, by the piece verifier on a thread of its own.
 
+use std::collections::VecDeque;
 use std::fs::File;
 use std::io;
+use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread::{self, JoinHandle};
 
 use sha2::Digest;
-use velocity_core::transfer::HashAlgorithm;
+use velocity_core::transfer::{HashAlgorithm, PieceHashes};
+
+use crate::scheduler::Coverage;
 
 /// One running digest of any algorithm a checksum can use.
 pub(crate) enum Hasher {
@@ -173,10 +180,10 @@ fn hash(file: &File, mut hasher: Hasher, shared: &Shared) -> io::Result<String> 
             }
             Next::Done => return Ok(hasher.finish_hex()),
             Next::Read(target) => {
-                let n = (target - hashed).min(READ_CHUNK as u64) as usize;
-                read_exact_at(file, &mut buf[..n], hashed)?;
-                hasher.update(&buf[..n]);
-                hashed += n as u64;
+                // One chunk at a time, so a stop is seen between chunks.
+                let end = target.min(hashed + READ_CHUNK as u64);
+                hash_range(file, &mut hasher, hashed, end, &mut buf)?;
+                hashed = end;
             }
         }
     }
@@ -203,6 +210,237 @@ fn read_exact_at(file: &File, mut buf: &mut [u8], mut offset: u64) -> io::Result
 fn read_exact_at(file: &File, buf: &mut [u8], offset: u64) -> io::Result<()> {
     use std::os::unix::fs::FileExt;
     file.read_exact_at(buf, offset)
+}
+
+impl Drop for PieceVerifier {
+    fn drop(&mut self) {
+        if let Some(thread) = self.thread.take() {
+            self.update(|p| p.stop = true);
+            // The thread checks for the stop between pieces, so this waits for one piece at most.
+            let _ = thread.join();
+        }
+    }
+}
+
+/// The piece verifier's thread: checks each queued piece until it is stopped. The verdicts go to
+/// `tx`; one that can't be sent means the verifier is gone.
+fn verify_pieces(
+    file: &File,
+    algorithm: HashAlgorithm,
+    hex: &[String],
+    shared: &(Mutex<Pieces>, Condvar),
+    tx: &Sender<PieceVerdict>,
+) {
+    let (pieces, wake) = shared;
+    let mut buf = vec![0; READ_CHUNK];
+    loop {
+        let (index, start, end) = {
+            let mut p = pieces.lock().expect("the piece queue lock");
+            loop {
+                if p.stop {
+                    return;
+                }
+                if let Some(next) = p.queue.pop_front() {
+                    break next;
+                }
+                p = wake.wait(p).expect("the piece queue lock");
+            }
+        };
+        let mut hasher = Hasher::new(algorithm);
+        let read = hash_range(file, &mut hasher, start, end, &mut buf);
+        let verdict = read.map(|()| hex.get(index) == Some(&hasher.finish_hex()));
+        if tx.send((index, verdict)).is_err() {
+            return;
+        }
+    }
+}
+
+/// Feeds bytes `[start, end)` of `file` to `hasher`, `buf.len()` at a time.
+fn hash_range(
+    file: &File,
+    hasher: &mut Hasher,
+    start: u64,
+    end: u64,
+    buf: &mut [u8],
+) -> io::Result<()> {
+    let mut at = start;
+    while at < end {
+        let n = (end - at).min(buf.len() as u64) as usize;
+        read_exact_at(file, &mut buf[..n], at)?;
+        hasher.update(&buf[..n]);
+        at += n as u64;
+    }
+    Ok(())
+}
+
+/// A piece's verdict: whether its bytes match its trusted hash.
+pub(crate) type PieceVerdict = (usize, io::Result<bool>);
+
+/// The pieces waiting to be checked, shared with the verifier's thread.
+#[derive(Default)]
+struct Pieces {
+    /// Each piece's index and byte range `[start, end)`.
+    queue: VecDeque<(usize, u64, u64)>,
+    stop: bool,
+}
+
+/// Checks pieces against trusted hashes on a thread of its own (#46).
+pub(crate) struct PieceVerifier {
+    shared: Arc<(Mutex<Pieces>, Condvar)>,
+    verdicts: Receiver<PieceVerdict>,
+    thread: Option<JoinHandle<()>>,
+}
+
+impl PieceVerifier {
+    /// Starts a verifier that reads pieces back from `file` and compares each with `hex[index]`,
+    /// a lowercase digest of `algorithm`.
+    pub(crate) fn start(
+        file: File,
+        algorithm: HashAlgorithm,
+        hex: Arc<Vec<String>>,
+    ) -> io::Result<Self> {
+        let shared: Arc<(Mutex<Pieces>, Condvar)> = Arc::default();
+        let theirs = Arc::clone(&shared);
+        let (tx, verdicts) = mpsc::channel();
+        let thread = thread::Builder::new()
+            .name("velocity-pieces".to_owned())
+            .spawn(move || verify_pieces(&file, algorithm, &hex, &theirs, &tx))?;
+        Ok(PieceVerifier {
+            shared,
+            verdicts,
+            thread: Some(thread),
+        })
+    }
+
+    /// Checks piece `index`, bytes `[start, end)`, which are written and won't change. Never waits.
+    pub(crate) fn check(&self, index: usize, start: u64, end: u64) {
+        self.update(|p| p.queue.push_back((index, start, end)));
+    }
+
+    fn update(&self, change: impl FnOnce(&mut Pieces)) {
+        let (pieces, wake) = &*self.shared;
+        change(&mut pieces.lock().expect("the piece queue lock"));
+        wake.notify_one();
+    }
+
+    /// The next verdict, waiting for it. `None` if the thread has ended.
+    pub(crate) fn next_verdict(&self) -> Option<PieceVerdict> {
+        self.verdicts.recv().ok()
+    }
+}
+
+/// A download's trusted piece hashes and how far their checks got (#46): each piece goes to the
+/// verifier once it is covered, and a bad one is counted and can be checked again once it was
+/// fetched again.
+pub(crate) struct PieceCheck {
+    algorithm: HashAlgorithm,
+    length: u64,
+    hex: Arc<Vec<String>>,
+    verifier: PieceVerifier,
+    /// Whether each piece went to the verifier since it was last covered.
+    sent: Vec<bool>,
+    /// The bad copies seen of each piece.
+    bad: Vec<u32>,
+    /// Verdicts still to come.
+    pending: usize,
+}
+
+impl PieceCheck {
+    /// Starts checking `file`'s pieces against `hashes`, whose digests are lowercase.
+    pub(crate) fn start(file: File, hashes: &PieceHashes) -> io::Result<Self> {
+        let count = hashes.hex.len();
+        let hex = Arc::new(hashes.hex.clone());
+        Ok(PieceCheck {
+            algorithm: hashes.algorithm,
+            length: hashes.length,
+            verifier: PieceVerifier::start(file, hashes.algorithm, Arc::clone(&hex))?,
+            hex,
+            sent: vec![false; count],
+            bad: vec![0; count],
+            pending: 0,
+        })
+    }
+
+    /// Starts again with `file`, a new part file: no piece checked, no bad copy seen.
+    pub(crate) fn restart(&mut self, file: File) -> io::Result<()> {
+        self.verifier = PieceVerifier::start(file, self.algorithm, Arc::clone(&self.hex))?;
+        self.sent.fill(false);
+        self.bad.fill(0);
+        self.pending = 0;
+        Ok(())
+    }
+
+    pub(crate) fn count(&self) -> usize {
+        self.sent.len()
+    }
+
+    /// Whether the list fits a file of `total` bytes: as many pieces as it takes to make it up.
+    pub(crate) fn fits(&self, total: u64) -> bool {
+        total.div_ceil(self.length) == self.count() as u64
+    }
+
+    /// Piece `index`'s bytes in a file of `total` bytes.
+    pub(crate) fn range(&self, index: usize, total: u64) -> (u64, u64) {
+        let start = index as u64 * self.length;
+        (start, (start + self.length).min(total))
+    }
+
+    /// Sends the pieces that overlap `[a, b)` and are now covered to the verifier. The last piece
+    /// ends with the file, so it goes only once `total` is known.
+    pub(crate) fn offer(&mut self, coverage: &Coverage, a: u64, b: u64, total: Option<u64>) {
+        if a >= b || self.sent.is_empty() {
+            return;
+        }
+        let last = self.count() - 1;
+        let first = (a / self.length).min(last as u64) as usize;
+        let end = ((b - 1) / self.length).min(last as u64) as usize;
+        for index in first..=end {
+            if self.sent[index] {
+                continue;
+            }
+            let start = index as u64 * self.length;
+            let stop = match (index == last, total) {
+                (false, _) => start + self.length,
+                (true, Some(total)) => total,
+                (true, None) => continue,
+            };
+            if start < stop && coverage.covers(start, stop) {
+                self.sent[index] = true;
+                self.pending += 1;
+                self.verifier.check(index, start, stop);
+            }
+        }
+    }
+
+    /// Waits for every verdict still to come, once the file of `total` bytes is covered, and
+    /// returns the bad pieces in order. Each counts as one more bad copy of its piece.
+    pub(crate) fn settle(&mut self, coverage: &Coverage, total: u64) -> io::Result<Vec<usize>> {
+        self.offer(coverage, 0, total, Some(total));
+        let mut bad = Vec::new();
+        while self.pending > 0 {
+            let (index, verdict) = self
+                .verifier
+                .next_verdict()
+                .ok_or_else(|| io::Error::other("the piece verifier stopped"))?;
+            self.pending -= 1;
+            if !verdict? {
+                self.bad[index] += 1;
+                bad.push(index);
+            }
+        }
+        bad.sort_unstable();
+        Ok(bad)
+    }
+
+    /// The bad copies seen of piece `index`.
+    pub(crate) fn bad_copies(&self, index: usize) -> u32 {
+        self.bad[index]
+    }
+
+    /// Piece `index` is no longer covered: it is checked again once it is.
+    pub(crate) fn uncovered(&mut self, index: usize) {
+        self.sent[index] = false;
+    }
 }
 
 #[cfg(test)]
@@ -331,6 +569,67 @@ mod tests {
         let frontier = HashFrontier::start(file, HashAlgorithm::Sha256).unwrap();
         let err = frontier.finish(20).expect_err("10 of 20 bytes");
         assert_eq!(err.kind(), io::ErrorKind::UnexpectedEof);
+    }
+
+    #[test]
+    fn each_piece_is_checked_against_its_own_hash_in_any_order() {
+        let dir = Dir::new("pieces");
+        let path = dir.0.join("f.vdmpart");
+        let bytes = seeded_bytes(10_000, 54);
+        let file = part(&path);
+        // Four pieces of 3000 bytes, the last one 1000; piece 2's hash is of other bytes.
+        let mut hex: Vec<String> = bytes
+            .chunks(3000)
+            .map(|c| digest(HashAlgorithm::Sha1, c))
+            .collect();
+        hex[2] = digest(HashAlgorithm::Sha1, b"other bytes");
+        let verifier = PieceVerifier::start(
+            file.try_clone().unwrap(),
+            HashAlgorithm::Sha1,
+            Arc::new(hex),
+        )
+        .unwrap();
+        for i in [3usize, 1, 0, 2] {
+            let (a, b) = (i * 3000, ((i + 1) * 3000).min(10_000));
+            write_at(&file, &bytes[a..b], a as u64);
+            verifier.check(i, a as u64, b as u64);
+        }
+        let mut verdicts: Vec<(usize, bool)> = (0..4)
+            .map(|_| {
+                let (i, ok) = verifier.next_verdict().expect("a verdict");
+                (i, ok.expect("read"))
+            })
+            .collect();
+        verdicts.sort_unstable();
+        assert_eq!(verdicts, [(0, true), (1, true), (2, false), (3, true)]);
+    }
+
+    #[test]
+    fn a_piece_that_cant_be_read_back_is_an_error_not_a_verdict() {
+        let dir = Dir::new("pieces-short");
+        let path = dir.0.join("f.vdmpart");
+        let file = part(&path);
+        let hex = Arc::new(vec![digest(HashAlgorithm::Md5, &[0; 100])]);
+        let verifier = PieceVerifier::start(file, HashAlgorithm::Md5, hex).unwrap();
+        // Nothing was written: the file is empty.
+        verifier.check(0, 0, 100);
+        let (i, ok) = verifier.next_verdict().expect("a verdict");
+        assert_eq!(i, 0);
+        assert_eq!(
+            ok.expect_err("unreadable").kind(),
+            io::ErrorKind::UnexpectedEof
+        );
+    }
+
+    #[test]
+    fn a_verifier_dropped_with_pieces_waiting_stops_its_thread() {
+        let dir = Dir::new("pieces-dropped");
+        let file = part(&dir.0.join("f.vdmpart"));
+        let hex = Arc::new(vec![String::new(); 4]);
+        let verifier = PieceVerifier::start(file, HashAlgorithm::Sha256, hex).unwrap();
+        verifier.check(0, 0, 1);
+        // Dropping joins the thread; one still waiting for pieces would hang the test.
+        drop(verifier);
     }
 
     #[cfg(windows)]

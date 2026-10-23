@@ -8,11 +8,14 @@ use std::time::Duration;
 
 use sha2::{Digest, Sha256};
 use velocity_core::domain::{DownloadStatus, FailureClass, Verification};
-use velocity_core::transfer::{Checkpoint, Checksum, HashAlgorithm, Resume, CHECKPOINT_FORMAT};
+use velocity_core::transfer::{
+    Checkpoint, Checksum, HashAlgorithm, PieceHashes, Resume, CHECKPOINT_FORMAT,
+};
 use velocity_curl::{CurlLoop, Libcurl, LoopOptions};
 use velocity_test_http::{seeded_bytes, FileHeaders, RangeMode, ServerOptions, TestServer};
 use velocity_transfer::download::{
-    download_resumable, Cadence, Control, DownloadError, DownloadOptions, DownloadReport, Mode,
+    download_resumable, Cadence, Control, DownloadError, DownloadOptions, DownloadReport, Expected,
+    Mode,
 };
 use velocity_transfer::retry::RetryPolicy;
 use velocity_transfer::scheduler::Sizes;
@@ -107,13 +110,27 @@ fn run(
     resume: Option<&Resume>,
     checksum: Option<&Checksum>,
 ) -> Run {
+    let expected = Expected {
+        checksum: checksum.cloned(),
+        pieces: None,
+    };
+    run_expected(url, dest, options, resume, &expected)
+}
+
+fn run_expected(
+    url: &str,
+    dest: &Path,
+    options: DownloadOptions,
+    resume: Option<&Resume>,
+    expected: &Expected,
+) -> Run {
     let statuses = Arc::new(Mutex::new(Vec::new()));
     let checkpoints = Arc::new(Mutex::new(Vec::new()));
     let (s, c) = (Arc::clone(&statuses), Arc::clone(&checkpoints));
     let control = Control::with_progress(|_, _| {})
         .with_status(move |status| s.lock().unwrap().push(status))
         .with_checkpoints(move |checkpoint| c.lock().unwrap().push(checkpoint));
-    let result = download_resumable(&curl_loop(), url, dest, options, resume, checksum, &control);
+    let result = download_resumable(&curl_loop(), url, dest, options, resume, expected, &control);
     let statuses = statuses.lock().unwrap().clone();
     let checkpoints = checkpoints.lock().unwrap().clone();
     Run {
@@ -161,7 +178,7 @@ fn a_wrong_checksum_fails_keeps_the_part_file_and_renames_nothing() {
     let dir = Dir::new("wrong");
     let dest = dir.0.join("out.bin");
     let run = run(&server.url("f.bin"), &dest, OPTIONS, None, Some(&wrong()));
-    let Err(DownloadError::ChecksumMismatch(e)) = run.result else {
+    let Err(DownloadError::IntegrityFailed(e)) = run.result else {
         panic!("expected a checksum mismatch, got {:?}", run.result);
     };
     assert!(e.message.contains("SHA-256 checksum"), "{}", e.message);
@@ -205,7 +222,7 @@ fn after_a_wrong_checksum_a_retry_downloads_the_file_again() {
     };
     let failed = run(&server.url("f.bin"), &dest, options, None, Some(&wrong()));
     assert!(
-        matches!(failed.result, Err(DownloadError::ChecksumMismatch(_))),
+        matches!(failed.result, Err(DownloadError::IntegrityFailed(_))),
         "{:?}",
         failed.result
     );
@@ -259,7 +276,7 @@ fn a_checksum_is_checked_on_a_single_stream_and_on_an_empty_file() {
     let bad = dir.0.join("bad.bin");
     let result = run(&url, &bad, OPTIONS, None, Some(&wrong())).result;
     assert!(
-        matches!(result, Err(DownloadError::ChecksumMismatch(_))),
+        matches!(result, Err(DownloadError::IntegrityFailed(_))),
         "{result:?}"
     );
     assert!(!bad.exists());
@@ -357,4 +374,203 @@ fn the_report_says_what_was_proven_about_the_bytes() {
         verification(&url, "tagged.bin", Some(&r), None),
         Verification::SizeVerified
     );
+}
+
+/// The SHA-256 of each `length` bytes of `data`: a trusted piece list.
+fn pieces(data: &[u8], length: usize) -> PieceHashes {
+    PieceHashes {
+        algorithm: HashAlgorithm::Sha256,
+        length: length as u64,
+        hex: data.chunks(length).map(|c| sha256(c).hex).collect(),
+    }
+}
+
+/// How many GETs asked for exactly `bytes=a-(b−1)`.
+fn asked_for(server: &TestServer, a: usize, b: usize) -> usize {
+    let range = format!("bytes={a}-{}", b - 1);
+    server
+        .counters()
+        .ranges
+        .iter()
+        .filter(|r| r.as_deref() == Some(range.as_str()))
+        .count()
+}
+
+const PIECE: usize = 64 * 1024;
+
+/// One connection: the probe takes the first piece and one lease the rest, so a piece fetched
+/// again is asked for as its own range.
+const ONE: DownloadOptions = DownloadOptions {
+    connections: 1,
+    ..OPTIONS
+};
+
+#[test]
+fn a_bad_piece_is_fetched_again_on_its_own() {
+    // Piece 8 of 16 arrives with one byte flipped, once. It is caught when it is covered, and only
+    // its 64 KiB are fetched again.
+    const LEN: usize = 16 * PIECE;
+    let data = seeded_bytes(LEN, 51);
+    let server = TestServer::start(
+        vec![("f.bin".into(), data.clone())],
+        ServerOptions {
+            corrupt_once: Some(7 * PIECE as u64 + 100),
+            ..ServerOptions::default()
+        },
+    );
+    let dir = Dir::new("piece");
+    let dest = dir.0.join("out.bin");
+    let expected = Expected {
+        checksum: None,
+        pieces: Some(pieces(&data, PIECE)),
+    };
+    let report = run_expected(&server.url("f.bin"), &dest, ONE, None, &expected)
+        .result
+        .expect("the download completes");
+    assert!(server.counters().corrupted);
+    assert!(std::fs::read(&dest).unwrap() == data);
+    assert_eq!(report.verification, Verification::Verified);
+    assert_eq!(
+        asked_for(&server, 7 * PIECE, 8 * PIECE),
+        1,
+        "the piece alone"
+    );
+    assert_eq!(report.written_bytes, LEN as u64, "each byte counted once");
+    assert!(report.wasted_bytes >= PIECE as u64, "{report:?}");
+    let sent = server.counters().body_bytes_sent;
+    assert!(
+        sent <= (LEN + PIECE) as u64,
+        "{sent} bytes for {LEN} and one piece"
+    );
+}
+
+#[test]
+fn a_piece_that_stays_bad_fails_after_two_re_fetches() {
+    const LEN: usize = 8 * PIECE;
+    let data = seeded_bytes(LEN, 52);
+    let server = TestServer::start(
+        vec![("f.bin".into(), data.clone())],
+        ServerOptions::default(),
+    );
+    let dir = Dir::new("piece-bad");
+    let dest = dir.0.join("out.bin");
+    let mut list = pieces(&data, PIECE);
+    list.hex[3] = sha256(b"another piece").hex;
+    let expected = Expected {
+        checksum: None,
+        pieces: Some(list),
+    };
+    let result = run_expected(&server.url("f.bin"), &dest, ONE, None, &expected).result;
+    let Err(DownloadError::IntegrityFailed(e)) = result else {
+        panic!("expected an integrity failure, got {result:?}");
+    };
+    assert!(e.message.contains("piece 4 of 8"), "{}", e.message);
+    assert_eq!(
+        asked_for(&server, 3 * PIECE, 4 * PIECE),
+        2,
+        "two re-fetches"
+    );
+    assert!(!dest.exists());
+    assert!(part_of(&dest).exists(), "kept for inspection");
+}
+
+#[test]
+fn a_bad_piece_from_a_server_without_ranges_starts_the_download_over_once() {
+    const LEN: usize = 4 * PIECE;
+    let data = seeded_bytes(LEN, 53);
+    let start = |corrupt_once| {
+        TestServer::start(
+            vec![("f.bin".into(), data.clone())],
+            ServerOptions {
+                range_mode: RangeMode::Ignore,
+                corrupt_once,
+                ..ServerOptions::default()
+            },
+        )
+    };
+    let dir = Dir::new("piece-stream");
+    let expected = Expected {
+        checksum: None,
+        pieces: Some(pieces(&data, PIECE)),
+    };
+
+    let once = start(Some(2 * PIECE as u64));
+    let dest = dir.0.join("once.bin");
+    let report = run_expected(&once.url("f.bin"), &dest, ONE, None, &expected)
+        .result
+        .expect("the second download is good");
+    assert_eq!(report.mode, Mode::SingleStream);
+    assert_eq!(report.verification, Verification::Verified);
+    assert_eq!(once.counters().gets, 2, "downloaded twice");
+    assert!(std::fs::read(&dest).unwrap() == data);
+
+    let always = start(None);
+    let mut list = pieces(&data, PIECE);
+    list.hex[1] = sha256(b"another piece").hex;
+    let expected = Expected {
+        checksum: None,
+        pieces: Some(list),
+    };
+    let dest = dir.0.join("always.bin");
+    let result = run_expected(&always.url("f.bin"), &dest, ONE, None, &expected).result;
+    assert!(
+        matches!(&result, Err(DownloadError::IntegrityFailed(e)) if e.message.contains("piece 2 of 4")),
+        "{result:?}"
+    );
+    assert_eq!(always.counters().gets, 2, "started over once, then failed");
+    assert!(!dest.exists());
+}
+
+#[test]
+fn a_piece_list_that_doesnt_fit_the_file_fails() {
+    let data = seeded_bytes(4 * PIECE, 54);
+    let server = TestServer::start(
+        vec![("f.bin".into(), data.clone())],
+        ServerOptions::default(),
+    );
+    let dir = Dir::new("piece-misfit");
+    let dest = dir.0.join("out.bin");
+    let mut list = pieces(&data, PIECE);
+    list.hex.pop();
+    let expected = Expected {
+        checksum: None,
+        pieces: Some(list),
+    };
+    let result = run_expected(&server.url("f.bin"), &dest, ONE, None, &expected).result;
+    let Err(DownloadError::IntegrityFailed(e)) = result else {
+        panic!("expected an integrity failure, got {result:?}");
+    };
+    assert_eq!(e.class, FailureClass::Permanent, "{e:?}");
+    assert!(e.message.contains("3 pieces"), "{}", e.message);
+    assert!(!dest.exists());
+}
+
+#[test]
+fn after_a_piece_is_fetched_again_the_whole_file_hash_starts_over() {
+    // The frontier had hashed the bad byte; the whole-file checksum must still match afterwards.
+    const LEN: usize = 8 * PIECE;
+    let data = seeded_bytes(LEN, 55);
+    let server = TestServer::start(
+        vec![("f.bin".into(), data.clone())],
+        ServerOptions {
+            corrupt_once: Some(10),
+            ..ServerOptions::default()
+        },
+    );
+    let dir = Dir::new("piece-and-checksum");
+    let dest = dir.0.join("out.bin");
+    let expected = Expected {
+        checksum: Some(sha256(&data)),
+        pieces: Some(pieces(&data, PIECE)),
+    };
+    let report = run_expected(&server.url("f.bin"), &dest, ONE, None, &expected)
+        .result
+        .expect("the download completes");
+    assert_eq!(report.verification, Verification::Verified);
+    assert_eq!(
+        asked_for(&server, 0, PIECE),
+        2,
+        "the probe, then the first piece again"
+    );
+    assert!(std::fs::read(&dest).unwrap() == data);
 }

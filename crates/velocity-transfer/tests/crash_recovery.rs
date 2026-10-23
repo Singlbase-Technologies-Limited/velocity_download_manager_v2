@@ -90,6 +90,7 @@ fn spec(url: String, destination: &Path, resume: Option<Resume>) -> TransferSpec
         credentials: None,
         headers: Vec::new(),
         checksum: None,
+        pieces: None,
         limits: Limits::default(),
         max_connections: CONNECTIONS,
         resume,

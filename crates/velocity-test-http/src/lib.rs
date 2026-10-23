@@ -80,6 +80,9 @@ pub struct ServerOptions {
     /// Closes the connection after this many body bytes of the first GET's answer, although its
     /// `Content-Length` promised more (#45).
     pub cut_first: Option<u64>,
+    /// The first response over HTTP/1.1 whose body holds this byte of the file sends it with its
+    /// bits flipped; later ones send it as it is: a piece that is bad once (#46).
+    pub corrupt_once: Option<u64>,
 }
 
 /// Headers the server sends with a file, each as given and only when set (#45).
@@ -143,6 +146,8 @@ pub struct Counters {
     pub dropped: u32,
     /// Whether the response that [`ServerOptions::freeze_later_range`] freezes was sent.
     pub frozen: bool,
+    /// Whether the byte [`ServerOptions::corrupt_once`] names was sent flipped.
+    pub corrupted: bool,
     /// Responses to file requests being sent now, from their status line to their last byte.
     pub answering: u32,
     /// The most responses to file requests that were sent at once (#47).
@@ -609,6 +614,25 @@ fn serve_connection(
                     thread::sleep(freeze.hold);
                 }
                 return;
+            }
+        }
+        let flipped;
+        let mut body = body;
+        if let Some(at) = options.corrupt_once {
+            // The body is the file from the range's start for a 206, and from byte 0 otherwise.
+            let from = match (answer.status, range) {
+                (206, Some((start, _))) => start,
+                _ => 0,
+            };
+            if (from..from + body.len() as u64).contains(&at) {
+                let mut c = counters.lock().unwrap();
+                if !c.corrupted {
+                    c.corrupted = true;
+                    let mut copy = body.to_vec();
+                    copy[(at - from) as usize] ^= 0xFF;
+                    flipped = copy;
+                    body = &flipped;
+                }
             }
         }
         let mut rate = options.throttle_bytes_per_sec;

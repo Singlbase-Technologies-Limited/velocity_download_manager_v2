@@ -27,7 +27,9 @@ use std::thread;
 use std::time::{Duration, Instant, SystemTime};
 
 use velocity_core::domain::{DownloadStatus, FailureClass, TransferError, Verification};
-use velocity_core::transfer::{Checkpoint, Checksum, HashAlgorithm, Resume, CHECKPOINT_FORMAT};
+use velocity_core::transfer::{
+    Checkpoint, Checksum, HashAlgorithm, PieceHashes, Resume, CHECKPOINT_FORMAT,
+};
 use velocity_curl::{
     CurlLoop, Fetch, FetchError, FetchEvent, FetchLimit, FetchRequest, Gate, RateLimit,
     ResponseHead,
@@ -36,7 +38,7 @@ use velocity_curl::{
 use crate::adaptive::{AdaptivePolicy, Ramp, Tuning};
 use crate::failure::{self, fetch_failure};
 use crate::files;
-use crate::integrity::HashFrontier;
+use crate::integrity::{HashFrontier, PieceCheck};
 use crate::probe::{
     check_continuation, check_segment, classify_probe, is_multipart, Continuation, ProbeOutcome,
     SegmentRejection,
@@ -53,6 +55,8 @@ const QUEUED_PER_SEGMENT: usize = 2;
 /// Anomalous answers a download tolerates before ranges stop for it, and the rest comes as one
 /// stream (report section 5.1, step 7: "two consecutive anomalies").
 const MAX_ANOMALIES: u32 = 2;
+/// How many times a bad piece is fetched again before the download fails (PO decision on #46).
+const PIECE_REFETCHES: u32 = 2;
 
 /// Called with the bytes written so far and the total, once known.
 type ProgressFn = Box<dyn Fn(u64, Option<u64>) + Send + Sync>;
@@ -350,15 +354,25 @@ pub enum DownloadError {
     /// download starts over once as one stream; this escapes only if that start-over isn't
     /// possible.
     EncodingChanged(TransferError),
-    /// The whole file doesn't match its checksum (#46). The part file is kept for inspection and
-    /// not renamed, and the engine doesn't restart the download on its own.
-    ChecksumMismatch(TransferError),
+    /// The file doesn't match its trusted hashes (#46): its checksum, or a piece that stayed bad
+    /// after it was fetched again. The part file is kept for inspection and not renamed, and the
+    /// engine doesn't restart the download on its own.
+    IntegrityFailed(TransferError),
 }
 
 impl From<TransferError> for DownloadError {
     fn from(e: TransferError) -> Self {
         DownloadError::Transfer(e)
     }
+}
+
+/// The trusted hashes a download is checked against before it completes (#46).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Expected {
+    /// The whole file's hash.
+    pub checksum: Option<Checksum>,
+    /// Each piece's hash; a bad piece is fetched again.
+    pub pieces: Option<PieceHashes>,
 }
 
 /// Downloads `url` to `destination`, through a part file beside it (`<destination>.vdmpart`).
@@ -386,9 +400,10 @@ pub fn download_resumable(
     destination: &Path,
     options: DownloadOptions,
     resume: Option<&Resume>,
-    checksum: Option<&Checksum>,
+    expected: &Expected,
     control: &Control,
 ) -> Result<DownloadReport, DownloadError> {
+    let checksum = expected.checksum.as_ref();
     // symlink_metadata doesn't follow a link: a dangling link at the destination still counts.
     if fs::symlink_metadata(destination).is_ok() {
         return Err(DownloadError::FileExists);
@@ -417,6 +432,9 @@ pub fn download_resumable(
     };
     if let Some(checksum) = checksum {
         part.hash_with(checksum.algorithm)?;
+    }
+    if let Some(pieces) = &expected.pieces {
+        part.check_pieces(pieces)?;
     }
 
     let mut ck = Checkpointer::new(options.checkpoints, url);
@@ -471,21 +489,22 @@ pub fn download_resumable(
             other => other,
         });
     }
+    // Pieces were checked as they were covered; bad ones are fetched again now (#46).
+    outcome = match outcome {
+        Ok(fetched) => repair_pieces(lp, url, options, &mut part, &mut ck, control, fetched),
+        failed => failed,
+    };
     control.running(0, false);
+    // Bytes from an earlier attempt are still part of the file, unless it started over since.
+    let resumed_bytes = if ck.resumed { resumed_bytes } else { 0 };
     match outcome {
         Ok(fetched) => {
             let (written, wasted, sparse) = (part.written, part.wasted, part.sparse);
-            match part.finish(fetched.total, destination, checksum, control) {
-                Err(DownloadError::ChecksumMismatch(e)) => {
-                    // None of its bytes can be trusted now: a resume from the last checkpoint
-                    // would check the same bytes again, so the last one trusts none, and a retry
-                    // downloads the whole file again (report section 5.3).
-                    if ck.sent > 0 {
-                        ck.send(fetched.total, &Coverage::default(), written, control);
-                    }
-                    return Err(DownloadError::ChecksumMismatch(e));
+            if let Err(e) = part.finish(fetched.total, destination, checksum, control) {
+                if matches!(e, DownloadError::IntegrityFailed(_)) {
+                    ck.distrust(control);
                 }
-                other => other?,
+                return Err(e);
             }
             Ok(DownloadReport {
                 mode: fetched.mode,
@@ -500,8 +519,8 @@ pub fn download_resumable(
                 peak_buffered_bytes: control.peak_buffered.load(Ordering::Acquire),
                 own_connections: control.own_connections.load(Ordering::Acquire),
                 peak_requests: control.peak_requests.load(Ordering::Acquire),
-                verification: if checksum.is_some() {
-                    // `finish` checked it.
+                verification: if checksum.is_some() || expected.pieces.is_some() {
+                    // `finish` checked the checksum, and `repair_pieces` every piece.
                     Verification::Verified
                 } else if resumed_bytes > 0 && ck.file.validator.is_none() {
                     // Bytes from an earlier attempt, kept on the length alone (ADR-0010).
@@ -516,7 +535,69 @@ pub fn download_resumable(
             if matches!(e, DownloadError::Paused) || (retryable && ck.sent > 0) {
                 part.keep = true;
             }
+            if matches!(e, DownloadError::IntegrityFailed(_)) {
+                // Kept for inspection, like a file that fails its checksum.
+                part.keep = true;
+                ck.distrust(control);
+            }
             Err(e)
+        }
+    }
+}
+
+/// Once the file is covered, waits for every piece's check, and fetches the bad pieces again
+/// (#46, report section 5.3, PO decisions): with ranges, each bad piece alone, at most
+/// [`PIECE_REFETCHES`] times; without them, the whole file once more as one stream. A download
+/// without piece hashes is returned as it is.
+fn repair_pieces(
+    lp: &CurlLoop,
+    url: &str,
+    options: DownloadOptions,
+    part: &mut PartFile,
+    ck: &mut Checkpointer,
+    control: &Control,
+    mut fetched: Fetched,
+) -> Result<Fetched, DownloadError> {
+    let mut started_over = false;
+    loop {
+        let bad = part.settle_pieces(fetched.total)?;
+        let (Some(&first), Some(pieces)) = (bad.first(), part.pieces.as_ref()) else {
+            return Ok(fetched);
+        };
+        let count = pieces.count();
+        if fetched.mode == Mode::Ranges {
+            if let Some(&worst) = bad
+                .iter()
+                .find(|&&i| pieces.bad_copies(i) > PIECE_REFETCHES)
+            {
+                return Err(DownloadError::IntegrityFailed(failure::piece_still_bad(
+                    worst,
+                    count,
+                    PIECE_REFETCHES,
+                )));
+            }
+            for &index in &bad {
+                part.uncover_piece(index, fetched.total)?;
+            }
+            let (fetches, splits, mode) =
+                fetch_ranges(lp, url, fetched.total, options, part, ck, control)?;
+            fetched.fetches += fetches;
+            fetched.splits += splits;
+            fetched.mode = mode;
+        } else if !started_over {
+            // Ranges don't work for this download, so the piece can't come alone.
+            started_over = true;
+            part.start_over()?;
+            *ck = Checkpointer::new(options.checkpoints, url);
+            let whole = fetch_whole(lp, url, part, control, &options.retry)?;
+            fetched = Fetched {
+                fetches: fetched.fetches + whole.fetches,
+                ..whole
+            };
+        } else {
+            return Err(DownloadError::IntegrityFailed(failure::piece_bad_again(
+                first, count,
+            )));
         }
     }
 }
@@ -542,7 +623,15 @@ pub fn download_with(
     options: DownloadOptions,
     control: &Control,
 ) -> Result<DownloadReport, DownloadError> {
-    download_resumable(lp, url, destination, options, None, None, control)
+    download_resumable(
+        lp,
+        url,
+        destination,
+        options,
+        None,
+        &Expected::default(),
+        control,
+    )
 }
 
 /// How the file was fetched, before it is finished.
@@ -700,6 +789,8 @@ fn discard(path: &Path) -> Result<(), DownloadError> {
 /// records the durable coverage, so a byte is in D only once it is on disk (invariant I5).
 struct Checkpointer {
     cadence: Cadence,
+    /// The file's total in the checkpoints sent.
+    total: u64,
     source: String,
     /// What the first answer said about the file, recorded with each checkpoint.
     file: Representation,
@@ -714,6 +805,7 @@ impl Checkpointer {
     fn new(cadence: Cadence, url: &str) -> Self {
         Checkpointer {
             cadence,
+            total: 0,
             source: Checkpoint::source_of(url),
             file: Representation::default(),
             last_at: Instant::now(),
@@ -755,7 +847,22 @@ impl Checkpointer {
     }
 
     /// Sends a checkpoint of `durable`; `written` is what the part file holds so far.
+    /// After an integrity failure no byte can be trusted: a resume from the last checkpoint would
+    /// check the same bytes again. So when there was one, a last one that trusts none follows, and
+    /// a retry downloads the whole file again (report section 5.3).
+    fn distrust(&mut self, control: &Control) {
+        if self.sent > 0 {
+            self.send(
+                self.total,
+                &Coverage::default(),
+                self.written_at_last,
+                control,
+            );
+        }
+    }
+
     fn send(&mut self, total: u64, durable: &Coverage, written: u64, control: &Control) {
+        self.total = total;
         control.checkpoint(Checkpoint {
             format: CHECKPOINT_FORMAT,
             source: self.source.clone(),
@@ -1944,6 +2051,10 @@ struct PartFile {
     sparse: bool,
     /// Hashes the covered prefix when the download has a checksum (#46).
     frontier: Option<(HashAlgorithm, HashFrontier)>,
+    /// Checks each piece once it is covered, when the download has piece hashes (#46).
+    pieces: Option<PieceCheck>,
+    /// What an earlier attempt left that this one trusts: a resume's durable ranges.
+    earlier: Coverage,
 }
 
 impl PartFile {
@@ -1960,6 +2071,8 @@ impl PartFile {
             keep: false,
             sparse: new.sparse,
             frontier: None,
+            pieces: None,
+            earlier: Coverage::default(),
         })
     }
 
@@ -1968,6 +2081,8 @@ impl PartFile {
         PartFile {
             path,
             file: Some(file),
+            earlier: durable.clone(),
+            pieces: None,
             coverage: durable,
             written: 0,
             wasted: 0,
@@ -1999,6 +2114,68 @@ impl PartFile {
         }
     }
 
+    /// Starts checking pieces against `hashes`, each once it is covered, on a thread of its own
+    /// (#46). What is covered already, such as a resume's durable ranges, is checked too.
+    fn check_pieces(&mut self, hashes: &PieceHashes) -> Result<(), DownloadError> {
+        let file = self.file.as_ref().expect("the part file is open");
+        let mut pieces = file
+            .try_clone()
+            .and_then(|f| PieceCheck::start(f, hashes))
+            .map_err(|e| io_error("start checking the pieces of", &self.path, &e))?;
+        pieces.offer(&self.coverage, 0, u64::MAX, None);
+        self.pieces = Some(pieces);
+        Ok(())
+    }
+
+    /// Sends the pieces that `[a, b)` completed to the piece check.
+    fn offer_pieces(&mut self, a: u64, b: u64) {
+        if let Some(pieces) = &mut self.pieces {
+            pieces.offer(&self.coverage, a, b, None);
+        }
+    }
+
+    /// Once the file of `total` bytes is covered: the bad pieces, after every check is in.
+    fn settle_pieces(&mut self, total: u64) -> Result<Vec<usize>, DownloadError> {
+        let Some(pieces) = &mut self.pieces else {
+            return Ok(Vec::new());
+        };
+        if !pieces.fits(total) {
+            let (count, length) = (pieces.count(), pieces.range(0, u64::MAX).1);
+            return Err(DownloadError::IntegrityFailed(failure::piece_list_misfit(
+                count, length, total,
+            )));
+        }
+        pieces
+            .settle(&self.coverage, total)
+            .map_err(|e| io_error("check a piece of", &self.path, &e))
+    }
+
+    /// Takes a bad piece out of coverage, so it is fetched again. Its bytes from this attempt count
+    /// as wasted, and a whole-file hash that may have read them starts again from byte 0.
+    fn uncover_piece(&mut self, index: usize, total: u64) -> Result<(), DownloadError> {
+        let Some(pieces) = &mut self.pieces else {
+            return Ok(());
+        };
+        let (a, b) = pieces.range(index, total);
+        pieces.uncovered(index);
+        let earlier: u64 = (b - a)
+            - self
+                .earlier
+                .gaps(a, b)
+                .iter()
+                .map(|(x, y)| y - x)
+                .sum::<u64>();
+        let ours = (b - a) - earlier;
+        self.earlier.remove(a, b);
+        self.coverage.remove(a, b);
+        self.written -= ours;
+        self.wasted += ours;
+        if let Some((algorithm, _)) = self.frontier.take() {
+            self.hash_with(algorithm)?;
+        }
+        Ok(())
+    }
+
     /// Discards what is in the part file and starts again with an empty one.
     fn start_over(&mut self) -> Result<(), DownloadError> {
         let algorithm = self.frontier.take().map(|(algorithm, _)| algorithm);
@@ -2007,10 +2184,17 @@ impl PartFile {
         let new = new_part(&self.path)?;
         self.file = Some(new.file);
         self.coverage = Coverage::default();
+        self.earlier = Coverage::default();
         self.written = 0;
         self.sparse = new.sparse;
         if let Some(algorithm) = algorithm {
             self.hash_with(algorithm)?;
+        }
+        if let Some(pieces) = &mut self.pieces {
+            let file = self.file.as_ref().expect("the part file is open");
+            file.try_clone()
+                .and_then(|f| pieces.restart(f))
+                .map_err(|e| io_error("start checking the pieces of", &self.path, &e))?;
         }
         Ok(())
     }
@@ -2056,6 +2240,7 @@ impl PartFile {
         self.coverage.insert(offset, offset + bytes.len() as u64);
         self.written += bytes.len() as u64;
         self.advance_frontier();
+        self.offer_pieces(offset, offset + bytes.len() as u64);
         Ok(())
     }
 
@@ -2073,6 +2258,7 @@ impl PartFile {
         self.written += fresh;
         self.wasted += chunk.len() as u64 - fresh;
         self.advance_frontier();
+        self.offer_pieces(offset, end);
         Ok(())
     }
 
@@ -2113,7 +2299,7 @@ impl PartFile {
                 .map_err(|e| io_error("hash", &self.path, &e))?;
             if !got.eq_ignore_ascii_case(&checksum.hex) {
                 self.keep = true;
-                return Err(DownloadError::ChecksumMismatch(failure::checksum_mismatch(
+                return Err(DownloadError::IntegrityFailed(failure::checksum_mismatch(
                     algorithm, &got,
                 )));
             }

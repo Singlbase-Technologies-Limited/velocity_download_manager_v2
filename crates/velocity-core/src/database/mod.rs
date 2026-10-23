@@ -652,6 +652,7 @@ mod tests {
                 value: "session=SECRET-COOKIE-1234".to_owned(),
             }],
             checksum: None,
+            pieces: None,
             limits: Limits::default(),
             max_connections: 4,
             resume: None,

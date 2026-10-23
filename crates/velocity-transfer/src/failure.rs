@@ -98,6 +98,49 @@ pub(crate) fn checksum_mismatch(algorithm: HashAlgorithm, got: &str) -> Transfer
     )
 }
 
+/// A piece that was still bad after it was fetched again `refetches` times (#46, PO decision): the
+/// server or a mirror sends bad data. Retrying by hand downloads the whole file again.
+pub(crate) fn piece_still_bad(index: usize, count: usize, refetches: u32) -> TransferError {
+    TransferError::new(
+        FailureClass::Transient,
+        None,
+        &format!(
+            "The downloaded file's piece {} of {count} doesn't match its trusted hash, even after \
+             fetching it again {refetches} times: the server sends bad data. It was kept as a \
+             .vdmpart file, not renamed; retrying downloads it again.",
+            index + 1
+        ),
+    )
+}
+
+/// A piece that was bad again after the whole file was downloaded again, from a server that
+/// can't send part of it (#46, PO decision).
+pub(crate) fn piece_bad_again(index: usize, count: usize) -> TransferError {
+    TransferError::new(
+        FailureClass::Transient,
+        None,
+        &format!(
+            "The downloaded file's piece {} of {count} doesn't match its trusted hash, in two \
+             downloads of the whole file: the server sends bad data. It was kept as a .vdmpart \
+             file, not renamed; retrying downloads it again.",
+            index + 1
+        ),
+    )
+}
+
+/// A piece list that can't describe the file: its pieces don't add up to the file's size. The
+/// list or the server is wrong, so retrying won't help.
+pub(crate) fn piece_list_misfit(count: usize, length: u64, total: u64) -> TransferError {
+    TransferError::new(
+        FailureClass::Permanent,
+        None,
+        &format!(
+            "The file's trusted piece list doesn't fit it: {count} pieces of {length} bytes \
+             can't make up its {total} bytes."
+        ),
+    )
+}
+
 /// A libcurl-side failure.
 pub(crate) fn fetch_failure(e: FetchError) -> TransferError {
     match e {

@@ -23,8 +23,8 @@ use std::sync::mpsc::Receiver;
 /// Version 3 (#49) added the global speed limit: [`DirectTransfer::set_global_limits`].
 /// Version 4 (#47) added [`crate::domain::Progress::connection_detail`] to snapshots.
 /// Version 5 (#45) added [`Checkpoint::content_encoding`].
-/// Version 6 (#46) added [`TransferSnapshot::verification`], and SHA-224 and SHA-384 to
-/// [`HashAlgorithm`]; engines now check a [`TransferSpec::checksum`].
+/// Version 6 (#46) added [`TransferSnapshot::verification`], [`TransferSpec::pieces`], and SHA-224
+/// and SHA-384 to [`HashAlgorithm`]; engines now check a [`TransferSpec::checksum`].
 pub const TRANSFER_CONTRACT_VERSION: u32 = 6;
 
 /// An engine's id for one transfer. Assigned by the engine, never reused, and never shown as the
@@ -108,6 +108,56 @@ impl Checksum {
     }
 }
 
+/// Trusted hashes of a file's pieces, such as a Metalink file's `<pieces>` (#46, #54): piece `i`
+/// is bytes `[i × length, (i + 1) × length)`, the last one ending with the file. Each piece is
+/// checked once it is covered, and a bad one is fetched again on its own.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PieceHashes {
+    pub algorithm: HashAlgorithm,
+    /// Bytes per piece; the last piece may be shorter.
+    pub length: u64,
+    /// One lowercase hexadecimal digest per piece, in file order.
+    pub hex: Vec<String>,
+}
+
+impl PieceHashes {
+    /// The fewest bytes a piece may have: a smaller one would make the list larger than the file
+    /// it describes. Metalink pieces are typically 256 KiB or more.
+    pub const MIN_LENGTH: u64 = 1024;
+    /// The most pieces a list may have: 16 TiB in 16 MiB pieces, about 64 MiB of SHA-512 digests.
+    pub const MAX_PIECES: usize = 1 << 20;
+
+    /// The list with its digests in lowercase, or `InvalidInput` when a digest isn't hexadecimal
+    /// or doesn't have its algorithm's length, the pieces are smaller than [`Self::MIN_LENGTH`],
+    /// or there are none or more than [`Self::MAX_PIECES`].
+    pub fn normalized(&self) -> Result<PieceHashes, ErrorCode> {
+        if self.length < Self::MIN_LENGTH
+            || self.hex.is_empty()
+            || self.hex.len() > Self::MAX_PIECES
+        {
+            return Err(ErrorCode::InvalidInput);
+        }
+        let hex = self
+            .hex
+            .iter()
+            .map(|hex| {
+                Checksum {
+                    algorithm: self.algorithm,
+                    hex: hex.clone(),
+                }
+                .normalized()
+                .map(|c| c.hex)
+            })
+            .collect::<Result<_, _>>()?;
+        Ok(PieceHashes {
+            algorithm: self.algorithm,
+            length: self.length,
+            hex,
+        })
+    }
+}
+
 /// Speed limits, for one transfer or for all of them. `None` means no limit.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -141,6 +191,8 @@ pub struct TransferSpec {
     pub credentials: Option<CredentialHandle>,
     pub headers: Vec<Header>,
     pub checksum: Option<Checksum>,
+    /// Trusted piece hashes (#46); `None` until a Metalink file supplies them (#54).
+    pub pieces: Option<PieceHashes>,
     pub limits: Limits,
     /// Requested connections; the engine may apply fewer (see [`DirectTransfer::set_connections`]).
     pub max_connections: u32,
@@ -385,6 +437,11 @@ mod tests {
                 algorithm: HashAlgorithm::Sha256,
                 hex: "ab".repeat(32),
             }),
+            pieces: Some(PieceHashes {
+                algorithm: HashAlgorithm::Sha1,
+                length: 256 << 10,
+                hex: vec!["cd".repeat(20), "ef".repeat(20)],
+            }),
             limits: Limits {
                 max_download_bps: Some(1_000_000),
             },
@@ -438,6 +495,38 @@ mod tests {
                     "{algorithm:?}: {bad:?}"
                 );
             }
+        }
+    }
+
+    #[test]
+    fn piece_hashes_need_valid_digests_a_sensible_length_and_a_bounded_count() {
+        let pieces = |length: u64, hex: Vec<String>| PieceHashes {
+            algorithm: HashAlgorithm::Sha256,
+            length,
+            hex,
+        };
+        assert_eq!(
+            pieces(1024, vec!["AB".repeat(32), "cd".repeat(32)]).normalized(),
+            Ok(pieces(1024, vec!["ab".repeat(32), "cd".repeat(32)])),
+            "uppercase is accepted and lowercased"
+        );
+        for (why, bad) in [
+            (
+                "a short digest",
+                pieces(1024, vec!["ab".repeat(32), "ab".repeat(31)]),
+            ),
+            (
+                "not hex",
+                pieces(1024, vec![format!("{}zz", "ab".repeat(31))]),
+            ),
+            ("pieces too small", pieces(1023, vec!["ab".repeat(32)])),
+            ("no pieces", pieces(1024, Vec::new())),
+            (
+                "too many pieces",
+                pieces(1024, vec!["ab".repeat(32); PieceHashes::MAX_PIECES + 1]),
+            ),
+        ] {
+            assert_eq!(bad.normalized(), Err(ErrorCode::InvalidInput), "{why}");
         }
     }
 
@@ -560,6 +649,7 @@ mod tests {
             "/spec",
             "/spec/headers/0",
             "/spec/checksum",
+            "/spec/pieces",
             "/spec/limits",
         ] {
             refuses_an_extra_field(&add, pointer);

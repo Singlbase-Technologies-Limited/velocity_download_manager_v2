@@ -206,6 +206,7 @@ mod tests {
             credentials: None,
             headers: Vec::new(),
             checksum: None,
+            pieces: None,
             limits: Limits::default(),
             max_connections: 4,
             resume: None,
