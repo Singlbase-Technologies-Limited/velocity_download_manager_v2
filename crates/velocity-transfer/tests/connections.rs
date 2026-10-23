@@ -319,14 +319,15 @@ fn adaptive_connections_stop_below_the_cap_when_more_stop_helping() {
     let _serial = one_at_a_time();
     // Per-IP throttle: 1 MiB/s per connection but 2.5 MiB/s in all, so 3 connections fill it and
     // a 4th brings nothing. A cap of exactly 3 MiB/s let a 4th look like a 10% gain on CI, as 3
-    // never quite reach it while a new lease starts.
-    let data = seeded_bytes(24 * MIB, 53);
+    // never quite reach it while a new lease starts. 48 MiB, about 19 s, so the download is still
+    // running when the ramp decides, however slowly a loaded machine lets it measure (#154).
+    let data = seeded_bytes(48 * MIB, 53);
     let server = throttled_server(&data, MIB as u64, Some(5 * MIB as u64 / 2));
     let dir = Dir::new("per-ip");
     let control = Arc::new(Control::default());
     let download = run(&server, &dir, ADAPTIVE, &control);
     wait_until(
-        Duration::from_secs(15),
+        Duration::from_secs(30),
         "more connections stop helping",
         || matches!(control.connections_now().tuned, Some((_, Tuning::NoGain))),
     );
