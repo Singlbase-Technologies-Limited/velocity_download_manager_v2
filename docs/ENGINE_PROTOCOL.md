@@ -56,7 +56,7 @@ For example:
 
 ## Versions
 
-- **What's checked:** the protocol version (`PROTOCOL_VERSION`, now 2) and the contract version (`TRANSFER_CONTRACT_VERSION`, now 4: version 2 added checkpoints, #43, version 3 the global speed limit, #49, and version 4 the connection detail in snapshots, #47) must match exactly, and both sides check them.
+- **What's checked:** the protocol version (`PROTOCOL_VERSION`, now 2) and the contract version (`TRANSFER_CONTRACT_VERSION`, now 5: version 2 added checkpoints, #43, version 3 the global speed limit, #49, version 4 the connection detail in snapshots, #47, and version 5 the checkpoint's encoding, #45) must match exactly, and both sides check them.
 - **The first frame:** the app refuses an engine whose `hello` has other versions, or whose first frame isn't a `hello`, as `ENGINE_INCOMPATIBLE`. Version 1 was the #37 prototype's JSON lines; an engine that still speaks it is refused this way.
 - **The answer:** the engine refuses a `start` with other versions by exiting, with the reason on stderr.
 - **An engine that exits before `hello`** failed to start: `ENGINE_START_FAILED`. A program that isn't there is `ENGINE_MISSING`.
