@@ -234,16 +234,11 @@ fn the_engine_allowance_holds_a_download_below_its_ask() {
     download.join().unwrap();
 }
 
-/// The report's ramp with shorter windows, so a test runs in seconds (#47).
-const FAST_RAMP: AdaptivePolicy = AdaptivePolicy {
-    // 1 s windows: each measurement averages twice the bytes of 500 ms ones, which misjudged
-    // gains on CI's slower runners.
-    min_window: Duration::from_secs(1),
-    ..AdaptivePolicy::DEFAULT
-};
-
+/// Eight connections asked for, with the engine's adaptive ramp (#47).
 const ADAPTIVE: DownloadOptions = DownloadOptions {
-    adaptive: Some(FAST_RAMP),
+    // The engine's own policy, with its 2 s windows. Shorter ones, 500 ms and then 1 s, misjudged
+    // gains on loaded machines: a flat 5th connection once measured as a 10% gain (#154).
+    adaptive: Some(AdaptivePolicy::DEFAULT),
     ..EIGHT
 };
 
@@ -301,7 +296,7 @@ fn adaptive_connections_ramp_up_while_each_helps() {
         Some((1, Tuning::RampingUp)),
         "it starts with one connection"
     );
-    wait_until(Duration::from_secs(15), "4 responses run", || {
+    wait_until(Duration::from_secs(30), "4 responses run", || {
         server.counters().answering == 4
     });
     assert_eq!(control.connections_now().tuned, None, "at the 4 asked for");
