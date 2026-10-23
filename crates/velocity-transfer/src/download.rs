@@ -72,6 +72,8 @@ pub struct Control {
     limits: Vec<RateLimit>,
     /// The most bytes one of its requests held for the writer (#49); shared with the forwarders.
     peak_buffered: Arc<AtomicU64>,
+    /// The most requests it had open at once (#154).
+    peak_requests: AtomicU32,
     /// The connections asked for while the download runs (#47). 0 until
     /// [`Control::set_connections`] is called; [`DownloadOptions::connections`] applies until then.
     connections: AtomicU32,
@@ -186,6 +188,7 @@ impl Control {
     /// Records the requests open now, and whether the file is too small for more.
     fn running(&self, active: u32, file_bound: bool) {
         self.active.store(active, Ordering::Release);
+        self.peak_requests.fetch_max(active, Ordering::AcqRel);
         self.file_bound.store(file_bound, Ordering::Release);
     }
 
@@ -318,6 +321,9 @@ pub struct DownloadReport {
     /// Over HTTP/2, more streams on one connection stopped helping, and connections of their own
     /// did better, so the requests went on those (#47).
     pub own_connections: bool,
+    /// The most requests it had open at once, ones being stopped included (#154). A server can
+    /// count one more for a moment: it writes a stopped request's tail until it sees the close.
+    pub peak_requests: u32,
 }
 
 #[derive(Debug)]
@@ -450,6 +456,7 @@ pub fn download_resumable(
                 sparse,
                 peak_buffered_bytes: control.peak_buffered.load(Ordering::Acquire),
                 own_connections: control.own_connections.load(Ordering::Acquire),
+                peak_requests: control.peak_requests.load(Ordering::Acquire),
             })
         }
         Err(e) => {
