@@ -934,6 +934,41 @@ fn downloads_from_one_host_share_its_cap_fairly() {
 }
 
 #[test]
+fn a_lower_profile_cap_bounds_many_small_downloads() {
+    // #57: each running download keeps one connection, so with many small ones at once it is
+    // libcurl's own per-host cap that bounds a host. It must follow the profile's.
+    let data = seeded_bytes(256 * 1024, 58);
+    for (mode, mut engine) in engines() {
+        let server = TestServer::start(
+            vec![("f.bin".into(), data.clone())],
+            ServerOptions::default(),
+        );
+        let dir = Dir::new(&format!("small-capped-{}", mode.replace(' ', "-")));
+        let events = engine.subscribe();
+        let conservative = EngineLimits {
+            max_connections_per_host: 2,
+            min_segment_bytes: 20 << 20,
+        };
+        engine
+            .set_engine_limits(conservative)
+            .expect("set_engine_limits");
+        let ids: Vec<TransferId> = (0..10)
+            .map(|i| {
+                engine
+                    .add(spec(server.url("f.bin"), dir.0.join(format!("f{i}.bin"))))
+                    .expect("add")
+            })
+            .collect();
+        all_completed(&events, &mut HashMap::new(), &ids, mode);
+        let used = server.counters().connections;
+        assert!(
+            used <= 2,
+            "{mode}: 10 files at once used {used} connections, over the cap of 2"
+        );
+    }
+}
+
+#[test]
 fn small_files_reuse_connections() {
     // #47: 40 files of 256 KiB from one host, smaller than the probe, so one GET each. One after
     // another, they reuse one keep-alive connection; added at once, the per-host cap bounds the

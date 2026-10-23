@@ -243,8 +243,9 @@ impl InProcessEngine {
     fn start_with_policy(first: TransferId, retry: RetryPolicy) -> Result<Self, String> {
         let libcurl = Libcurl::start().map_err(|e| e.to_string())?;
         let options = LoopOptions {
-            // libcurl's own ceiling; the budget holds each host to the cap in force (#57).
-            max_connections_per_host: EngineLimits::MAX_CONNECTIONS_PER_HOST as usize,
+            // libcurl's own cap follows the profile's (#57): with many small downloads, each
+            // keeping one connection, it is what bounds a host, not the budget.
+            max_connections_per_host: MAX_CONNECTIONS as usize,
             ..LoopOptions::default()
         };
         let curl = CurlLoop::start(&libcurl, options).map_err(|e| e.to_string())?;
@@ -526,6 +527,11 @@ impl DirectTransfer for InProcessEngine {
 
     fn set_engine_limits(&mut self, limits: EngineLimits) -> Result<(), ErrorCode> {
         limits.check()?;
+        // libcurl first: if it refuses, nothing changed.
+        self.shared
+            .curl
+            .set_max_connections_per_host(limits.max_connections_per_host as usize)
+            .map_err(|_| ErrorCode::Internal)?;
         let mut state = lock(&self.shared.state);
         state.limits = limits;
         // A lower cap holds running transfers back at their next step; the smallest piece

@@ -272,7 +272,7 @@ All are starting values to tune by measurement (#77), and #30 makes them setting
 
 | Value | Starting value | Where it comes from |
 |---|---|---|
-| Per-host cap | The performance profile's: 8 for Balanced, 2 to 16 for the others ([SETTINGS.md](SETTINGS.md#performance)) | Report section 5.5 (8, at most 16); PO decisions on #47 and #57. `set_engine_limits` changes it while transfers run; libcurl's own ceiling is 16 |
+| Per-host cap | The performance profile's: 8 for Balanced, 2 to 16 for the others ([SETTINGS.md](SETTINGS.md#performance)) | Report section 5.5 (8, at most 16); PO decisions on #47 and #57. `set_engine_limits` changes it while transfers run, and libcurl's own per-host cap (`CURLMOPT_MAX_HOST_CONNECTIONS`) with it: with many small downloads at once, each keeping one connection, that is what bounds a host |
 | Smallest piece (`Sizes::min_split`) | The profile's: 1 MiB for Balanced | PO decision on #57 |
 | Shared budget (`CONNECTION_BUDGET`) | 48 | V1's `connection_budget`; PO decision on #47 |
 | Window | max(2 s, 4 × RTT) | Report section 5.5 |

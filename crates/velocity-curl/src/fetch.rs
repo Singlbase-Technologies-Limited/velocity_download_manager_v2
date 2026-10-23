@@ -290,6 +290,8 @@ enum Command {
     Start(usize, Box<Easy2<Collector>>),
     Cancel(usize),
     Unpause(usize),
+    /// A new `CURLMOPT_MAX_HOST_CONNECTIONS`, and where to say whether libcurl took it.
+    MaxHostConnections(usize, Sender<Result<(), String>>),
     Stop,
 }
 
@@ -363,6 +365,17 @@ impl CurlLoop {
             }
         }
         fetch
+    }
+
+    /// Changes `CURLMOPT_MAX_HOST_CONNECTIONS` while the loop runs (#57): the performance
+    /// profile's per-host cap. Fetches past it wait for a connection.
+    pub fn set_max_connections_per_host(&self, connections: usize) -> Result<(), LoopError> {
+        let (reply, answer) = mpsc::channel();
+        self.send(Command::MaxHostConnections(connections, reply));
+        answer
+            .recv()
+            .map_err(|_| LoopError("the loop thread has ended".into()))?
+            .map_err(|e| LoopError(format!("CURLMOPT_MAX_HOST_CONNECTIONS: {e}")))
     }
 
     fn send(&self, command: Command) {
@@ -705,6 +718,12 @@ fn run_loop(
                     if let Some(handle) = active.get(&token) {
                         let _ = handle.unpause_write();
                     }
+                }
+                Command::MaxHostConnections(connections, reply) => {
+                    let set = multi
+                        .set_max_host_connections(connections)
+                        .map_err(|e| e.to_string());
+                    let _ = reply.send(set);
                 }
                 Command::Stop => {
                     for (_, handle) in active.drain() {
