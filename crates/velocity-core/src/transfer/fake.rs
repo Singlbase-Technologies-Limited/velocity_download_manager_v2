@@ -2,7 +2,9 @@
 //! own: commands change state as the contract says, and the test scripts everything else
 //! (progress, failures, completion) through a [`FakeControl`]. Compiled for tests only.
 
-use super::{DirectTransfer, Limits, TransferEvent, TransferId, TransferSnapshot, TransferSpec};
+use super::{
+    DirectTransfer, EngineLimits, Limits, TransferEvent, TransferId, TransferSnapshot, TransferSpec,
+};
 use crate::domain::{
     Capabilities, DownloadStatus, ErrorCode, Progress, TransferError, Verification,
 };
@@ -20,6 +22,8 @@ struct State {
     log: Vec<String>,
     /// The limits from the last `set_global_limits`.
     global_limits: Limits,
+    /// The limits from the last `set_engine_limits`.
+    engine_limits: EngineLimits,
     /// Makes every command fail with this code, like an engine that stopped responding.
     unavailable: Option<ErrorCode>,
 }
@@ -136,6 +140,10 @@ impl FakeControl {
 
     pub fn global_limits(&self) -> Limits {
         lock(&self.state).global_limits
+    }
+
+    pub fn engine_limits(&self) -> EngineLimits {
+        lock(&self.state).engine_limits
     }
 
     /// Reports bytes arriving: the transfer is Downloading with this progress.
@@ -282,6 +290,14 @@ impl DirectTransfer for FakeTransfer {
         s.command("set_global_limits".to_owned())?;
         limits.check()?;
         s.global_limits = limits;
+        Ok(())
+    }
+
+    fn set_engine_limits(&mut self, limits: EngineLimits) -> Result<(), ErrorCode> {
+        let mut s = lock(&self.state);
+        s.command("set_engine_limits".to_owned())?;
+        limits.check()?;
+        s.engine_limits = limits;
         Ok(())
     }
 

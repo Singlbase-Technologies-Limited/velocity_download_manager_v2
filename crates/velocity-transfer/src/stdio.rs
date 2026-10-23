@@ -23,8 +23,8 @@ use std::time::{Duration, Instant};
 
 use velocity_core::domain::{Capabilities, ErrorCode};
 use velocity_core::transfer::{
-    dispatch, DirectTransfer, Limits, TransferCommand, TransferEvent, TransferId, TransferReply,
-    TransferSnapshot, TransferSpec, TRANSFER_CONTRACT_VERSION,
+    dispatch, DirectTransfer, EngineLimits, Limits, TransferCommand, TransferEvent, TransferId,
+    TransferReply, TransferSnapshot, TransferSpec, TRANSFER_CONTRACT_VERSION,
 };
 
 use crate::engine::InProcessEngine;
@@ -182,7 +182,8 @@ struct Connection {
     stdin: Mutex<Option<Box<dyn Write + Send>>>,
     shared: Arc<Shared>,
     next_seq: AtomicU64,
-    capabilities: Capabilities,
+    /// What the engine reported at the handshake, and again after its limits changed (#57).
+    capabilities: Mutex<Capabilities>,
     /// Disconnects when the reader stops: the engine's stdout ended or broke the protocol.
     closed: Mutex<Receiver<()>>,
 }
@@ -215,17 +216,17 @@ impl Connection {
             Ok(Err(code)) => return Err(code),
             Err(_) => return Err(ErrorCode::EngineStartFailed),
         }
-        let mut connection = Connection {
+        let connection = Connection {
             stdin: Mutex::new(Some(Box::new(stdin))),
             shared,
             next_seq: AtomicU64::new(0),
-            capabilities: Capabilities {
+            capabilities: Mutex::new(Capabilities {
                 protocols: Vec::new(),
                 live_connection_changes: false,
                 validator_resume: false,
                 metalink: false,
                 max_connections_per_host: 1,
-            },
+            }),
             closed: Mutex::new(closed),
         };
         let start = ToChild::Start {
@@ -236,11 +237,19 @@ impl Connection {
         connection
             .send(&start)
             .map_err(|_| ErrorCode::EngineStartFailed)?;
-        match connection.request(TransferCommand::Capabilities {})? {
-            TransferReply::Capabilities { capabilities } => connection.capabilities = capabilities,
-            _ => return Err(ErrorCode::EngineIncompatible),
-        }
+        connection.refresh_capabilities()?;
         Ok(connection)
+    }
+
+    /// Asks the engine for its capabilities and keeps them.
+    fn refresh_capabilities(&self) -> Result<(), ErrorCode> {
+        match self.request(TransferCommand::Capabilities {})? {
+            TransferReply::Capabilities { capabilities } => {
+                *lock(&self.capabilities) = capabilities;
+                Ok(())
+            }
+            _ => Err(ErrorCode::EngineIncompatible),
+        }
     }
 
     fn send(&self, message: &ToChild) -> Result<(), ErrorCode> {
@@ -420,7 +429,7 @@ impl ChildProcessEngine {
     }
 
     pub fn capabilities(&self) -> Capabilities {
-        self.connection.capabilities.clone()
+        lock(&self.connection.capabilities).clone()
     }
 
     pub fn add(&self, spec: TransferSpec) -> Result<TransferId, ErrorCode> {
@@ -454,6 +463,13 @@ impl ChildProcessEngine {
 
     pub fn set_global_limits(&self, limits: Limits) -> Result<(), ErrorCode> {
         self.done(TransferCommand::SetGlobalLimits { limits })
+    }
+
+    /// Sets the engine's limits, then reads its capabilities again: the per-host cap they report
+    /// is the new one.
+    pub fn set_engine_limits(&self, limits: EngineLimits) -> Result<(), ErrorCode> {
+        self.done(TransferCommand::SetEngineLimits { limits })?;
+        self.connection.refresh_capabilities()
     }
 
     pub fn set_connections(&self, id: TransferId, connections: u32) -> Result<u32, ErrorCode> {
@@ -518,6 +534,10 @@ impl DirectTransfer for ChildProcessEngine {
 
     fn set_global_limits(&mut self, limits: Limits) -> Result<(), ErrorCode> {
         ChildProcessEngine::set_global_limits(self, limits)
+    }
+
+    fn set_engine_limits(&mut self, limits: EngineLimits) -> Result<(), ErrorCode> {
+        ChildProcessEngine::set_engine_limits(self, limits)
     }
 
     fn set_connections(&mut self, id: TransferId, connections: u32) -> Result<u32, ErrorCode> {
@@ -612,7 +632,7 @@ mod tests {
             let _ = read_message::<ToChild>(&mut input);
         })
         .expect("the handshake succeeds");
-        assert_eq!(connection.capabilities.max_connections_per_host, 3);
+        assert_eq!(lock(&connection.capabilities).max_connections_per_host, 3);
         assert_eq!(
             seen_rx.recv().unwrap(),
             ToChild::Start {

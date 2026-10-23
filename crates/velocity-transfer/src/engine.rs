@@ -25,8 +25,8 @@ use velocity_core::domain::{
     FailureClass, Progress, TransferError,
 };
 use velocity_core::transfer::{
-    Checkpoint, Checksum, DirectTransfer, Limits, PieceHashes, Resume, TransferEvent, TransferId,
-    TransferSnapshot, TransferSpec,
+    Checkpoint, Checksum, DirectTransfer, EngineLimits, Limits, PieceHashes, Resume, TransferEvent,
+    TransferId, TransferSnapshot, TransferSpec,
 };
 use velocity_curl::{CurlLoop, Libcurl, LoopOptions, RateLimit};
 
@@ -40,10 +40,10 @@ use crate::files;
 use crate::retry::RetryPolicy;
 use crate::scheduler::Sizes;
 
-/// The most connections to one host, which its transfers share, and so the most one transfer may
-/// use. Report section 5.5's starting value (8, at most 16; PO decision on #47), not a
-/// requirement; #30 makes it a setting.
-pub const MAX_CONNECTIONS: u32 = 8;
+/// The most connections to one host the engine starts with: the Balanced profile's
+/// ([`EngineLimits::DEFAULT`]). [`DirectTransfer::set_engine_limits`] changes it, up to
+/// [`EngineLimits::MAX_CONNECTIONS_PER_HOST`] (#57).
+pub const MAX_CONNECTIONS: u32 = EngineLimits::DEFAULT.max_connections_per_host;
 /// The connections all transfers share, max-min fairly (V1's 48; PO decision on #47). A starting
 /// value; #30 makes it a setting.
 pub const CONNECTION_BUDGET: u32 = 48;
@@ -70,6 +70,9 @@ struct State {
     next_id: u64,
     transfers: BTreeMap<TransferId, Entry>,
     subscribers: Vec<Sender<TransferEvent>>,
+    /// The performance profile's limits (#57): the per-host cap the budget shares, and the
+    /// smallest piece a starting transfer is split into.
+    limits: EngineLimits,
 }
 
 struct Entry {
@@ -128,7 +131,11 @@ impl State {
                 wants: *wants,
             })
             .collect();
-        let shares = budget::share(&demands, MAX_CONNECTIONS, CONNECTION_BUDGET);
+        let shares = budget::share(
+            &demands,
+            self.limits.max_connections_per_host,
+            CONNECTION_BUDGET,
+        );
         let mut changed = Vec::new();
         for ((id, _, _), share) in running.iter().zip(shares) {
             let entry = self.transfers.get_mut(id).expect("running");
@@ -236,7 +243,8 @@ impl InProcessEngine {
     fn start_with_policy(first: TransferId, retry: RetryPolicy) -> Result<Self, String> {
         let libcurl = Libcurl::start().map_err(|e| e.to_string())?;
         let options = LoopOptions {
-            max_connections_per_host: MAX_CONNECTIONS as usize,
+            // libcurl's own ceiling; the budget holds each host to the cap in force (#57).
+            max_connections_per_host: EngineLimits::MAX_CONNECTIONS_PER_HOST as usize,
             ..LoopOptions::default()
         };
         let curl = CurlLoop::start(&libcurl, options).map_err(|e| e.to_string())?;
@@ -355,7 +363,7 @@ impl DirectTransfer for InProcessEngine {
             // With a strong validator, resume sends it in If-Range (#45).
             validator_resume: true,
             metalink: false,
-            max_connections_per_host: MAX_CONNECTIONS,
+            max_connections_per_host: lock(&self.shared.state).limits.max_connections_per_host,
         }
     }
 
@@ -383,8 +391,10 @@ impl DirectTransfer for InProcessEngine {
         if spec.credentials.is_some() || !spec.headers.is_empty() {
             return Err(ErrorCode::Unsupported);
         }
-        let connections = spec.max_connections.clamp(1, MAX_CONNECTIONS);
         let mut state = lock(&self.shared.state);
+        let connections = spec
+            .max_connections
+            .clamp(1, state.limits.max_connections_per_host);
         state.next_id += 1;
         let id = TransferId(state.next_id);
         let snapshot = TransferSnapshot {
@@ -507,9 +517,19 @@ impl DirectTransfer for InProcessEngine {
         Ok(())
     }
 
+    fn set_engine_limits(&mut self, limits: EngineLimits) -> Result<(), ErrorCode> {
+        limits.check()?;
+        let mut state = lock(&self.shared.state);
+        state.limits = limits;
+        // A lower cap holds running transfers back at their next step; the smallest piece
+        // applies to transfers that start after it.
+        state.rebalance();
+        Ok(())
+    }
+
     fn set_connections(&mut self, id: TransferId, connections: u32) -> Result<u32, ErrorCode> {
         let mut state = self.known(id)?;
-        let applied = connections.clamp(1, MAX_CONNECTIONS);
+        let applied = connections.clamp(1, state.limits.max_connections_per_host);
         let entry = state.transfers.get_mut(&id).expect("known");
         // A running worker sees it at its next step; a later worker starts with it.
         entry.job.connections = applied;
@@ -575,6 +595,15 @@ fn start_worker(shared: &Arc<Shared>, id: TransferId, resume: Option<Resume>) {
     }
 }
 
+/// The lease and split sizes for the profile's smallest piece (#57): a lease is never cut into
+/// pieces smaller than it.
+fn sizes_for(limits: EngineLimits) -> Sizes {
+    Sizes {
+        min_split: limits.min_segment_bytes,
+        ..Sizes::DEFAULT
+    }
+}
+
 /// A transfer's worker: runs the download and reports how it ended. A download that fails in a
 /// way worth retrying is started again after a wait, at most [`RetryPolicy::download_retries`]
 /// times (V1's `app_retries`, #48), from its last checkpoint when it has one.
@@ -583,7 +612,7 @@ fn run(shared: &Shared, id: TransferId, job: &Job, resume: Option<&Resume>, cont
     let options = DownloadOptions {
         connections: job.connections,
         probe_bytes: PROBE_BYTES,
-        leases: Sizes::DEFAULT,
+        leases: sizes_for(lock(&shared.state).limits),
         checkpoints: Cadence::DEFAULT,
         retry: shared.retry,
         // The asked-for count is a ceiling, not a must (PO decision on #47).
@@ -740,6 +769,19 @@ fn ended(shared: &Shared, id: TransferId, change: impl FnOnce(&mut TransferSnaps
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_profiles_smallest_piece_is_the_split_size() {
+        // #57: Balanced keeps today's sizes; Conservative splits nothing below 20 MiB.
+        assert_eq!(sizes_for(EngineLimits::DEFAULT), Sizes::DEFAULT);
+        let conservative = EngineLimits {
+            max_connections_per_host: 2,
+            min_segment_bytes: 20 << 20,
+        };
+        let sizes = sizes_for(conservative);
+        assert_eq!(sizes.min_split, 20 << 20);
+        assert_eq!(sizes.max_lease, Sizes::DEFAULT.max_lease);
+    }
 
     #[test]
     fn checks_urls_as_untrusted_input() {

@@ -12,8 +12,8 @@ use velocity_core::domain::{
     ConnectionDetail, ConnectionLimit, DownloadKind, DownloadStatus, ErrorCode, Verification,
 };
 use velocity_core::transfer::{
-    Checkpoint, Checksum, DirectTransfer, HashAlgorithm, Limits, PieceHashes, TransferEvent,
-    TransferId, TransferSnapshot, TransferSpec,
+    Checkpoint, Checksum, DirectTransfer, EngineLimits, HashAlgorithm, Limits, PieceHashes,
+    TransferEvent, TransferId, TransferSnapshot, TransferSpec,
 };
 use velocity_test_http::{seeded_bytes, ServerOptions, TestServer};
 use velocity_transfer::engine::InProcessEngine;
@@ -256,6 +256,75 @@ fn checks_piece_hashes_and_refuses_a_malformed_list() {
             hex: vec!["not hex".to_owned(); 6],
         });
         assert_eq!(engine.add(bad), Err(ErrorCode::InvalidInput), "{mode}");
+    }
+}
+
+#[test]
+fn engine_limits_set_the_per_server_cap_live_and_are_checked() {
+    // #57: the profile's per-server cap. A slow download keeps running while the cap changes.
+    let server = TestServer::start(
+        vec![("f.bin".into(), seeded_bytes(2_000_000, 57))],
+        ServerOptions {
+            throttle_bytes_per_sec: Some(200_000),
+            ..ServerOptions::default()
+        },
+    );
+    for (mode, mut engine) in engines() {
+        let dir = Dir::new(&format!("engine-limits-{}", mode.replace(' ', "-")));
+        let events = engine.subscribe();
+        assert_eq!(
+            engine.capabilities().max_connections_per_host,
+            8,
+            "{mode}: Balanced"
+        );
+        let id = engine
+            .add(spec(server.url("f.bin"), dir.0.join("f.bin")))
+            .expect("add");
+        assert_eq!(
+            engine.set_connections(id, 16),
+            Ok(8),
+            "{mode}: at most 8 by default"
+        );
+        let maximum = EngineLimits {
+            max_connections_per_host: 16,
+            ..EngineLimits::DEFAULT
+        };
+        engine
+            .set_engine_limits(maximum)
+            .expect("set_engine_limits");
+        assert_eq!(engine.capabilities().max_connections_per_host, 16, "{mode}");
+        assert_eq!(
+            engine.set_connections(id, 16),
+            Ok(16),
+            "{mode}: Maximum allows 16"
+        );
+        let conservative = EngineLimits {
+            max_connections_per_host: 2,
+            min_segment_bytes: 20 << 20,
+        };
+        engine
+            .set_engine_limits(conservative)
+            .expect("set_engine_limits");
+        let held = wait_for_snapshot(&events, id, |s| {
+            s.progress.connection_detail.is_some_and(|d| {
+                d.allowed <= 2 && d.limited_by == Some(ConnectionLimit::PerHostCap)
+            })
+        });
+        assert_eq!(
+            held.progress.connection_detail.unwrap().requested,
+            16,
+            "{mode}"
+        );
+        let too_many = EngineLimits {
+            max_connections_per_host: 17,
+            ..EngineLimits::DEFAULT
+        };
+        assert_eq!(
+            engine.set_engine_limits(too_many),
+            Err(ErrorCode::InvalidInput),
+            "{mode}"
+        );
+        engine.cancel(id).expect("cancel");
     }
 }
 
