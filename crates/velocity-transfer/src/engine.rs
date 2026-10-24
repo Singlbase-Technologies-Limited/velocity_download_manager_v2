@@ -506,7 +506,9 @@ impl DirectTransfer for InProcessEngine {
                 },
             ],
             live_connection_changes: true,
-            metalink: false,
+            // #54: the manager reads Metalink documents; this engine downloads their files, with
+            // their checksums and piece hashes (#46), and their mirrors in the spec's URLs.
+            metalink: true,
             max_connections_per_host: lock(&self.shared.state).limits.max_connections_per_host,
         }
     }

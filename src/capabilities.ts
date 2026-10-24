@@ -64,8 +64,13 @@ export function cleartextWarning(link: string, requireEncryption: boolean): stri
     : null;
 }
 
-/** Whether this build downloads `kind`, and, given `feature`, whether it does that for it. */
+/**
+ * Whether this build downloads `kind`, and, given `feature`, whether it does that for it. Metalink
+ * isn't a protocol: the engine reports it on its own (#54), and its files download over HTTP or
+ * FTP, whose features apply.
+ */
 export function availability(capabilities: Capabilities, kind: DownloadKind, feature?: ProtocolFeature): Availability {
+  if (kind === 'metalink') return capabilities.metalink ? AVAILABLE : { available: false, reason: MISSING.metalink };
   const protocol = capabilities.protocols.find((p) => p.kind === kind);
   if (!protocol) return { available: false, reason: MISSING[kind] };
   if (feature && !protocol[feature]) return { available: false, reason: lacking(kind, feature) };

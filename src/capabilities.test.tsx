@@ -33,6 +33,14 @@ describe('availability', () => {
     expect(availability(caps, 'torrent').reason).toBe('This version of Velocity can’t download torrents yet.');
   });
 
+  it('Metalink is available when the engine says so, not from the protocol list (#54)', () => {
+    expect(availability({ ...caps, metalink: true }, 'metalink')).toEqual({ available: true, reason: null });
+    expect(availability(caps, 'metalink')).toEqual({
+      available: false,
+      reason: 'This version of Velocity can’t open Metalink files yet.',
+    });
+  });
+
   it('a feature a protocol lacks is unavailable, saying which', () => {
     expect(availability(withFtp, 'ftp', 'segmented')).toEqual({
       available: false,

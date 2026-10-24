@@ -141,7 +141,9 @@ fn reports_its_capabilities_honestly() {
         );
         // Live connection changes came with #47.
         assert!(c.live_connection_changes, "{mode}");
-        assert!(!c.metalink, "{mode}");
+        // Metalink came with #54: the manager reads the document, and the engine downloads its
+        // files with their sources, checksums and piece hashes.
+        assert!(c.metalink, "{mode}");
         assert!(c.max_connections_per_host >= 1, "{mode}");
     }
 }
