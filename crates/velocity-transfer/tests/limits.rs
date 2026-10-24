@@ -7,7 +7,7 @@
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
 use velocity_curl::{CurlLoop, Libcurl, LoopOptions, RateLimit};
@@ -20,6 +20,18 @@ use velocity_transfer::scheduler::Sizes;
 
 const MIB: u64 = 1 << 20;
 const TOLERANCE: f64 = 0.10;
+
+/// These tests measure speed. Run at once they compete for the CPU with each other and with their
+/// test servers, and on a busy CI runner two of them measured 27-41% under their limits (#174), as
+/// the connection tests once did (#154). Each holds this for its whole run, so they run one at a
+/// time; a failed one doesn't block the rest.
+static SERIAL: Mutex<()> = Mutex::new(());
+
+fn one_at_a_time() -> MutexGuard<'static, ()> {
+    SERIAL
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
 
 /// The measurement window: 10 s, or `VELOCITY_LIMIT_SECONDS`.
 fn window() -> Duration {
@@ -140,6 +152,7 @@ fn serve_for(bps: u64, seconds: f64) -> TestServer {
 
 #[test]
 fn a_global_limit_holds_across_three_downloads() {
+    let _serial = one_at_a_time();
     // #49's acceptance fixture: 4 MiB/s shared by 3 downloads, within ±10%.
     let global_bps = 4 * MIB;
     let window = window();
@@ -173,6 +186,7 @@ fn a_global_limit_holds_across_three_downloads() {
 
 #[test]
 fn a_changed_limit_takes_effect_within_2_s() {
+    let _serial = one_at_a_time();
     let server = serve_for(4 * MIB, 6.0);
     let dir = Dir::new("change");
     let lp = curl_loop();
@@ -194,6 +208,7 @@ fn a_changed_limit_takes_effect_within_2_s() {
 
 #[test]
 fn a_download_limit_holds_under_a_higher_global_one_and_the_rest_goes_to_the_others() {
+    let _serial = one_at_a_time();
     // 4 MiB/s in all; one download is limited to 1 MiB/s, so the other gets the remaining 3.
     let window = Duration::from_secs(5);
     let server = serve_for(4 * MIB, window.as_secs_f64());
