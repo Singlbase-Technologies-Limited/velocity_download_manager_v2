@@ -86,6 +86,7 @@ fn unnamed(url: String, directory: PathBuf) -> TransferSpec {
         max_connections: 4,
         resume: None,
         require_encryption: false,
+        ssh_key: None,
     }
 }
 

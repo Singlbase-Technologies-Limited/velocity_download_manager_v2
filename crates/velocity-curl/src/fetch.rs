@@ -87,6 +87,28 @@ pub struct RequestOptions {
     /// FTP only: insist on TLS (`AUTH TLS`) for the login and the file, and fail if the server
     /// can't, never falling back to plain FTP (#51). `ftps://` is always encrypted.
     pub require_encryption: bool,
+    /// SFTP only: log in with this private key, as the user of `login` (#53).
+    pub ssh_key: Option<SshKeyFile>,
+}
+
+/// A private key file for an SFTP login, and its passphrase if it is encrypted (#53). `Debug`
+/// never shows the passphrase.
+#[derive(Clone, PartialEq, Eq)]
+pub struct SshKeyFile {
+    pub path: std::path::PathBuf,
+    pub passphrase: Option<String>,
+}
+
+impl std::fmt::Debug for SshKeyFile {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SshKeyFile")
+            .field("path", &self.path)
+            .field(
+                "passphrase",
+                &self.passphrase.as_ref().map(|_| "<redacted>"),
+            )
+            .finish()
+    }
 }
 
 impl std::fmt::Debug for RequestOptions {
@@ -98,6 +120,7 @@ impl std::fmt::Debug for RequestOptions {
             .field("headers", &names)
             .field("login", &self.login.as_ref().map(|_| "<redacted>"))
             .field("require_encryption", &self.require_encryption)
+            .field("ssh_key", &self.ssh_key)
             .finish()
     }
 }
@@ -194,8 +217,24 @@ pub enum FetchError {
     /// Velocity refused to follow a redirect (`redirect.rs`, #40): too many, to another
     /// protocol, or from `https` to `http`. The message names no URL.
     RedirectRefused { kind: CurlFailure, message: String },
+    /// SFTP failed (#53): what kind of failure it is, and what went wrong, for diagnostics.
+    Sftp { kind: CurlFailure, message: String },
+    /// The SFTP server's host key isn't one the user has trusted (#53): unknown, or changed.
+    HostKey(HostKeyProblem),
     /// The loop stopped before the fetch finished.
     LoopStopped,
+}
+
+/// An SFTP server's host key that wasn't trusted (#53). An unknown key waits for the user to
+/// confirm its fingerprint; a changed one is always refused.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HostKeyProblem {
+    pub host: String,
+    pub port: u16,
+    /// The key the server presented, as OpenSSH prints its SHA-256 fingerprint: `SHA256:…`.
+    pub fingerprint: String,
+    /// The fingerprint of the key pinned for this server before, when the key changed.
+    pub pinned: Option<String>,
 }
 
 /// What kind of failure libcurl reported, so that callers can decide about retries without

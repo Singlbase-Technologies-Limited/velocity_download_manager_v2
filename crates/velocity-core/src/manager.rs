@@ -541,6 +541,7 @@ mod tests {
             max_connections: 4,
             resume: None,
             require_encryption: false,
+            ssh_key: None,
         }
     }
 

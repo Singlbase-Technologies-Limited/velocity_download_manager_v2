@@ -553,6 +553,15 @@ impl DirectTransfer for SupervisedEngine {
         self.running(id)?.set_connections(id, connections)
     }
 
+    fn trust_host_key(
+        &mut self,
+        host: &str,
+        port: u16,
+        fingerprint: &str,
+    ) -> Result<(), ErrorCode> {
+        self.engine()?.0.trust_host_key(host, port, fingerprint)
+    }
+
     fn set_global_limits(&mut self, limits: Limits) -> Result<(), ErrorCode> {
         self.engine()?.0.set_global_limits(limits)?;
         self.shared.state().global_limits = limits;

@@ -244,6 +244,13 @@ impl FetchPipe {
     ) -> (FetchPipe, Fetch) {
         let (events_tx, events) = mpsc::channel();
         let flow = Arc::new(Flow::default());
+        if let Some((start, Some(end))) = request.range {
+            // The transport reads from the range's start; the body limit ends it.
+            flow.limit.store(
+                end.saturating_sub(start).saturating_add(1),
+                Ordering::Release,
+            );
+        }
         let fetch = Fetch::new(events, Arc::clone(&flow), cap, control);
         let pipe = FetchPipe {
             sink: Sink::new(events_tx, flow, cap, request.limits.clone()),
@@ -370,6 +377,20 @@ mod tests {
         assert_eq!(pipe.offer(b"abc"), Offered::Took(3));
         assert_eq!(pipe.offer(b"defg"), Offered::Took(2));
         assert_eq!(pipe.offer(b"h"), Offered::Took(0));
+    }
+
+    #[test]
+    fn a_range_with_an_end_is_the_body_limit() {
+        let calls = Arc::new(Calls::default());
+        let request = FetchRequest::range("sftp://h/f".to_owned(), 10, Some(14));
+        let (mut pipe, _fetch) = FetchPipe::open(
+            &request,
+            1024,
+            Box::new(|_: &ResponseHead| Gate::Accept),
+            calls,
+        );
+        pipe.head(head(206));
+        assert_eq!(pipe.offer(b"abcdefgh"), Offered::Took(5));
     }
 
     #[test]

@@ -5,7 +5,7 @@
 import { z } from 'zod';
 
 /** Must equal `velocity_core::COMMAND_API_VERSION`; the app refuses to start on a mismatch. */
-export const COMMAND_API_VERSION = 5;
+export const COMMAND_API_VERSION = 6;
 
 const bytes = z.number().int().nonnegative();
 
@@ -32,11 +32,21 @@ export type DownloadKind = z.infer<typeof DownloadKindSchema>;
 
 export const FailureClassSchema = z.enum(['transient', 'throttled', 'permanent']);
 
+/** An SFTP server host key the user hasn’t trusted (#53): unknown until they confirm its fingerprint, or changed, which is always refused. */
+export const HostKeyCheckSchema = z.strictObject({
+  host: z.string(),
+  port: z.number().int().min(1).max(65535),
+  fingerprint: z.string(),
+  pinned: z.string().nullable(),
+});
+export type HostKeyCheck = z.infer<typeof HostKeyCheckSchema>;
+
 export const TransferErrorSchema = z.strictObject({
   class: FailureClassSchema,
   httpStatus: z.number().int().min(100).max(599).nullable(),
   message: z.string(),
   retryable: z.boolean(),
+  hostKey: HostKeyCheckSchema.nullable(),
 });
 export type TransferError = z.infer<typeof TransferErrorSchema>;
 

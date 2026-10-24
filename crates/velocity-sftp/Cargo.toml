@@ -12,7 +12,7 @@ rust-version.workspace = true
 velocity-curl = { path = "../velocity-curl" }
 russh.workspace = true
 russh-sftp.workspace = true
-tokio = { workspace = true, features = ["sync"] }
+tokio = { workspace = true, features = ["sync", "macros"] }
 
 [dev-dependencies]
 velocity-test-http = { path = "../velocity-test-http" }

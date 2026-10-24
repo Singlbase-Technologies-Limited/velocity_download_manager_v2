@@ -766,6 +766,7 @@ mod tests {
                 max_connections: 4,
                 resume: None,
                 require_encryption: false,
+                ssh_key: None,
             };
             let new = NewDownload::from_transfer("d-0001", kind, &spec, 1_792_600_000_000);
             assert!(new.has_sensitive_options, "{kind:?}");

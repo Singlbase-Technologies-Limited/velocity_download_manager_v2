@@ -36,7 +36,9 @@ use std::sync::mpsc::Receiver;
 /// engines now send headers and logins.
 /// Version 9 (#51) added [`TransferSpec::require_encryption`] and
 /// [`crate::domain::ProtocolCapabilities::encryption`]; engines now download `ftp` and `ftps`.
-pub const TRANSFER_CONTRACT_VERSION: u32 = 9;
+/// Version 10 (#53) added [`TransferSpec::ssh_key`], [`crate::domain::TransferError::host_key`] and
+/// [`DirectTransfer::trust_host_key`]; engines now download `sftp`.
+pub const TRANSFER_CONTRACT_VERSION: u32 = 10;
 
 /// An engine's id for one transfer. Assigned by the engine, never reused, and never shown as the
 /// app's download id.
@@ -71,6 +73,28 @@ impl fmt::Debug for Header {
 pub struct Credentials {
     pub user_name: String,
     pub password: String,
+}
+
+/// A private key file for an SFTP login, and its passphrase if the key is encrypted (#53). The
+/// passphrase crosses the contract like a password; `Debug` never prints it.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SshKey {
+    /// An absolute path. The engine reads the key when it connects.
+    pub path: PathBuf,
+    pub passphrase: Option<String>,
+}
+
+impl fmt::Debug for SshKey {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("SshKey")
+            .field("path", &self.path)
+            .field(
+                "passphrase",
+                &self.passphrase.as_ref().map(|_| "<redacted>"),
+            )
+            .finish()
+    }
 }
 
 impl fmt::Debug for Credentials {
@@ -272,6 +296,9 @@ pub struct TransferSpec {
     /// the server can't, never falling back to plain FTP (PO decision on #51). `https://` and
     /// `ftps://` are always encrypted; an `http://` link that requires it is refused.
     pub require_encryption: bool,
+    /// For an `sftp://` link: log in with this private key, as the user in `credentials` (#53).
+    /// Its passphrase travels like a password: in memory and through the engine's pipe only.
+    pub ssh_key: Option<SshKey>,
     /// Custom request headers, checked by [`crate::request::check_headers`]. Dropped, with the
     /// login and the referrer, once a redirect leaves the first URL's origin.
     pub headers: Vec<Header>,
@@ -317,6 +344,27 @@ impl TransferSpec {
         }
         if let Some(credentials) = &self.credentials {
             check_credentials(credentials)?;
+        }
+        if let Some(key) = &self.ssh_key {
+            // A key logs in to SFTP as a user, from a file the engine can find wherever it runs.
+            let sftp = |url: &String| {
+                url.split_once("://")
+                    .is_some_and(|(scheme, _)| scheme.eq_ignore_ascii_case("sftp"))
+            };
+            let passphrase_ok = key.passphrase.as_deref().is_none_or(|p| {
+                check_credentials(&Credentials {
+                    user_name: "key".to_owned(),
+                    password: p.to_owned(),
+                })
+                .is_ok()
+            });
+            if !self.urls.iter().all(sftp)
+                || self.credentials.is_none()
+                || !key.path.is_absolute()
+                || !passphrase_ok
+            {
+                return Err(ErrorCode::InvalidInput);
+            }
         }
         Ok(())
     }
@@ -443,6 +491,13 @@ pub trait DirectTransfer: Send {
     /// Requests a connection count and returns the count the engine applied, which is at least 1
     /// and at most `capabilities().max_connections_per_host`.
     fn set_connections(&mut self, id: TransferId, connections: u32) -> Result<u32, ErrorCode>;
+    /// Trusts the SFTP host key the user confirmed (#53): the key the engine last saw from `host`
+    /// and `port`, whose SHA-256 fingerprint is `fingerprint`, as a transfer's
+    /// [`crate::domain::TransferError::host_key`] showed it. `NotFound` when the engine saw no
+    /// such key there; `InvalidState` when the host has another key pinned, since a changed key
+    /// is never trusted. The caller then resumes or adds again the transfer that waited for it.
+    fn trust_host_key(&mut self, host: &str, port: u16, fingerprint: &str)
+        -> Result<(), ErrorCode>;
     /// The current state of every transfer the engine knows.
     fn snapshot(&self) -> Result<Vec<TransferSnapshot>, ErrorCode>;
     /// A new receiver for this engine's events. Each receiver gets every event from the moment
@@ -488,6 +543,11 @@ pub enum TransferCommand {
     },
     SetEngineLimits {
         limits: EngineLimits,
+    },
+    TrustHostKey {
+        host: String,
+        port: u16,
+        fingerprint: String,
     },
     Snapshot {},
 }
@@ -547,6 +607,14 @@ pub fn dispatch(
             engine.set_engine_limits(limits)?;
             TransferReply::Done {}
         }
+        TransferCommand::TrustHostKey {
+            host,
+            port,
+            fingerprint,
+        } => {
+            engine.trust_host_key(&host, port, &fingerprint)?;
+            TransferReply::Done {}
+        }
         TransferCommand::Snapshot {} => TransferReply::Snapshot {
             transfers: engine.snapshot()?,
         },
@@ -592,6 +660,7 @@ mod tests {
                 checkpoint: checkpoint(),
             }),
             require_encryption: false,
+            ssh_key: None,
         }
     }
 
@@ -987,6 +1056,55 @@ mod tests {
         );
         // A resume continues a file that has its name already.
         assert_eq!(with(|s| s.file_name = None), invalid);
+    }
+
+    #[test]
+    fn an_ssh_key_needs_an_sftp_link_a_user_and_an_absolute_path() {
+        let key_path = std::env::temp_dir().join("id_ed25519");
+        let with_key = |url: &str, path: PathBuf, passphrase: Option<&str>, user: bool| {
+            TransferSpec {
+                urls: vec![url.to_owned()],
+                ssh_key: Some(SshKey {
+                    path,
+                    passphrase: passphrase.map(str::to_owned),
+                }),
+                credentials: user.then(|| Credentials {
+                    user_name: "alice".to_owned(),
+                    password: String::new(),
+                }),
+                ..spec()
+            }
+            .check_request()
+        };
+        let sftp = "sftp://files.example.org/a.zip";
+        assert_eq!(with_key(sftp, key_path.clone(), None, true), Ok(()));
+        assert_eq!(
+            with_key(sftp, key_path.clone(), Some("phrase"), true),
+            Ok(())
+        );
+        let invalid = Err(ErrorCode::InvalidInput);
+        // A key logs in to SFTP only, as a user, from an absolute path.
+        assert_eq!(
+            with_key("https://example.com/a", key_path.clone(), None, true),
+            invalid
+        );
+        assert_eq!(with_key(sftp, key_path.clone(), None, false), invalid);
+        assert_eq!(
+            with_key(sftp, PathBuf::from("id_ed25519"), None, true),
+            invalid
+        );
+        assert_eq!(with_key(sftp, key_path, Some("a\nb"), true), invalid);
+    }
+
+    #[test]
+    fn debug_output_never_shows_a_key_passphrase() {
+        let key = SshKey {
+            path: PathBuf::from("/home/alice/.ssh/id_ed25519"),
+            passphrase: Some("SECRET-PHRASE".to_owned()),
+        };
+        let shown = format!("{key:?}");
+        assert!(!shown.contains("SECRET-PHRASE"), "{shown}");
+        assert!(shown.contains("id_ed25519"));
     }
 
     #[test]

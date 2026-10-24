@@ -61,6 +61,12 @@ impl Paths {
         self.data_dir.join("checkpoints")
     }
 
+    /// The SFTP host keys the user trusted (#53): V2's own known_hosts file, never
+    /// `~/.ssh/known_hosts`.
+    pub fn known_hosts(&self) -> PathBuf {
+        self.data_dir.join("known_hosts")
+    }
+
     /// Local socket path (Unix) or named pipe name (Windows) for the browser bridge (#65).
     pub fn ipc_endpoint(&self) -> String {
         if cfg!(windows) {

@@ -100,6 +100,7 @@ fn spec(url: String, destination: &Path, resume: Option<Resume>) -> TransferSpec
         max_connections: CONNECTIONS,
         resume,
         require_encryption: false,
+        ssh_key: None,
     }
 }
 

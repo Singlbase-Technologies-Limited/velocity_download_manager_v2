@@ -389,6 +389,7 @@ fn options() -> Arc<RequestOptions> {
         ],
         login: Some(("alice".to_owned(), "hunter2".to_owned())),
         require_encryption: false,
+        ssh_key: None,
     })
 }
 

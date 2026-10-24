@@ -24,8 +24,8 @@ pub use capabilities::{
     REQUIRED_FEATURES, REQUIRED_PROTOCOLS,
 };
 pub use fetch::{
-    CurlFailure, CurlLoop, FetchError, FetchEvent, FetchRequest, Gate, LoopError, LoopOptions,
-    RequestOptions, ResponseHead,
+    CurlFailure, CurlLoop, FetchError, FetchEvent, FetchRequest, Gate, HostKeyProblem, LoopError,
+    LoopOptions, RequestOptions, ResponseHead, SshKeyFile,
 };
 pub use head::file_head;
 pub use pipe::{Fetch, FetchControl, FetchLimit, FetchPipe, GateFn, Offered, Transport};
