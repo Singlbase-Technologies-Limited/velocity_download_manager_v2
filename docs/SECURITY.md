@@ -39,7 +39,9 @@ The certificate tests run real libcurl against the local TLS fixture ([TESTING.m
 
 ### The Windows certificate store
 
-Users on Windows reach servers through the Windows store, not a CA file. A test adds the test CA to the machine's Root store, downloads from a valid certificate, is refused a revoked one ("… has been revoked"), and removes the CA. It needs an administrator, so it is ignored locally and run by PR checks' Windows job ([CI.md](CI.md)). Locally, as an administrator: `cargo test -p velocity-curl --test windows_store -- --ignored`. If it can't remove the CA, it says so ("REMOVE BY HAND").
+Users on Windows reach servers through the Windows store, not a CA file. A test adds the test CA to the machine's Root store, downloads from a valid certificate, is refused a revoked, expired, wrong-host, untrusted-issuer and client-auth-only one, and removes the CA.
+
+- **A different error code on this path:** through the store, Schannel reports a refused certificate as `CURLE_SSL_CONNECT_ERROR` (35), with the reason only in its detail, for example `CRYPT_E_REVOKED (0x80092010)`. With a CA file it reports `CURLE_PEER_FAILED_VERIFICATION` (60). The engine treats both as a refused certificate: permanent, never retried. The store test found the first one classified as a transient handshake failure on CI, and the fix came in the same PR, with a regression test. It needs an administrator, so it is ignored locally and run by PR checks' Windows job ([CI.md](CI.md)). Locally, as an administrator: `cargo test -p velocity-curl --test windows_store -- --ignored`. If it can't remove the CA, it says so ("REMOVE BY HAND").
 
 ### How the tests trust a test CA
 
