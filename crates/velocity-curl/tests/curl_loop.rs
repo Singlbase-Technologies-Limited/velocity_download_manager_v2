@@ -548,18 +548,20 @@ fn refuses_an_http_link_that_requires_encryption() {
         require_encryption: true,
         ..RequestOptions::default()
     });
-    let o = collect(
-        &l.fetch(
-            FetchRequest::get(s.url("a.bin")).with_options(encrypted),
-            accept_all,
-        ),
-        None,
-    );
-    assert!(
-        matches!(o.done, Err(FetchError::Curl { .. })),
-        "{:?}",
-        o.done
-    );
+    for url in [s.url("a.bin"), s.url("a.bin").replacen("http", "HTTP", 1)] {
+        let o = collect(
+            &l.fetch(
+                FetchRequest::get(url.clone()).with_options(Arc::clone(&encrypted)),
+                accept_all,
+            ),
+            None,
+        );
+        assert!(
+            matches!(o.done, Err(FetchError::Curl { .. })),
+            "{url}: {:?}",
+            o.done
+        );
+    }
     assert_eq!(s.counters().requests.len(), 0, "nothing was sent");
 }
 

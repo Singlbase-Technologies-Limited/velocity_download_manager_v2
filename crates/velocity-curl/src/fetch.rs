@@ -790,9 +790,13 @@ fn set_options(
         })?,
         None => {}
     }
+    let plain_http = request
+        .url
+        .split_once("://")
+        .is_some_and(|(scheme, _)| scheme.eq_ignore_ascii_case("http"));
     if ftp {
         set_ftp_options(easy, request)?;
-    } else if request.options.require_encryption && request.url.starts_with("http:") {
+    } else if request.options.require_encryption && plain_http {
         // A plain http:// link can't be encrypted: refused rather than sent in clear.
         return Err(refused());
     }
