@@ -216,6 +216,31 @@ pub enum CurlFailure {
     Other,
 }
 
+/// Windows' certificate-trust errors (HRESULTs from winerror.h) that Schannel names in a connect
+/// error's detail: the `CERT_E_*` range, revocation, and the `SEC_E_*` certificate errors.
+const REFUSED_CERTIFICATE_CODES: &[&str] = &[
+    "0x800b01",   // CERT_E_*: expired, untrusted root, wrong name, wrong usage, revoked…
+    "0x80092010", // CRYPT_E_REVOKED
+    "0x80092012", // CRYPT_E_NO_REVOCATION_CHECK
+    "0x80092013", // CRYPT_E_REVOCATION_OFFLINE
+    "0x80090322", // SEC_E_WRONG_PRINCIPAL
+    "0x80090325", // SEC_E_UNTRUSTED_ROOT
+    "0x80090327", // SEC_E_CERT_UNKNOWN
+    "0x80090328", // SEC_E_CERT_EXPIRED
+    "0x80090349", // SEC_E_CERT_WRONG_USAGE
+];
+
+/// Whether a connect error's detail says the server's certificate was refused.
+fn refuses_certificate(detail: Option<&str>) -> bool {
+    let Some(detail) = detail else {
+        return false;
+    };
+    let detail = detail.to_ascii_lowercase();
+    REFUSED_CERTIFICATE_CODES
+        .iter()
+        .any(|code| detail.contains(code))
+}
+
 impl CurlFailure {
     fn of(e: &curl::Error) -> Self {
         if e.is_couldnt_resolve_host() || e.is_couldnt_resolve_proxy() {
@@ -232,6 +257,10 @@ impl CurlFailure {
             || e.is_http2_stream_error()
         {
             CurlFailure::Interrupted
+        } else if e.is_ssl_connect_error() && refuses_certificate(e.extra_description()) {
+            // Verifying against the Windows store, Schannel reports a refused certificate as a
+            // connect error, with the reason only in the detail (#69).
+            CurlFailure::Certificate
         } else if e.is_ssl_connect_error() {
             CurlFailure::TlsHandshake
         } else if e.is_peer_failed_verification()
@@ -1035,6 +1064,45 @@ mod tests {
 
     fn kind(code: curl_sys::CURLcode) -> CurlFailure {
         CurlFailure::of(&curl::Error::new(code))
+    }
+
+    /// Regression (#69, found by the Windows store test on CI): verifying against the Windows
+    /// store, Schannel reports a certificate it refuses as CURLE_SSL_CONNECT_ERROR, with the
+    /// reason only in the detail. It was taken for a transient handshake failure and retried.
+    #[test]
+    fn a_connect_error_from_a_refused_certificate_is_a_certificate_failure() {
+        let with = |code, detail: &str| {
+            let mut e = curl::Error::new(code);
+            e.set_extra(detail.to_owned());
+            CurlFailure::of(&e)
+        };
+        for detail in [
+            "schannel: next InitializeSecurityContext failed: CRYPT_E_REVOKED (0x80092010) - The certificate is revoked.",
+            "schannel: next InitializeSecurityContext failed: SEC_E_UNTRUSTED_ROOT (0x80090325) - The certificate chain was issued by an authority that is not trusted.",
+            "schannel: next InitializeSecurityContext failed: SEC_E_CERT_EXPIRED (0x80090328) - The received certificate has expired.",
+            "schannel: next InitializeSecurityContext failed: SEC_E_WRONG_PRINCIPAL (0x80090322) - The target principal name is incorrect.",
+            "schannel: next InitializeSecurityContext failed: Unknown error (0x800B0110)",
+            "schannel: next InitializeSecurityContext failed: CRYPT_E_NO_REVOCATION_CHECK (0x80092012) - The revocation function was unable to check revocation for the certificate.",
+            "schannel: next InitializeSecurityContext failed: CRYPT_E_REVOCATION_OFFLINE (0x80092013) - The revocation function was unable to check revocation because the revocation server was offline.",
+        ] {
+            assert_eq!(
+                with(curl_sys::CURLE_SSL_CONNECT_ERROR, detail),
+                CurlFailure::Certificate,
+                "{detail}"
+            );
+        }
+        // A handshake that broke for another reason stays a transient handshake failure.
+        for detail in [
+            "schannel: failed to receive handshake, SSL/TLS connection failed",
+            "schannel: next InitializeSecurityContext failed: SEC_E_INTERNAL_ERROR (0x80090304)",
+            "",
+        ] {
+            assert_eq!(
+                with(curl_sys::CURLE_SSL_CONNECT_ERROR, detail),
+                CurlFailure::TlsHandshake,
+                "{detail}"
+            );
+        }
     }
 
     #[test]

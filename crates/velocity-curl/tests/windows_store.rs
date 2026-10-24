@@ -73,7 +73,7 @@ fn fetch(url: &str) -> (Vec<u8>, Result<(), FetchError>) {
 
 #[test]
 #[ignore = "changes the machine's trust store: needs an administrator; CI's Windows job runs it"]
-fn a_ca_in_the_windows_store_is_trusted_and_revocation_is_checked() {
+fn a_ca_in_the_windows_store_is_trusted_and_every_refusal_is_a_certificate_failure() {
     let data = seeded_bytes(100_000, 75);
     let server = TestServer::start(
         vec![("f.bin".into(), data.clone())],
@@ -86,15 +86,31 @@ fn a_ca_in_the_windows_store_is_trusted_and_revocation_is_checked() {
     assert_eq!(done, Ok(()), "a valid certificate from a CA in the store");
     assert!(got == data);
 
-    let revoked = TlsFront::start(server.addr(), Leaf::Revoked, Alpn::Http1);
-    let _trusted_too = TrustedInStore::add(&revoked);
-    let (got, done) = fetch(&revoked.url("f.bin"));
-    match done {
-        Err(FetchError::Curl { kind, message, .. }) => {
-            assert_eq!(kind, CurlFailure::Certificate, "{message}");
-            assert!(message.contains("has been revoked"), "{message}");
+    // Through the store, Schannel reports a refused certificate as a connect error (code 35) with
+    // the reason in its detail; it must still be a certificate failure, never a transient one that
+    // is retried (the regression this test found on CI).
+    for (leaf, reason) in [
+        (Leaf::Revoked, "0x80092010"),
+        (Leaf::Expired, "expired"),
+        (Leaf::WrongHost, ""),
+        (Leaf::UntrustedIssuer, ""),
+        (Leaf::ClientAuthOnly, ""),
+    ] {
+        let front = TlsFront::start(server.addr(), leaf, Alpn::Http1);
+        let _trusted = TrustedInStore::add(&front);
+        let (got, done) = fetch(&front.url("f.bin"));
+        // Schannel's words on this path, for the per-platform record (docs/SECURITY.md).
+        eprintln!("{leaf:?} through the store: {done:?}");
+        match done {
+            Err(FetchError::Curl { kind, message, .. }) => {
+                assert_eq!(kind, CurlFailure::Certificate, "{leaf:?}: {message}");
+                assert!(
+                    message.to_ascii_lowercase().contains(reason),
+                    "{leaf:?}: {message}"
+                );
+            }
+            other => panic!("{leaf:?}: expected a refused certificate, got {other:?}"),
         }
-        other => panic!("a revoked certificate must be refused, got {other:?}"),
+        assert!(got.is_empty(), "{leaf:?}: nothing may be delivered");
     }
-    assert!(got.is_empty());
 }

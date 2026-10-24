@@ -180,7 +180,7 @@ jobs:
         if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         env:
           CARGO_INCREMENTAL: 0
-        run: cargo test -p velocity-curl --test windows_store -- --ignored
+        run: cargo test -p velocity-curl --test windows_store -- --ignored --nocapture
       - name: Write the job report
         if: ${{ !cancelled() && steps.checkout.outcome == 'success' }}
         env:
