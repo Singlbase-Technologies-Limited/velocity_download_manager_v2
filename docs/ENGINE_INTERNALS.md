@@ -25,6 +25,31 @@ The probe is the download's first request and also its first segment, so its byt
 | No answer: the connection failed | Retried after a wait | — |
 | A malformed `Content-Range`, a `Content-Length` that disagrees with it, a start other than 0, an end past the request or the total | Fails before writing, not retryable | — |
 
+## Redirects (#40)
+
+Velocity follows redirects itself; libcurl's `CURLOPT_FOLLOWLOCATION` is off. libcurl would follow one with every custom header, and it drops only `Authorization` and `Cookie` when the host changes. When a response is a `3xx` with a `Location`, the libcurl loop drops its body, reads the next URL as libcurl resolved it (`CURLINFO_REDIRECT_URL`), and checks the hop ([`redirect.rs`](../crates/velocity-curl/src/redirect.rs)):
+
+- **Protocols:** only `http` and `https`. A redirect to `ftp`, `sftp`, `scp`, `file` or anything else is refused before any connection. libcurl's `CURLOPT_REDIR_PROTOCOLS_STR` stays set to `http,https` as a second barrier.
+- **No downgrade:** a redirect from `https` to `http` is refused. Allowing it after the user confirms is #67.
+- **At most 10** redirects per request; the 11th is refused.
+- **Origins:** the next request carries the login and the custom headers only when it goes to the first URL's origin: its scheme, host and port. The origin is read with libcurl's own URL parser ([`url.rs`](../crates/velocity-curl/src/url.rs), `curl_url`), so Velocity and libcurl agree on the host. For example, `http://evil.example\@good.example/` goes to `good.example` for both. The user agent and the referrer go with every request.
+
+The same handle is reset and set up again for each hop, so nothing from the last hop carries over. A refusal ends the request as `FetchError::RedirectRefused`, and the download fails with a message that names the protocol, never the URL. Each segment request follows the redirects from the first URL again, so a link that redirects to a short-lived URL works for every segment.
+
+## File names (#40)
+
+A spec without a `fileName` downloads into its folder, and the server's first answer names the file:
+
+1. The `Content-Disposition` header (RFC 6266): `filename*` (RFC 8187, UTF-8 or ISO-8859-1) wins over `filename`. Any path in it is dropped, so `../../x.sh` gives `x.sh`.
+2. Else the final URL's last path segment, after redirects, percent-decoded.
+3. Else `download`.
+
+The name is then sanitised ([`naming.rs`](../crates/velocity-core/src/naming.rs), ported from V1): separators, control characters and `< > : " | ? *` become `_`, leading dots and trailing dots and spaces go, Windows device names such as `CON.txt` get a `_` in front, a name ending in `.vdmpart` gets one at the end, and the name is cut to 240 bytes, keeping its extension. When the name is taken by a file, a link or a part file, the first free `name (n).ext` is used, n from 1 to 9999 (PO decision on #40), so no file is ever replaced.
+
+- **No extra request:** the part file is created when the probe's first byte arrives, or when the probe ends without a body, as for an empty file. Before that nothing is on disk; a pause then keeps nothing, and the next attempt asks again.
+- **Reported:** the engine reports the name in the snapshot's `fileName`. From then on, retries, pauses and cancels use that file.
+- **Given names:** a spec that gives `fileName` is saved under it, and it fails with `FileExists` when the name is taken; #31 adds the conflict settings. `naming::file_name_for_link` decides whether a link names its file on its own: `report.pdf` does, `download.php?id=3` and `/files/12345` don't, so those are left to the server. Nothing calls it yet; the add flow that will is R8's.
+
 ## Later segments: the range scheduler (#42)
 
 After a probe that gave a total, the rest of the file is fetched with leases from the range scheduler ([`scheduler.rs`](../crates/velocity-transfer/src/scheduler.rs), report section 5.2). The downloader's thread owns it and makes every change; no lock is held across I/O.
@@ -523,6 +548,8 @@ Run it with `cargo run --release -p velocity-transfer --example high_offset_writ
 
 ## Not yet
 
+- **https→http after confirmation:** such a redirect is refused; #67 adds the confirmation. It has no end-to-end test yet, as the fixtures have no TLS (#69); `redirect.rs`'s unit tests cover the rule.
+- **Credentials beyond memory:** the keychain, zeroisation and the secret-leak scan are #70 and #71.
 - **HTTP/2 over TLS:** the HTTP/2 fixtures run over cleartext, with prior knowledge. HTTP/2 negotiated through TLS (ALPN) is #69, as Windows' Schannel refuses a test CA it can't check for revocation (PO decision on #47).
 - **Connection values:** the per-host cap and the smallest piece come from the performance profile (#57). The budget and the ramp's values are engine defaults until the settings model passes the user's (#30). Tuning them by measurement is #77.
 - **Learning per host:** what a host allowed isn't remembered between downloads (a non-goal of #47).

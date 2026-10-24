@@ -41,7 +41,7 @@ A value this build doesn't know, read back from the database, is kept as `Stored
 - **By construction:** `StoredOptions` has no field for any of them.
 - **URL logins:** `without_login` removes a login from a URL (`https://user:pass@host/` becomes `https://host/`), and `insert_download` applies it again.
 - **What is kept:** `has_sensitive_options` records that a download had credentials, headers or a URL login, so a retry can ask for them again.
-- **Tested:** a test adds a download with a password in its URL, a credential handle and a cookie header. It then searches every file SQLite wrote, with the WAL and after closing, and finds none of them.
+- **Tested:** a test adds a download with a password in its URL, a login (`credentials`, #40) and a cookie header. It then searches every file SQLite wrote, with the WAL and after closing, and finds none of them.
 
 ## Upgrades
 
