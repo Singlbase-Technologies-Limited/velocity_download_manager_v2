@@ -195,12 +195,6 @@ impl SshServer {
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(log);
-        #[cfg(unix)]
-        {
-            use std::os::unix::process::CommandExt;
-            // A group of its own, so `stop` reaches the sessions sshd forks too.
-            command.process_group(0);
-        }
         let mut child = command
             .spawn()
             .map_err(|e| format!("sshd didn't start: {e}"))?;
@@ -326,21 +320,54 @@ fn free_addr() -> io::Result<SocketAddr> {
     TcpListener::bind("127.0.0.1:0")?.local_addr()
 }
 
-/// Kills `child` and every process it started: `taskkill /T` on Windows, its process group on Unix.
+/// Kills `child` and every process it started: `taskkill /T` on Windows; on Unix, every
+/// descendant `ps` lists, since sshd moves each session into a session (and process group) of its
+/// own, which a kill of sshd's group would miss.
 fn kill_tree(child: &mut Child) {
-    let pid = child.id().to_string();
+    let pid = child.id();
     if cfg!(windows) {
         let _ = Command::new("taskkill")
-            .args(["/T", "/F", "/PID", &pid])
+            .args(["/T", "/F", "/PID", &pid.to_string()])
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .status();
     } else {
+        let pids: Vec<String> = descendants(pid)
+            .into_iter()
+            .chain([pid])
+            .map(|p| p.to_string())
+            .collect();
         let _ = Command::new("kill")
-            .args(["-9", &format!("-{pid}")])
+            .arg("-9")
+            .args(&pids)
             .stderr(Stdio::null())
             .status();
     }
     let _ = child.kill();
     let _ = child.wait();
+}
+
+/// Every process below `root`, from `ps -e -o pid=,ppid=`.
+fn descendants(root: u32) -> Vec<u32> {
+    let Ok(out) = Command::new("ps").args(["-e", "-o", "pid=,ppid="]).output() else {
+        return Vec::new();
+    };
+    let pairs: Vec<(u32, u32)> = String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .filter_map(|line| {
+            let mut fields = line.split_whitespace();
+            Some((fields.next()?.parse().ok()?, fields.next()?.parse().ok()?))
+        })
+        .collect();
+    let mut found = Vec::new();
+    let mut parents = vec![root];
+    while let Some(parent) = parents.pop() {
+        for &(pid, ppid) in &pairs {
+            if ppid == parent && !found.contains(&pid) {
+                found.push(pid);
+                parents.push(pid);
+            }
+        }
+    }
+    found
 }
