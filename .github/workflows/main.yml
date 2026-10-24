@@ -201,10 +201,12 @@ jobs:
         name: SFTP test server (OpenSSH Server feature)
         shell: pwsh
         run: |
-          if (-not (Test-Path C:WindowsSystem32OpenSSHsshd.exe)) {
+          $sshd = Join-Path $env:SystemRoot 'System32/OpenSSH/sshd.exe'
+          if (-not (Test-Path $sshd)) {
             Add-WindowsCapability -Online -Name OpenSSH.Server~~~~0.0.1.0 | Out-Null
           }
-          & C:WindowsSystem32OpenSSHsshd.exe -V 2>&1 | Select-Object -First 1
+          if (-not (Test-Path $sshd)) { throw "the OpenSSH Server feature didn't install $sshd" }
+          & $sshd -V 2>&1 | Select-Object -First 1
           "VELOCITY_REQUIRE_SSHD=1" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
       - id: checks
         name: All L1 checks
