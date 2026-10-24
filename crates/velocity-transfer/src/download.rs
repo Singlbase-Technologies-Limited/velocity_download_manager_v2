@@ -79,6 +79,8 @@ type CheckpointFn = Box<dyn Fn(Checkpoint) + Send + Sync>;
 type StatusFn = Box<dyn Fn(DownloadStatus) + Send + Sync>;
 /// Called with the name a download into a folder chose, once its part file has it (#40).
 type NamedFn = Box<dyn Fn(&str) + Send + Sync>;
+/// Called with the file's media type, once the server answered with the file (#54).
+type TypedFn = Box<dyn Fn(&str) + Send + Sync>;
 
 /// Lets a caller follow, pause and stop a running download (the engine, #37, #43).
 #[derive(Default)]
@@ -115,6 +117,7 @@ pub struct Control {
     /// and login, the last two only for the first URL's origin.
     request: Arc<RequestOptions>,
     named: Option<NamedFn>,
+    typed: Option<TypedFn>,
 }
 
 /// Gives a request what every request of its download carries: its speed limits (#49) and its
@@ -196,6 +199,13 @@ impl Control {
     /// its part file has it (#40).
     pub fn with_naming(mut self, named: impl Fn(&str) + Send + Sync + 'static) -> Self {
         self.named = Some(Box::new(named));
+        self
+    }
+
+    /// `typed` is called with the file's media type ([`media_type`]), once the server answered
+    /// with the file, when it gave a valid one (#54).
+    pub fn with_content_type(mut self, typed: impl Fn(&str) + Send + Sync + 'static) -> Self {
+        self.typed = Some(Box::new(typed));
         self
     }
 
@@ -1265,6 +1275,14 @@ fn probe(
         let source = name_source.lock().expect("the name source lock").clone();
         part.name_from(&source.unwrap_or_default(), control)?;
     }
+    let content_type = name_source
+        .lock()
+        .expect("the name source lock")
+        .as_ref()
+        .and_then(|s| s.content_type.clone());
+    if let (Some(content_type), Some(typed)) = (content_type, &control.typed) {
+        typed(&content_type);
+    }
     let file = answered.map(|a| a.file).unwrap_or_default();
     Ok(Ok(Probed::Outcome(outcome, cursor, file)))
 }
@@ -2211,11 +2229,25 @@ struct Pending {
 }
 
 /// What names a file in a folder (#40): the answer's `Content-Disposition`, and its URL after any
-/// redirects.
+/// redirects. Also its media type, which tells a Metalink file (#54).
 #[derive(Clone, Debug, Default)]
 struct NameSource {
     disposition: Option<String>,
     url: String,
+    content_type: Option<String>,
+}
+
+/// A `Content-Type` value's media type, `type/subtype` in lowercase without its parameters, or
+/// `None` when it isn't one (RFC 9110 section 8.3.1): each part a token, at most 127 bytes.
+pub fn media_type(value: &str) -> Option<String> {
+    let essence = value.split(';').next().unwrap_or_default().trim();
+    let token = |s: &str| {
+        !s.is_empty()
+            && s.chars()
+                .all(|c| c.is_ascii_alphanumeric() || "!#$%&'*+-.^_`|~".contains(c))
+    };
+    let (kind, subtype) = essence.split_once('/')?;
+    (essence.len() <= 127 && token(kind) && token(subtype)).then(|| essence.to_ascii_lowercase())
 }
 
 impl NameSource {
@@ -2223,6 +2255,7 @@ impl NameSource {
         NameSource {
             disposition: head.header("content-disposition").map(str::to_owned),
             url: head.url.clone(),
+            content_type: head.header("content-type").and_then(media_type),
         }
     }
 

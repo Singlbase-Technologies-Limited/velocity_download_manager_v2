@@ -21,12 +21,14 @@ use crate::database::QueueEntry;
 use crate::domain::{
     DownloadKind, DownloadRecord, DownloadStatus, ErrorCode, FailureClass, Progress, TransferError,
 };
+use crate::metalink::{self, Metalink};
 use crate::performance::PerformanceSettings;
 use crate::queue::QueueSettings;
-use crate::transfer::{DirectTransfer, TransferEvent, TransferId, TransferSpec};
+use crate::transfer::{DirectTransfer, Limits, TransferEvent, TransferId, TransferSpec};
 use jiff::civil::DateTime;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap};
+use std::path::PathBuf;
 use std::sync::mpsc::Receiver;
 
 struct Download {
@@ -41,6 +43,8 @@ struct Download {
     paused: bool,
     /// It runs only while the schedule's window is open.
     scheduled: bool,
+    /// The file's media type, as the engine reported it (#54).
+    content_type: Option<String>,
 }
 
 /// How a new download starts (V1's `startPaused` and `scheduled`).
@@ -50,6 +54,16 @@ pub struct AddOptions {
     pub start_paused: bool,
     /// It runs only while the schedule's window is open.
     pub scheduled: bool,
+}
+
+/// Which of a Metalink document's files to download, and where (#54).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MetalinkSelection {
+    /// The chosen folder; each file goes into its subfolders inside it.
+    pub directory: PathBuf,
+    /// Indexes into [`Metalink::files`], or `None` for every file.
+    pub files: Option<Vec<usize>>,
+    pub limits: Limits,
 }
 
 /// Where [`Manager::move_download`] moves a download among the waiting ones (V1's
@@ -77,6 +91,11 @@ pub struct Manager {
     /// The local time at the last [`Manager::tick`], and whether the window was open then.
     local: Option<DateTime>,
     window_open: bool,
+    /// Metalink is turned on (#54).
+    metalink_enabled: bool,
+    /// Downloads that completed in the events being applied, to follow when they are Metalink
+    /// files.
+    just_completed: Vec<String>,
 }
 
 /// Statuses a direct engine may report. The torrent-only ones (fetching metadata, choosing files,
@@ -118,6 +137,8 @@ impl Manager {
             performance: PerformanceSettings::default(),
             local: None,
             window_open: false,
+            metalink_enabled: false,
+            just_completed: Vec::new(),
         }
     }
 
@@ -147,12 +168,24 @@ impl Manager {
         spec.max_connections = spec
             .max_connections
             .min(self.connections_for_new_downloads());
-        if matches!(kind, DownloadKind::Torrent | DownloadKind::Magnet)
-            || self.engine.capabilities().protocol(kind).is_none()
-        {
+        let source_url = spec.urls.first().cloned().ok_or(ErrorCode::InvalidUrl)?;
+        let capabilities = self.engine.capabilities();
+        let supported = match kind {
+            DownloadKind::Torrent | DownloadKind::Magnet => false,
+            // A Metalink file's download fetches over its first source's protocol (#54).
+            DownloadKind::Metalink => {
+                if !self.metalink_enabled {
+                    return Err(ErrorCode::ProtocolDisabled);
+                }
+                capabilities.metalink
+                    && metalink::source_kind(&source_url)
+                        .is_some_and(|k| capabilities.protocol(k).is_some())
+            }
+            _ => capabilities.protocol(kind).is_some(),
+        };
+        if !supported {
             return Err(ErrorCode::Unsupported);
         }
-        let source_url = spec.urls.first().cloned().ok_or(ErrorCode::InvalidUrl)?;
         // No name yet when the server names the file; the engine reports it (#40).
         let file_name = spec.file_name.clone();
         let directory = spec.directory.to_string_lossy().into_owned();
@@ -188,6 +221,7 @@ impl Manager {
             running: false,
             paused,
             scheduled: options.scheduled,
+            content_type: None,
         };
         download.record.status = download.waiting_status();
         let starts_now = download.may_run(self.window_open) && self.free_slots() > 0;
@@ -202,6 +236,104 @@ impl Manager {
             }
         }
         Ok(id)
+    }
+
+    /// Turns Metalink on or off (V1's `advanced.enable_metalink`, off by default; ADR-0005). Its
+    /// storage and Settings page are #30's.
+    pub fn set_metalink_enabled(&mut self, enabled: bool) {
+        self.metalink_enabled = enabled;
+    }
+
+    /// Adds the selected files of a Metalink document, one download each, and returns their ids
+    /// in document order. Each file is saved in its subfolders inside the chosen folder, which are
+    /// created here ([`metalink::create_folders`]), and fetched from its sources the engine
+    /// supports, best first, with the document's hashes to check. The downloads are added as with
+    /// [`Manager::add_with`], so they queue as any other.
+    ///
+    /// Refused with nothing added: `ProtocolDisabled` while Metalink is off, `Unsupported` by an
+    /// engine without Metalink or for a file with no source it can fetch, `InvalidInput` for a
+    /// selection that is empty, out of range or names a file twice. When a file is refused after
+    /// others were added, those are cancelled again, and the refusal is the error.
+    pub fn add_metalink(
+        &mut self,
+        metalink: &Metalink,
+        selection: &MetalinkSelection,
+        options: AddOptions,
+        now_ms: u64,
+    ) -> Result<Vec<String>, ErrorCode> {
+        if !self.metalink_enabled {
+            return Err(ErrorCode::ProtocolDisabled);
+        }
+        let capabilities = self.engine.capabilities();
+        if !capabilities.metalink {
+            return Err(ErrorCode::Unsupported);
+        }
+        let indexes: Vec<usize> = match &selection.files {
+            None => (0..metalink.files.len()).collect(),
+            Some(files) => {
+                let mut sorted = files.clone();
+                sorted.sort_unstable();
+                sorted.dedup();
+                let in_range = sorted.last().is_some_and(|&i| i < metalink.files.len());
+                if sorted.len() != files.len() || !in_range {
+                    return Err(ErrorCode::InvalidInput);
+                }
+                sorted
+            }
+        };
+        // Every file's sources first, so an unusable one refuses the lot before anything changes.
+        let mut planned = Vec::with_capacity(indexes.len());
+        for &i in &indexes {
+            let file = &metalink.files[i];
+            let urls: Vec<String> = file
+                .urls
+                .iter()
+                .filter(|url| {
+                    metalink::source_kind(url).is_some_and(|k| capabilities.protocol(k).is_some())
+                })
+                .cloned()
+                .collect();
+            if urls.is_empty() {
+                return Err(ErrorCode::Unsupported);
+            }
+            planned.push((file, urls));
+        }
+        let mut added = Vec::with_capacity(planned.len());
+        for (file, urls) in planned {
+            let result = metalink::create_folders(&selection.directory, &file.folders).and_then(
+                |directory| {
+                    let spec = TransferSpec {
+                        urls,
+                        directory,
+                        file_name: Some(file.name.clone()),
+                        credentials: None,
+                        require_encryption: false,
+                        ssh_key: None,
+                        headers: Vec::new(),
+                        referrer: None,
+                        user_agent: None,
+                        checksum: file.checksum.clone(),
+                        pieces: file.pieces.clone(),
+                        limits: selection.limits,
+                        max_connections: self.connections_for_new_downloads(),
+                        resume: None,
+                    };
+                    self.add_with(DownloadKind::Metalink, spec, options, now_ms)
+                },
+            );
+            match result {
+                Ok(id) => added.push(id),
+                Err(code) => {
+                    for id in &added {
+                        // Each was just added and is unfinished, so it can be cancelled; one that
+                        // still can't stays in the list, where the user sees it.
+                        let _ = self.cancel(id);
+                    }
+                    return Err(code);
+                }
+            }
+        }
+        Ok(added)
     }
 
     /// Pauses an unfinished download: the engine pauses a running one, and its slot goes to the
@@ -394,8 +526,69 @@ impl Manager {
                 applied += 1;
             }
         }
+        for id in std::mem::take(&mut self.just_completed) {
+            self.follow_metalink(&id, now_ms);
+        }
         self.fill();
         applied
+    }
+
+    /// Follows a completed download that is a Metalink file, as aria2's `follow-metalink` did for
+    /// V1 (#54): while Metalink is on, an HTTP or FTP download named `.meta4` or `.metalink`, or
+    /// that the server called `application/metalink4+xml` or `application/metalink+xml`, adds
+    /// every file it lists, in its folder. The Metalink file stays on disk as a completed
+    /// download. One that can't be used fails, with the reason, so the user knows its files
+    /// weren't added. A download from a Metalink is never followed, so one can't list another.
+    fn follow_metalink(&mut self, id: &str, now_ms: u64) {
+        let Some(download) = self.downloads.get(id) else {
+            return;
+        };
+        let record = &download.record;
+        let followed = matches!(record.kind, DownloadKind::Http | DownloadKind::Ftp);
+        let Some(name) = record
+            .file_name
+            .clone()
+            .filter(|_| followed && self.metalink_enabled)
+        else {
+            return;
+        };
+        let by_name = crate::naming::extension_of(&name)
+            .is_some_and(|e| matches!(e.to_ascii_lowercase().as_str(), "meta4" | "metalink"));
+        let by_type = download
+            .content_type
+            .as_deref()
+            .is_some_and(|t| matches!(t, "application/metalink4+xml" | "application/metalink+xml"));
+        if !by_name && !by_type {
+            return;
+        }
+        let directory = PathBuf::from(&record.directory);
+        let options = AddOptions {
+            start_paused: false,
+            scheduled: download.scheduled,
+        };
+        let result = metalink::read_document(&directory.join(&name))
+            .map_err(|e| e.to_string())
+            .and_then(|document| {
+                let selection = MetalinkSelection {
+                    directory,
+                    files: None,
+                    limits: Limits::default(),
+                };
+                self.add_metalink(&document, &selection, options, now_ms)
+                    .map_err(|code| code.user_message().to_owned())
+            });
+        if let (Err(why), Some(download)) = (result, self.downloads.get_mut(id)) {
+            let record = &mut download.record;
+            record.status = DownloadStatus::Failed;
+            record.completed_at_ms = None;
+            record.error = Some(TransferError::new(
+                FailureClass::Permanent,
+                None,
+                &format!(
+                    "Velocity downloaded this Metalink file but couldn't add its files: {why}"
+                ),
+            ));
+        }
     }
 
     /// The unfinished downloads in queue order, as the database saves them
@@ -510,8 +703,13 @@ impl Manager {
                 if snapshot.file_name.is_some() {
                     record.file_name = snapshot.file_name;
                 }
+                if snapshot.content_type.is_some() {
+                    download.content_type = snapshot.content_type;
+                }
+                let record = &mut download.record;
                 if record.status == DownloadStatus::Completed && record.completed_at_ms.is_none() {
                     record.completed_at_ms = Some(now_ms);
+                    self.just_completed.push(app_id.clone());
                 }
                 if record.status.is_terminal() {
                     download.running = false;
@@ -744,6 +942,7 @@ mod tests {
             error: None,
             verification: None,
             file_name: None,
+            content_type: None,
         };
         stray.progress.completed_bytes = 999;
         control.emit(TransferEvent::Changed { snapshot: stray });
@@ -1236,6 +1435,336 @@ mod tests {
                 ..QueueSettings::default()
             };
             assert_eq!(m.set_queue_settings(invalid), Err(ErrorCode::InvalidInput));
+        }
+    }
+
+    /// Metalink downloads (#54).
+    mod metalink {
+        use super::*;
+        use crate::metalink::parse;
+
+        fn document() -> Metalink {
+            parse(xml().as_bytes()).unwrap()
+        }
+
+        fn xml() -> String {
+            format!(
+                "<metalink xmlns=\"urn:ietf:params:xml:ns:metalink\">\
+                 <file name=\"disc/image.iso\"><size>2048</size>\
+                 <hash type=\"sha-256\">{a}</hash>\
+                 <pieces length=\"1024\" type=\"sha-256\"><hash>{b}</hash><hash>{c}</hash></pieces>\
+                 <url priority=\"2\">https://b.example.com/image.iso</url>\
+                 <url priority=\"1\">ftp://a.example.com/image.iso</url></file>\
+                 <file name=\"readme.txt\"><url>ftp://example.com/readme.txt</url></file>\
+                 </metalink>",
+                a = "a".repeat(64),
+                b = "b".repeat(64),
+                c = "c".repeat(64),
+            )
+        }
+
+        fn with_metalink() -> Capabilities {
+            Capabilities {
+                metalink: true,
+                ..Capabilities::sample()
+            }
+        }
+
+        fn manager(capabilities: Capabilities, enabled: bool) -> (Manager, FakeControl) {
+            let fake = FakeTransfer::with_capabilities(capabilities);
+            let control = fake.control();
+            let mut m = Manager::new(Box::new(fake));
+            m.set_metalink_enabled(enabled);
+            (m, control)
+        }
+
+        fn folder(test: &str) -> PathBuf {
+            let dir =
+                std::env::temp_dir().join(format!("v2-mgr-metalink-{test}-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(&dir).unwrap();
+            dir
+        }
+
+        fn selection(directory: &std::path::Path, files: Option<Vec<usize>>) -> MetalinkSelection {
+            MetalinkSelection {
+                directory: directory.to_path_buf(),
+                files,
+                limits: Limits::default(),
+            }
+        }
+
+        #[test]
+        fn metalink_is_refused_while_it_is_turned_off() {
+            let dir = folder("off");
+            let (mut m, control) = manager(with_metalink(), false);
+            let all = selection(&dir, None);
+            assert_eq!(
+                m.add_metalink(&document(), &all, AddOptions::default(), T0),
+                Err(ErrorCode::ProtocolDisabled)
+            );
+            // The same gate for a download added as Metalink directly.
+            assert_eq!(
+                m.add(DownloadKind::Metalink, spec(), T0),
+                Err(ErrorCode::ProtocolDisabled)
+            );
+            assert!(control.log().is_empty());
+            assert!(!dir.join("disc").exists());
+            std::fs::remove_dir_all(&dir).unwrap();
+        }
+
+        #[test]
+        fn an_engine_without_metalink_refuses_it() {
+            let dir = folder("unsupported");
+            let (mut m, control) = manager(Capabilities::sample(), true);
+            assert_eq!(
+                m.add_metalink(
+                    &document(),
+                    &selection(&dir, None),
+                    AddOptions::default(),
+                    T0
+                ),
+                Err(ErrorCode::Unsupported)
+            );
+            assert!(control.log().is_empty());
+            std::fs::remove_dir_all(&dir).unwrap();
+        }
+
+        #[test]
+        fn each_file_becomes_a_download_in_its_subfolder_with_its_sources_and_hashes() {
+            let dir = folder("all");
+            let (mut m, control) = manager(with_metalink(), true);
+            let ids = m
+                .add_metalink(
+                    &document(),
+                    &selection(&dir, None),
+                    AddOptions::default(),
+                    T0,
+                )
+                .unwrap();
+            assert_eq!(ids.len(), 2);
+            let image = m.get(&ids[0]).unwrap();
+            assert_eq!(image.kind, DownloadKind::Metalink);
+            assert_eq!(image.source_url, "ftp://a.example.com/image.iso");
+            assert_eq!(image.file_name.as_deref(), Some("image.iso"));
+            assert_eq!(PathBuf::from(&image.directory), dir.join("disc"));
+            assert!(dir.join("disc").is_dir());
+            let spec = control.spec(TransferId(1));
+            assert_eq!(
+                spec.urls,
+                [
+                    "ftp://a.example.com/image.iso",
+                    "https://b.example.com/image.iso"
+                ]
+            );
+            assert_eq!(spec.directory, dir.join("disc"));
+            assert_eq!(spec.file_name.as_deref(), Some("image.iso"));
+            assert_eq!(spec.checksum, document().files[0].checksum);
+            assert_eq!(spec.pieces, document().files[0].pieces);
+            assert_eq!(spec.max_connections, m.connections_for_new_downloads());
+            assert_eq!(spec.credentials, None);
+            assert!(spec.headers.is_empty());
+            let readme = m.get(&ids[1]).unwrap();
+            assert_eq!(readme.file_name.as_deref(), Some("readme.txt"));
+            assert_eq!(PathBuf::from(&readme.directory), dir);
+            std::fs::remove_dir_all(&dir).unwrap();
+        }
+
+        #[test]
+        fn only_the_selected_files_are_added() {
+            let dir = folder("selected");
+            let (mut m, _control) = manager(with_metalink(), true);
+            let one = selection(&dir, Some(vec![1]));
+            let ids = m
+                .add_metalink(&document(), &one, AddOptions::default(), T0)
+                .unwrap();
+            assert_eq!(ids.len(), 1);
+            assert_eq!(
+                m.get(&ids[0]).unwrap().file_name.as_deref(),
+                Some("readme.txt")
+            );
+            assert!(!dir.join("disc").exists());
+            std::fs::remove_dir_all(&dir).unwrap();
+        }
+
+        #[test]
+        fn a_selection_that_names_no_file_or_one_twice_is_refused() {
+            let dir = folder("bad-selection");
+            let (mut m, control) = manager(with_metalink(), true);
+            for files in [vec![], vec![2], vec![0, 0]] {
+                let bad = selection(&dir, Some(files.clone()));
+                assert_eq!(
+                    m.add_metalink(&document(), &bad, AddOptions::default(), T0),
+                    Err(ErrorCode::InvalidInput),
+                    "{files:?}"
+                );
+            }
+            assert!(control.log().is_empty());
+            assert!(m.queue().is_empty());
+            std::fs::remove_dir_all(&dir).unwrap();
+        }
+
+        #[test]
+        fn sources_the_engine_cant_fetch_are_dropped() {
+            let dir = folder("http-only");
+            let mut http_only = with_metalink();
+            http_only.protocols.retain(|p| p.kind == DownloadKind::Http);
+            let (mut m, control) = manager(http_only, true);
+            let image = selection(&dir, Some(vec![0]));
+            let ids = m
+                .add_metalink(&document(), &image, AddOptions::default(), T0)
+                .unwrap();
+            assert_eq!(
+                m.get(&ids[0]).unwrap().source_url,
+                "https://b.example.com/image.iso"
+            );
+            assert_eq!(
+                control.spec(TransferId(1)).urls,
+                ["https://b.example.com/image.iso"]
+            );
+            // readme.txt has only an FTP source.
+            let readme = selection(&dir, Some(vec![1]));
+            assert_eq!(
+                m.add_metalink(&document(), &readme, AddOptions::default(), T0),
+                Err(ErrorCode::Unsupported)
+            );
+            std::fs::remove_dir_all(&dir).unwrap();
+        }
+
+        /// A link added as any download, which the server names `file_name`.
+        fn link(m: &mut Manager, dir: &std::path::Path) -> String {
+            let spec = TransferSpec {
+                urls: vec!["https://example.com/get?id=1".to_owned()],
+                directory: dir.to_path_buf(),
+                file_name: None,
+                ..spec()
+            };
+            m.add(DownloadKind::Http, spec, T0).unwrap()
+        }
+
+        #[test]
+        fn a_finished_link_to_a_metalink_file_adds_the_files_it_lists() {
+            let dir = folder("follow");
+            let (mut m, control) = manager(with_metalink(), true);
+            let id = link(&mut m, &dir);
+            std::fs::write(dir.join("files.meta4"), xml()).unwrap();
+            control.named(TransferId(1), "files.meta4");
+            control.complete(TransferId(1));
+            m.pump(T0 + 1);
+            // The Metalink file itself stays a completed download, on disk.
+            assert_eq!(status(&m, &id), DownloadStatus::Completed);
+            assert!(dir.join("files.meta4").is_file());
+            let queue: Vec<String> = m.queue().into_iter().map(|e| e.id).collect();
+            assert_eq!(queue.len(), 2, "{queue:?}");
+            let image = m.get(&queue[0]).unwrap();
+            assert_eq!(image.kind, DownloadKind::Metalink);
+            assert_eq!(image.file_name.as_deref(), Some("image.iso"));
+            assert_eq!(PathBuf::from(&image.directory), dir.join("disc"));
+            assert_eq!(
+                control.spec(TransferId(2)).pieces,
+                document().files[0].pieces
+            );
+            assert_eq!(
+                m.get(&queue[1]).unwrap().file_name.as_deref(),
+                Some("readme.txt")
+            );
+            std::fs::remove_dir_all(&dir).unwrap();
+        }
+
+        #[test]
+        fn a_link_is_known_as_metalink_by_its_media_type_too() {
+            for media_type in ["application/metalink4+xml", "application/metalink+xml"] {
+                let dir = folder("follow-type");
+                let (mut m, control) = manager(with_metalink(), true);
+                link(&mut m, &dir);
+                std::fs::write(dir.join("get"), xml()).unwrap();
+                control.named(TransferId(1), "get");
+                control.typed(TransferId(1), media_type);
+                control.complete(TransferId(1));
+                m.pump(T0 + 1);
+                assert_eq!(m.queue().len(), 2, "{media_type}");
+                std::fs::remove_dir_all(&dir).unwrap();
+            }
+        }
+
+        #[test]
+        fn while_metalink_is_off_a_metalink_file_is_just_a_file() {
+            let dir = folder("follow-off");
+            let (mut m, control) = manager(with_metalink(), false);
+            let id = link(&mut m, &dir);
+            std::fs::write(dir.join("files.meta4"), xml()).unwrap();
+            control.named(TransferId(1), "files.meta4");
+            control.complete(TransferId(1));
+            m.pump(T0 + 1);
+            assert_eq!(status(&m, &id), DownloadStatus::Completed);
+            assert!(m.queue().is_empty());
+            assert_eq!(control.log(), ["add"]);
+            std::fs::remove_dir_all(&dir).unwrap();
+        }
+
+        #[test]
+        fn a_metalink_file_that_cant_be_used_fails_with_the_reason() {
+            let dir = folder("follow-bad");
+            let (mut m, control) = manager(with_metalink(), true);
+            let id = link(&mut m, &dir);
+            std::fs::write(dir.join("files.meta4"), "<rss/>").unwrap();
+            control.named(TransferId(1), "files.meta4");
+            control.complete(TransferId(1));
+            m.pump(T0 + 1);
+            let r = m.get(&id).unwrap();
+            assert_eq!(r.status, DownloadStatus::Failed);
+            let error = r.error.as_ref().unwrap();
+            assert_eq!(error.class, FailureClass::Permanent);
+            assert!(error.message.contains("Metalink"), "{}", error.message);
+            assert_eq!(r.completed_at_ms, None);
+            assert!(m.queue().is_empty());
+            // The file the user downloaded is kept.
+            assert!(dir.join("files.meta4").is_file());
+            std::fs::remove_dir_all(&dir).unwrap();
+        }
+
+        #[test]
+        fn a_metalink_file_listed_in_a_metalink_is_not_followed_again() {
+            let dir = folder("follow-nested");
+            let (mut m, control) = manager(with_metalink(), true);
+            let nested = parse(
+                b"<metalink xmlns=\"urn:ietf:params:xml:ns:metalink\"><file name=\"inner.meta4\">\
+                  <url>https://example.com/inner.meta4</url></file></metalink>",
+            )
+            .unwrap();
+            let ids = m
+                .add_metalink(&nested, &selection(&dir, None), AddOptions::default(), T0)
+                .unwrap();
+            std::fs::write(dir.join("inner.meta4"), xml()).unwrap();
+            control.complete(TransferId(1));
+            m.pump(T0 + 1);
+            assert_eq!(status(&m, &ids[0]), DownloadStatus::Completed);
+            assert!(m.queue().is_empty());
+            std::fs::remove_dir_all(&dir).unwrap();
+        }
+
+        #[test]
+        fn a_refused_file_takes_back_the_files_added_before_it() {
+            let dir = folder("rollback");
+            let (mut m, control) = manager(with_metalink(), true);
+            control.refuse_file_name("readme.txt", ErrorCode::FileExists);
+            assert_eq!(
+                m.add_metalink(
+                    &document(),
+                    &selection(&dir, None),
+                    AddOptions::default(),
+                    T0
+                ),
+                Err(ErrorCode::FileExists)
+            );
+            m.pump(T0);
+            assert!(m.queue().is_empty());
+            assert!(
+                control.log().contains(&"cancel 1".to_owned()),
+                "{:?}",
+                control.log()
+            );
+            std::fs::remove_dir_all(&dir).unwrap();
         }
     }
 }

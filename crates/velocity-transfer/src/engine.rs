@@ -506,7 +506,9 @@ impl DirectTransfer for InProcessEngine {
                 },
             ],
             live_connection_changes: true,
-            metalink: false,
+            // #54: the manager reads Metalink documents; this engine downloads their files, with
+            // their checksums and piece hashes (#46), and their mirrors in the spec's URLs.
+            metalink: true,
             max_connections_per_host: lock(&self.shared.state).limits.max_connections_per_host,
         }
     }
@@ -560,6 +562,7 @@ impl DirectTransfer for InProcessEngine {
             error: None,
             verification: None,
             file_name: spec.file_name.clone(),
+            content_type: None,
         };
         state.transfers.insert(
             id,
@@ -738,7 +741,7 @@ fn start_worker(shared: &Arc<Shared>, id: TransferId, resume: Option<Resume>) {
         let Some(entry) = state.transfers.get_mut(&id) else {
             return;
         };
-        let (reporter, namer) = (Arc::clone(shared), Arc::clone(shared));
+        let (reporter, namer, typer) = (Arc::clone(shared), Arc::clone(shared), Arc::clone(shared));
         let control = Control::with_progress(progress_reporter(shared, id))
             .with_status(status_reporter(shared, id))
             .with_limits(vec![entry.limit.clone(), shared.global.clone()])
@@ -757,6 +760,15 @@ fn start_worker(shared: &Arc<Shared>, id: TransferId, resume: Option<Resume>) {
                     entry.job.destination = Some(entry.job.directory.join(name));
                     entry.snapshot.file_name = Some(name.to_owned());
                     state.changed(id);
+                }
+            })
+            .with_content_type(move |content_type| {
+                let mut state = lock(&typer.state);
+                if let Some(entry) = state.transfers.get_mut(&id) {
+                    if entry.snapshot.content_type.as_deref() != Some(content_type) {
+                        entry.snapshot.content_type = Some(content_type.to_owned());
+                        state.changed(id);
+                    }
                 }
             });
         entry.control = Arc::new(control);

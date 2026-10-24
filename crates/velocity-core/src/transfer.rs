@@ -38,7 +38,9 @@ use std::sync::mpsc::Receiver;
 /// [`crate::domain::ProtocolCapabilities::encryption`]; engines now download `ftp` and `ftps`.
 /// Version 10 (#53) added [`TransferSpec::ssh_key`], [`crate::domain::TransferError::host_key`] and
 /// [`DirectTransfer::trust_host_key`]; engines now download `sftp`.
-pub const TRANSFER_CONTRACT_VERSION: u32 = 10;
+/// Version 11 (#54) added [`TransferSnapshot::content_type`], and engines may report
+/// [`crate::domain::Capabilities::metalink`].
+pub const TRANSFER_CONTRACT_VERSION: u32 = 11;
 
 /// An engine's id for one transfer. Assigned by the engine, never reused, and never shown as the
 /// app's download id.
@@ -441,6 +443,10 @@ pub struct TransferSnapshot {
     /// The name the file is saved under, once the engine knows it (#40): the spec's, or the
     /// server's, either made free when taken.
     pub file_name: Option<String>,
+    /// The file's media type as the server gave it (`Content-Type` without its parameters, in
+    /// lowercase), once it answered with the file (#54): how a link to a Metalink file is known.
+    /// `None` for FTP and SFTP, and when the server gave none or an invalid one.
+    pub content_type: Option<String>,
 }
 
 /// Something that happened to a transfer, pushed by the engine.
@@ -795,6 +801,7 @@ mod tests {
             )),
             verification: None,
             file_name: Some("a.zip".to_owned()),
+            content_type: None,
         }
     }
 

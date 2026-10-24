@@ -26,6 +26,8 @@ struct State {
     engine_limits: EngineLimits,
     /// Makes every command fail with this code, like an engine that stopped responding.
     unavailable: Option<ErrorCode>,
+    /// Makes `add` refuse a transfer with this file name, as an engine refuses a name taken.
+    refused_name: Option<(String, ErrorCode)>,
 }
 
 struct Transfer {
@@ -215,9 +217,22 @@ impl FakeControl {
         s.changed(id);
     }
 
+    /// Reports the file's media type, as an engine does once the server answered (#54).
+    pub fn typed(&self, id: TransferId, content_type: &str) {
+        let mut s = lock(&self.state);
+        let t = s.transfers.get_mut(&id).expect("known transfer");
+        t.snapshot.content_type = Some(content_type.to_owned());
+        s.changed(id);
+    }
+
     /// Sends an arbitrary event, for example one about a transfer that doesn't exist.
     pub fn emit(&self, event: TransferEvent) {
         lock(&self.state).emit(event);
+    }
+
+    /// From now on `add` refuses a transfer named `name` with `code`.
+    pub fn refuse_file_name(&self, name: &str, code: ErrorCode) {
+        lock(&self.state).refused_name = Some((name.to_owned(), code));
     }
 
     /// From now on every command fails with `code`; `None` makes the engine respond again.
@@ -237,6 +252,11 @@ impl DirectTransfer for FakeTransfer {
         if spec.urls.is_empty() {
             return Err(ErrorCode::InvalidInput);
         }
+        if let Some((name, code)) = &s.refused_name {
+            if spec.file_name.as_ref() == Some(name) {
+                return Err(*code);
+            }
+        }
         s.next_id += 1;
         let id = TransferId(s.next_id);
         let snapshot = TransferSnapshot {
@@ -254,6 +274,7 @@ impl DirectTransfer for FakeTransfer {
             error: None,
             verification: None,
             file_name: spec.file_name.clone(),
+            content_type: None,
         };
         s.transfers.insert(id, Transfer { spec, snapshot });
         s.changed(id);

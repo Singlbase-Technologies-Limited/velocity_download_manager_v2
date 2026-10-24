@@ -101,6 +101,8 @@ pub struct FileHeaders {
     pub content_encoding: Option<String>,
     /// Sent as `Content-Disposition`, as given (#40).
     pub content_disposition: Option<String>,
+    /// Sent as `Content-Type`, as given (#54).
+    pub content_type: Option<String>,
 }
 
 /// The body of every redirect the server sends (#40).
@@ -809,6 +811,7 @@ pub(crate) fn answer<'a>(
             .clone()
             .map(|v| ("Content-Disposition", v)),
     );
+    headers.extend(file.content_type.clone().map(|v| ("Content-Type", v)));
     let (status, reason, body): (u16, &'static str, &[u8]) = match (mode, range) {
         (RangeMode::Ignore, _) | (_, None) => (200, "OK", data),
         (RangeMode::FullBodyForNonZeroStart, Some((start, _))) if start > 0 => (200, "OK", data),

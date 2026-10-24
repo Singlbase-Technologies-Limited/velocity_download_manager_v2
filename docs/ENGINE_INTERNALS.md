@@ -148,6 +148,36 @@ Cancelling the fetch, or dropping it, ends the task at its next step.
 | No such file | `NotFound` | No |
 | The connection was refused, or broke part way | `Connect`, `Interrupted` | Yes, from the first missing byte |
 
+## Metalink (#54)
+
+A Metalink document lists files with their sources, hashes and piece hashes: Metalink 4 (RFC 5854, `.meta4`) or Metalink 3 (metalinker.org 3.0, `.metalink`). libcurl dropped Metalink in 7.78.0, so V2 reads it itself. The manager does the reading, in `velocity-core` (`metalink.rs`); the engine only downloads the files, with the hashes it already checks (#46). Metalink is off until the user turns it on, as V1's `advanced.enable_metalink` (ADR-0005); the setting is stored and shown by #30.
+
+### Reading a document
+
+- **The parser** is quick-xml (PO decision on #54), read as a stream. Its limits are in [SECURITY.md](SECURITY.md#metalink-54).
+- **Per file:** its name, which may hold subfolders (`disc/image.iso`); its size; the strongest whole-file hash of MD5, SHA-1, SHA-224, SHA-256, SHA-384 and SHA-512; the strongest piece list, which must fit the size; and its sources.
+- **Sources:** `http`, `https`, `ftp` and `ftps` URLs without a login, best first. Metalink 4's lower `priority` comes first and Metalink 3's higher `preference`; unranked ones come last, in document order. A duplicate counts once. SFTP sources are dropped (a document can't supply a login or confirm a host key), as are torrents (`metaurl`, a Metalink 3 `bittorrent` resource; a non-goal of #54).
+- **A file with no usable source** is skipped and counted (`Metalink::skipped`), and a document with none at all is refused.
+- **Not supported, as in V1:** Metalink/HTTP (RFC 6249), whose `Link` and `Digest` headers aria2 never read.
+
+### Adding its files
+
+`Manager::add_metalink` adds the selected files, all of them unless a selection names some, one download each with kind `metalink`:
+
+- **The folder:** each file goes into its subfolders inside the chosen folder (PO decision on #54: kept, as V1 did). They're created one level at a time. A folder already there is used, but a file, a link or (Windows) any reparse point in the way is refused, never followed.
+- **The download:** its sources the engine can fetch, best first, in `TransferSpec::urls`; its hash in `checksum` and its piece list in `pieces`; its name in `fileName`. No login, headers or referrer: a document's sources are other servers.
+- **All or nothing:** a file with no source the engine supports refuses the lot before anything is added. A file the engine refuses after others were added takes those back (they're cancelled), and the refusal is the error.
+- **A local file:** `metalink::read_file` reads a `.metalink` or `.meta4` file the user chose, as V1's `validate_local_metadata_file` did: an absolute path to a plain file, never a link. The file chooser and its Tauri command are #58's and #60's.
+
+### Following a link
+
+As aria2's `follow-metalink` did for V1: while Metalink is on, a completed HTTP or FTP download that is a Metalink file adds every file it lists, into its own folder.
+
+- **How it's known:** its name ends `.meta4` or `.metalink`, or the server called it `application/metalink4+xml` or `application/metalink+xml` (`TransferSnapshot::contentType`, contract 11).
+- **The Metalink file stays** on disk as a completed download.
+- **One that can't be used** fails, with the reason: "Velocity downloaded this Metalink file but couldn't add its files: …". The file is kept.
+- **Never twice:** a download that came from a Metalink is never followed, so one document can't chain to another.
+
 ## Later segments: the range scheduler (#42)
 
 After a probe that gave a total, the rest of the file is fetched with leases from the range scheduler ([`scheduler.rs`](../crates/velocity-transfer/src/scheduler.rs), report section 5.2). The downloader's thread owns it and makes every change; no lock is held across I/O.
@@ -512,7 +542,7 @@ Hashes don't compose: the digests of separate segments can't be combined into th
 - **Without ranges** (a single stream, or ranges lost), a piece can't come alone, so the whole file is downloaded once more as one stream (PO decision on #46). A bad piece again fails it.
 - **A list that doesn't fit** the file, with more or fewer pieces than its size needs, fails at once as Permanent.
 - **With a checksum as well,** the frontier starts again from byte 0 after a piece is fetched again, because it may have hashed the bad bytes.
-- **Mirrors:** a bad piece will prefer another mirror once a download has mirrors (Metalink, #54). Today it comes from the same server.
+- **Mirrors:** a Metalink download carries its mirrors in `TransferSpec::urls` (#54), but the engine fetches from the first one only. Preferring another mirror for a bad piece, and failing over, come with #55.
 
 ### A failed check
 
@@ -662,4 +692,8 @@ Run it with `cargo run --release -p velocity-transfer --example high_offset_writ
 - **Retry settings:** the values are engine defaults until the settings model passes the user's (#30).
 - **Saving the verification state:** `verification` isn't saved in the database yet (#58).
 - **Integrity without the app:** a whole-file hash that a server gives (`Repr-Digest`) is deferred (report section 5.3).
+- **Metalink in the app:** the Metalink switch's storage and Settings page are #30's; the file chooser, the file selection and the Tauri commands are #58's and #60's. Until then `Manager::add_metalink` and following a link are reachable from code only.
+- **Metalink mirrors:** a Metalink download uses its first source only; failover between its sources is #55.
+- **Folders a Metalink download creates** stay when it's cancelled or fails, even when empty. Only part files are removed.
+- **A fuzz target for the Metalink parser** comes with #73, which brings the fuzzing tool.
 - **Saving checkpoints in the app:** the manager saves the engine's checkpoint events in the database and resumes unfinished downloads at startup with `StoredDownload::resume` (#58).

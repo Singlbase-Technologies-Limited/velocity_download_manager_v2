@@ -13,3 +13,4 @@ dirs.workspace = true
 rusqlite.workspace = true
 rusqlite_migration.workspace = true
 jiff.workspace = true
+quick-xml.workspace = true
