@@ -12,6 +12,8 @@ compile_error!("the test-ca feature is for test builds only");
 mod capabilities;
 mod fetch;
 mod ftp;
+mod head;
+mod pipe;
 mod rate;
 mod redirect;
 mod runtime;
@@ -22,9 +24,11 @@ pub use capabilities::{
     REQUIRED_FEATURES, REQUIRED_PROTOCOLS,
 };
 pub use fetch::{
-    CurlFailure, CurlLoop, Fetch, FetchError, FetchEvent, FetchLimit, FetchRequest, Gate,
-    LoopError, LoopOptions, RequestOptions, ResponseHead,
+    CurlFailure, CurlLoop, FetchError, FetchEvent, FetchRequest, Gate, LoopError, LoopOptions,
+    RequestOptions, ResponseHead,
 };
+pub use head::file_head;
+pub use pipe::{Fetch, FetchControl, FetchLimit, FetchPipe, GateFn, Offered, Transport};
 pub use rate::RateLimit;
 pub use runtime::{Libcurl, StartError};
 pub use url::{origin, Origin};
