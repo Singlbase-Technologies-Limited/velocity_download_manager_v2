@@ -1,6 +1,6 @@
 # ADR-0011: SFTP uses libssh2 through libcurl
 
-- **Status:** Accepted
+- **Status:** Superseded by ADR-0013
 - **Date:** 2026-10-22
 - **Decided by:** the Product Owner
 - **Issue:** #52

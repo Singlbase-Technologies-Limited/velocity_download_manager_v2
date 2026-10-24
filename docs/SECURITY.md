@@ -1,6 +1,6 @@
 # Security
 
-How V2 protects downloads and the people who use it. The rules every contributor follows are in [AGENTS.md](../AGENTS.md#security-and-data) and `.claude/rules/security.md`. This document records what V2 does and what was measured. It covers TLS and FTP for now; the URL and redirect policy (#67) and secret handling (#70) add their sections when they are built.
+How V2 protects downloads and the people who use it. The rules every contributor follows are in [AGENTS.md](../AGENTS.md#security-and-data) and `.claude/rules/security.md`. This document records what V2 does and what was measured. It covers TLS, FTP and SFTP host keys for now; the URL and redirect policy (#67) and secret handling (#70) add their sections when they are built.
 
 ## TLS verification (#69)
 
@@ -72,3 +72,16 @@ How FTP downloads work is in [ENGINE_INTERNALS.md](ENGINE_INTERNALS.md#ftp-and-f
 - **The login stays out of storage.** It reaches the engine as `credentials`, and a login in the link is split off before the download is stored. The database test scans every file SQLite wrote for an FTP login, in the link and as credentials. The libcurl layer reads only the verb of each command it sends, so the `PASS` line isn't kept or logged.
 - **An `http://` link can't require encryption:** such a spec is refused, rather than sent in clear.
 - **Not verified:** servers that require the data connection to resume the control connection's TLS session ([ENGINE_INTERNALS.md](ENGINE_INTERNALS.md#ftps-the-evaluation-51-asked-for)).
+
+## SFTP host keys (#53)
+
+SSH has no certificate authority to vouch for a server, so a host key is trusted only once the user has seen and confirmed its fingerprint, and it is pinned from then on (research report section 8). How it works is in [ENGINE_INTERNALS.md](ENGINE_INTERNALS.md#host-keys); the backend is russh ([ADR-0013](decisions/0013-sftp-russh.md)).
+
+- **Nothing before the key is checked:** the host key is checked against V2's own known_hosts file before the login, so no password, key signature or file name goes to an unverified server.
+- **Unknown keys wait for the user.** The download fails with the key's SHA-256 fingerprint, and only the key the engine actually saw with that fingerprint can be trusted.
+- **Changed keys are always refused,** and are never offered for trust. A pinned key is never replaced by trusting another.
+- **V2's own file,** `<data folder>/known_hosts`, unhashed and readable. `~/.ssh/known_hosts` is neither read nor written.
+- **Host certificates are refused:** V2 trusts no SSH certificate authority.
+- **Logins:** a password, or a private key file with an optional passphrase. Both travel like other credentials: in memory, and through the engine's pipe, never its arguments, environment, database, checkpoints or logs ([ENGINE_CONTRACT.md](ENGINE_CONTRACT.md)). `Debug` never prints a passphrase (tested). The keychain is #70's.
+- **Tested** against the installed OpenSSH server on Windows and Linux, as an unprivileged `sshd` with throwaway host keys (Ed25519, ECDSA and RSA): an unknown key refused until trusted, a changed key refused, key logins with and without a passphrase, a refused login. Password logins are tested on CI's Linux runner, against an `sshd` run as root; on Windows they are NOT RUN.
+- **An accepted advisory:** `rsa` (used for RSA keys) has RUSTSEC-2023-0071 ("Marvin"), a timing side channel in private-key operations, with no fix. The PO accepted it on #53: an SFTP client signs once per login with the user's own RSA key, and host-key checks use only public keys ([DEPENDENCIES.md](DEPENDENCIES.md)).
