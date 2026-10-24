@@ -5,6 +5,9 @@
 // optimised build with it doesn't compile, so a release can't contain it.
 #[cfg(all(feature = "test-h2c", not(debug_assertions)))]
 compile_error!("the test-h2c feature is for test builds only");
+// Trusting a test CA file is for the TLS tests only (PO decision on #69), likewise.
+#[cfg(all(feature = "test-ca", not(debug_assertions)))]
+compile_error!("the test-ca feature is for test builds only");
 
 mod capabilities;
 mod fetch;

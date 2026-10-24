@@ -264,7 +264,7 @@ pub enum FetchEvent {
     Done(Result<(), FetchError>),
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub struct LoopOptions {
     /// The most body bytes one fetch keeps for its reader before it pauses the transfer.
     pub buffer_bytes_per_fetch: usize,
@@ -279,6 +279,11 @@ pub struct LoopOptions {
     /// against a local server without TLS. Test builds only (PO decision on #47).
     #[cfg(feature = "test-h2c")]
     pub http2_prior_knowledge: bool,
+    /// Trusts this PEM file's CA (`CURLOPT_CAINFO`) in place of the platform's store, for the TLS
+    /// tests against the local test CA (#69). Verification and revocation checks stay on. Test
+    /// builds only (PO decision on #69).
+    #[cfg(feature = "test-ca")]
+    pub ca_file: Option<std::path::PathBuf>,
 }
 
 impl Default for LoopOptions {
@@ -292,6 +297,8 @@ impl Default for LoopOptions {
             max_connections_per_host: 8,
             #[cfg(feature = "test-h2c")]
             http2_prior_knowledge: false,
+            #[cfg(feature = "test-ca")]
+            ca_file: None,
         }
     }
 }
@@ -355,9 +362,10 @@ impl CurlLoop {
     pub fn start(_curl: &Libcurl, options: LoopOptions) -> Result<Self, LoopError> {
         let (commands, inbox) = mpsc::channel();
         let (waker_tx, waker_rx) = mpsc::channel();
+        let for_loop = options.clone();
         let thread = thread::Builder::new()
             .name("velocity-curl-multi".into())
-            .spawn(move || run_loop(inbox, waker_tx, options))
+            .spawn(move || run_loop(inbox, waker_tx, for_loop))
             .map_err(|e| LoopError(e.to_string()))?;
         // The Multi is created on the loop thread (it isn't Send); only its waker comes back.
         let waker = waker_rx
@@ -747,6 +755,11 @@ fn set_options(
     if options.http2_prior_knowledge {
         easy.http_version(curl::easy::HttpVersion::V2PriorKnowledge)?;
     }
+    // The test CA in place of the platform's store; verification stays on (#69).
+    #[cfg(feature = "test-ca")]
+    if let Some(ca_file) = &options.ca_file {
+        easy.cainfo(ca_file)?;
+    }
     Ok(())
 }
 
@@ -833,11 +846,17 @@ fn set_string(
     }
 }
 
+/// libcurl's error: its kind, its code, and its description with the detail from libcurl's error
+/// buffer when there is one, such as which certificate check failed (#69).
 fn curl_error(e: &curl::Error) -> FetchError {
+    let message = match e.extra_description().map(str::trim) {
+        Some(detail) if !detail.is_empty() => format!("{}: {detail}", e.description()),
+        _ => e.description().to_owned(),
+    };
     FetchError::Curl {
         kind: CurlFailure::of(e),
         code: i64::from(e.code()),
-        message: e.description().to_owned(),
+        message,
     }
 }
 
@@ -1055,6 +1074,25 @@ mod tests {
         ];
         for (code, expected) in cases {
             assert_eq!(kind(code), expected, "CURLcode {code}");
+        }
+    }
+
+    #[test]
+    fn a_failure_keeps_libcurls_own_detail() {
+        let mut e = curl::Error::new(curl_sys::CURLE_PEER_FAILED_VERIFICATION);
+        e.set_extra("schannel: the certificate has been revoked".to_owned());
+        match curl_error(&e) {
+            FetchError::Curl { message, .. } => {
+                assert!(message.contains("has been revoked"), "{message}");
+                assert!(message.contains("was not OK"), "{message}");
+            }
+            other => panic!("{other:?}"),
+        }
+        // Without a detail, the code's description alone.
+        let plain = curl::Error::new(curl_sys::CURLE_COULDNT_CONNECT);
+        match curl_error(&plain) {
+            FetchError::Curl { message, .. } => assert_eq!(message, plain.description()),
+            other => panic!("{other:?}"),
         }
     }
 

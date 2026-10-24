@@ -6,6 +6,7 @@
 //! modes over HTTP/2 (#47). Test code: it trusts its callers and isn't hardened.
 
 mod http2;
+pub mod tls;
 
 pub use http2::{Http2Options, Http2Server};
 
