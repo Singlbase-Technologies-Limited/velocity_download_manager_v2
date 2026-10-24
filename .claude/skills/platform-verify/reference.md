@@ -34,6 +34,26 @@ git status --short   # must be empty: the clone is only for checks
 
 If the clone is missing, clone it again from GitHub through the agent's SSH alias, or from `/mnt/c/projects/velocity_download_manager_v2`. Never edit files in it.
 
+## Local SFTP password-login server
+
+The password-login SFTP tests need a root `sshd`, which a test can't start. On CI's Linux job, `scripts/ci-sftp-server.sh` provides it. In WSL, the PO set it up once with `sudo bash scripts/local-sftp-server.sh` (#176):
+
+- **The service:** `velocity-v2-sftp`, on 127.0.0.1:2222, for the test user `v2sftp` only, with SFTP only.
+- **The server's details:** in `~/.config/velocity-v2/sftp-password-server.env`, readable by the PO's account only.
+- **Removing it:** `sudo bash scripts/local-sftp-server.sh --remove`.
+
+Before `pnpm check:fast` in the clean clone, export the server's details and make a missing `sshd` or server fail instead of reporting NOT RUN:
+
+```sh
+export VELOCITY_REQUIRE_SSHD=1
+sftp_env=~/.config/velocity-v2/sftp-password-server.env
+if [ -f "$sftp_env" ]; then
+  export "$(cat "$sftp_env")" VELOCITY_REQUIRE_SFTP_PASSWORD=1
+fi
+```
+
+If that file is missing, `a_password_login_works_where_ci_provides_a_server` reports NOT RUN, and so must the report.
+
 ## GUI through WSLg
 
 Start GUI apps from a script file, never from inline PowerShell arguments. Run `pnpm dev` in the background, log to a file in `/tmp`, and stop it afterwards. A screenshot for docs or a PR shows the app window only.

@@ -1,6 +1,7 @@
 //! SFTP fetches against the machine's OpenSSH server (#53): real russh, real sshd, real sockets.
 //! Where sshd isn't installed, each test says NOT RUN and returns. Password logins run only
-//! against the server CI provisions (`VELOCITY_SFTP_PASSWORD_SERVER`).
+//! against a provisioned server (`VELOCITY_SFTP_PASSWORD_SERVER`): CI's, or the local one from
+//! `scripts/local-sftp-server.sh` (#176).
 
 use std::path::PathBuf;
 use std::sync::Arc;
