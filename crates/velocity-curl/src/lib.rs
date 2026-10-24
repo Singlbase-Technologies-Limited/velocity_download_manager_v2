@@ -11,6 +11,7 @@ compile_error!("the test-ca feature is for test builds only");
 
 mod capabilities;
 mod fetch;
+mod ftp;
 mod rate;
 mod redirect;
 mod runtime;

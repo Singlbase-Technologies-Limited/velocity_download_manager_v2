@@ -74,42 +74,30 @@ pub struct Session {
     pub alpn: Option<String>,
 }
 
-/// A running TLS front on 127.0.0.1 and a free port, with its revocation-list server. It stops,
-/// and removes its CA file, when dropped.
-pub struct TlsFront {
-    addr: SocketAddr,
+/// A test CA made fresh, the leaf it signed, and the server of its revocation list on a fresh port
+/// (#69). The TLS front uses one, and so does the FTPS server, which terminates TLS itself (#51).
+/// It stops its revocation-list server, and removes its CA file, when dropped.
+pub struct TestPki {
     ca_der: CertificateDer<'static>,
     ca_name: String,
     ca_dir: PathBuf,
     ca_file: PathBuf,
     crl_url: String,
     crl_requests: Arc<AtomicU32>,
-    sessions: Arc<Mutex<Vec<Session>>>,
+    leaf_der: CertificateDer<'static>,
+    leaf_key: PrivateKeyDer<'static>,
     runtime: Option<Runtime>,
 }
 
-impl TlsFront {
-    /// Starts a front for `backend` that presents `leaf` and offers `alpn`.
-    pub fn start(backend: SocketAddr, leaf: Leaf, alpn: Alpn) -> Self {
+impl TestPki {
+    /// A new CA, `leaf` signed as its variant says, and the CA's revocation list served.
+    pub fn start(leaf: Leaf) -> Self {
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(2)
             .enable_all()
             .build()
             .expect("a tokio runtime");
-        let bind = |runtime: &Runtime| {
-            let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind 127.0.0.1:0");
-            listener
-                .set_nonblocking(true)
-                .expect("a non-blocking listener");
-            let addr = listener.local_addr().expect("local address");
-            let _entered = runtime.enter();
-            (
-                TcpListener::from_std(listener).expect("a tokio listener"),
-                addr,
-            )
-        };
         let (crl_listener, crl_addr) = bind(&runtime);
-        let (listener, addr) = bind(&runtime);
         let crl_url = format!("http://{crl_addr}/ca.crl");
         // A name of its own, so a test that adds the CA to a trust store removes exactly it.
         let front = format!(
@@ -125,46 +113,40 @@ impl TlsFront {
         let ca_file = ca_dir.join("test-ca.pem");
         std::fs::write(&ca_file, &pki.ca_pem).expect("the test CA written");
 
-        let provider = Arc::new(rustls::crypto::ring::default_provider());
-        let mut config = rustls::ServerConfig::builder_with_provider(provider)
-            .with_safe_default_protocol_versions()
-            .expect("rustls's default versions")
-            .with_no_client_auth()
-            .with_single_cert(vec![pki.leaf_der.clone()], pki.leaf_key)
-            .expect("the leaf certificate and key");
-        config.alpn_protocols = vec![match alpn {
-            Alpn::Http1 => b"http/1.1".to_vec(),
-            Alpn::Http2 => b"h2".to_vec(),
-        }];
-        let acceptor = TlsAcceptor::from(Arc::new(config));
-        let sessions = Arc::<Mutex<Vec<Session>>>::default();
         let crl_requests = Arc::new(AtomicU32::new(0));
         runtime.spawn(serve_crl(
             crl_listener,
             pki.crl_der,
             Arc::clone(&crl_requests),
         ));
-        runtime.spawn(accept(listener, acceptor, backend, Arc::clone(&sessions)));
-        TlsFront {
-            addr,
+        TestPki {
             ca_der: pki.ca_der,
             ca_name,
             ca_dir,
             ca_file,
             crl_url,
             crl_requests,
-            sessions,
+            leaf_der: pki.leaf_der,
+            leaf_key: pki.leaf_key,
             runtime: Some(runtime),
         }
     }
 
-    pub fn addr(&self) -> SocketAddr {
-        self.addr
-    }
-
-    /// `https://localhost:<port>/<name>`.
-    pub fn url(&self, name: &str) -> String {
-        format!("https://localhost:{}/{name}", self.addr.port())
+    /// A rustls server configuration that presents the leaf, offering `alpn` if given.
+    pub fn server_config(&self, alpn: Option<Alpn>) -> Arc<rustls::ServerConfig> {
+        let provider = Arc::new(rustls::crypto::ring::default_provider());
+        let mut config = rustls::ServerConfig::builder_with_provider(provider)
+            .with_safe_default_protocol_versions()
+            .expect("rustls's default versions")
+            .with_no_client_auth()
+            .with_single_cert(vec![self.leaf_der.clone()], self.leaf_key.clone_key())
+            .expect("the leaf certificate and key");
+        config.alpn_protocols = match alpn {
+            Some(Alpn::Http1) => vec![b"http/1.1".to_vec()],
+            Some(Alpn::Http2) => vec![b"h2".to_vec()],
+            None => Vec::new(),
+        };
+        Arc::new(config)
     }
 
     /// The test CA as a PEM file, for the client to trust (`CURLOPT_CAINFO`).
@@ -172,7 +154,7 @@ impl TlsFront {
         &self.ca_file
     }
 
-    /// The test CA's common name, unique to this front.
+    /// The test CA's common name, unique to this CA.
     pub fn ca_name(&self) -> &str {
         &self.ca_name
     }
@@ -192,18 +174,95 @@ impl TlsFront {
         self.crl_requests.load(Ordering::Acquire)
     }
 
-    /// The TLS sessions completed so far, in order.
-    pub fn sessions(&self) -> Vec<Session> {
-        self.sessions.lock().unwrap().clone()
+    fn runtime(&self) -> &Runtime {
+        self.runtime.as_ref().expect("running until dropped")
     }
 }
 
-impl Drop for TlsFront {
+impl Drop for TestPki {
     fn drop(&mut self) {
         if let Some(runtime) = self.runtime.take() {
             runtime.shutdown_background();
         }
         let _ = std::fs::remove_dir_all(&self.ca_dir);
+    }
+}
+
+/// A tokio listener on 127.0.0.1 and a free port, for `runtime`.
+fn bind(runtime: &Runtime) -> (TcpListener, SocketAddr) {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind 127.0.0.1:0");
+    listener
+        .set_nonblocking(true)
+        .expect("a non-blocking listener");
+    let addr = listener.local_addr().expect("local address");
+    let _entered = runtime.enter();
+    (
+        TcpListener::from_std(listener).expect("a tokio listener"),
+        addr,
+    )
+}
+
+/// A running TLS front on 127.0.0.1 and a free port, with its revocation-list server. It stops,
+/// and removes its CA file, when dropped.
+pub struct TlsFront {
+    addr: SocketAddr,
+    sessions: Arc<Mutex<Vec<Session>>>,
+    pki: TestPki,
+}
+
+impl TlsFront {
+    /// Starts a front for `backend` that presents `leaf` and offers `alpn`.
+    pub fn start(backend: SocketAddr, leaf: Leaf, alpn: Alpn) -> Self {
+        let pki = TestPki::start(leaf);
+        let (listener, addr) = bind(pki.runtime());
+        let acceptor = TlsAcceptor::from(pki.server_config(Some(alpn)));
+        let sessions = Arc::<Mutex<Vec<Session>>>::default();
+        pki.runtime()
+            .spawn(accept(listener, acceptor, backend, Arc::clone(&sessions)));
+        TlsFront {
+            addr,
+            sessions,
+            pki,
+        }
+    }
+
+    pub fn addr(&self) -> SocketAddr {
+        self.addr
+    }
+
+    /// `https://localhost:<port>/<name>`.
+    pub fn url(&self, name: &str) -> String {
+        format!("https://localhost:{}/{name}", self.addr.port())
+    }
+
+    /// The test CA as a PEM file, for the client to trust (`CURLOPT_CAINFO`).
+    pub fn ca_file(&self) -> &Path {
+        self.pki.ca_file()
+    }
+
+    /// The test CA's common name, unique to this front.
+    pub fn ca_name(&self) -> &str {
+        self.pki.ca_name()
+    }
+
+    /// The test CA's certificate.
+    pub fn ca_der(&self) -> CertificateDer<'static> {
+        self.pki.ca_der()
+    }
+
+    /// Where the leaf's revocation list is served.
+    pub fn crl_url(&self) -> &str {
+        self.pki.crl_url()
+    }
+
+    /// How many times the revocation list was fetched.
+    pub fn crl_requests(&self) -> u32 {
+        self.pki.crl_requests()
+    }
+
+    /// The TLS sessions completed so far, in order.
+    pub fn sessions(&self) -> Vec<Session> {
+        self.sessions.lock().unwrap().clone()
     }
 }
 
