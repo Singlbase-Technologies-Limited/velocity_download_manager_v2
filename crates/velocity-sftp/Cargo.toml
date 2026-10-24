@@ -1,0 +1,18 @@
+[package]
+name = "velocity-sftp"
+description = "The SFTP layer of Velocity Download Manager V2: the only crate that calls russh (ADR-0013)"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+rust-version.workspace = true
+
+# russh and russh-sftp, with ring (PO decision on #53, ADR-0013). velocity-curl for the fetch types
+# every transport shares (its pipe.rs); this crate never calls libcurl.
+[dependencies]
+velocity-curl = { path = "../velocity-curl" }
+russh.workspace = true
+russh-sftp.workspace = true
+tokio = { workspace = true, features = ["sync"] }
+
+[dev-dependencies]
+velocity-test-http = { path = "../velocity-test-http" }
