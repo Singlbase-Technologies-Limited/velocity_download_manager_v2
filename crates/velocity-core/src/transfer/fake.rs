@@ -202,6 +202,19 @@ impl FakeControl {
         s.changed(id);
     }
 
+    /// The transfer's snapshot as the fake holds it now.
+    pub fn snapshot(&self, id: TransferId) -> TransferSnapshot {
+        lock(&self.state).transfers[&id].snapshot.clone()
+    }
+
+    /// Reports the name the file is saved under, as an engine does once it knows it (#40).
+    pub fn named(&self, id: TransferId, file_name: &str) {
+        let mut s = lock(&self.state);
+        let t = s.transfers.get_mut(&id).expect("known transfer");
+        t.snapshot.file_name = Some(file_name.to_owned());
+        s.changed(id);
+    }
+
     /// Sends an arbitrary event, for example one about a transfer that doesn't exist.
     pub fn emit(&self, event: TransferEvent) {
         lock(&self.state).emit(event);
@@ -240,6 +253,7 @@ impl DirectTransfer for FakeTransfer {
             wasted_bytes: 0,
             error: None,
             verification: None,
+            file_name: spec.file_name.clone(),
         };
         s.transfers.insert(id, Transfer { spec, snapshot });
         s.changed(id);

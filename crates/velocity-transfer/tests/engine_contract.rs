@@ -58,9 +58,14 @@ impl Drop for Dir {
 fn spec(url: String, destination: PathBuf) -> TransferSpec {
     TransferSpec {
         urls: vec![url],
-        destination,
+        directory: destination.parent().expect("a folder").to_owned(),
+        file_name: destination
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned()),
         credentials: None,
         headers: Vec::new(),
+        referrer: None,
+        user_agent: None,
         checksum: None,
         pieces: None,
         limits: Limits::default(),
@@ -441,24 +446,40 @@ fn refuses_bad_commands_with_their_codes() {
             "{mode}"
         );
         assert_eq!(
-            engine.add(spec("ftp://example.com/a".into(), PathBuf::from("a"))),
+            engine.add(spec(
+                "ftp://example.com/a".into(),
+                PathBuf::from(".").join("a")
+            )),
             Err(ErrorCode::UnsupportedScheme),
             "{mode}"
         );
         assert_eq!(
-            engine.add(spec("not a url".into(), PathBuf::from("a"))),
+            engine.add(spec("not a url".into(), PathBuf::from(".").join("a"))),
             Err(ErrorCode::InvalidUrl),
             "{mode}"
         );
-        let mut empty = spec("https://example.com/a".into(), PathBuf::from("a"));
+        let mut empty = spec("https://example.com/a".into(), PathBuf::from(".").join("a"));
         empty.urls.clear();
         assert_eq!(engine.add(empty), Err(ErrorCode::InvalidInput), "{mode}");
-        let mut short = spec("https://example.com/a".into(), PathBuf::from("a"));
+        let mut short = spec("https://example.com/a".into(), PathBuf::from(".").join("a"));
         short.checksum = Some(Checksum {
             algorithm: HashAlgorithm::Sha256,
             hex: "ab".repeat(31),
         });
         assert_eq!(engine.add(short), Err(ErrorCode::InvalidInput), "{mode}");
+        // A login travels as `credentials`, never in a URL; a name is one safe component (#40).
+        let login = spec(
+            "https://u:p@example.com/a".into(),
+            PathBuf::from(".").join("a"),
+        );
+        assert_eq!(engine.add(login), Err(ErrorCode::InvalidUrl), "{mode}");
+        let mut climbing = spec("https://example.com/a".into(), PathBuf::from(".").join("a"));
+        climbing.file_name = Some("../a".to_owned());
+        assert_eq!(
+            engine.add(climbing),
+            Err(ErrorCode::InvalidFilename),
+            "{mode}"
+        );
     }
 }
 

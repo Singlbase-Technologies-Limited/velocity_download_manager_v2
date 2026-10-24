@@ -378,9 +378,15 @@ impl DirectTransfer for InProcessEngine {
     fn add(&mut self, spec: TransferSpec) -> Result<TransferId, ErrorCode> {
         let url = spec.urls.first().ok_or(ErrorCode::InvalidInput)?.clone();
         check_url(&url)?;
-        if spec.destination.as_os_str().is_empty() {
+        if spec.directory.as_os_str().is_empty() {
             return Err(ErrorCode::InvalidPath);
         }
+        spec.check_request()?;
+        // Naming a file from the server's answer comes with the next step of #40.
+        let Some(file_name) = spec.file_name.clone() else {
+            return Err(ErrorCode::Unsupported);
+        };
+        let destination = spec.directory.join(&file_name);
         spec.limits.check()?;
         let expected = Expected {
             checksum: spec
@@ -419,6 +425,7 @@ impl DirectTransfer for InProcessEngine {
             wasted_bytes: 0,
             error: None,
             verification: None,
+            file_name: Some(file_name),
         };
         state.transfers.insert(
             id,
@@ -427,7 +434,7 @@ impl DirectTransfer for InProcessEngine {
                 control: Arc::new(Control::default()),
                 job: Job {
                     url,
-                    destination: spec.destination.clone(),
+                    destination,
                     connections,
                     expected,
                 },

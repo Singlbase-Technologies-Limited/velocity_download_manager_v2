@@ -2,6 +2,8 @@
 //! `Content-Disposition`, a browser's suggestion (#40). Ported from V1's `validation.rs`; the
 //! category, conflict and rename settings built on them are #31's.
 
+use crate::domain::ErrorCode;
+
 /// The longest file name, in bytes, kept on every platform.
 pub const MAX_FILE_NAME_BYTES: usize = 240;
 /// The name used when nothing usable is left.
@@ -49,6 +51,16 @@ pub fn sanitize_file_name(name: &str) -> String {
         out.push('_');
     }
     shorten(&out, "")
+}
+
+/// `InvalidFilename` unless `name` is already a safe file name: one that sanitising leaves as it
+/// is. Used for names given with a download, such as a link's or one the user typed.
+pub fn check_file_name(name: &str) -> Result<(), ErrorCode> {
+    if !name.is_empty() && sanitize_file_name(name) == name {
+        Ok(())
+    } else {
+        Err(ErrorCode::InvalidFilename)
+    }
 }
 
 /// The decoded, sanitised last path segment of `url`, or `None` when it has none.
@@ -275,6 +287,41 @@ mod tests {
         // Never cut inside a character.
         let s = sanitize_file_name(&format!("{}.zip", "é".repeat(200)));
         assert!(s.len() <= MAX_FILE_NAME_BYTES && s.ends_with(".zip"), "{s}");
+    }
+
+    #[test]
+    fn a_given_name_must_already_be_safe() {
+        for good in [
+            "report.pdf",
+            "Annual report (1).pdf",
+            "résumé.txt",
+            "download",
+        ] {
+            assert_eq!(check_file_name(good), Ok(()), "{good}");
+        }
+        let long = "x".repeat(MAX_FILE_NAME_BYTES + 1);
+        for bad in [
+            "",
+            ".",
+            "..",
+            "a/b",
+            "a\\b",
+            "CON",
+            "con.txt",
+            "x.",
+            "a:b",
+            " a",
+            ".hidden",
+            "a.vdmpart",
+            "nul\0",
+            &long,
+        ] {
+            assert_eq!(
+                check_file_name(bad),
+                Err(ErrorCode::InvalidFilename),
+                "{bad:?}"
+            );
+        }
     }
 
     #[test]

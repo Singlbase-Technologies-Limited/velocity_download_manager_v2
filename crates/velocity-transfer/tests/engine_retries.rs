@@ -57,9 +57,14 @@ fn part_of(dest: &Path) -> PathBuf {
 fn spec(url: String, destination: PathBuf, connections: u32) -> TransferSpec {
     TransferSpec {
         urls: vec![url],
-        destination,
+        directory: destination.parent().expect("a folder").to_owned(),
+        file_name: destination
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned()),
         credentials: None,
         headers: Vec::new(),
+        referrer: None,
+        user_agent: None,
         checksum: None,
         pieces: None,
         limits: Limits::default(),

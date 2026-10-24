@@ -175,8 +175,26 @@ mod tests {
 
     #[test]
     fn the_largest_piece_list_a_spec_may_carry_fits_in_one_message() {
-        use velocity_core::transfer::{HashAlgorithm, Limits, PieceHashes, TransferSpec};
+        use velocity_core::request::{
+            MAX_HEADERS, MAX_HEADER_NAME_BYTES, MAX_HEADER_VALUE_BYTES, MAX_LOGIN_PART_BYTES,
+            MAX_URL_BYTES, MAX_USER_AGENT_BYTES,
+        };
+        use velocity_core::transfer::{
+            Credentials, HashAlgorithm, Header, Limits, PieceHashes, TransferSpec,
+        };
         use HashAlgorithm::*;
+        // The request options at their largest, each character one JSON escapes into two (#40).
+        let quotes = |n: usize| "\"".repeat(n);
+        let headers: Vec<Header> = (0..MAX_HEADERS)
+            .map(|i| Header {
+                name: format!("X-{i:0>width$}", width = MAX_HEADER_NAME_BYTES - 2),
+                value: quotes(MAX_HEADER_VALUE_BYTES),
+            })
+            .collect();
+        let credentials = Credentials {
+            user_name: quotes(MAX_LOGIN_PART_BYTES),
+            password: quotes(MAX_LOGIN_PART_BYTES),
+        };
         for algorithm in [Md5, Sha1, Sha224, Sha256, Sha384, Sha512] {
             let most = PieceHashes::MAX_HEX_BYTES / algorithm.hex_len();
             let list = |count: usize| PieceHashes {
@@ -191,9 +209,15 @@ mod tests {
             let spec = TransferSpec {
                 // A long URL and mirrors, so the rest of the spec isn't empty.
                 urls: vec![format!("https://example.com/{}", "p".repeat(8000)); 8],
-                destination: "d".repeat(4000).into(),
-                credentials: None,
-                headers: Vec::new(),
+                directory: "d".repeat(4000).into(),
+                file_name: Some("f".repeat(240)),
+                credentials: Some(credentials.clone()),
+                headers: headers.clone(),
+                referrer: Some(format!(
+                    "https://example.com/{}",
+                    "r".repeat(MAX_URL_BYTES - 20)
+                )),
+                user_agent: Some(quotes(MAX_USER_AGENT_BYTES)),
                 checksum: None,
                 pieces: Some(
                     list(most)
@@ -224,7 +248,7 @@ mod tests {
         };
         assert_eq!(
             serde_json::to_string(&start).unwrap(),
-            r#"{"type":"start","protocol":2,"contract":7,"firstTransferId":12}"#
+            r#"{"type":"start","protocol":2,"contract":8,"firstTransferId":12}"#
         );
         let refused = FromChild::Reply {
             seq: 7,

@@ -47,7 +47,8 @@ const MANAGED_HEADERS: &[&str] = &[
 ];
 
 /// `InvalidInput` unless every header has a valid name (an RFC 9110 token) and a value without
-/// CR, LF or NUL, within the limits, and none is one the engine manages itself.
+/// control characters but tab (so no CR or LF to start another header), within the limits, and
+/// none is one the engine manages itself.
 pub fn check_headers(headers: &[Header]) -> Result<(), ErrorCode> {
     if headers.len() > MAX_HEADERS {
         return Err(ErrorCode::InvalidInput);
@@ -59,7 +60,7 @@ pub fn check_headers(headers: &[Header]) -> Result<(), ErrorCode> {
             && h.name.chars().all(token)
             && !MANAGED_HEADERS.contains(&h.name.to_ascii_lowercase().as_str())
             && h.value.len() <= MAX_HEADER_VALUE_BYTES
-            && !h.value.contains(['\r', '\n', '\0'])
+            && !h.value.chars().any(|c| c.is_control() && c != '\t')
     };
     if headers.iter().all(valid) {
         Ok(())
@@ -157,6 +158,8 @@ mod tests {
             header("Cookie", "a=1; b=2"),
             header("X-Custom_Thing.1", "any value: with colons"),
             header("Accept", ""),
+            header("X-Tab", "a\tb"),
+            header("X-Unicode", "résumé"),
         ];
         assert_eq!(check_headers(&headers), Ok(()));
     }
@@ -164,6 +167,18 @@ mod tests {
     #[test]
     fn a_header_value_cannot_inject_another_header() {
         for value in ["a\r\nInjected: 1", "a\nb", "a\rb", "a\0b"] {
+            assert_eq!(
+                check_headers(&[header("X-A", value)]),
+                Err(ErrorCode::InvalidInput),
+                "{value:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_header_value_has_no_control_character_but_tab() {
+        // RFC 9110 §5.5: field values are visible characters, spaces and tabs.
+        for value in ["a\u{1}b", "a\u{1b}[31m", "a\u{7f}b", "a\u{85}b"] {
             assert_eq!(
                 check_headers(&[header("X-A", value)]),
                 Err(ErrorCode::InvalidInput),

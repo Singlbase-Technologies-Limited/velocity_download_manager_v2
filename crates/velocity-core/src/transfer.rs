@@ -12,6 +12,10 @@ pub(crate) mod fake;
 use crate::domain::{
     Capabilities, DownloadStatus, ErrorCode, Progress, TransferError, Verification,
 };
+use crate::naming::check_file_name;
+use crate::request::{
+    check_credentials, check_headers, check_referrer, check_user_agent, split_login,
+};
 use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::path::PathBuf;
@@ -26,19 +30,17 @@ use std::sync::mpsc::Receiver;
 /// Version 6 (#46) added [`TransferSnapshot::verification`], [`TransferSpec::pieces`], and SHA-224
 /// and SHA-384 to [`HashAlgorithm`]; engines now check a [`TransferSpec::checksum`].
 /// Version 7 (#57) added the performance profile's limits: [`DirectTransfer::set_engine_limits`].
-pub const TRANSFER_CONTRACT_VERSION: u32 = 7;
+/// Version 8 (#40) replaced `destination` with [`TransferSpec::directory`] and
+/// [`TransferSpec::file_name`], the credential handle with [`Credentials`], added
+/// [`TransferSpec::referrer`], [`TransferSpec::user_agent`] and [`TransferSnapshot::file_name`];
+/// engines now send headers and logins.
+pub const TRANSFER_CONTRACT_VERSION: u32 = 8;
 
 /// An engine's id for one transfer. Assigned by the engine, never reused, and never shown as the
 /// app's download id.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct TransferId(pub u64);
-
-/// Refers to credentials the app keeps in memory (#70). Only the handle crosses the contract; the
-/// user name and password never do, so they can't reach a checkpoint, a log or a message.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(transparent)]
-pub struct CredentialHandle(pub u64);
 
 /// A custom request header. Its value may be a secret (a cookie, a token), so `Debug` never
 /// prints it.
@@ -253,11 +255,23 @@ impl Default for EngineLimits {
 pub struct TransferSpec {
     /// The source and any mirrors, primary first, with credentials removed. Never empty.
     pub urls: Vec<String>,
-    /// The final file path. The engine writes to a part file beside it and renames it only after
-    /// verification (#43, #46).
-    pub destination: PathBuf,
-    pub credentials: Option<CredentialHandle>,
+    /// The folder the file is saved in. The engine writes to a part file there and renames it only
+    /// after verification (#43, #46).
+    pub directory: PathBuf,
+    /// The file's name in [`TransferSpec::directory`]; `None` to take the server's (#40): its
+    /// `Content-Disposition`, else the final URL's last segment. A new download whose name is
+    /// taken gets a free one (`a (1).zip`); the engine reports the name it uses in
+    /// [`TransferSnapshot::file_name`]. A resume always gives the name.
+    pub file_name: Option<String>,
+    /// A login for the server of the first URL only (#40).
+    pub credentials: Option<Credentials>,
+    /// Custom request headers, checked by [`crate::request::check_headers`]. Dropped, with the
+    /// login and the referrer, once a redirect leaves the first URL's origin.
     pub headers: Vec<Header>,
+    /// Sent as `Referer`.
+    pub referrer: Option<String>,
+    /// Sent as `User-Agent`; `None` for [`crate::request::default_user_agent`].
+    pub user_agent: Option<String>,
     pub checksum: Option<Checksum>,
     /// Trusted piece hashes (#46); `None` until a Metalink file supplies them (#54).
     pub pieces: Option<PieceHashes>,
@@ -266,6 +280,32 @@ pub struct TransferSpec {
     pub max_connections: u32,
     /// How to treat what an earlier attempt left on disk (#43). `None` for a new download.
     pub resume: Option<Resume>,
+}
+
+impl TransferSpec {
+    /// Checks what a user or the browser may set on the requests (#40): no login in a URL, a safe
+    /// file name, and valid headers, referrer, user agent and login. A resume must give the name.
+    pub fn check_request(&self) -> Result<(), ErrorCode> {
+        if self.urls.iter().any(|url| split_login(url).1.is_some()) {
+            return Err(ErrorCode::InvalidUrl);
+        }
+        match &self.file_name {
+            Some(name) => check_file_name(name)?,
+            None if self.resume.is_some() => return Err(ErrorCode::InvalidInput),
+            None => {}
+        }
+        check_headers(&self.headers)?;
+        if let Some(referrer) = &self.referrer {
+            check_referrer(referrer)?;
+        }
+        if let Some(user_agent) = &self.user_agent {
+            check_user_agent(user_agent)?;
+        }
+        if let Some(credentials) = &self.credentials {
+            check_credentials(credentials)?;
+        }
+        Ok(())
+    }
 }
 
 /// The format of [`Checkpoint`]. A checkpoint in another format isn't used.
@@ -336,6 +376,9 @@ pub struct TransferSnapshot {
     pub error: Option<TransferError>,
     /// What was proven about the file's bytes once it completed; `None` until then (#46).
     pub verification: Option<Verification>,
+    /// The name the file is saved under, once the engine knows it (#40): the spec's, or the
+    /// server's, either made free when taken.
+    pub file_name: Option<String>,
 }
 
 /// Something that happened to a transfer, pushed by the engine.
@@ -506,12 +549,18 @@ mod tests {
     pub(crate) fn spec() -> TransferSpec {
         TransferSpec {
             urls: vec!["https://example.com/a.zip".to_owned()],
-            destination: PathBuf::from("downloads/a.zip"),
-            credentials: Some(CredentialHandle(7)),
+            directory: PathBuf::from("downloads"),
+            file_name: Some("a.zip".to_owned()),
+            credentials: Some(Credentials {
+                user_name: "alice".to_owned(),
+                password: "hunter2".to_owned(),
+            }),
             headers: vec![Header {
                 name: "Cookie".to_owned(),
                 value: "session=secret-value".to_owned(),
             }],
+            referrer: Some("https://example.com/page".to_owned()),
+            user_agent: None,
             checksum: Some(Checksum {
                 algorithm: HashAlgorithm::Sha256,
                 hex: "ab".repeat(32),
@@ -661,6 +710,7 @@ mod tests {
                 "Not found",
             )),
             verification: None,
+            file_name: Some("a.zip".to_owned()),
         }
     }
 
@@ -859,16 +909,69 @@ mod tests {
     }
 
     #[test]
-    fn credentials_cross_only_as_a_handle() {
+    fn a_login_crosses_the_contract_in_memory_with_its_spec() {
         let json = serde_json::to_value(spec()).unwrap();
-        assert_eq!(json["credentials"], 7);
+        assert_eq!(json["credentials"]["userName"], "alice");
+        assert_eq!(json["directory"], "downloads");
+        assert_eq!(json["fileName"], "a.zip");
+        assert_eq!(json["referrer"], "https://example.com/page");
+        assert!(json["userAgent"].is_null());
+        let back: TransferSpec = serde_json::from_value(json).unwrap();
+        assert_eq!(back, spec());
     }
 
     #[test]
-    fn debug_output_never_shows_header_values() {
+    fn debug_output_never_shows_header_values_or_logins() {
         let shown = format!("{:?}", spec());
-        assert!(!shown.contains("secret-value"), "{shown}");
+        for secret in ["secret-value", "alice", "hunter2"] {
+            assert!(!shown.contains(secret), "{secret} in {shown}");
+        }
         assert!(shown.contains("Cookie"));
+    }
+
+    #[test]
+    fn a_spec_with_valid_request_options_passes_its_check() {
+        assert_eq!(spec().check_request(), Ok(()));
+        let unnamed = TransferSpec {
+            file_name: None,
+            resume: None,
+            ..spec()
+        };
+        assert_eq!(unnamed.check_request(), Ok(()));
+    }
+
+    #[test]
+    fn a_spec_with_unsafe_request_options_is_refused() {
+        let with = |change: fn(&mut TransferSpec)| {
+            let mut s = spec();
+            change(&mut s);
+            s.check_request()
+        };
+        let invalid = Err(ErrorCode::InvalidInput);
+        assert_eq!(
+            with(|s| s.headers[0].value = "a\r\nX: 1".to_owned()),
+            invalid
+        );
+        assert_eq!(with(|s| s.user_agent = Some("a\nb".to_owned())), invalid);
+        assert_eq!(
+            with(|s| s.credentials.as_mut().unwrap().user_name = "a:b".to_owned()),
+            invalid
+        );
+        assert_eq!(
+            with(|s| s.referrer = Some("file:///etc".to_owned())),
+            Err(ErrorCode::InvalidUrl)
+        );
+        // A login stays out of URLs: it travels as `credentials`.
+        assert_eq!(
+            with(|s| s.urls = vec!["https://u:p@example.com/a.zip".to_owned()]),
+            Err(ErrorCode::InvalidUrl)
+        );
+        assert_eq!(
+            with(|s| s.file_name = Some("../a.zip".to_owned())),
+            Err(ErrorCode::InvalidFilename)
+        );
+        // A resume continues a file that has its name already.
+        assert_eq!(with(|s| s.file_name = None), invalid);
     }
 
     #[test]
@@ -876,7 +979,7 @@ mod tests {
         let mut engine = FakeTransfer::new();
         let control = engine.control();
         let id = engine.add(spec()).unwrap();
-        assert_eq!(control.spec(id).credentials, Some(CredentialHandle(7)));
+        assert_eq!(control.spec(id).credentials, spec().credentials);
 
         let limits = Limits {
             max_download_bps: None,
