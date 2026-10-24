@@ -86,9 +86,14 @@ impl Drop for Dir {
 fn spec(url: String, destination: &Path, resume: Option<Resume>) -> TransferSpec {
     TransferSpec {
         urls: vec![url],
-        destination: destination.to_owned(),
+        directory: destination.parent().expect("a folder").to_owned(),
+        file_name: destination
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned()),
         credentials: None,
         headers: Vec::new(),
+        referrer: None,
+        user_agent: None,
         checksum: None,
         pieces: None,
         limits: Limits::default(),

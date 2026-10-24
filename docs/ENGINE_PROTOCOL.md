@@ -22,7 +22,7 @@ The app doesn't use the supervisor yet; the manager is wired to it in #58.
   - on Linux, `SSL_CERT_FILE` and `SSL_CERT_DIR`, which tell OpenSSL where the trust store is when they are set.
 
   Proxy variables are dropped with the rest ([ADR-0008](decisions/0008-proxy-support.md)).
-- **Secrets:** credentials will cross only the pipe, never arguments or the environment (#70). Today the engine refuses a transfer with credentials or custom headers as `Unsupported`.
+- **Secrets:** logins and custom header values cross only the pipe, inside an `add` command's spec, never arguments or the environment (#40, PO decision). `Debug` output never shows them ([ENGINE_CONTRACT.md](ENGINE_CONTRACT.md#secrets)).
 - **No console window:** on Windows the engine starts with `CREATE_NO_WINDOW`.
 
 ## Framing

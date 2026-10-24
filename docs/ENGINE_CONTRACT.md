@@ -2,7 +2,7 @@
 
 The manager talks to a direct-download engine (HTTP, FTP, SFTP, Metalink) only through the `DirectTransfer` contract in [`crates/velocity-core/src/transfer.rs`](../crates/velocity-core/src/transfer.rs) (#36, [ADR-0002](decisions/0002-engine-crate-layout.md)). The manager never sees libcurl types, engine-internal ids or aria2 vocabulary. Torrent operations (trackers, peers, file priorities, seeding, magnet metadata) are not part of this contract; they belong to the torrent bridge (research report section 4.2).
 
-Contract version: `TRANSFER_CONTRACT_VERSION = 6`. Raise it with any incompatible change to a command, reply, event or type. Version 2 added checkpoints (#43), version 3 the global speed limit (#49), version 4 the connection detail in snapshots (#47), version 5 the checkpoint's `contentEncoding` (#45), version 6 integrity (#46): checked checksums with SHA-224 and SHA-384, `pieces` in the spec, and `verification` in snapshots, and version 7 the performance profile (#57): `set_engine_limits`, and capabilities per protocol.
+Contract version: `TRANSFER_CONTRACT_VERSION = 8`. Raise it with any incompatible change to a command, reply, event or type. Version 2 added checkpoints (#43), version 3 the global speed limit (#49), version 4 the connection detail in snapshots (#47), version 5 the checkpoint's `contentEncoding` (#45), version 6 integrity (#46): checked checksums with SHA-224 and SHA-384, `pieces` in the spec, and `verification` in snapshots, version 7 the performance profile (#57): `set_engine_limits`, and capabilities per protocol, and version 8 HTTP details (#40): `directory` and an optional `fileName` in place of `destination`, `credentials` in place of the credential handle, `referrer` and `userAgent` in the spec, and `fileName` in snapshots.
 
 ## Commands
 
@@ -25,10 +25,15 @@ A limit below 1 KiB/s (`Limits::MIN_BPS`), in a spec or a command, is refused wi
 
 ## Types
 
-- **`TransferSpec`:** URLs (primary first, then mirrors; never empty, credentials removed), the final destination path, a credential handle, custom headers, an optional trusted checksum, optional trusted piece hashes, limits, and the requested connection count.
+- **`TransferSpec`:** URLs (primary first, then mirrors; never empty, with no login in them), the folder and an optional file name, a login, custom headers, a referrer, a user agent, an optional trusted checksum, optional trusted piece hashes, limits, and the requested connection count. `TransferSpec::check_request` checks what a user or the browser may set, and the engine runs it on `add` (#40):
+  - **`directory` and `fileName`:** the file goes in `directory`. Without a `fileName`, the server names it ([ENGINE_INTERNALS.md](ENGINE_INTERNALS.md#file-names-40)). A given name must be one safe component (`naming::check_file_name`, else `InvalidFilename`), and is refused with `FileExists` when taken; #31 adds the conflict settings. A spec with a `resume` must give the name (`InvalidInput`).
+  - **`credentials`:** `{ userName, password }`, sent as HTTP Basic only to the first URL's origin. The user name has no colon, and neither part has a control character or exceeds 1 KiB. A URL with a login in it is refused with `InvalidUrl`; `request::split_login` moves it out.
+  - **`headers`:** at most 32, each an RFC 9110 token name with a value of at most 8 KiB without control characters but tab. Headers the engine manages itself are refused: `Host`, `Content-Length`, `Range`, `If-Range`, `Accept-Encoding`, `Connection`, `Transfer-Encoding`, `TE`, `Upgrade`, `Expect`, `Keep-Alive`, `Proxy-Connection`, `Proxy-Authorization`, `Referer` and `User-Agent`. They go only to the first URL's origin.
+  - **`referrer`:** an `http` or `https` URL without a login, at most 8 KiB, sent as `Referer` with every request.
+  - **`userAgent`:** at most 256 bytes without control characters, sent with every request. Without one, `VelocityDownloadManager/<version>` (`request::default_user_agent`, PO decision on #40).
   - **`checksum`:** `{ algorithm, hex }`, with `md5`, `sha1`, `sha224`, `sha256`, `sha384` or `sha512`, the six V1 accepts. A digest that isn't hexadecimal, or doesn't have its algorithm's length (32, 40, 56, 64, 96 or 128 characters), is refused with `InvalidInput`; uppercase is accepted. The whole file is checked before it is renamed into place.
   - **`pieces`:** `{ algorithm, length, hex }`, one digest per `length` bytes, the last piece ending with the file, such as a Metalink file's `<pieces>` (#54 fills it). `InvalidInput` for a bad digest, pieces under 1 KiB (`PieceHashes::MIN_LENGTH`), or no pieces, or more digests than 2 MiB of hex (`MAX_HEX_BYTES`), so that a spec always fits in one message to the engine's child process: 32,768 SHA-256 digests, 32 GiB of file in 1 MiB pieces. Each piece is checked once covered, and a bad one is fetched again.
-- **`TransferSnapshot`:** the id, a `DownloadStatus`, `Progress` (accepted bytes only; the connections in use now, and `connectionDetail` while a direct transfer runs), `wasted_bytes`, the last `TransferError`, and `verification`: what was proven about the bytes once the transfer completed, `null` until then ([ENGINE_INTERNALS.md](ENGINE_INTERNALS.md#what-was-proven)).
+- **`TransferSnapshot`:** the id, a `DownloadStatus`, `Progress` (accepted bytes only; the connections in use now, and `connectionDetail` while a direct transfer runs), `wasted_bytes`, the last `TransferError`, `verification`: what was proven about the bytes once the transfer completed, `null` until then ([ENGINE_INTERNALS.md](ENGINE_INTERNALS.md#what-was-proven)), and `fileName`: the name the file is saved under, `null` until the server named it.
 - **`TransferEvent`:** `changed { snapshot }` or `removed { id }`.
 
 A direct engine reports only these statuses: Queued, Connecting, Downloading, Retrying, Stalled, Paused, Verifying, Completed, Failed and Removed. "Cancelled" in the research report is Removed here.
@@ -59,8 +64,9 @@ A direct engine reports only these statuses: Queued, Connecting, Downloading, Re
 
 ## Secrets
 
-- **Credentials** cross the contract only as a `CredentialHandle`, an opaque number. The app keeps the user name and password in memory (#70), so they can't reach a checkpoint, a log or a message.
-- **Header values** may be secrets (cookies, tokens). They cross the contract in memory, because the engine must send them, but `Debug` output of a `Header` or `TransferSpec` always shows `<redacted>` (tested).
+- **Logins** cross the contract in memory, because the engine must send them (PO decision on #40). To an engine in a child process they go only through its pipe, never its arguments or environment ([ADR-0012](decisions/0012-engine-child-process.md)). They never reach a checkpoint, the database or a log. `Debug` output of `Credentials`, a `TransferSpec` or the libcurl layer's `RequestOptions` shows `<redacted>` for both parts (tested). The keychain and the secret-leak scan are #70's and #71's.
+- **Header values** may be secrets (cookies, tokens). They cross the contract the same way, and `Debug` output of a `Header`, a `TransferSpec` or `RequestOptions` never shows them (tested).
+- **Only to the first origin:** the login and the custom headers go only to the first URL's origin (scheme, host and port, as libcurl reads the URL). Once a redirect leaves it, no request carries them ([ENGINE_INTERNALS.md](ENGINE_INTERNALS.md#redirects-40)).
 
 ## Across a process boundary
 

@@ -94,6 +94,28 @@ pub struct FileHeaders {
     pub date: Option<String>,
     /// Sent as `Content-Encoding`, without encoding anything: the bytes are what the client stores.
     pub content_encoding: Option<String>,
+    /// Sent as `Content-Disposition`, as given (#40).
+    pub content_disposition: Option<String>,
+}
+
+/// The body of every redirect the server sends (#40).
+pub const REDIRECT_BODY: &str = "<html><body>Moved</body></html>";
+
+/// One request as the server read it: its path and headers (#40).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SeenRequest {
+    pub path: String,
+    pub headers: Vec<(String, String)>,
+}
+
+impl SeenRequest {
+    /// The first header with this name, compared without case.
+    pub fn header(&self, name: &str) -> Option<&str> {
+        self.headers
+            .iter()
+            .find(|(k, _)| k.eq_ignore_ascii_case(name))
+            .map(|(_, v)| v.as_str())
+    }
 }
 
 /// After the first `after` GETs, every GET is answered from `data` with `headers` instead, whatever
@@ -154,6 +176,8 @@ pub struct Counters {
     pub peak_answering: u32,
     /// HTTP/2 streams the client reset (`RST_STREAM`) before their last byte (#47).
     pub streams_reset: u32,
+    /// Every HTTP/1.1 request, redirected ones included, in arrival order (#40).
+    pub requests: Vec<SeenRequest>,
 }
 
 /// Counts one response in [`Counters::answering`] while it lives.
@@ -482,6 +506,10 @@ fn serve_connection(
         let head = req.method == "HEAD";
         let gets = {
             let mut c = counters.lock().unwrap();
+            c.requests.push(SeenRequest {
+                path: req.path.clone(),
+                headers: req.headers.clone(),
+            });
             if head {
                 c.heads += 1;
             } else {
@@ -518,9 +546,15 @@ fn serve_connection(
             }
         }
         if let Some((_, location)) = options.redirects.iter().find(|(p, _)| *p == req.path) {
+            // With a body, as servers send one: a client must never take it for the file's bytes.
+            let body = REDIRECT_BODY;
             let _ = out.write_all(
-                format!("HTTP/1.1 302 Found\r\nLocation: {location}\r\nContent-Length: 0\r\n\r\n")
-                    .as_bytes(),
+                format!(
+                    "HTTP/1.1 302 Found\r\nLocation: {location}\r\nContent-Type: text/html\r\n\
+                     Content-Length: {}\r\n\r\n{body}",
+                    body.len()
+                )
+                .as_bytes(),
             );
             if close {
                 return;
@@ -764,6 +798,11 @@ pub(crate) fn answer<'a>(
         file.content_encoding
             .clone()
             .map(|v| ("Content-Encoding", v)),
+    );
+    headers.extend(
+        file.content_disposition
+            .clone()
+            .map(|v| ("Content-Disposition", v)),
     );
     let (status, reason, body): (u16, &'static str, &[u8]) = match (mode, range) {
         (RangeMode::Ignore, _) | (_, None) => (200, "OK", data),

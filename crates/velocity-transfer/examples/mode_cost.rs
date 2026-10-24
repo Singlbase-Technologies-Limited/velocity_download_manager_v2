@@ -226,9 +226,14 @@ impl Engine {
 fn spec(url: &str, destination: PathBuf, connections: u32) -> TransferSpec {
     TransferSpec {
         urls: vec![url.to_string()],
-        destination,
+        directory: destination.parent().expect("a folder").to_owned(),
+        file_name: destination
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned()),
         credentials: None,
         headers: Vec::new(),
+        referrer: None,
+        user_agent: None,
         checksum: None,
         pieces: None,
         limits: Limits::default(),

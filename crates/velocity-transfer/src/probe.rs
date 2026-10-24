@@ -312,6 +312,7 @@ mod tests {
                 .map(|(k, v)| ((*k).to_owned(), (*v).to_owned()))
                 .collect(),
             http2: false,
+            url: "http://example.com/f".to_owned(),
         }
     }
 

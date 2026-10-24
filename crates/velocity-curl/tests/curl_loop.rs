@@ -1,10 +1,11 @@
 //! The libcurl loop against the local test server (#37): real libcurl, real sockets.
 
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use velocity_curl::{
     CurlFailure, CurlLoop, Fetch, FetchError, FetchEvent, FetchRequest, Gate, Libcurl, LoopOptions,
-    RateLimit, ResponseHead,
+    RateLimit, RequestOptions, ResponseHead,
 };
 use velocity_test_http::{seeded_bytes, RangeMode, ServerOptions, TestServer};
 
@@ -321,7 +322,13 @@ fn a_redirect_to_a_protocol_outside_the_allowlist_is_refused() {
     let l = start_loop(LoopOptions::default());
     let o = collect(&l.fetch(FetchRequest::get(s.url("go")), accept_all), None);
     assert!(
-        matches!(o.done, Err(FetchError::Curl { .. })),
+        matches!(
+            o.done,
+            Err(FetchError::RedirectRefused {
+                kind: CurlFailure::Refused,
+                ..
+            })
+        ),
         "{:?}",
         o.done
     );
@@ -346,8 +353,8 @@ fn reports_an_error_status_to_the_gate() {
     assert_eq!(o.done, Err(FetchError::Aborted("HTTP 404".into())));
 }
 
-/// libcurl's own default would follow a redirect to FTP; V2's allowlist allows only HTTP(S)
-/// redirects, so libcurl must refuse it before connecting (CURLE_UNSUPPORTED_PROTOCOL).
+/// libcurl's own default would follow a redirect to FTP; V2 allows only HTTP(S) redirects, and
+/// Velocity, which follows redirects itself (#40), refuses it before connecting.
 #[test]
 fn a_redirect_to_ftp_is_refused_by_the_redirect_allowlist() {
     let (s, _) = serve(
@@ -361,12 +368,173 @@ fn a_redirect_to_ftp_is_refused_by_the_redirect_allowlist() {
     let l = start_loop(LoopOptions::default());
     let o = collect(&l.fetch(FetchRequest::get(s.url("go")), accept_all), None);
     match o.done {
-        Err(FetchError::Curl { kind, code, .. }) => {
-            assert_eq!(code, 1, "expected CURLE_UNSUPPORTED_PROTOCOL");
+        Err(FetchError::RedirectRefused { kind, message }) => {
             assert_eq!(kind, CurlFailure::Refused);
+            assert!(message.contains("ftp://"), "{message}");
         }
         other => panic!("expected a refused redirect, got {other:?}"),
     }
+    assert!(o.data.is_empty());
+}
+
+/// What a fetch sends with each request (#40): the login as Basic, `alice:hunter2`.
+fn options() -> Arc<RequestOptions> {
+    Arc::new(RequestOptions {
+        user_agent: Some("VelocityTest/1".to_owned()),
+        referrer: Some("https://example.com/page".to_owned()),
+        headers: vec![
+            ("X-Custom".to_owned(), "custom-value".to_owned()),
+            ("Cookie".to_owned(), "session=secret".to_owned()),
+            ("X-Empty".to_owned(), String::new()),
+        ],
+        login: Some(("alice".to_owned(), "hunter2".to_owned())),
+    })
+}
+
+const BASIC: &str = "Basic YWxpY2U6aHVudGVyMg==";
+
+#[test]
+fn sends_the_user_agent_referrer_custom_headers_and_login() {
+    let (s, data) = serve("a.bin", 1000, ServerOptions::default());
+    let l = start_loop(LoopOptions::default());
+    let request = FetchRequest::get(s.url("a.bin")).with_options(options());
+    let o = collect(&l.fetch(request, accept_all), None);
+    assert_eq!(o.done, Ok(()));
+    assert!(o.data == data);
+    let seen = &s.counters().requests[0];
+    assert_eq!(seen.header("User-Agent"), Some("VelocityTest/1"));
+    assert_eq!(seen.header("Referer"), Some("https://example.com/page"));
+    assert_eq!(seen.header("X-Custom"), Some("custom-value"));
+    assert_eq!(seen.header("Cookie"), Some("session=secret"));
+    assert_eq!(seen.header("X-Empty"), Some(""));
+    assert_eq!(seen.header("Authorization"), Some(BASIC));
+}
+
+#[test]
+fn a_redirect_within_the_origin_keeps_everything_and_never_delivers_its_body() {
+    let (s, data) = serve(
+        "a.bin",
+        1000,
+        ServerOptions {
+            redirects: vec![("/go".into(), "/a.bin".into())],
+            ..ServerOptions::default()
+        },
+    );
+    let l = start_loop(LoopOptions::default());
+    let request = FetchRequest::get(s.url("go")).with_options(options());
+    let o = collect(&l.fetch(request, accept_all), None);
+    assert_eq!(o.done, Ok(()));
+    assert!(
+        o.data == data,
+        "only the file's bytes, never the redirect's body"
+    );
+    let head = o.head.expect("the final head");
+    assert_eq!(head.status, 200);
+    assert_eq!(head.url, s.url("a.bin"));
+    let requests = s.counters().requests;
+    assert_eq!(
+        requests.iter().map(|r| r.path.as_str()).collect::<Vec<_>>(),
+        ["/go", "/a.bin"]
+    );
+    for seen in &requests {
+        assert_eq!(seen.header("Authorization"), Some(BASIC), "{}", seen.path);
+        assert_eq!(
+            seen.header("X-Custom"),
+            Some("custom-value"),
+            "{}",
+            seen.path
+        );
+        assert_eq!(
+            seen.header("Cookie"),
+            Some("session=secret"),
+            "{}",
+            seen.path
+        );
+    }
+}
+
+#[test]
+fn a_redirect_to_another_origin_drops_the_login_cookie_and_custom_headers() {
+    let (other, data) = serve("a.bin", 1000, ServerOptions::default());
+    let (first, _) = serve(
+        "unused.bin",
+        10,
+        ServerOptions {
+            // Another port is another origin.
+            redirects: vec![("/go".into(), other.url("a.bin"))],
+            ..ServerOptions::default()
+        },
+    );
+    let l = start_loop(LoopOptions::default());
+    let request = FetchRequest::get(first.url("go")).with_options(options());
+    let o = collect(&l.fetch(request, accept_all), None);
+    assert_eq!(o.done, Ok(()));
+    assert!(o.data == data);
+    assert_eq!(o.head.expect("the final head").url, other.url("a.bin"));
+    let sent = &first.counters().requests[0];
+    assert_eq!(sent.header("Authorization"), Some(BASIC));
+    let seen = &other.counters().requests[0];
+    for secret in ["Authorization", "Cookie", "X-Custom", "X-Empty"] {
+        assert_eq!(
+            seen.header(secret),
+            None,
+            "{secret} reached the other origin"
+        );
+    }
+    // Not secrets: they still go.
+    assert_eq!(seen.header("User-Agent"), Some("VelocityTest/1"));
+    assert_eq!(seen.header("Referer"), Some("https://example.com/page"));
+}
+
+#[test]
+fn a_redirect_loop_stops_after_ten_redirects() {
+    let (s, _) = serve(
+        "a.bin",
+        10,
+        ServerOptions {
+            redirects: vec![("/loop".into(), "/loop".into())],
+            ..ServerOptions::default()
+        },
+    );
+    let l = start_loop(LoopOptions::default());
+    let o = collect(&l.fetch(FetchRequest::get(s.url("loop")), accept_all), None);
+    assert!(
+        matches!(
+            o.done,
+            Err(FetchError::RedirectRefused {
+                kind: CurlFailure::TooManyRedirects,
+                ..
+            })
+        ),
+        "{:?}",
+        o.done
+    );
+    assert!(o.data.is_empty());
+    // The first request and ten redirects followed.
+    assert_eq!(s.counters().requests.len(), 11);
+}
+
+#[test]
+fn refuses_a_header_that_would_break_the_request() {
+    let (s, _) = serve("a.bin", 10, ServerOptions::default());
+    let l = start_loop(LoopOptions::default());
+    let bad = Arc::new(RequestOptions {
+        headers: vec![("X-A".to_owned(), "a\r\nInjected: 1".to_owned())],
+        ..RequestOptions::default()
+    });
+    let o = collect(
+        &l.fetch(
+            FetchRequest::get(s.url("a.bin")).with_options(bad),
+            accept_all,
+        ),
+        None,
+    );
+    assert!(
+        matches!(o.done, Err(FetchError::Curl { .. })),
+        "{:?}",
+        o.done
+    );
+    assert_eq!(s.counters().requests.len(), 0, "nothing was sent");
 }
 
 /// `.invalid` never resolves (RFC 6761 §6.4), so this needs no network.

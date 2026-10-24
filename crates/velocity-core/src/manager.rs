@@ -153,15 +153,9 @@ impl Manager {
             return Err(ErrorCode::Unsupported);
         }
         let source_url = spec.urls.first().cloned().ok_or(ErrorCode::InvalidUrl)?;
-        let file_name = spec
-            .destination
-            .file_name()
-            .map(|n| n.to_string_lossy().into_owned());
-        let directory = spec
-            .destination
-            .parent()
-            .map(|d| d.to_string_lossy().into_owned())
-            .unwrap_or_default();
+        // No name yet when the server names the file; the engine reports it (#40).
+        let file_name = spec.file_name.clone();
+        let directory = spec.directory.to_string_lossy().into_owned();
         let paused =
             options.start_paused || (!self.settings.start_immediately && !options.scheduled);
 
@@ -493,6 +487,9 @@ impl Manager {
                 record.progress = snapshot.progress;
                 record.error = snapshot.error;
                 record.verification = snapshot.verification;
+                if snapshot.file_name.is_some() {
+                    record.file_name = snapshot.file_name;
+                }
                 if record.status == DownloadStatus::Completed && record.completed_at_ms.is_none() {
                     record.completed_at_ms = Some(now_ms);
                 }
@@ -532,9 +529,12 @@ mod tests {
     fn spec() -> TransferSpec {
         TransferSpec {
             urls: vec!["https://example.com/files/a.zip".to_owned()],
-            destination: PathBuf::from("downloads").join("a.zip"),
+            directory: PathBuf::from("downloads"),
+            file_name: Some("a.zip".to_owned()),
             credentials: None,
             headers: Vec::new(),
+            referrer: None,
+            user_agent: None,
             checksum: None,
             pieces: None,
             limits: Limits::default(),
@@ -679,6 +679,39 @@ mod tests {
     }
 
     #[test]
+    fn a_download_the_server_names_takes_the_name_the_engine_reports() {
+        let fake = FakeTransfer::new();
+        let control = fake.control();
+        let mut m = Manager::new(Box::new(fake));
+        let unnamed = TransferSpec {
+            urls: vec!["https://example.com/download.php?id=3".to_owned()],
+            file_name: None,
+            ..spec()
+        };
+        let id = m.add(DownloadKind::Http, unnamed, T0).unwrap();
+        m.pump(T0);
+        assert_eq!(m.get(&id).unwrap().file_name, None);
+        control.named(TransferId(1), "report (1).pdf");
+        m.pump(T0);
+        assert_eq!(
+            m.get(&id).unwrap().file_name.as_deref(),
+            Some("report (1).pdf")
+        );
+        // A later snapshot that doesn't repeat the name keeps it.
+        control.emit(TransferEvent::Changed {
+            snapshot: TransferSnapshot {
+                file_name: None,
+                ..control.snapshot(TransferId(1))
+            },
+        });
+        m.pump(T0);
+        assert_eq!(
+            m.get(&id).unwrap().file_name.as_deref(),
+            Some("report (1).pdf")
+        );
+    }
+
+    #[test]
     fn events_for_unknown_transfers_are_ignored() {
         let (mut m, control, id) = setup();
         let mut stray = TransferSnapshot {
@@ -688,6 +721,7 @@ mod tests {
             wasted_bytes: 0,
             error: None,
             verification: None,
+            file_name: None,
         };
         stray.progress.completed_bytes = 999;
         control.emit(TransferEvent::Changed { snapshot: stray });
@@ -781,7 +815,7 @@ mod tests {
 
         fn named(name: &str) -> TransferSpec {
             TransferSpec {
-                destination: PathBuf::from("downloads").join(name),
+                file_name: Some(name.to_owned()),
                 ..spec()
             }
         }
@@ -807,14 +841,7 @@ mod tests {
         fn started(control: &FakeControl) -> Vec<String> {
             let adds = control.log().iter().filter(|c| *c == "add").count() as u64;
             (1..=adds)
-                .map(|n| {
-                    let spec = control.spec(TransferId(n));
-                    spec.destination
-                        .file_name()
-                        .unwrap()
-                        .to_string_lossy()
-                        .into_owned()
-                })
+                .map(|n| control.spec(TransferId(n)).file_name.unwrap())
                 .collect()
         }
 
@@ -1050,10 +1077,7 @@ mod tests {
             assert_eq!(message, Some(ErrorCode::EngineUnavailable.user_message()));
             control.set_unavailable(None);
             add(&mut m, "c");
-            assert_eq!(
-                control.spec(TransferId(2)).destination.file_name().unwrap(),
-                "c"
-            );
+            assert_eq!(control.spec(TransferId(2)).file_name.as_deref(), Some("c"));
         }
 
         #[test]

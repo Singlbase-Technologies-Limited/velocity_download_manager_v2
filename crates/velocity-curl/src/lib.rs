@@ -9,7 +9,9 @@ compile_error!("the test-h2c feature is for test builds only");
 mod capabilities;
 mod fetch;
 mod rate;
+mod redirect;
 mod runtime;
+mod url;
 
 pub use capabilities::{
     check, IncompatibleCurl, LinkedCurl, Problem, ALLOWED_PROTOCOLS, EXPECTED_TLS, LIBCURL_FLOOR,
@@ -17,7 +19,8 @@ pub use capabilities::{
 };
 pub use fetch::{
     CurlFailure, CurlLoop, Fetch, FetchError, FetchEvent, FetchLimit, FetchRequest, Gate,
-    LoopError, LoopOptions, ResponseHead,
+    LoopError, LoopOptions, RequestOptions, ResponseHead,
 };
 pub use rate::RateLimit;
 pub use runtime::{Libcurl, StartError};
+pub use url::{origin, Origin};

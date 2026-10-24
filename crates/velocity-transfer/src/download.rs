@@ -27,12 +27,16 @@ use std::thread;
 use std::time::{Duration, Instant, SystemTime};
 
 use velocity_core::domain::{DownloadStatus, FailureClass, TransferError, Verification};
+use velocity_core::naming::{
+    file_name_from_content_disposition, file_name_from_url, free_file_name, FALLBACK_FILE_NAME,
+    PART_FILE_SUFFIX,
+};
 use velocity_core::transfer::{
     Checkpoint, Checksum, HashAlgorithm, PieceHashes, Resume, CHECKPOINT_FORMAT,
 };
 use velocity_curl::{
     CurlLoop, Fetch, FetchError, FetchEvent, FetchLimit, FetchRequest, Gate, RateLimit,
-    ResponseHead,
+    RequestOptions, ResponseHead,
 };
 
 use crate::adaptive::{AdaptivePolicy, Ramp, Tuning};
@@ -64,6 +68,8 @@ type ProgressFn = Box<dyn Fn(u64, Option<u64>) + Send + Sync>;
 type CheckpointFn = Box<dyn Fn(Checkpoint) + Send + Sync>;
 /// Called when the download starts waiting to retry, stalls, or receives bytes again.
 type StatusFn = Box<dyn Fn(DownloadStatus) + Send + Sync>;
+/// Called with the name a download into a folder chose, once its part file has it (#40).
+type NamedFn = Box<dyn Fn(&str) + Send + Sync>;
 
 /// Lets a caller follow, pause and stop a running download (the engine, #37, #43).
 #[derive(Default)]
@@ -96,6 +102,33 @@ pub struct Control {
     tuned: Mutex<Option<(u32, Tuning)>>,
     /// The requests go on connections of their own, not as HTTP/2 streams of one (#47).
     own_connections: AtomicBool,
+    /// What every request of the download carries (#40): user agent, referrer, custom headers
+    /// and login, the last two only for the first URL's origin.
+    request: Arc<RequestOptions>,
+    named: Option<NamedFn>,
+}
+
+/// Gives a request what every request of its download carries: its speed limits (#49) and its
+/// request options (#40).
+trait ForDownload {
+    fn with_control(self, control: &Control) -> FetchRequest;
+}
+
+impl ForDownload for FetchRequest {
+    fn with_control(self, control: &Control) -> FetchRequest {
+        self.limited(&control.limits)
+            .with_options(Arc::clone(&control.request))
+    }
+}
+
+/// Where a download's file goes (#40).
+#[derive(Clone, Copy, Debug)]
+pub enum Target<'a> {
+    /// This path.
+    File(&'a Path),
+    /// A new file in this folder, named from the server's first answer: its `Content-Disposition`,
+    /// else the final URL, sanitised and made free (`a (1).zip`) if taken.
+    Folder(&'a Path),
 }
 
 /// The connections a download runs now, and what of its own holds it back (#47).
@@ -141,6 +174,19 @@ impl Control {
     /// and the global one (#49).
     pub fn with_limits(mut self, limits: Vec<RateLimit>) -> Self {
         self.limits = limits;
+        self
+    }
+
+    /// `options` go with every request of the download (#40).
+    pub fn with_request(mut self, options: RequestOptions) -> Self {
+        self.request = Arc::new(options);
+        self
+    }
+
+    /// `named` is called with the name a download into a folder chose ([`Target::Folder`]), once
+    /// its part file has it (#40).
+    pub fn with_naming(mut self, named: impl Fn(&str) + Send + Sync + 'static) -> Self {
+        self.named = Some(Box::new(named));
         self
     }
 
@@ -403,33 +449,62 @@ pub fn download_resumable(
     expected: &Expected,
     control: &Control,
 ) -> Result<DownloadReport, DownloadError> {
+    download_to(
+        lp,
+        url,
+        Target::File(destination),
+        options,
+        resume,
+        expected,
+        control,
+    )
+}
+
+/// [`download_resumable`] to a [`Target`] (#40). A download into a folder is always a new one:
+/// its part file is created once the server's first answer named the file, which `control`
+/// hears of ([`Control::with_naming`]); before that nothing is on disk, so a `resume` for it is
+/// ignored.
+pub fn download_to(
+    lp: &CurlLoop,
+    url: &str,
+    target: Target,
+    options: DownloadOptions,
+    resume: Option<&Resume>,
+    expected: &Expected,
+    control: &Control,
+) -> Result<DownloadReport, DownloadError> {
     let checksum = expected.checksum.as_ref();
-    // symlink_metadata doesn't follow a link: a dangling link at the destination still counts.
-    if fs::symlink_metadata(destination).is_ok() {
-        return Err(DownloadError::FileExists);
-    }
-    let path = part_path(destination);
     let mut part = None;
     let mut from = None;
-    if let Some(Resume::Checkpoint { checkpoint }) = resume {
-        if let Some(durable) = trusted(checkpoint, url) {
-            match files::open_part(&path) {
-                Ok(file) => {
-                    part = Some(PartFile::resumed(path.clone(), file, durable));
-                    from = Some(checkpoint);
+    match target {
+        Target::File(destination) => {
+            // symlink_metadata doesn't follow a link: a dangling link at the destination counts.
+            if fs::symlink_metadata(destination).is_ok() {
+                return Err(DownloadError::FileExists);
+            }
+            let path = part_path(destination);
+            if let Some(Resume::Checkpoint { checkpoint }) = resume {
+                if let Some(durable) = trusted(checkpoint, url) {
+                    match files::open_part(&path) {
+                        Ok(file) => {
+                            part = Some(PartFile::resumed(path.clone(), file, durable));
+                            from = Some(checkpoint);
+                        }
+                        Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+                        Err(e) => return Err(io_error("open the part file", &path, &e)),
+                    }
                 }
-                Err(e) if e.kind() == io::ErrorKind::NotFound => {}
-                Err(e) => return Err(io_error("open the part file", &path, &e)),
+            }
+            if part.is_none() {
+                if resume.is_some() {
+                    discard(&path)?;
+                }
+                part = Some(PartFile::create(path)?);
             }
         }
+        Target::Folder(directory) => part = Some(PartFile::pending(directory.to_owned())),
     }
-    if part.is_none() && resume.is_some() {
-        discard(&path)?;
-    }
-    let mut part = match part {
-        Some(p) => p,
-        None => PartFile::create(path)?,
-    };
+    let mut part = part.expect("a part file for every target");
     if let Some(checksum) = checksum {
         part.hash_with(checksum.algorithm)?;
     }
@@ -500,7 +575,13 @@ pub fn download_resumable(
     match outcome {
         Ok(fetched) => {
             let (written, wasted, sparse) = (part.written, part.wasted, part.sparse);
-            if let Err(e) = part.finish(fetched.total, destination, checksum, control) {
+            let destination = match target {
+                Target::File(destination) => destination.to_owned(),
+                Target::Folder(_) => part.destination.clone().ok_or_else(|| {
+                    DownloadError::Io("the server's answer never named the file".to_owned())
+                })?,
+            };
+            if let Err(e) = part.finish(fetched.total, &destination, checksum, control) {
                 if matches!(e, DownloadError::IntegrityFailed(_)) {
                     ck.distrust(control);
                 }
@@ -762,7 +843,8 @@ fn paused_in_probe(
     ck: &mut Checkpointer,
     control: &Control,
 ) -> Result<Fetched, DownloadError> {
-    if let Some(total) = total {
+    // A download into a folder that has no byte yet has no part file to checkpoint (#40).
+    if let (Some(total), false) = (total, part.is_pending()) {
         ck.file = file;
         ck.take_probe(part, total, control)?;
     }
@@ -892,10 +974,10 @@ impl Checkpointer {
     }
 }
 
-/// `<destination>.vdmpart`.
+/// `<destination>.vdmpart` ([`PART_FILE_SUFFIX`]).
 pub(crate) fn part_path(destination: &Path) -> PathBuf {
     let mut p = destination.as_os_str().to_owned();
-    p.push(".vdmpart");
+    p.push(PART_FILE_SUFFIX);
     PathBuf::from(p)
 }
 
@@ -1033,43 +1115,44 @@ fn probe(
     let validators: Arc<Mutex<Option<Answered>>> = Arc::default();
     let changed: Arc<Mutex<Option<TransferError>>> = Arc::default();
     let retry_after = RetryAfter::default();
-    let (verdict, saw_multipart, seen, other, asked) = (
+    // What names the file when the download goes into a folder (#40).
+    let name_source: Arc<Mutex<Option<NameSource>>> = Arc::default();
+    let (verdict, saw_multipart, seen, other, asked, naming) = (
         Arc::clone(&probe_verdict),
         Arc::clone(&multipart),
         Arc::clone(&validators),
         Arc::clone(&changed),
         retry_after.clone(),
+        Arc::clone(&name_source),
     );
     let earlier = earlier.cloned();
-    let fetch = lp.fetch(
-        request.limited(&control.limits),
-        move |head: &ResponseHead| {
-            asked.note(head);
-            if is_multipart(head) {
-                saw_multipart.store(true, Ordering::Release);
-                return Gate::Abort("a multipart/byteranges answer to one range".to_owned());
+    let fetch = lp.fetch(request.with_control(control), move |head: &ResponseHead| {
+        asked.note(head);
+        if is_multipart(head) {
+            saw_multipart.store(true, Ordering::Release);
+            return Gate::Abort("a multipart/byteranges answer to one range".to_owned());
+        }
+        let result = classify_probe(head, probe_end);
+        if let Ok(outcome) = &result {
+            if let Some(Err(why)) = earlier.as_ref().map(|e| e.check(head, outcome)) {
+                // The bytes written so far are another answer's (#45).
+                let e = TransferError::new(FailureClass::Permanent, Some(head.status), &why);
+                *other.lock().expect("the changed lock") = Some(e);
+                return Gate::Abort(why);
             }
-            let result = classify_probe(head, probe_end);
-            if let Ok(outcome) = &result {
-                if let Some(Err(why)) = earlier.as_ref().map(|e| e.check(head, outcome)) {
-                    // The bytes written so far are another answer's (#45).
-                    let e = TransferError::new(FailureClass::Permanent, Some(head.status), &why);
-                    *other.lock().expect("the changed lock") = Some(e);
-                    return Gate::Abort(why);
-                }
-                *seen.lock().expect("the validators lock") = Some(Answered {
-                    file: Representation::of(head),
-                    length: single_stream_length(outcome),
-                });
-            }
-            let gate = match &result {
-                Ok(_) => Gate::Accept,
-                Err(e) => Gate::Abort(e.message.clone()),
-            };
-            *verdict.lock().expect("the probe verdict lock") = Some(result);
-            gate
-        },
-    );
+            *seen.lock().expect("the validators lock") = Some(Answered {
+                file: Representation::of(head),
+                length: single_stream_length(outcome),
+            });
+            *naming.lock().expect("the name source lock") = Some(NameSource::of(head));
+        }
+        let gate = match &result {
+            Ok(_) => Gate::Accept,
+            Err(e) => Gate::Abort(e.message.clone()),
+        };
+        *verdict.lock().expect("the probe verdict lock") = Some(result);
+        gate
+    });
     // The probe's bytes start at 0; how far they may go depends on its outcome.
     let mut cursor = 0u64;
     let drained = drain(&fetch, control, policy, |chunk| {
@@ -1088,6 +1171,11 @@ fn probe(
             Some(Ok(ProbeOutcome::SingleStream { length })) => (None, *length),
             _ => (None, None),
         };
+        if part.is_pending() {
+            // The first byte of a download into a folder: the answer names its part file now.
+            let source = name_source.lock().expect("the name source lock").clone();
+            part.name_from(&source.unwrap_or_default(), control)?;
+        }
         part.accept(&mut cursor, limit, chunk)?;
         control.report(part.written, total);
         // With a total, ranges work, so the probe's bytes can be resumed from: checkpoint them.
@@ -1138,6 +1226,11 @@ fn probe(
         if !matches!(outcome, ProbeOutcome::RangesOk { .. }) {
             return retryable(e, &retry_after, answered);
         }
+    }
+    if part.is_pending() {
+        // An answer without a body byte, such as an empty file, names the file too (#40).
+        let source = name_source.lock().expect("the name source lock").clone();
+        part.name_from(&source.unwrap_or_default(), control)?;
     }
     let file = answered.map(|a| a.file).unwrap_or_default();
     Ok(Ok(Probed::Outcome(outcome, cursor, file)))
@@ -1326,7 +1419,7 @@ fn request(
         ..asking.base.clone()
     }
     .if_range(asking.file.if_range())
-    .limited(&control.limits);
+    .with_control(control);
     let (total, file) = (asking.total, asking.file.clone());
     let fetch = lp.fetch(fetch_request, move |head: &ResponseHead| {
         asked.note(head);
@@ -1725,7 +1818,7 @@ fn fetch_sequential(
         let fetch = lp.fetch(
             FetchRequest::range(url.to_owned(), from, None)
                 .if_range(file.if_range())
-                .limited(&control.limits),
+                .with_control(control),
             move |head: &ResponseHead| {
                 asked.note(head);
                 let result = check_continuation(head, from, &same);
@@ -1838,7 +1931,7 @@ fn stream_gaps(
         let asked = retry_after.clone();
         let same = file.cloned();
         let fetch = lp.fetch(
-            FetchRequest::get(url.to_owned()).limited(&control.limits),
+            FetchRequest::get(url.to_owned()).with_control(control),
             move |head: &ResponseHead| {
                 asked.note(head);
                 let length = head
@@ -2069,6 +2162,50 @@ struct PartFile {
     pieces: Option<PieceCheck>,
     /// What an earlier attempt left that this one trusts: a resume's durable ranges.
     earlier: Coverage,
+    /// A download into a folder before the server named its file (#40): no file yet.
+    pending: Option<Pending>,
+    /// The finished file's path, once a download into a folder named it (#40).
+    destination: Option<PathBuf>,
+}
+
+/// What a part file still waiting for its name starts once it has one (#40).
+struct Pending {
+    directory: PathBuf,
+    hash: Option<HashAlgorithm>,
+    pieces: Option<PieceHashes>,
+}
+
+/// What names a file in a folder (#40): the answer's `Content-Disposition`, and its URL after any
+/// redirects.
+#[derive(Clone, Debug, Default)]
+struct NameSource {
+    disposition: Option<String>,
+    url: String,
+}
+
+impl NameSource {
+    fn of(head: &ResponseHead) -> Self {
+        NameSource {
+            disposition: head.header("content-disposition").map(str::to_owned),
+            url: head.url.clone(),
+        }
+    }
+
+    /// The `Content-Disposition` name, else the URL's last segment, else the fallback; sanitised.
+    fn file_name(&self) -> String {
+        self.disposition
+            .as_deref()
+            .and_then(file_name_from_content_disposition)
+            .or_else(|| file_name_from_url(&self.url))
+            .unwrap_or_else(|| FALLBACK_FILE_NAME.to_owned())
+    }
+}
+
+/// A name is taken by a file, a link or a part file of that name in `directory`.
+fn is_taken(directory: &Path, name: &str) -> bool {
+    let path = directory.join(name);
+    // symlink_metadata doesn't follow a link: a dangling link counts.
+    fs::symlink_metadata(&path).is_ok() || fs::symlink_metadata(part_path(&path)).is_ok()
 }
 
 impl PartFile {
@@ -2076,39 +2213,104 @@ impl PartFile {
     /// removed on a failure, renamed on success.
     fn create(path: PathBuf) -> Result<Self, DownloadError> {
         let new = new_part(&path)?;
-        Ok(PartFile {
-            path,
-            file: Some(new.file),
-            coverage: Coverage::default(),
-            written: 0,
-            wasted: 0,
-            keep: false,
-            sparse: new.sparse,
-            frontier: None,
-            pieces: None,
-            earlier: Coverage::default(),
-        })
+        let mut part = PartFile::empty();
+        part.path = path;
+        part.file = Some(new.file);
+        part.sparse = new.sparse;
+        Ok(part)
     }
 
     /// The download's own part file, reopened to resume: only `durable` is trusted.
     fn resumed(path: PathBuf, file: File, durable: Coverage) -> Self {
-        PartFile {
-            path,
-            file: Some(file),
-            earlier: durable.clone(),
+        let mut part = PartFile::empty();
+        part.path = path;
+        part.file = Some(file);
+        part.earlier = durable.clone();
+        part.coverage = durable;
+        part
+    }
+
+    /// A part file for a download into `directory`, created once the server names the file
+    /// ([`PartFile::name_from`]). Until then nothing is on disk.
+    fn pending(directory: PathBuf) -> Self {
+        let mut part = PartFile::empty();
+        part.pending = Some(Pending {
+            directory,
+            hash: None,
             pieces: None,
-            coverage: durable,
+        });
+        part
+    }
+
+    fn empty() -> Self {
+        PartFile {
+            path: PathBuf::new(),
+            file: None,
+            coverage: Coverage::default(),
             written: 0,
             wasted: 0,
             keep: false,
             sparse: false,
             frontier: None,
+            pieces: None,
+            earlier: Coverage::default(),
+            pending: None,
+            destination: None,
         }
+    }
+
+    fn is_pending(&self) -> bool {
+        self.pending.is_some()
+    }
+
+    /// Names a pending part file from `source` and creates it: the server's name, sanitised, or
+    /// the first free `name (n).ext` when it is taken, so no file is ever replaced (PO decision on
+    /// #40). The checks it waited for start, and `control` hears the name. Does nothing once named.
+    fn name_from(&mut self, source: &NameSource, control: &Control) -> Result<(), DownloadError> {
+        let Some(pending) = self.pending.take() else {
+            return Ok(());
+        };
+        let wanted = source.file_name();
+        let mut lost = Vec::new();
+        let name = loop {
+            let name = free_file_name(&wanted, |n| {
+                lost.iter().any(|l| l == n) || is_taken(&pending.directory, n)
+            })
+            .ok_or(DownloadError::FileExists)?;
+            let destination = pending.directory.join(&name);
+            let path = part_path(&destination);
+            match files::create_part(&path) {
+                Ok(new) => {
+                    self.path = path;
+                    self.file = Some(new.file);
+                    self.sparse = new.sparse;
+                    self.destination = Some(destination);
+                    break name;
+                }
+                // Taken since it was checked, by another download: the next free name.
+                Err(e) if e.kind() == io::ErrorKind::AlreadyExists => lost.push(name),
+                Err(e) => return Err(io_error("create the part file", &path, &e)),
+            }
+        };
+        if let Some(algorithm) = pending.hash {
+            self.hash_with(algorithm)?;
+        }
+        if let Some(pieces) = &pending.pieces {
+            self.check_pieces(pieces)?;
+        }
+        if let Some(named) = &control.named {
+            named(&name);
+        }
+        Ok(())
     }
 
     /// Starts hashing the file with `algorithm` from byte 0, on a thread of its own (#46). What
     /// is covered already, such as a resume's durable ranges, is read back.
     fn hash_with(&mut self, algorithm: HashAlgorithm) -> Result<(), DownloadError> {
+        if let Some(pending) = &mut self.pending {
+            pending.hash = Some(algorithm);
+            return Ok(());
+        }
         // Stops the old frontier's thread first, if there is one.
         self.frontier = None;
         let file = self.file.as_ref().expect("the part file is open");
@@ -2131,6 +2333,10 @@ impl PartFile {
     /// Starts checking pieces against `hashes`, each once it is covered, on a thread of its own
     /// (#46). What is covered already, such as a resume's durable ranges, is checked too.
     fn check_pieces(&mut self, hashes: &PieceHashes) -> Result<(), DownloadError> {
+        if let Some(pending) = &mut self.pending {
+            pending.pieces = Some(hashes.clone());
+            return Ok(());
+        }
         let file = self.file.as_ref().expect("the part file is open");
         let mut pieces = file
             .try_clone()
@@ -2198,6 +2404,11 @@ impl PartFile {
 
     /// Discards what is in the part file and starts again with an empty one.
     fn start_over(&mut self) -> Result<(), DownloadError> {
+        if self.is_pending() {
+            // Nothing is on disk yet.
+            self.written = 0;
+            return Ok(());
+        }
         let algorithm = self.frontier.take().map(|(algorithm, _)| algorithm);
         drop(self.file.take());
         discard(&self.path)?;
@@ -2221,6 +2432,9 @@ impl PartFile {
 
     /// Syncs what was written to disk.
     fn sync(&self) -> Result<(), DownloadError> {
+        if self.is_pending() {
+            return Ok(());
+        }
         self.file
             .as_ref()
             .expect("the part file is open")
@@ -2348,7 +2562,8 @@ impl PartFile {
 
 impl Drop for PartFile {
     fn drop(&mut self) {
-        if !self.keep {
+        // A download into a folder that never got its name created nothing.
+        if !self.keep && !self.path.as_os_str().is_empty() {
             drop(self.file.take());
             // Only the part file this download created is removed, never through a link. A
             // failure here leaves it behind, and the next download refuses to reuse it.

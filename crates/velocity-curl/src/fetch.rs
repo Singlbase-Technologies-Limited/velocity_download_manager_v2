@@ -28,12 +28,13 @@ use curl::easy::{Easy2, Handler, List, WriteError};
 use curl::multi::{Easy2Handle, Multi, MultiWaker};
 
 use crate::rate::{self, RateLimit};
+use crate::redirect::{next_hop, Refusal};
 use crate::runtime::Libcurl;
+use crate::url::{origin, Origin};
 
 /// Protocols a fetch may use, and the ones a redirect may lead to. SFTP joins when #53 builds it.
 const PROTOCOLS: &str = "http,https,ftp";
 const REDIRECT_PROTOCOLS: &str = "http,https";
-const MAX_REDIRECTS: u32 = 10;
 /// The longest the loop waits for sockets before checking commands and timers again. Commands also
 /// wake it at once; this only bounds a missed wakeup.
 const POLL_CAP: Duration = Duration::from_millis(100);
@@ -58,6 +59,35 @@ pub struct FetchRequest {
     /// A strong validator sent as `If-Range` with the range (#45): a server whose file no longer
     /// matches it answers the whole new file as `200` instead (RFC 9110 §13.1.5).
     pub if_range: Option<String>,
+    /// What the download adds to its requests (#40), shared by all of them.
+    pub options: Arc<RequestOptions>,
+}
+
+/// What a download adds to its requests (#40). The login and the custom headers go only to the
+/// first URL's origin; the user agent and the referrer go with every request. `Debug` never shows
+/// a header value or the login.
+#[derive(Clone, Default, PartialEq, Eq)]
+pub struct RequestOptions {
+    /// `User-Agent`; none is sent without one.
+    pub user_agent: Option<String>,
+    /// `Referer`.
+    pub referrer: Option<String>,
+    /// Custom headers, name and value; an empty value is sent as an empty header.
+    pub headers: Vec<(String, String)>,
+    /// User name and password, sent as HTTP Basic (or as the FTP login).
+    pub login: Option<(String, String)>,
+}
+
+impl std::fmt::Debug for RequestOptions {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let names: Vec<&str> = self.headers.iter().map(|(n, _)| n.as_str()).collect();
+        f.debug_struct("RequestOptions")
+            .field("user_agent", &self.user_agent)
+            .field("referrer", &self.referrer)
+            .field("headers", &names)
+            .field("login", &self.login.as_ref().map(|_| "<redacted>"))
+            .finish()
+    }
 }
 
 impl FetchRequest {
@@ -68,7 +98,14 @@ impl FetchRequest {
             limits: Vec::new(),
             own_connection: false,
             if_range: None,
+            options: Arc::default(),
         }
+    }
+
+    /// The same request, with what its download adds to every request (#40).
+    pub fn with_options(mut self, options: Arc<RequestOptions>) -> Self {
+        self.options = options;
+        self
     }
 
     pub fn range(url: String, start: u64, end: Option<u64>) -> Self {
@@ -104,6 +141,9 @@ pub struct ResponseHead {
     pub headers: Vec<(String, String)>,
     /// It came over HTTP/2: its status line says `HTTP/2` (#47).
     pub http2: bool,
+    /// The URL this response answered, after any redirects (#40): the final URL names a file
+    /// that `Content-Disposition` doesn't.
+    pub url: String,
 }
 
 impl ResponseHead {
@@ -139,6 +179,9 @@ pub enum FetchError {
         code: i64,
         message: String,
     },
+    /// Velocity refused to follow a redirect (`redirect.rs`, #40): too many, to another
+    /// protocol, or from `https` to `http`. The message names no URL.
+    RedirectRefused { kind: CurlFailure, message: String },
     /// The loop stopped before the fetch finished.
     LoopStopped,
 }
@@ -163,6 +206,8 @@ pub enum CurlFailure {
     TooManyRedirects,
     /// A URL or redirect outside the protocol allowlist, or a malformed URL.
     Refused,
+    /// A redirect from `https` to `http`, refused until the user can confirm one (#40, #67).
+    InsecureRedirect,
     /// The server's answer broke the protocol.
     Protocol,
     /// A local problem: memory, or the write side.
@@ -348,6 +393,10 @@ impl CurlLoop {
             abort: None,
             delivered: 0,
             stopped_at_limit: false,
+            first: origin(&request.url),
+            request,
+            followed: 0,
+            redirecting: false,
         };
         let fetch = Fetch {
             token,
@@ -358,7 +407,7 @@ impl CurlLoop {
             waker: self.waker.clone(),
             done: AtomicBool::new(false),
         };
-        match configure(collector, &request, &self.options) {
+        match configure(collector, &self.options) {
             Ok(easy) => self.send(Command::Start(token, Box::new(easy))),
             Err(e) => {
                 let _ = events_tx.send(FetchEvent::Done(Err(curl_error(&e))));
@@ -496,6 +545,15 @@ struct Collector {
     delivered: u64,
     /// The transfer was stopped at its limit: it ends as completed, not as an error.
     stopped_at_limit: bool,
+    /// The request, with the URL of the current hop (#40).
+    request: FetchRequest,
+    /// The first URL's origin: the login and the custom headers go only there.
+    first: Option<Origin>,
+    /// Redirects followed so far.
+    followed: u32,
+    /// The response being received is a redirect: its body is never the file's, and the loop
+    /// decides whether to follow it once it ends (`follow`).
+    redirecting: bool,
 }
 
 impl Handler for Collector {
@@ -503,21 +561,26 @@ impl Handler for Collector {
         let line = String::from_utf8_lossy(data).trim_end().to_owned();
         if line.starts_with("HTTP/") {
             self.lines.clear();
+            self.redirecting = false;
         }
         if !line.is_empty() {
             self.lines.push(line);
             return true;
         }
         // A blank line ends one response's headers.
-        let Some(head) = parse_head(&self.lines) else {
+        let Some(mut head) = parse_head(&self.lines) else {
             return true;
         };
-        // 1xx and followed redirects are intermediate responses; libcurl continues past them.
-        if head.status < 200
-            || ((300..400).contains(&head.status) && head.header("location").is_some())
-        {
+        // 1xx responses are intermediate; libcurl continues past them.
+        if head.status < 200 {
             return true;
         }
+        // A redirect: Velocity follows it itself once this response ends (#40).
+        if (300..400).contains(&head.status) && head.header("location").is_some() {
+            self.redirecting = true;
+            return true;
+        }
+        head.url = self.request.url.clone();
         let gate = (self.gate)(&head);
         let _ = self.events.send(FetchEvent::Head(head));
         match gate {
@@ -533,6 +596,10 @@ impl Handler for Collector {
     }
 
     fn write(&mut self, data: &[u8]) -> Result<usize, WriteError> {
+        if self.redirecting {
+            // A redirect's own body, such as a "Moved" page: read and dropped.
+            return Ok(data.len());
+        }
         if !self.accepted {
             // A body without an accepted head (for example an FTP response): nothing to gate.
             self.accepted = true;
@@ -579,15 +646,27 @@ fn parse_head(lines: &[String]) -> Option<ResponseHead> {
         status,
         headers,
         http2: lines.first()?.starts_with("HTTP/2"),
+        url: String::new(),
     })
 }
 
-fn configure(
-    collector: Collector,
-    request: &FetchRequest,
-    options: &LoopOptions,
-) -> Result<Easy2<Collector>, curl::Error> {
+fn configure(collector: Collector, options: &LoopOptions) -> Result<Easy2<Collector>, curl::Error> {
+    let request = collector.request.clone();
     let mut easy = Easy2::new(collector);
+    // The first URL is its own origin: the login and the custom headers go with it.
+    set_options(&mut easy, &request, true, options)?;
+    Ok(easy)
+}
+
+/// Sets every option of a request on a new or reset handle. `with_secrets` adds the login and the
+/// custom headers: only for the first URL's origin (#40).
+fn set_options(
+    easy: &mut Easy2<Collector>,
+    request: &FetchRequest,
+    with_secrets: bool,
+    options: &LoopOptions,
+) -> Result<(), curl::Error> {
+    let refused = || curl::Error::new(curl_sys::CURLE_BAD_FUNCTION_ARGUMENT);
     easy.url(&request.url)?;
     easy.connect_timeout(options.connect_timeout)?;
     easy.get(true)?;
@@ -597,22 +676,64 @@ fn configure(
             None => format!("{start}-"),
         })?;
     }
+    let mut lines = Vec::new();
     if let Some(validator) = &request.if_range {
         // The value comes from a server: a control character could end the header line and add
         // another header, so such a value is refused and nothing is sent.
         if validator.bytes().any(|b| b.is_ascii_control()) {
-            return Err(curl::Error::new(curl_sys::CURLE_BAD_FUNCTION_ARGUMENT));
+            return Err(refused());
         }
-        let mut headers = List::new();
-        headers.append(&format!("If-Range: {validator}"))?;
-        easy.http_headers(headers)?;
+        lines.push(format!("If-Range: {validator}"));
     }
-    easy.follow_location(true)?;
-    easy.max_redirections(MAX_REDIRECTS)?;
+    let extra = &request.options;
+    if with_secrets {
+        for (name, value) in &extra.headers {
+            // The engine checked them (velocity-core's check_headers); refused again here, where
+            // the line is written, rather than trusted.
+            if !is_header_line_safe(name, value) {
+                return Err(refused());
+            }
+            // libcurl sends `Name;` as an empty header, and drops `Name:`.
+            lines.push(if value.is_empty() {
+                format!("{name};")
+            } else {
+                format!("{name}: {value}")
+            });
+        }
+        if let Some((user, password)) = &extra.login {
+            easy.username(user)?;
+            easy.password(password)?;
+            // Basic only: sent with the first request, never another scheme negotiated by the
+            // server. CURLOPT_UNRESTRICTED_AUTH stays off.
+            easy.http_auth(curl::easy::Auth::new().basic(true))?;
+        }
+    }
+    if !lines.is_empty() {
+        let mut list = List::new();
+        for line in &lines {
+            list.append(line)?;
+        }
+        easy.http_headers(list)?;
+    }
+    if let Some(agent) = &extra.user_agent {
+        if !is_header_line_safe("User-Agent", agent) {
+            return Err(refused());
+        }
+        easy.useragent(agent)?;
+    }
+    if let Some(referrer) = &extra.referrer {
+        if !is_header_line_safe("Referer", referrer) {
+            return Err(refused());
+        }
+        easy.referer(referrer)?;
+    }
+    // Velocity follows redirects itself (`follow`, `redirect.rs`): libcurl would send the custom
+    // headers to another host.
+    easy.follow_location(false)?;
     // An empty proxy disables proxies, including those from http_proxy and similar variables.
     easy.proxy("")?;
-    set_string(&easy, CURLOPT_PROTOCOLS_STR, PROTOCOLS)?;
-    set_string(&easy, CURLOPT_REDIR_PROTOCOLS_STR, REDIRECT_PROTOCOLS)?;
+    set_string(easy, CURLOPT_PROTOCOLS_STR, PROTOCOLS)?;
+    set_string(easy, CURLOPT_REDIR_PROTOCOLS_STR, REDIRECT_PROTOCOLS)?;
     if request.own_connection {
         // A connection of its own, closed at the end, so no other fetch shares it (#47).
         easy.fresh_connect(true)?;
@@ -626,7 +747,72 @@ fn configure(
     if options.http2_prior_knowledge {
         easy.http_version(curl::easy::HttpVersion::V2PriorKnowledge)?;
     }
-    Ok(easy)
+    Ok(())
+}
+
+/// A header name that is an RFC 9110 token and a value without control characters but tab, so
+/// the line can't end early and start another header.
+fn is_header_line_safe(name: &str, value: &str) -> bool {
+    let token = |c: char| c.is_ascii_alphanumeric() || "!#$%&'*+-.^_`|~".contains(c);
+    !name.is_empty()
+        && name.chars().all(token)
+        && !value.chars().any(|c| c.is_control() && c != '\t')
+}
+
+/// Follows the redirect a fetch's response ended with, when Velocity's rules allow it
+/// (`redirect.rs`): the same handle, reset and set up again for the next URL, carries on under
+/// the same token. On the loop thread. On a refusal, the fetch's events and why.
+fn follow(
+    multi: &Multi,
+    handle: Easy2Handle<Collector>,
+    token: usize,
+    options: &LoopOptions,
+) -> Result<Easy2Handle<Collector>, (Sender<FetchEvent>, FetchError)> {
+    let events = handle.get_ref().events.clone();
+    let fail = |e: FetchError| (events.clone(), e);
+    let local = |what: &str, code: i64, e: String| FetchError::Curl {
+        kind: CurlFailure::Local,
+        code,
+        message: format!("the redirect couldn't be {what}: {e}"),
+    };
+    let mut easy = multi
+        .remove2(handle)
+        .map_err(|e| fail(local("followed", i64::from(e.code()), e.to_string())))?;
+    // libcurl resolves the Location against the URL it answered (CURLINFO_REDIRECT_URL).
+    let location = easy.redirect_url().ok().flatten().map(str::to_owned);
+    let collector = easy.get_mut();
+    let hop = match location {
+        Some(to) => next_hop(
+            collector.first.as_ref(),
+            &collector.request.url,
+            &to,
+            collector.followed,
+        ),
+        None => Err(Refusal {
+            kind: CurlFailure::Refused,
+            message: "a redirect without a usable Location".to_owned(),
+        }),
+    }
+    .map_err(|r| {
+        fail(FetchError::RedirectRefused {
+            kind: r.kind,
+            message: r.message,
+        })
+    })?;
+    collector.followed += 1;
+    collector.request.url = hop.url;
+    collector.redirecting = false;
+    collector.lines.clear();
+    let request = collector.request.clone();
+    // Back to libcurl's defaults, so no option of the last hop, such as the login, carries over.
+    easy.reset();
+    set_options(&mut easy, &request, hop.same_origin, options).map_err(|e| fail(curl_error(&e)))?;
+    let mut next = multi
+        .add2(easy)
+        .map_err(|e| fail(local("started", i64::from(e.code()), e.to_string())))?;
+    next.set_token(token)
+        .map_err(|e| fail(local("started", i64::from(e.code()), e.to_string())))?;
+    Ok(next)
 }
 
 /// Sets a string option that the curl crate doesn't wrap.
@@ -772,6 +958,18 @@ fn run_loop(
         });
         for (token, result) in ended {
             if let Some(handle) = active.remove(&token) {
+                if result.is_ok() && handle.get_ref().redirecting {
+                    match follow(&multi, handle, token, &options) {
+                        Ok(next) => {
+                            active.insert(token, next);
+                        }
+                        // The reader may have dropped its Fetch; then nobody is waiting.
+                        Err((events, refused)) => {
+                            let _ = events.send(FetchEvent::Done(Err(refused)));
+                        }
+                    }
+                    continue;
+                }
                 let outcome = match result {
                     Ok(()) => Ok(()),
                     // Stopped at its limit: the range it was asked for is complete.

@@ -298,7 +298,7 @@ mod tests {
     use super::*;
     use crate::domain::{DownloadKind, DownloadStatus};
     use crate::transfer::{
-        Checkpoint, CredentialHandle, Header, Limits, Resume, TransferSpec, CHECKPOINT_FORMAT,
+        Checkpoint, Credentials, Header, Limits, Resume, TransferSpec, CHECKPOINT_FORMAT,
     };
 
     /// A fresh directory for one test.
@@ -731,12 +731,18 @@ mod tests {
         let dir = Dir::new("secrets");
         let spec = TransferSpec {
             urls: vec!["https://alice:SECRET-PASS-5678@example.com/files/a.zip?x=1".to_owned()],
-            destination: PathBuf::from("/home/user/Downloads/a.zip"),
-            credentials: Some(CredentialHandle(7)),
+            directory: PathBuf::from("/home/user/Downloads"),
+            file_name: Some("a.zip".to_owned()),
+            credentials: Some(Credentials {
+                user_name: "bob-the-user".to_owned(),
+                password: "SECRET-LOGIN-9012".to_owned(),
+            }),
             headers: vec![Header {
                 name: "Cookie".to_owned(),
                 value: "session=SECRET-COOKIE-1234".to_owned(),
             }],
+            referrer: None,
+            user_agent: None,
             checksum: None,
             pieces: None,
             limits: Limits::default(),
@@ -754,7 +760,13 @@ mod tests {
             for name in dir.names() {
                 let bytes = std::fs::read(dir.0.join(&name)).unwrap();
                 let text = String::from_utf8_lossy(&bytes);
-                for secret in ["SECRET-PASS-5678", "SECRET-COOKIE-1234", "alice"] {
+                for secret in [
+                    "SECRET-PASS-5678",
+                    "SECRET-COOKIE-1234",
+                    "alice",
+                    "SECRET-LOGIN-9012",
+                    "bob-the-user",
+                ] {
                     assert!(!text.contains(secret), "{secret} in {name} ({when})");
                 }
             }

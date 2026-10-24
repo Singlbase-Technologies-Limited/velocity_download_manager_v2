@@ -97,7 +97,8 @@ pub struct NewDownload {
 
 impl NewDownload {
     /// The record for a direct download about to be handed to the engine: the first URL without
-    /// its login, the destination split into folder and name, and the options without secrets.
+    /// its login, the folder and the name (none yet when the server will name it), and the options
+    /// without secrets.
     pub fn from_transfer(
         id: &str,
         kind: DownloadKind,
@@ -105,15 +106,8 @@ impl NewDownload {
         created_at_ms: u64,
     ) -> Self {
         let (source_url, had_login) = without_login(spec.urls.first().map_or("", String::as_str));
-        let directory = spec
-            .destination
-            .parent()
-            .map(|p| p.to_string_lossy().into_owned())
-            .unwrap_or_default();
-        let file_name = spec
-            .destination
-            .file_name()
-            .map(|n| n.to_string_lossy().into_owned());
+        let directory = spec.directory.to_string_lossy().into_owned();
+        let file_name = spec.file_name.clone();
         NewDownload {
             id: id.to_owned(),
             engine: Engine::Velocity,
@@ -203,17 +197,10 @@ impl StoredDownload {
 }
 
 /// `url` without a login (`scheme://user:password@host/…` becomes `scheme://host/…`), and whether
-/// it had one.
+/// it had one ([`crate::request::split_login`]).
 pub fn without_login(url: &str) -> (String, bool) {
-    let Some(at) = url.find("://") else {
-        return (url.to_owned(), false);
-    };
-    let (scheme, rest) = url.split_at(at + 3);
-    let end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
-    match rest[..end].rfind('@') {
-        Some(login) => (format!("{scheme}{}", &rest[login + 1..]), true),
-        None => (url.to_owned(), false),
-    }
+    let (url, login) = crate::request::split_login(url);
+    (url, login.is_some())
 }
 
 const COLUMNS: &str = "id, engine, kind, status, source_url, directory, file_name, category_id, \
