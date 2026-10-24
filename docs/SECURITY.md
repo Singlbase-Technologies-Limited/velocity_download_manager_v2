@@ -73,6 +73,17 @@ How FTP downloads work is in [ENGINE_INTERNALS.md](ENGINE_INTERNALS.md#ftp-and-f
 - **An `http://` link can't require encryption:** such a spec is refused, rather than sent in clear.
 - **Not verified:** servers that require the data connection to resume the control connection's TLS session ([ENGINE_INTERNALS.md](ENGINE_INTERNALS.md#ftps-the-evaluation-51-asked-for)).
 
+## Metalink (#54)
+
+A Metalink document is untrusted input, from a file the user chose or from any link. How it's read and used is in [ENGINE_INTERNALS.md](ENGINE_INTERNALS.md#metalink-54). What protects V2:
+
+- **No entity can expand.** A document with a `<!DOCTYPE>` is refused, so it can't declare an entity: no "billion laughs", and no external entity that reads a local file or a URL. Only XML's five predefined entities and character references are read. The parser is quick-xml (PO decision on #54), which never expands custom entities itself.
+- **Bounded:** at most 16 MiB, 10,000 files, 256 sources per file, 32 levels of nesting and 8 KiB of text per value, read as a stream. A piece list fits the engine's limit (2 MiB of digests).
+- **Safe names:** every part of a file's name must be one safe name (`naming::check_file_name`): no `..`, no absolute path, no drive letter, no `\` or `:`, no reserved Windows name, no control character, no part file's name, at most 32 subfolders deep. Two files at one path, whatever their case, or a file where another file's folder is, refuse the document. One bad name refuses the whole document, never only its file.
+- **Folders inside the chosen folder:** created one level at a time; a file, a link or a reparse point in the way is refused, never followed (tested with a symbolic link on Linux and a junction on Windows).
+- **No credentials from a document:** a source with a login in it is dropped, and a Metalink download sends no login, custom header or referrer. SFTP sources are dropped, since they would need a login and a host key the user confirms.
+- **Off by default,** as in V1, so a link that turns out to be a Metalink file is just a file until the user turns Metalink on.
+
 ## SFTP host keys (#53)
 
 SSH has no certificate authority to vouch for a server, so a host key is trusted only once the user has seen and confirmed its fingerprint, and it is pinned from then on (research report section 8). How it works is in [ENGINE_INTERNALS.md](ENGINE_INTERNALS.md#host-keys); the backend is russh ([ADR-0013](decisions/0013-sftp-russh.md)).
