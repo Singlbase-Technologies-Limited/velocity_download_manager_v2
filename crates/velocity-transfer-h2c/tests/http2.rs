@@ -210,16 +210,25 @@ const ADAPTIVE: DownloadOptions = DownloadOptions {
 #[test]
 fn a_server_that_throttles_each_connection_gets_separate_connections() {
     // 1 MiB/s per TCP connection, however many streams share it: more streams don't help, so the
-    // downloader tries connections of their own, which do.
+    // downloader tries connections of their own, which do. 64 MiB, so the trial of its own
+    // connections settles before the file ends (#168).
     let (s, data) = serve(
-        32 * MIB,
+        64 * MIB,
         Http2Options {
             throttle_connection_bytes_per_sec: Some(MIB as u64),
             ..Http2Options::default()
         },
     );
     let dir = Dir::new("per-tcp");
-    let r = download(&h2c_loop(), &s.url("f.bin"), &dir.file("f"), ADAPTIVE).expect("done");
+    // 8 asked for, not 4 (#168): on a loaded machine one stream stays below the connection's cap,
+    // so the first few added streams are real gains. With 4 the stream ramp could reach its ceiling
+    // before the connection was saturated, and the trial, which starts only on "no gain", never ran
+    // (CI's Windows runner, run 40073688105). With 8 it saturates the 1 MiB/s first.
+    let options = DownloadOptions {
+        connections: 8,
+        ..ADAPTIVE
+    };
+    let r = download(&h2c_loop(), &s.url("f.bin"), &dir.file("f"), options).expect("done");
     assert!(std::fs::read(dir.file("f")).unwrap() == data);
     let c = s.counters();
     eprintln!(
