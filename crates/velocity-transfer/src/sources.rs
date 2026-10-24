@@ -33,6 +33,35 @@ pub enum Admission {
     Different(String),
 }
 
+/// How a source's first answer is taken, given the first source's (`first`, `None` before it
+/// answered), whether the download has trusted piece hashes, the answer's `total` and the
+/// download's `expected` one, and what the answer says (`file`). [`Sources::admit`] applies it;
+/// the request's header callback uses it to stop an answer that may not be mixed in.
+pub fn admission(
+    pieces: bool,
+    first: Option<&Representation>,
+    total: u64,
+    expected: u64,
+    file: &Representation,
+) -> Admission {
+    if total != expected {
+        return Admission::Different(format!(
+            "it has another size: {total} bytes, not {expected}"
+        ));
+    }
+    if first.is_some_and(|f| f.encoding != file.encoding) {
+        return Admission::Different("it sends the file with another Content-Encoding".to_owned());
+    }
+    let same = first
+        .and_then(|f| f.validator.as_ref())
+        .is_some_and(|v| file.validator.as_ref() == Some(v));
+    if pieces || same {
+        Admission::Joined
+    } else {
+        Admission::Unproven
+    }
+}
+
 /// What [`Sources`] knows of one source, for the report and the tests.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SourceReport {
@@ -65,6 +94,9 @@ struct Source {
     requests: u32,
     bad_pieces: u32,
     cooling_until: Option<Instant>,
+    /// The byte ranges `[a, b)` it sent that are still in the file, so a bad piece can be traced
+    /// to it.
+    served: Vec<(u64, u64)>,
 }
 
 impl Source {
@@ -113,6 +145,7 @@ impl Sources {
                 requests: 0,
                 bad_pieces: 0,
                 cooling_until: None,
+                served: Vec::new(),
             })
             .collect();
         Sources {
@@ -256,26 +289,7 @@ impl Sources {
             .enumerate()
             .find(|(i, s)| *i != id.0 && s.file.is_some())
             .and_then(|(_, s)| s.file.clone());
-        let different = |why: String| Admission::Different(why);
-        let admission = if total != expected {
-            different(format!(
-                "it has another size: {total} bytes, not {expected}"
-            ))
-        } else if first.as_ref().is_some_and(|f| f.encoding != file.encoding) {
-            different("it sends the file with another Content-Encoding".to_owned())
-        } else if self.pieces {
-            Admission::Joined
-        } else {
-            let same = first
-                .as_ref()
-                .and_then(|f| f.validator.as_ref())
-                .is_some_and(|v| file.validator.as_ref() == Some(v));
-            if same {
-                Admission::Joined
-            } else {
-                Admission::Unproven
-            }
-        };
+        let admission = admission(self.pieces, first.as_ref(), total, expected, &file);
         let s = &mut self.sources[id.0];
         s.file = Some(file);
         match &admission {
@@ -284,6 +298,57 @@ impl Sources {
             Admission::Different(why) => s.disable(why),
         }
         admission
+    }
+
+    /// `id` sent the bytes `[start, end)`, accepted into the file.
+    pub fn served(&mut self, id: SourceId, start: u64, end: u64) {
+        let served = &mut self.sources[id.0].served;
+        match served.last_mut() {
+            Some(last) if last.1 == start => last.1 = end,
+            _ => served.push((start, end)),
+        }
+    }
+
+    /// The bytes `[start, end)` failed their trusted piece hash: every source that sent some of
+    /// them gets a [`Sources::bad_piece`], and they are forgotten, to be fetched again. Returns
+    /// the sources blamed.
+    pub fn blame(&mut self, start: u64, end: u64, now: Instant) -> Vec<SourceId> {
+        let mut blamed = Vec::new();
+        for i in 0..self.sources.len() {
+            let served = &mut self.sources[i].served;
+            if !served.iter().any(|&(a, b)| a < end && start < b) {
+                continue;
+            }
+            // Keep what lies outside [start, end).
+            let mut kept = Vec::with_capacity(served.len() + 1);
+            for &(a, b) in served.iter() {
+                if a < start {
+                    kept.push((a, b.min(start)));
+                }
+                if b > end {
+                    kept.push((a.max(end), b));
+                }
+            }
+            *served = kept;
+            blamed.push(SourceId(i));
+        }
+        for &id in &blamed {
+            self.bad_piece(id, now);
+        }
+        blamed
+    }
+
+    /// When the first usable source that is cooling down may take a request again, when none
+    /// can take one now; `None` when one can, or none is left.
+    pub fn next_ready(&self, now: Instant) -> Option<Instant> {
+        let usable = self
+            .sources
+            .iter()
+            .filter(|s| s.state == SourceState::Usable);
+        if usable.clone().any(|s| !s.cooling(now)) {
+            return None;
+        }
+        usable.filter_map(|s| s.cooling_until).min()
     }
 
     /// No source can serve the download any more, now or after a cooldown.
@@ -517,6 +582,64 @@ mod tests {
         assert_eq!(s.fallback(SourceId(0)), Some(SourceId(1)));
         s.failed(SourceId(1), now, true, "gone");
         assert_eq!(s.fallback(SourceId(0)), None);
+    }
+
+    #[test]
+    fn a_bad_piece_is_blamed_on_every_source_that_sent_part_of_it() {
+        let now = Instant::now();
+        let mut s = Sources::new(&urls(3), true, 8);
+        s.served(SourceId(0), 0, 1000);
+        s.served(SourceId(0), 1000, 2000);
+        s.served(SourceId(1), 2000, 3000);
+        s.served(SourceId(2), 3000, 4000);
+        // Bytes 1500..2500 came from 0 and 1.
+        assert_eq!(s.blame(1500, 2500, now), [SourceId(0), SourceId(1)]);
+        assert_eq!(s.report()[0].failures, 1);
+        assert_eq!(s.report()[2].failures, 0);
+        // Forgotten: fetched again from 2, only 2 is blamed next time.
+        s.served(SourceId(2), 1500, 2500);
+        assert_eq!(s.blame(1500, 2500, now), [SourceId(2)]);
+        assert_eq!(s.blame(4000, 5000, now), []);
+    }
+
+    #[test]
+    fn next_ready_says_when_a_cooling_source_is_back() {
+        let now = Instant::now();
+        let mut s = Sources::new(&urls(2), true, 8);
+        assert_eq!(s.next_ready(now), None, "one can take a request now");
+        s.failed(SourceId(0), now, false, "reset");
+        s.failed(SourceId(1), now, false, "reset");
+        s.failed(SourceId(1), now, false, "reset");
+        assert_eq!(s.next_ready(now), Some(now + COOLDOWN));
+        s.failed(SourceId(0), now, true, "404");
+        assert_eq!(s.next_ready(now), Some(now + COOLDOWN * 2));
+        s.failed(SourceId(1), now, true, "404");
+        assert_eq!(s.next_ready(now), None, "none left");
+    }
+
+    #[test]
+    fn admission_decides_as_admit_does() {
+        let a = tagged("\"a\"");
+        assert_eq!(
+            admission(true, Some(&a), 10, 10, &tagged("\"b\"")),
+            Admission::Joined
+        );
+        assert_eq!(
+            admission(false, Some(&a), 10, 10, &tagged("\"a\"")),
+            Admission::Joined
+        );
+        assert_eq!(
+            admission(false, Some(&a), 10, 10, &tagged("\"b\"")),
+            Admission::Unproven
+        );
+        assert_eq!(
+            admission(false, None, 10, 10, &tagged("\"a\"")),
+            Admission::Unproven
+        );
+        assert!(matches!(
+            admission(true, Some(&a), 9, 10, &a),
+            Admission::Different(_)
+        ));
     }
 
     #[test]
