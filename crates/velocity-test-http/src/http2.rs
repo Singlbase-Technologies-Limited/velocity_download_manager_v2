@@ -1,8 +1,8 @@
 //! A local HTTP/2 server over cleartext TCP, with prior knowledge (no TLS, no upgrade), for the
 //! engine's HTTP/2 tests (#47). It serves the same files and range modes as the HTTP/1.1 server,
 //! as concurrent streams on each connection, and can throttle each stream or each TCP connection,
-//! so a test can tell multiplexing from separate connections. HTTP/2 over TLS (ALPN) is #69's
-//! (PO decision on #47: Windows' Schannel refuses a test CA, as it can't check its revocation).
+//! so a test can tell multiplexing from separate connections. For HTTP/2 over TLS, negotiated
+//! through ALPN, the TLS front of `tls.rs` sits in front of it (#69).
 //!
 //! It runs on its own tokio runtime, which stops when the server is dropped.
 

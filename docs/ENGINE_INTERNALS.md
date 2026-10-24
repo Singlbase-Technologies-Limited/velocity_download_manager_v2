@@ -544,13 +544,13 @@ Run it with `cargo run --release -p velocity-transfer --example high_offset_writ
 
   The unit tests in `integrity.rs` check the six algorithms against their standard test vectors, a frontier fed in reverse order, and the piece verifier. `tests/engine_contract.rs` checks checksums and piece hashes in both engine modes.
 - **HTTP/2 fixtures (#47):** `crates/velocity-transfer-h2c/tests/http2.rs` runs against the cleartext HTTP/2 server: #41's probe fixtures, #42's split that resets only its stream, and the multiplex policy against a server throttling each TCP connection and one throttling each stream. They need the `test-h2c` feature, which only test builds have ([TESTING.md](TESTING.md#fixture-servers-v2-needs)). They live in a test-only crate of their own (#46): a dev-dependency's features reach every example of its crate, so while they were in `velocity-transfer`, none of its examples could be built for release.
+- **TLS fixtures (#69):** `crates/velocity-transfer-h2c/tests/tls.rs` downloads in segments over HTTPS and over HTTP/2 negotiated through ALPN, and checks that a refused certificate fails permanently with nothing on disk. It needs the `test-ca` feature, so it lives in the same test-only crate. What each TLS backend accepts and refuses is in [SECURITY.md](SECURITY.md#tls-verification-69).
 - **Unit tests:** the tests in `probe.rs`, `validator.rs`, `failure.rs`, `retry.rs`, `adaptive.rs`, `budget.rs`, the libcurl layer's `rate.rs`, `scheduler.rs`, `files.rs` and the libcurl layer's `tests/curl_loop.rs` (`FetchLimit`, the per-host cap) and `tests/http2.rs` cover each rule on its own.
 
 ## Not yet
 
-- **https→http after confirmation:** such a redirect is refused; #67 adds the confirmation. It has no end-to-end test yet, as the fixtures have no TLS (#69); `redirect.rs`'s unit tests cover the rule.
+- **https→http after confirmation:** such a redirect is refused; #67 adds the confirmation. `redirect.rs`'s unit tests cover the rule; an end-to-end test on the TLS fixture (#69) comes with #67.
 - **Credentials beyond memory:** the keychain, zeroisation and the secret-leak scan are #70 and #71.
-- **HTTP/2 over TLS:** the HTTP/2 fixtures run over cleartext, with prior knowledge. HTTP/2 negotiated through TLS (ALPN) is #69, as Windows' Schannel refuses a test CA it can't check for revocation (PO decision on #47).
 - **Connection values:** the per-host cap and the smallest piece come from the performance profile (#57). The budget and the ramp's values are engine defaults until the settings model passes the user's (#30). Tuning them by measurement is #77.
 - **Learning per host:** what a host allowed isn't remembered between downloads (a non-goal of #47).
 - **Throttling across downloads:** a `429` or `503` halves the connections of the download that got it, not of the other downloads to that host.

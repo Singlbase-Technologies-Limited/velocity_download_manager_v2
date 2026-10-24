@@ -97,9 +97,8 @@ From most numerous and fastest to fewest and slowest. Each layer proves what the
 | Changed-object modes | **Built** (#45): `ETag`, `Last-Modified` and `Date` sent as configured, `If-Range` honoured as RFC 9110 §13.1.5 says, and a file that changes after a set number of GETs. That one change covers a new strong ETag, a dropped ETag and content changed with the ETag kept. Weak-ETag-only and Last-Modified-only files are configurations | Validators, resume | **#45** |
 | Throttle and politeness modes | Speed limits (#49) need no server mode: the server sends as fast as asked, and the engine paces itself. **Built** (#48): `429` and `503` with `Retry-After` on the first requests, a slow but healthy 20 KiB/s stream, a frozen later range. `freeze_process` freezes a whole engine process for the supervisor's hang test | Retries, stall detection, limits | **#48**, #49 |
 | Encoding modes | **Built** (#45): `Content-Encoding` sent without encoding anything, so the stored bytes can be compared, and changed between responses with a file change | Range safety | #41, **#45** |
-| HTTPS with a test CA | Valid, expired, wrong host, wrong purpose (client-auth or code-signing only), untrusted CA; per TLS backend | TLS rules | **#69** |
+| TLS front with a test CA (`velocity_test_http::tls::TlsFront`, on rustls, ring and rcgen) | **Built:** terminates TLS for the HTTP/1.1 or HTTP/2 server, whose modes and counters work unchanged; a fresh CA per front; leaves that are valid, without an extended key usage, client-auth or code-signing only, from an untrusted issuer, for another host, expired or revoked; a CRL served on a fresh port, so Schannel can check revocation; ALPN `http/1.1` or `h2`; the TLS version and ALPN of each session. Clients trust the CA through velocity-curl's test-only `test-ca` feature ([SECURITY.md](SECURITY.md#how-the-tests-trust-a-test-ca)) | TLS rules, HTTP/2 over TLS | **#69** |
 | HTTP/2 over cleartext (`Http2Server` in `crates/velocity-test-http`, on `h2` and tokio) | **Built:** the HTTP/1.1 server's range modes as concurrent streams, throttling per stream or per TCP connection, a slowed first later range, and counters for TCP connections, streams and stream resets. libcurl reaches it with prior knowledge through the `test-h2c` feature of `velocity-curl`, which only test builds have: an optimised build with it doesn't compile (PO decision on #47). The engine's HTTP/2 tests are in the test-only crate `crates/velocity-transfer-h2c`, so `velocity-transfer`'s examples build without the feature (#46) | Multiplexing policy, probe and split over HTTP/2 | **#47** |
-| HTTP/2 over TLS | ALPN negotiation against a local HTTPS server. Windows' Schannel refuses a test CA without a revocation source, so the fixture must serve one | TLS rules | **#69** |
 | Redirects across origins | Cross-host redirect with credentials and cookies, https→http, redirect to `file:` or `sftp:` | Credential and protocol rules | **#40**, #67, #70 |
 | FTP (passive, EPSV) and FTPS | Login, `SIZE`, `REST` resume, a missing file | FTP | **#51** |
 | SFTP (OpenSSH) | Unknown, changed and known host keys; resume after a cut | SFTP | **#53**: needs OpenSSH, a platform dependency needing approval. On Linux, a local `sshd`; on Windows, availability must be checked (Windows OpenSSH Server or WSL), otherwise NOT RUN |
@@ -142,7 +141,7 @@ Test tools are dependencies too. Each needs PO approval before it's added ([DEPE
 | A browser driver (for example Playwright) | Browser end-to-end | #64 |
 | OpenSSH server | SFTP fixtures | #53 |
 | `h2`, tokio, `http` and `bytes` (**approved**, test-only) | The HTTP/2 fixture server | #47 |
-| A TLS server for fixtures | TLS fixtures | #69 |
+| rustls, tokio-rustls, ring and rcgen (**approved**, test-only) | The TLS fixture | #69 |
 
 Without approval, a hand-written seeded generator or a Node built-in module is the fallback.
 
