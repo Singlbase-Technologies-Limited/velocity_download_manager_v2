@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Metalink 3.0 (metalinker.org), in the shape its specification and its generators use. -->
+<metalink version="3.0" xmlns="http://www.metalinker.org/" generator="Velocity test corpus">
+  <publisher>
+    <name>Example</name>
+  </publisher>
+  <files>
+    <file name="tools/archive.tar.gz">
+      <size>4096</size>
+      <verification>
+        <hash type="md5">0123456789abcdef0123456789abcdef</hash>
+        <hash type="sha1">5555555555555555555555555555555555555555</hash>
+        <pieces length="2048" type="sha1">
+          <hash piece="0">6666666666666666666666666666666666666666</hash>
+          <hash piece="1">7777777777777777777777777777777777777777</hash>
+        </pieces>
+      </verification>
+      <resources>
+        <url type="bittorrent" preference="100">https://example.com/archive.torrent</url>
+        <url type="http" location="us" preference="50">http://us.example.com/archive.tar.gz</url>
+        <url type="ftp" preference="90">ftp://ftp.example.com/archive.tar.gz</url>
+        <url type="https">https://unranked.example.com/archive.tar.gz</url>
+      </resources>
+    </file>
+  </files>
+</metalink>

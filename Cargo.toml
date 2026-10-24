@@ -40,6 +40,10 @@ md-5 = { version = "=0.11.0", default-features = false }
 # Local time for the download schedule (PO-approved on #50, 2026-10-23): the system time zone,
 # with summer time. Default features: the system zone, and on Windows a bundled time-zone database.
 jiff = "=0.2.38"
+# Metalink documents for the core (PO-approved on #54, 2026-10-24): a streaming XML reader that never
+# expands custom entities. The same version Tauri already brings (through plist), so no new crate.
+# No default features: no serde, no encodings other than UTF-8.
+quick-xml = { version = "=0.42.0", default-features = false }
 # libcurl's C API, for crates/velocity-curl only (PO-approved on #35, 2026-10-22). Its bundled
 # build never runs: .cargo/config.toml overrides it, and velocity-curl links the Velocity-built
 # libcurl (docs/BUILDING_NATIVE.md). No default features, so it pulls in no openssl-sys.

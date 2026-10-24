@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Metalink 4 with what a real document mixes: subfolders, several hash types, piece hashes,
+     priorities, URLs V2 can't use, an extension element and entity references. -->
+<metalink xmlns="urn:ietf:params:xml:ns:metalink" xmlns:ext="urn:example:extension">
+  <generator>Velocity test corpus</generator>
+  <published>2026-10-24T00:00:00Z</published>
+  <origin dynamic="false">https://example.com/files.meta4</origin>
+  <file name="disc/image.iso">
+    <size>2560</size>
+    <hash type="md5">0123456789abcdef0123456789abcdef</hash>
+    <hash type="sha-256">AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA</hash>
+    <hash type="sha-1">1111111111111111111111111111111111111111</hash>
+    <hash type="whirlpool">ffff</hash>
+    <pieces length="1024" type="sha-1">
+      <hash>2222222222222222222222222222222222222222</hash>
+      <hash>3333333333333333333333333333333333333333</hash>
+      <hash>4444444444444444444444444444444444444444</hash>
+    </pieces>
+    <url priority="20">https://mirror-b.example.com/image.iso</url>
+    <url>http://unranked.example.com/image.iso</url>
+    <url priority="10" location="nl">https://mirror-a.example.com/image.iso?x=1&amp;y=2</url>
+    <url priority="5">sftp://ssh.example.com/image.iso</url>
+    <url priority="5">file:///etc/passwd</url>
+    <url priority="5">https://user:secret@login.example.com/image.iso</url>
+    <url priority="30">FTP://ftp.example.com/image.iso</url>
+    <url priority="20">https://mirror-b.example.com/image.iso</url>
+    <metaurl mediatype="torrent">https://example.com/image.iso.torrent</metaurl>
+    <ext:url>https://extension.example.com/ignored</ext:url>
+  </file>
+  <file name="readme &#x2014; notes.txt">
+    <url><![CDATA[https://example.com/readme.txt]]></url>
+  </file>
+  <file name="torrent-only.bin">
+    <metaurl mediatype="torrent">https://example.com/torrent-only.torrent</metaurl>
+  </file>
+</metalink>

@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- RFC 5854 section 1.1's example, with its digest written out in full (the RFC shortens it
+     with "..."). -->
+<metalink xmlns="urn:ietf:params:xml:ns:metalink">
+  <file name="example.ext">
+    <size>14471447</size>
+    <identity>Example</identity>
+    <version>1.0</version>
+    <language>en</language>
+    <description>
+    A description of the example file for download.
+    </description>
+    <hash type="sha-256">f0ad929cd259957e160ea442eb80986b5f01f0ad929cd259957e160ea442eb80</hash>
+    <url location="de" priority="1">ftp://ftp.example.com/example.ext</url>
+    <url location="fr" priority="1">http://example.com/example.ext</url>
+    <metaurl mediatype="torrent" priority="2">http://example.com/example.ext.torrent</metaurl>
+  </file>
+</metalink>

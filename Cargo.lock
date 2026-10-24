@@ -5618,6 +5618,7 @@ version = "0.1.0"
 dependencies = [
  "dirs",
  "jiff",
+ "quick-xml",
  "rusqlite",
  "rusqlite_migration",
  "serde",
