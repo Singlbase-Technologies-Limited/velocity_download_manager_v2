@@ -728,52 +728,75 @@ mod tests {
 
     #[test]
     fn no_secret_reaches_the_database_files() {
-        let dir = Dir::new("secrets");
-        let spec = TransferSpec {
-            urls: vec!["https://alice:SECRET-PASS-5678@example.com/files/a.zip?x=1".to_owned()],
-            directory: PathBuf::from("/home/user/Downloads"),
-            file_name: Some("a.zip".to_owned()),
-            credentials: Some(Credentials {
-                user_name: "bob-the-user".to_owned(),
-                password: "SECRET-LOGIN-9012".to_owned(),
-            }),
-            headers: vec![Header {
-                name: "Cookie".to_owned(),
-                value: "session=SECRET-COOKIE-1234".to_owned(),
-            }],
-            referrer: None,
-            user_agent: None,
-            checksum: None,
-            pieces: None,
-            limits: Limits::default(),
-            max_connections: 4,
-            resume: None,
-        };
-        let new =
-            NewDownload::from_transfer("d-0001", DownloadKind::Http, &spec, 1_792_600_000_000);
-        assert!(new.has_sensitive_options);
-        assert_eq!(new.source_url, "https://example.com/files/a.zip?x=1");
-        let db = Database::open(&dir.db()).unwrap();
-        db.insert_download(&new).unwrap();
-        // Search every file SQLite wrote, while the WAL is still there and after it is merged.
-        let scan = |when: &str| {
-            for name in dir.names() {
-                let bytes = std::fs::read(dir.0.join(&name)).unwrap();
-                let text = String::from_utf8_lossy(&bytes);
-                for secret in [
-                    "SECRET-PASS-5678",
-                    "SECRET-COOKIE-1234",
-                    "alice",
-                    "SECRET-LOGIN-9012",
-                    "bob-the-user",
-                ] {
-                    assert!(!text.contains(secret), "{secret} in {name} ({when})");
+        // An HTTPS link with a cookie, and an FTP link (#51): each with a login in the link and
+        // another as credentials.
+        let downloads = [
+            (
+                DownloadKind::Http,
+                "https://alice:SECRET-PASS-5678@example.com/files/a.zip?x=1",
+                "https://example.com/files/a.zip?x=1",
+                vec![Header {
+                    name: "Cookie".to_owned(),
+                    value: "session=SECRET-COOKIE-1234".to_owned(),
+                }],
+            ),
+            (
+                DownloadKind::Ftp,
+                "ftp://carol:SECRET-FTP-3456@ftp.example.org/pub/a.iso",
+                "ftp://ftp.example.org/pub/a.iso",
+                Vec::new(),
+            ),
+        ];
+        for (kind, url, stored, headers) in downloads {
+            let dir = Dir::new(&format!("secrets-{kind:?}"));
+            let spec = TransferSpec {
+                urls: vec![url.to_owned()],
+                directory: PathBuf::from("/home/user/Downloads"),
+                file_name: Some("a.zip".to_owned()),
+                credentials: Some(Credentials {
+                    user_name: "bob-the-user".to_owned(),
+                    password: "SECRET-LOGIN-9012".to_owned(),
+                }),
+                headers,
+                referrer: None,
+                user_agent: None,
+                checksum: None,
+                pieces: None,
+                limits: Limits::default(),
+                max_connections: 4,
+                resume: None,
+                require_encryption: false,
+            };
+            let new = NewDownload::from_transfer("d-0001", kind, &spec, 1_792_600_000_000);
+            assert!(new.has_sensitive_options, "{kind:?}");
+            assert_eq!(new.source_url, stored);
+            let db = Database::open(&dir.db()).unwrap();
+            db.insert_download(&new).unwrap();
+            // Search every file SQLite wrote, while the WAL is still there and after it is merged.
+            let scan = |when: &str| {
+                for name in dir.names() {
+                    let bytes = std::fs::read(dir.0.join(&name)).unwrap();
+                    let text = String::from_utf8_lossy(&bytes);
+                    for secret in [
+                        "SECRET-PASS-5678",
+                        "SECRET-COOKIE-1234",
+                        "alice",
+                        "SECRET-FTP-3456",
+                        "carol",
+                        "SECRET-LOGIN-9012",
+                        "bob-the-user",
+                    ] {
+                        assert!(
+                            !text.contains(secret),
+                            "{secret} in {name} ({kind:?}, {when})"
+                        );
+                    }
                 }
-            }
-        };
-        scan("with the WAL");
-        drop(db);
-        scan("after closing");
+            };
+            scan("with the WAL");
+            drop(db);
+            scan("after closing");
+        }
     }
 
     #[test]

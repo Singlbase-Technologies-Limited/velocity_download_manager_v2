@@ -12,9 +12,12 @@
 //! - **Speed limits:** a fetch draws from the [`RateLimit`]s in its request. The write callback
 //!   pauses a transfer whose limit has no tokens, and the loop thread resumes it once all its
 //!   limits have tokens again (`rate.rs`, #49).
-//! - **Safe defaults:** only `http`, `https` and `ftp`, redirects only to `http` and `https`, an
-//!   explicitly empty proxy so `http_proxy` and the like are ignored (ADR-0008), no
+//! - **Safe defaults:** only `http`, `https`, `ftp` and `ftps`, redirects only to `http` and
+//!   `https`, an explicitly empty proxy so `http_proxy` and the like are ignored (ADR-0008), no
 //!   `Accept-Encoding`, and TLS verification as libcurl's default (on).
+//! - **FTP** (#51): its control replies become a response head before the first body byte
+//!   (`ftp.rs`), so the gate works as for HTTP. A range is sent as `REST`, and its end is the
+//!   fetch's body limit. Passive mode only, to the control connection's address.
 
 use std::collections::HashMap;
 use std::ffi::CString;
@@ -22,19 +25,23 @@ use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::sync::Arc;
 use std::thread::{self, JoinHandle};
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
-use curl::easy::{Easy2, Handler, List, WriteError};
+use curl::easy::{Easy2, Handler, InfoType, List, WriteError};
 use curl::multi::{Easy2Handle, Multi, MultiWaker};
 
+use crate::ftp::{is_ftp, FtpReplies};
 use crate::rate::{self, RateLimit};
 use crate::redirect::{next_hop, Refusal};
 use crate::runtime::Libcurl;
 use crate::url::{origin, Origin};
 
 /// Protocols a fetch may use, and the ones a redirect may lead to. SFTP joins when #53 builds it.
-const PROTOCOLS: &str = "http,https,ftp";
+const PROTOCOLS: &str = "http,https,ftp,ftps";
 const REDIRECT_PROTOCOLS: &str = "http,https";
+/// `CURLFTPAUTH_TLS` (curl.h of curl 8.23.0): explicit FTPS asks `AUTH TLS` first, not the older
+/// `AUTH SSL`. curl-sys 0.4.91 doesn't define it.
+const CURLFTPAUTH_TLS: std::os::raw::c_long = 2;
 /// The longest the loop waits for sockets before checking commands and timers again. Commands also
 /// wake it at once; this only bounds a missed wakeup.
 const POLL_CAP: Duration = Duration::from_millis(100);
@@ -76,6 +83,9 @@ pub struct RequestOptions {
     pub headers: Vec<(String, String)>,
     /// User name and password, sent as HTTP Basic (or as the FTP login).
     pub login: Option<(String, String)>,
+    /// FTP only: insist on TLS (`AUTH TLS`) for the login and the file, and fail if the server
+    /// can't, never falling back to plain FTP (#51). `ftps://` is always encrypted.
+    pub require_encryption: bool,
 }
 
 impl std::fmt::Debug for RequestOptions {
@@ -86,6 +96,7 @@ impl std::fmt::Debug for RequestOptions {
             .field("referrer", &self.referrer)
             .field("headers", &names)
             .field("login", &self.login.as_ref().map(|_| "<redacted>"))
+            .field("require_encryption", &self.require_encryption)
             .finish()
     }
 }
@@ -210,6 +221,13 @@ pub enum CurlFailure {
     InsecureRedirect,
     /// The server's answer broke the protocol.
     Protocol,
+    /// The server has no such file (FTP's `550`, #51).
+    NotFound,
+    /// The server refused the login, or access to the file (FTP, #51).
+    AccessDenied,
+    /// Encryption was required, and the server can't encrypt the connection (FTP's `AUTH TLS`,
+    /// #51). Nothing was sent in clear after the greeting.
+    EncryptionRefused,
     /// A local problem: memory, or the write side.
     Local,
     /// Any other code.
@@ -273,6 +291,12 @@ impl CurlFailure {
             CurlFailure::TooManyRedirects
         } else if e.is_unsupported_protocol() || e.is_url_malformed() {
             CurlFailure::Refused
+        } else if e.code() == curl_sys::CURLE_REMOTE_FILE_NOT_FOUND {
+            CurlFailure::NotFound
+        } else if e.is_login_denied() || e.is_remote_access_denied() {
+            CurlFailure::AccessDenied
+        } else if e.is_use_ssl_failed() {
+            CurlFailure::EncryptionRefused
         } else if e.code() == curl_sys::CURLE_FTP_WEIRD_SERVER_REPLY || e.is_bad_content_encoding()
         {
             // curl-sys names code 8 by its old FTP name; libcurl uses it for any protocol.
@@ -419,6 +443,14 @@ impl CurlLoop {
         let token = self.next_token.fetch_add(1, Ordering::Relaxed);
         let (events_tx, events) = mpsc::channel();
         let flow = Arc::new(Flow::default());
+        let ftp = is_ftp(&request.url).then(|| FtpReplies::new(request.range, request.url.clone()));
+        if let (Some(_), Some((start, Some(end)))) = (&ftp, request.range) {
+            // FTP's REST has no end: the transfer stops at it instead.
+            flow.limit.store(
+                end.saturating_sub(start).saturating_add(1),
+                Ordering::Release,
+            );
+        }
         let collector = Collector {
             events: events_tx.clone(),
             gate: Box::new(gate),
@@ -434,6 +466,7 @@ impl CurlLoop {
             request,
             followed: 0,
             redirecting: false,
+            ftp,
         };
         let fetch = Fetch {
             token,
@@ -591,10 +624,47 @@ struct Collector {
     /// The response being received is a redirect: its body is never the file's, and the loop
     /// decides whether to follow it once it ends (`follow`).
     redirecting: bool,
+    /// An FTP fetch's control replies, which make its head (#51); `None` for HTTP.
+    ftp: Option<FtpReplies>,
+}
+
+impl Collector {
+    /// Shows the gate the final head and sends it on; `false` when the gate aborts.
+    fn gate(&mut self, head: ResponseHead) -> bool {
+        let gate = (self.gate)(&head);
+        // FTP's 200 to a range after byte 0 starts at the REST offset, not at byte 0, whatever the
+        // gate says: it never reaches the caller (#51).
+        let unproven = self.ftp.is_some()
+            && head.status == 200
+            && self.request.range.is_some_and(|(start, _)| start > 0);
+        let _ = self.events.send(FetchEvent::Head(head));
+        match gate {
+            Gate::Accept if !unproven => {
+                self.accepted = true;
+                true
+            }
+            Gate::Accept => {
+                self.abort = Some("a 200 for a range after byte 0".to_owned());
+                false
+            }
+            Gate::Abort(reason) => {
+                self.abort = Some(reason);
+                false
+            }
+        }
+    }
 }
 
 impl Handler for Collector {
     fn header(&mut self, data: &[u8]) -> bool {
+        if let Some(ftp) = self.ftp.as_mut() {
+            // A control reply, never a header: libcurl passes FTP's replies here (#51).
+            let reply = String::from_utf8_lossy(data);
+            return match ftp.received(&reply, SystemTime::now()) {
+                Some(head) => self.gate(head),
+                None => true,
+            };
+        }
         let line = String::from_utf8_lossy(data).trim_end().to_owned();
         if line.starts_with("HTTP/") {
             self.lines.clear();
@@ -618,17 +688,14 @@ impl Handler for Collector {
             return true;
         }
         head.url = self.request.url.clone();
-        let gate = (self.gate)(&head);
-        let _ = self.events.send(FetchEvent::Head(head));
-        match gate {
-            Gate::Accept => {
-                self.accepted = true;
-                true
-            }
-            Gate::Abort(reason) => {
-                self.abort = Some(reason);
-                false
-            }
+        self.gate(head)
+    }
+
+    /// libcurl's debug output, on only for FTP: the commands it sent, which the replies answer
+    /// (#51). Nothing is printed or kept but a command's verb, so the password never is.
+    fn debug(&mut self, kind: InfoType, data: &[u8]) {
+        if let (InfoType::HeaderOut, Some(ftp)) = (kind, self.ftp.as_mut()) {
+            ftp.sent(data);
         }
     }
 
@@ -637,8 +704,14 @@ impl Handler for Collector {
             // A redirect's own body, such as a "Moved" page: read and dropped.
             return Ok(data.len());
         }
+        if !self.accepted && self.ftp.is_some() {
+            // FTP bytes before the replies made a head: nothing gated them, so none is delivered.
+            // A short count stops the transfer.
+            self.abort = Some("FTP data before the server's reply to RETR".to_owned());
+            return Ok(0);
+        }
         if !self.accepted {
-            // A body without an accepted head (for example an FTP response): nothing to gate.
+            // A body without a head: nothing to gate.
             self.accepted = true;
         }
         // Up to the limit, which another thread may have lowered since the last write.
@@ -707,11 +780,25 @@ fn set_options(
     easy.url(&request.url)?;
     easy.connect_timeout(options.connect_timeout)?;
     easy.get(true)?;
-    if let Some((start, end)) = request.range {
-        easy.range(&match end {
+    let ftp = is_ftp(&request.url);
+    match request.range {
+        // REST, from where the range starts; the fetch's body limit ends it (`CurlLoop::fetch`).
+        Some((start, _)) if ftp => easy.resume_from(start)?,
+        Some((start, end)) => easy.range(&match end {
             Some(end) => format!("{start}-{end}"),
             None => format!("{start}-"),
-        })?;
+        })?,
+        None => {}
+    }
+    let plain_http = request
+        .url
+        .split_once("://")
+        .is_some_and(|(scheme, _)| scheme.eq_ignore_ascii_case("http"));
+    if ftp {
+        set_ftp_options(easy, request)?;
+    } else if request.options.require_encryption && plain_http {
+        // A plain http:// link can't be encrypted: refused rather than sent in clear.
+        return Err(refused());
     }
     let mut lines = Vec::new();
     if let Some(validator) = &request.if_range {
@@ -792,6 +879,36 @@ fn set_options(
     Ok(())
 }
 
+/// FTP's own options (#51).
+///
+/// - **Debug output** on, for the debug callback alone: it pairs each reply with its command
+///   (`ftp.rs`). libcurl prints nothing itself once a debug callback is set.
+/// - **`MDTM`**, the file's modification time, which becomes `Last-Modified`.
+/// - **Passive mode to the control connection's address:** the address in a `PASV` reply is
+///   ignored, so a server can't send the data connection elsewhere (libcurl's default since
+///   7.74.0, set here to keep it).
+/// - **Encryption:** an `ftps://` link is always encrypted. A plain `ftp://` link that requires
+///   encryption asks `AUTH TLS` before the login and fails if the server refuses
+///   (`CURLUSESSL_ALL`), never falling back to plain FTP. Certificates are verified as for HTTPS.
+fn set_ftp_options(easy: &mut Easy2<Collector>, request: &FetchRequest) -> Result<(), curl::Error> {
+    easy.verbose(true)?;
+    easy.fetch_filetime(true)?;
+    set_long(easy, curl_sys::CURLOPT_FTP_SKIP_PASV_IP, 1)?;
+    set_long(easy, curl_sys::CURLOPT_FTPSSLAUTH, CURLFTPAUTH_TLS)?;
+    let implicit = request
+        .url
+        .split_once("://")
+        .is_some_and(|(scheme, _)| scheme.eq_ignore_ascii_case("ftps"));
+    if implicit || request.options.require_encryption {
+        set_long(
+            easy,
+            curl_sys::CURLOPT_USE_SSL,
+            std::os::raw::c_long::from(curl_sys::CURLUSESSL_ALL),
+        )?;
+    }
+    Ok(())
+}
+
 /// A header name that is an RFC 9110 token and a value without control characters but tab, so
 /// the line can't end early and start another header.
 fn is_header_line_safe(name: &str, value: &str) -> bool {
@@ -868,6 +985,22 @@ fn set_string(
     // (CURLOPT_PROTOCOLS_STR and CURLOPT_REDIR_PROTOCOLS_STR) during the call, so `value` may be
     // freed afterwards.
     let code = unsafe { curl_sys::curl_easy_setopt(easy.raw(), option, value.as_ptr()) };
+    if code == curl_sys::CURLE_OK {
+        Ok(())
+    } else {
+        Err(curl::Error::new(code))
+    }
+}
+
+/// Sets a `long` option that the curl crate doesn't wrap.
+fn set_long(
+    easy: &Easy2<Collector>,
+    option: curl_sys::CURLoption,
+    value: std::os::raw::c_long,
+) -> Result<(), curl::Error> {
+    // SAFETY: `easy.raw()` is a live easy handle owned by `easy`, and every option passed here
+    // (CURLOPT_FTP_SKIP_PASV_IP, CURLOPT_FTPSSLAUTH, CURLOPT_USE_SSL) takes a `long`.
+    let code = unsafe { curl_sys::curl_easy_setopt(easy.raw(), option, value) };
     if code == curl_sys::CURLE_OK {
         Ok(())
     } else {
@@ -1018,12 +1151,21 @@ fn run_loop(
                     }
                     continue;
                 }
+                let collector = handle.get_ref();
                 let outcome = match result {
                     Ok(()) => Ok(()),
                     // Stopped at its limit: the range it was asked for is complete.
-                    Err(_) if handle.get_ref().stopped_at_limit => Ok(()),
-                    Err(e) => match &handle.get_ref().abort {
+                    Err(_) if collector.stopped_at_limit => Ok(()),
+                    Err(e) => match &collector.abort {
                         Some(reason) => Err(FetchError::Aborted(reason.clone())),
+                        // An FTP range past the end ends without a body, like an HTTP 416.
+                        None if collector
+                            .ftp
+                            .as_ref()
+                            .is_some_and(FtpReplies::unsatisfiable) =>
+                        {
+                            Ok(())
+                        }
                         None => Err(curl_error(&e)),
                     },
                 };
@@ -1136,6 +1278,16 @@ mod tests {
                 CurlFailure::Protocol,
             ),
             (curl_sys::CURLE_BAD_CONTENT_ENCODING, CurlFailure::Protocol),
+            (curl_sys::CURLE_REMOTE_FILE_NOT_FOUND, CurlFailure::NotFound),
+            (curl_sys::CURLE_LOGIN_DENIED, CurlFailure::AccessDenied),
+            (
+                curl_sys::CURLE_REMOTE_ACCESS_DENIED,
+                CurlFailure::AccessDenied,
+            ),
+            (
+                curl_sys::CURLE_USE_SSL_FAILED,
+                CurlFailure::EncryptionRefused,
+            ),
             (curl_sys::CURLE_OUT_OF_MEMORY, CurlFailure::Local),
             (curl_sys::CURLE_WRITE_ERROR, CurlFailure::Local),
             (curl_sys::CURLE_FAILED_INIT, CurlFailure::Other),

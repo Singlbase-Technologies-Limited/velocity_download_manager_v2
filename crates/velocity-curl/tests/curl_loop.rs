@@ -388,6 +388,7 @@ fn options() -> Arc<RequestOptions> {
             ("X-Empty".to_owned(), String::new()),
         ],
         login: Some(("alice".to_owned(), "hunter2".to_owned())),
+        require_encryption: false,
     })
 }
 
@@ -534,6 +535,33 @@ fn refuses_a_header_that_would_break_the_request() {
         "{:?}",
         o.done
     );
+    assert_eq!(s.counters().requests.len(), 0, "nothing was sent");
+}
+
+/// Encryption is for FTP's `AUTH TLS` (#51): a plain http:// link can't have it, so a request that
+/// requires it is refused rather than sent in clear.
+#[test]
+fn refuses_an_http_link_that_requires_encryption() {
+    let (s, _) = serve("a.bin", 10, ServerOptions::default());
+    let l = start_loop(LoopOptions::default());
+    let encrypted = Arc::new(RequestOptions {
+        require_encryption: true,
+        ..RequestOptions::default()
+    });
+    for url in [s.url("a.bin"), s.url("a.bin").replacen("http", "HTTP", 1)] {
+        let o = collect(
+            &l.fetch(
+                FetchRequest::get(url.clone()).with_options(Arc::clone(&encrypted)),
+                accept_all,
+            ),
+            None,
+        );
+        assert!(
+            matches!(o.done, Err(FetchError::Curl { .. })),
+            "{url}: {:?}",
+            o.done
+        );
+    }
     assert_eq!(s.counters().requests.len(), 0, "nothing was sent");
 }
 

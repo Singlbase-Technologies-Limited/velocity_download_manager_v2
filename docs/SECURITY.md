@@ -1,6 +1,6 @@
 # Security
 
-How V2 protects downloads and the people who use it. The rules every contributor follows are in [AGENTS.md](../AGENTS.md#security-and-data) and `.claude/rules/security.md`. This document records what V2 does and what was measured. It covers TLS for now; the URL and redirect policy (#67) and secret handling (#70) add their sections when they are built.
+How V2 protects downloads and the people who use it. The rules every contributor follows are in [AGENTS.md](../AGENTS.md#security-and-data) and `.claude/rules/security.md`. This document records what V2 does and what was measured. It covers TLS and FTP for now; the URL and redirect policy (#67) and secret handling (#70) add their sections when they are built.
 
 ## TLS verification (#69)
 
@@ -59,3 +59,16 @@ Measured on PR checks' Windows runner (run `40072038728`):
 - **Fresh per test:** each TLS front makes its own CA, with a unique name, and serves its own CRL on a fresh port, so a list cached by Windows never answers for another run.
 - **Test-only trust:** the tests pass the CA file with velocity-curl's `test-ca` feature (`CURLOPT_CAINFO`, PO decision on #69). It replaces the platform's store for that test; verification and revocation checks stay on. An optimised build refuses to compile with the feature, so a release can't contain it, like `test-h2c`.
 - **Nothing installed** on the machine, except in the Windows store test above.
+- **The FTPS server** terminates TLS itself, with the same kind of test CA, leaf and revocation list (`TestPki`), since `AUTH TLS` starts TLS part way through a connection.
+
+## FTP and FTPS (#51)
+
+How FTP downloads work is in [ENGINE_INTERNALS.md](ENGINE_INTERNALS.md#ftp-and-ftps-51). What protects them:
+
+- **Plain FTP is cleartext.** The login and the file travel unencrypted, so anyone on the network path can read them. The engine reports what it can encrypt per protocol (`encryption` in the capabilities), and the add form (R8) warns before a plain `ftp://` download starts (PO decision on #51).
+- **Requiring encryption never falls back.** A download that requires it sends `AUTH TLS` before the login and fails at once if the server refuses, with nothing sent in clear after the greeting: no login, no file name. `ftps://` is TLS from the first byte. Both protect the data connections too (`PROT P`). Tested on Windows and Linux: a plain server, asked for encryption, never receives the login.
+- **Certificates** are verified as in [TLS verification](#tls-verification-69), with the same backends, store and revocation behaviour. A refused certificate fails before the login.
+- **No bounce to another host:** the data connection goes to the control connection's address; the address in a `PASV` reply is ignored. Active mode (`PORT`), where the server connects back, is never used.
+- **The login stays out of storage.** It reaches the engine as `credentials`, and a login in the link is split off before the download is stored. The database test scans every file SQLite wrote for an FTP login, in the link and as credentials. The libcurl layer reads only the verb of each command it sends, so the `PASS` line isn't kept or logged.
+- **An `http://` link can't require encryption:** such a spec is refused, rather than sent in clear.
+- **Not verified:** servers that require the data connection to resume the control connection's TLS session ([ENGINE_INTERNALS.md](ENGINE_INTERNALS.md#ftps-the-evaluation-51-asked-for)).

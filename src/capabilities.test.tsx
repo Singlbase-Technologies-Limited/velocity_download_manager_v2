@@ -1,19 +1,22 @@
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
-import { availability } from './capabilities';
+import { availability, cleartextWarning } from './capabilities';
 import { CapabilityOption } from './CapabilityOption';
 import type { Capabilities } from './contract';
 
-// Like the engine's report today: HTTP(S) only, segmented, resumable, over HTTP/2.
+// HTTP(S) as the engine reports it: segmented, resumable, over HTTP/2, encrypted over https://.
 const caps: Capabilities = {
-  protocols: [{ kind: 'http', segmented: true, resume: true, validatorResume: true, http2: true }],
+  protocols: [{ kind: 'http', segmented: true, resume: true, validatorResume: true, http2: true, encryption: true }],
   liveConnectionChanges: true,
   metalink: false,
   maxConnectionsPerHost: 8,
 };
 const withFtp: Capabilities = {
   ...caps,
-  protocols: [...caps.protocols, { kind: 'ftp', segmented: false, resume: true, validatorResume: false, http2: false }],
+  protocols: [
+    ...caps.protocols,
+    { kind: 'ftp', segmented: false, resume: true, validatorResume: false, http2: false, encryption: false },
+  ],
 };
 
 describe('availability', () => {
@@ -36,8 +39,28 @@ describe('availability', () => {
       reason: 'Downloads over FTP use one connection in this version of Velocity.',
     });
     expect(availability(withFtp, 'ftp', 'http2').reason).toBe('HTTP/2 is only for HTTP and HTTPS.');
+    expect(availability(withFtp, 'ftp', 'encryption').reason).toBe(
+      'Downloads over FTP can’t be encrypted in this version of Velocity.',
+    );
     // A feature of a protocol that isn't there gives the protocol's reason.
     expect(availability(caps, 'sftp', 'resume').reason).toBe('This version of Velocity can’t download over SFTP yet.');
+  });
+});
+
+describe('cleartextWarning', () => {
+  const warning = 'This FTP download isn’t encrypted: the login and the file can be read on the network.';
+
+  it('warns before a plain ftp:// download, unless it requires encryption (PO decision on #51)', () => {
+    expect(cleartextWarning('ftp://ftp.example.org/a.iso', false)).toBe(warning);
+    expect(cleartextWarning('FTP://ftp.example.org/a.iso', false)).toBe(warning);
+    expect(cleartextWarning('ftp://ftp.example.org/a.iso', true)).toBeNull();
+  });
+
+  it('doesn’t warn for links that are encrypted, or that #67 covers', () => {
+    expect(cleartextWarning('ftps://ftp.example.org/a.iso', false)).toBeNull();
+    expect(cleartextWarning('https://example.com/a.iso', false)).toBeNull();
+    expect(cleartextWarning('http://example.com/a.iso', false)).toBeNull();
+    expect(cleartextWarning('not a link', false)).toBeNull();
   });
 });
 

@@ -314,6 +314,26 @@ pub struct DownloadOptions {
     pub adaptive: Option<AdaptivePolicy>,
 }
 
+impl DownloadOptions {
+    /// These options for FTP (#51): one connection, and one stream to the end of the file. The
+    /// probe asks for the whole file, so a download that isn't cut is one transfer; whatever a cut
+    /// or a resume leaves is one lease to the end, so one `REST`. FTP opens a control and a data
+    /// connection per transfer, so more connections wait until #77 measures that they help (PO
+    /// decision on #51).
+    pub fn one_connection(self) -> Self {
+        DownloadOptions {
+            connections: 1,
+            probe_bytes: u64::MAX,
+            leases: Sizes {
+                max_lease: u64::MAX,
+                ..self.leases
+            },
+            adaptive: None,
+            ..self
+        }
+    }
+}
+
 /// How often the part file is synced and a checkpoint taken: after this many new bytes or this
 /// much time, whichever comes first.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

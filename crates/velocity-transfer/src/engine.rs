@@ -119,6 +119,7 @@ fn request_options(spec: &TransferSpec) -> RequestOptions {
             .credentials
             .as_ref()
             .map(|c| (c.user_name.clone(), c.password.clone())),
+        require_encryption: spec.require_encryption,
     }
 }
 
@@ -224,10 +225,11 @@ fn host_of(url: &str) -> String {
     {
         return host;
     }
-    let port = if scheme.eq_ignore_ascii_case("https") {
-        443
-    } else {
-        80
+    let port = match scheme.to_ascii_lowercase().as_str() {
+        "https" => 443,
+        "ftp" => 21,
+        "ftps" => 990,
+        _ => 80,
     };
     format!("{host}:{port}")
 }
@@ -320,7 +322,24 @@ impl InProcessEngine {
     }
 }
 
-/// Checks a URL as untrusted input: `http` or `https`, with a host.
+/// Whether `url`, checked by [`check_url`], is FTP or FTPS (#51).
+fn is_ftp(url: &str) -> bool {
+    url.split_once("://").is_some_and(|(scheme, _)| {
+        scheme.eq_ignore_ascii_case("ftp") || scheme.eq_ignore_ascii_case("ftps")
+    })
+}
+
+/// The connections a transfer of `url` uses when `asked` are asked for: one for FTP (PO decision
+/// on #51), otherwise up to the per-host cap.
+fn connections_for(url: &str, asked: u32, cap: u32) -> u32 {
+    if is_ftp(url) {
+        1
+    } else {
+        asked.clamp(1, cap)
+    }
+}
+
+/// Checks a URL as untrusted input: `http`, `https`, `ftp` or `ftps` (#51), with a host.
 fn check_url(url: &str) -> Result<(), ErrorCode> {
     let Some((scheme, rest)) = url.split_once("://") else {
         return Err(ErrorCode::InvalidUrl);
@@ -332,7 +351,10 @@ fn check_url(url: &str) -> Result<(), ErrorCode> {
     {
         return Err(ErrorCode::InvalidUrl);
     }
-    if !matches!(scheme.to_ascii_lowercase().as_str(), "http" | "https") {
+    if !matches!(
+        scheme.to_ascii_lowercase().as_str(),
+        "http" | "https" | "ftp" | "ftps"
+    ) {
         return Err(ErrorCode::UnsupportedScheme);
     }
     let host = rest.split(['/', '?', '#']).next().unwrap_or("");
@@ -382,16 +404,34 @@ fn progress_reporter(
 impl DirectTransfer for InProcessEngine {
     fn capabilities(&self) -> Capabilities {
         Capabilities {
-            protocols: vec![ProtocolCapabilities {
-                kind: DownloadKind::Http,
-                // Ranges as leases over several connections (#42).
-                segmented: true,
-                // From a checkpoint (#43), with the strong validator in If-Range (#45).
-                resume: true,
-                validator_resume: true,
-                // libcurl is refused at start without HTTP/2 (velocity-curl's capability check).
-                http2: true,
-            }],
+            protocols: vec![
+                ProtocolCapabilities {
+                    kind: DownloadKind::Http,
+                    // Ranges as leases over several connections (#42).
+                    segmented: true,
+                    // From a checkpoint (#43), with the strong validator in If-Range (#45).
+                    resume: true,
+                    validator_resume: true,
+                    // libcurl is refused at start without HTTP/2 (velocity-curl's capability
+                    // check).
+                    http2: true,
+                    // https://, verified with the platform's trust store (#69).
+                    encryption: true,
+                },
+                ProtocolCapabilities {
+                    kind: DownloadKind::Ftp,
+                    // One connection until #77 measures more (PO decision on #51).
+                    segmented: false,
+                    // From a checkpoint, with REST, checked against MDTM when the server gives
+                    // it, as a strong Last-Modified (#51, ADR-0010).
+                    resume: true,
+                    validator_resume: true,
+                    http2: false,
+                    // FTPS, explicit and implicit, verified as for HTTPS; libcurl is refused at
+                    // start without ftps (velocity-curl's capability check).
+                    encryption: true,
+                },
+            ],
             live_connection_changes: true,
             metalink: false,
             max_connections_per_host: lock(&self.shared.state).limits.max_connections_per_host,
@@ -425,9 +465,11 @@ impl DirectTransfer for InProcessEngine {
         };
         let request = request_options(&spec);
         let mut state = lock(&self.shared.state);
-        let connections = spec
-            .max_connections
-            .clamp(1, state.limits.max_connections_per_host);
+        let connections = connections_for(
+            &url,
+            spec.max_connections,
+            state.limits.max_connections_per_host,
+        );
         state.next_id += 1;
         let id = TransferId(state.next_id);
         let snapshot = TransferSnapshot {
@@ -572,8 +614,9 @@ impl DirectTransfer for InProcessEngine {
 
     fn set_connections(&mut self, id: TransferId, connections: u32) -> Result<u32, ErrorCode> {
         let mut state = self.known(id)?;
-        let applied = connections.clamp(1, state.limits.max_connections_per_host);
+        let cap = state.limits.max_connections_per_host;
         let entry = state.transfers.get_mut(&id).expect("known");
+        let applied = connections_for(&entry.job.url, connections, cap);
         // A running worker sees it at its next step; a later worker starts with it.
         entry.job.connections = applied;
         entry.control.set_connections(applied);
@@ -670,6 +713,11 @@ fn run(shared: &Shared, id: TransferId, job: &Job, resume: Option<&Resume>, cont
         retry: shared.retry,
         // The asked-for count is a ceiling, not a must (PO decision on #47).
         adaptive: Some(AdaptivePolicy::DEFAULT),
+    };
+    let options = if is_ftp(&job.url) {
+        options.one_connection()
+    } else {
+        options
     };
     let mut resume = resume.cloned();
     let mut restarts = 0;
@@ -855,8 +903,11 @@ mod tests {
     fn checks_urls_as_untrusted_input() {
         assert_eq!(check_url("https://example.com/a.zip"), Ok(()));
         assert_eq!(check_url("HTTP://example.com"), Ok(()));
+        // FTP and FTPS since #51; SFTP comes with #53.
+        assert_eq!(check_url("ftp://example.com/a"), Ok(()));
+        assert_eq!(check_url("FTPS://example.com/a"), Ok(()));
         assert_eq!(
-            check_url("ftp://example.com/a"),
+            check_url("sftp://example.com/a"),
             Err(ErrorCode::UnsupportedScheme)
         );
         assert_eq!(
@@ -880,6 +931,17 @@ mod tests {
         assert_eq!(host_of("https://user:pw@example.com/a"), "example.com:443");
         assert_eq!(host_of("http://[::1]/a"), "[::1]:80");
         assert_eq!(host_of("http://[::1]:8080/a"), "[::1]:8080");
+        assert_eq!(host_of("ftp://ftp.example.org/f"), "ftp.example.org:21");
+        assert_eq!(host_of("FTPS://ftp.example.org/f"), "ftp.example.org:990");
+        assert_eq!(host_of("ftp://h:2121/f"), "h:2121");
+    }
+
+    #[test]
+    fn ftp_uses_one_connection_whatever_is_asked() {
+        assert_eq!(connections_for("ftp://h/f", 8, 6), 1);
+        assert_eq!(connections_for("ftps://h/f", 0, 6), 1);
+        assert_eq!(connections_for("https://h/f", 8, 6), 6);
+        assert_eq!(connections_for("https://h/f", 0, 6), 1);
     }
 
     fn now(active: u32, throttled_to: Option<u32>, file_bound: bool) -> ConnectionsNow {

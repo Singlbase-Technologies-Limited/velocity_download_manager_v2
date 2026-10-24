@@ -85,6 +85,7 @@ fn unnamed(url: String, directory: PathBuf) -> TransferSpec {
         limits: Limits::default(),
         max_connections: 4,
         resume: None,
+        require_encryption: false,
     }
 }
 

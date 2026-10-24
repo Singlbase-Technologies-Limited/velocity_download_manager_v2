@@ -227,6 +227,7 @@ mod tests {
                 limits: Limits::default(),
                 max_connections: 8,
                 resume: None,
+                require_encryption: false,
             };
             let add = ToChild::Request {
                 seq: 1,
@@ -248,7 +249,7 @@ mod tests {
         };
         assert_eq!(
             serde_json::to_string(&start).unwrap(),
-            r#"{"type":"start","protocol":2,"contract":8,"firstTransferId":12}"#
+            r#"{"type":"start","protocol":2,"contract":9,"firstTransferId":12}"#
         );
         let refused = FromChild::Reply {
             seq: 7,

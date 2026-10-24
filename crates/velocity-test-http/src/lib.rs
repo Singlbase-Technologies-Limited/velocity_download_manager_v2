@@ -3,8 +3,10 @@
 //! and counts what it sends so a test can prove, for example, that no second full transfer was
 //! made. It can also freeze a process, for the supervisor's hang test (#48). Standard library
 //! only, plus `windows-sys` on Windows for that. [`Http2Server`] serves the same files and range
-//! modes over HTTP/2 (#47). Test code: it trusts its callers and isn't hardened.
+//! modes over HTTP/2 (#47), and [`ftp::FtpServer`] serves FTP and FTPS (#51). Test code: it
+//! trusts its callers and isn't hardened.
 
+pub mod ftp;
 mod http2;
 pub mod tls;
 

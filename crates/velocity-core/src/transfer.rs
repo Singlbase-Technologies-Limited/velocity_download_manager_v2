@@ -34,7 +34,9 @@ use std::sync::mpsc::Receiver;
 /// [`TransferSpec::file_name`], the credential handle with [`Credentials`], added
 /// [`TransferSpec::referrer`], [`TransferSpec::user_agent`] and [`TransferSnapshot::file_name`];
 /// engines now send headers and logins.
-pub const TRANSFER_CONTRACT_VERSION: u32 = 8;
+/// Version 9 (#51) added [`TransferSpec::require_encryption`] and
+/// [`crate::domain::ProtocolCapabilities::encryption`]; engines now download `ftp` and `ftps`.
+pub const TRANSFER_CONTRACT_VERSION: u32 = 9;
 
 /// An engine's id for one transfer. Assigned by the engine, never reused, and never shown as the
 /// app's download id.
@@ -266,6 +268,10 @@ pub struct TransferSpec {
     pub file_name: Option<String>,
     /// A login for the server of the first URL only (#40).
     pub credentials: Option<Credentials>,
+    /// For an `ftp://` link: insist on TLS (`AUTH TLS`) for the login and the file, and fail if
+    /// the server can't, never falling back to plain FTP (PO decision on #51). `https://` and
+    /// `ftps://` are always encrypted; an `http://` link that requires it is refused.
+    pub require_encryption: bool,
     /// Custom request headers, checked by [`crate::request::check_headers`]. Dropped, with the
     /// login and the referrer, once a redirect leaves the first URL's origin.
     pub headers: Vec<Header>,
@@ -289,6 +295,13 @@ impl TransferSpec {
     pub fn check_request(&self) -> Result<(), ErrorCode> {
         if self.urls.iter().any(|url| split_login(url).1.is_some()) {
             return Err(ErrorCode::InvalidUrl);
+        }
+        let plain_http = |url: &String| {
+            url.split_once("://")
+                .is_some_and(|(scheme, _)| scheme.eq_ignore_ascii_case("http"))
+        };
+        if self.require_encryption && self.urls.iter().any(plain_http) {
+            return Err(ErrorCode::InvalidInput);
         }
         match &self.file_name {
             Some(name) => check_file_name(name)?,
@@ -578,6 +591,7 @@ mod tests {
             resume: Some(Resume::Checkpoint {
                 checkpoint: checkpoint(),
             }),
+            require_encryption: false,
         }
     }
 
@@ -973,6 +987,30 @@ mod tests {
         );
         // A resume continues a file that has its name already.
         assert_eq!(with(|s| s.file_name = None), invalid);
+    }
+
+    #[test]
+    fn encryption_is_required_only_where_a_link_can_have_it() {
+        let requiring = |url: &str| TransferSpec {
+            urls: vec![url.to_owned()],
+            require_encryption: true,
+            ..spec()
+        };
+        for url in [
+            "ftp://ftp.example.org/a.zip",
+            "ftps://ftp.example.org/a.zip",
+            "https://example.com/a.zip",
+        ] {
+            assert_eq!(requiring(url).check_request(), Ok(()), "{url}");
+        }
+        // A plain http:// link can't be encrypted: refused rather than sent in clear (#51).
+        for url in ["http://example.com/a.zip", "HTTP://example.com/a.zip"] {
+            assert_eq!(
+                requiring(url).check_request(),
+                Err(ErrorCode::InvalidInput),
+                "{url}"
+            );
+        }
     }
 
     #[test]

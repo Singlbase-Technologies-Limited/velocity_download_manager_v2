@@ -1,6 +1,6 @@
 [package]
 name = "velocity-test-http"
-description = "Local HTTP/1.1 and HTTP/2 (cleartext) servers for V2's engine tests: serve seeded files and misbehave on demand (test-only)"
+description = "Local HTTP/1.1, HTTP/2 (cleartext), TLS and FTP/FTPS servers for V2's engine tests: serve seeded files and misbehave on demand (test-only)"
 version.workspace = true
 edition.workspace = true
 publish.workspace = true
@@ -8,7 +8,9 @@ rust-version.workspace = true
 
 # The HTTP/1.1 server uses the standard library only (#37). The HTTP/2 server uses h2 on tokio
 # (PO decision on #47, 2026-10-23). On Windows also windows-sys, already approved, to freeze a
-# process in the hung-engine test (PO decision on #48, 2026-10-23).
+# process in the hung-engine test (PO decision on #48, 2026-10-23). The TLS fixture uses rustls,
+# tokio-rustls, ring and rcgen (PO decision on #69, 2026-10-24); the FTP server uses the standard
+# library, and rustls's synchronous streams for FTPS (#51).
 [dependencies]
 bytes.workspace = true
 h2.workspace = true
