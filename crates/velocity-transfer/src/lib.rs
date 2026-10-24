@@ -14,6 +14,7 @@ pub mod probe;
 pub mod protocol;
 pub mod retry;
 pub mod scheduler;
+pub mod sources;
 pub mod stdio;
 pub mod supervisor;
 pub mod validator;

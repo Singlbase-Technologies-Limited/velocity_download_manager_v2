@@ -73,6 +73,15 @@ How FTP downloads work is in [ENGINE_INTERNALS.md](ENGINE_INTERNALS.md#ftp-and-f
 - **An `http://` link can't require encryption:** such a spec is refused, rather than sent in clear.
 - **Not verified:** servers that require the data connection to resume the control connection's TLS session ([ENGINE_INTERNALS.md](ENGINE_INTERNALS.md#ftps-the-evaluation-51-asked-for)).
 
+## Mirrors (#55)
+
+A download's mirrors, such as a Metalink file's, are other servers than the one the user chose. How they're used is in [ENGINE_INTERNALS.md](ENGINE_INTERNALS.md#mirrors-55). What protects V2:
+
+- **No bytes are mixed unless proven the same.** A mirror serves a range only after its first answer shows the same size and encoding, and, without trusted piece hashes, the same strong validator as the download's first answer. With piece hashes, every piece is checked, and a mirror that sends other bytes is disabled after its second bad piece. Tested: a mirror with other bytes of the same size never ends up in the file.
+- **No credentials to other servers.** The login and custom headers go only to the first URL's origin; a mirror on another origin gets neither (tested). A Metalink download carries none anyway (#54).
+- **Every mirror is checked** like the first URL: the scheme allowlist applies to each, and one the engine may not fetch, such as `file://`, refuses the download (tested).
+- **A bad mirror can't stop a download** as long as another source is left: it is cooled down or disabled, and its ranges go elsewhere.
+
 ## Metalink (#54)
 
 A Metalink document is untrusted input, from a file the user chose or from any link. How it's read and used is in [ENGINE_INTERNALS.md](ENGINE_INTERNALS.md#metalink-54). What protects V2:
