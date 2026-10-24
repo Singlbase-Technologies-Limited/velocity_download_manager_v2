@@ -79,6 +79,7 @@ pub struct Session {
 pub struct TlsFront {
     addr: SocketAddr,
     ca_der: CertificateDer<'static>,
+    ca_name: String,
     ca_dir: PathBuf,
     ca_file: PathBuf,
     crl_url: String,
@@ -110,13 +111,16 @@ impl TlsFront {
         let (crl_listener, crl_addr) = bind(&runtime);
         let (listener, addr) = bind(&runtime);
         let crl_url = format!("http://{crl_addr}/ca.crl");
-        let pki = Pki::new(leaf, &crl_url);
-
-        let ca_dir = std::env::temp_dir().join(format!(
-            "v2-tls-{}-{}",
+        // A name of its own, so a test that adds the CA to a trust store removes exactly it.
+        let front = format!(
+            "{}-{}",
             std::process::id(),
             NEXT_FRONT.fetch_add(1, Ordering::Relaxed)
-        ));
+        );
+        let ca_name = format!("Velocity V2 test CA {front}");
+        let pki = Pki::new(leaf, &ca_name, &crl_url);
+
+        let ca_dir = std::env::temp_dir().join(format!("v2-tls-{front}"));
         std::fs::create_dir_all(&ca_dir).expect("a folder for the test CA");
         let ca_file = ca_dir.join("test-ca.pem");
         std::fs::write(&ca_file, &pki.ca_pem).expect("the test CA written");
@@ -144,6 +148,7 @@ impl TlsFront {
         TlsFront {
             addr,
             ca_der: pki.ca_der,
+            ca_name,
             ca_dir,
             ca_file,
             crl_url,
@@ -165,6 +170,11 @@ impl TlsFront {
     /// The test CA as a PEM file, for the client to trust (`CURLOPT_CAINFO`).
     pub fn ca_file(&self) -> &Path {
         &self.ca_file
+    }
+
+    /// The test CA's common name, unique to this front.
+    pub fn ca_name(&self) -> &str {
+        &self.ca_name
     }
 
     /// The test CA's certificate.
@@ -209,8 +219,8 @@ struct Pki {
 }
 
 impl Pki {
-    fn new(leaf: Leaf, crl_url: &str) -> Self {
-        let (ca, ca_issuer) = new_ca("Velocity V2 test CA");
+    fn new(leaf: Leaf, ca_name: &str, crl_url: &str) -> Self {
+        let (ca, ca_issuer) = new_ca(ca_name);
         // An untrusted leaf is signed by a CA of its own, which the client never sees.
         let other = (leaf == Leaf::UntrustedIssuer).then(|| new_ca("Velocity V2 untrusted CA"));
         let signer = other.as_ref().map_or(&ca_issuer, |(_, issuer)| issuer);

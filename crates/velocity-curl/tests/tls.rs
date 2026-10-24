@@ -60,15 +60,28 @@ fn assert_accepted(leaf: Leaf) {
     assert!(o.data == data, "{leaf:?}: the body differs");
 }
 
-fn assert_refused(leaf: Leaf, trust_ca: bool) {
+/// What each TLS backend says when it refuses, as measured on #69: Schannel on Windows, OpenSSL on
+/// Linux. Checking it proves the certificate was refused for its own reason.
+struct Reason {
+    schannel: &'static str,
+    openssl: &'static str,
+}
+
+fn assert_refused(leaf: Leaf, trust_ca: bool, reason: Reason) {
     let (server, _) = backend();
     let front = TlsFront::start(server.addr(), leaf, Alpn::Http1);
     let o = fetch(&front, trust_ca, "f.bin");
     // What the TLS backend said, for the per-platform record (docs/SECURITY.md).
     eprintln!("{leaf:?} (CA trusted: {trust_ca}): {:?}", o.done);
     match &o.done {
-        Err(FetchError::Curl { kind, .. }) => {
-            assert_eq!(*kind, CurlFailure::Certificate, "{leaf:?}: {:?}", o.done)
+        Err(FetchError::Curl { kind, message, .. }) => {
+            assert_eq!(*kind, CurlFailure::Certificate, "{leaf:?}: {:?}", o.done);
+            let expected = if cfg!(windows) {
+                reason.schannel
+            } else {
+                reason.openssl
+            };
+            assert!(message.contains(expected), "{leaf:?}: {message}");
         }
         other => panic!("{leaf:?}: expected a refused certificate, got {other:?}"),
     }
@@ -96,28 +109,71 @@ fn a_certificate_without_an_extended_key_usage_is_accepted() {
 /// The CVE-2026-8367 class: a certificate from a trusted CA that isn't for TLS servers.
 #[test]
 fn a_certificate_not_for_server_authentication_is_refused() {
-    assert_refused(Leaf::ClientAuthOnly, true);
-    assert_refused(Leaf::CodeSigningOnly, true);
+    // Schannel's 0x10 is CERT_TRUST_IS_NOT_VALID_FOR_USAGE.
+    assert_refused(
+        Leaf::ClientAuthOnly,
+        true,
+        Reason {
+            schannel: "schannel: error 0x00000010",
+            openssl: "unsuitable certificate purpose (26)",
+        },
+    );
+    assert_refused(
+        Leaf::CodeSigningOnly,
+        true,
+        Reason {
+            schannel: "schannel: error 0x00000010",
+            openssl: "unsuitable certificate purpose (26)",
+        },
+    );
 }
 
 #[test]
 fn a_certificate_from_an_untrusted_issuer_is_refused() {
-    assert_refused(Leaf::UntrustedIssuer, true);
+    assert_refused(
+        Leaf::UntrustedIssuer,
+        true,
+        Reason {
+            schannel: "the certificate chain is incomplete",
+            openssl: "unable to get local issuer certificate (20)",
+        },
+    );
 }
 
 #[test]
 fn a_certificate_for_another_host_is_refused() {
-    assert_refused(Leaf::WrongHost, true);
+    assert_refused(
+        Leaf::WrongHost,
+        true,
+        Reason {
+            schannel: "failed to match connection hostname (localhost)",
+            openssl: "no alternative certificate subject name matches target hostname 'localhost'",
+        },
+    );
 }
 
 #[test]
 fn an_expired_certificate_is_refused() {
-    assert_refused(Leaf::Expired, true);
+    assert_refused(
+        Leaf::Expired,
+        true,
+        Reason {
+            schannel: "is not time valid",
+            openssl: "certificate has expired (10)",
+        },
+    );
 }
 
 #[test]
 fn the_test_ca_is_not_trusted_unless_it_is_given() {
-    assert_refused(Leaf::Valid, false);
+    assert_refused(
+        Leaf::Valid,
+        false,
+        Reason {
+            schannel: "SEC_E_UNTRUSTED_ROOT",
+            openssl: "unable to get local issuer certificate (20)",
+        },
+    );
 }
 
 /// Schannel checks revocation, through the CRL distribution point the fixture serves. libcurl with
@@ -126,7 +182,14 @@ fn the_test_ca_is_not_trusted_unless_it_is_given() {
 #[test]
 fn a_revoked_certificate_is_refused_on_windows_and_accepted_on_linux() {
     if cfg!(windows) {
-        assert_refused(Leaf::Revoked, true);
+        assert_refused(
+            Leaf::Revoked,
+            true,
+            Reason {
+                schannel: "has been revoked",
+                openssl: "unused: OpenSSL accepts it",
+            },
+        );
     } else {
         assert_accepted(Leaf::Revoked);
     }
