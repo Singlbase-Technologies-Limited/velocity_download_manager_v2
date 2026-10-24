@@ -13,7 +13,7 @@ This is what a reviewer (the Product Owner today, future maintainers later) chec
 
 - [ ] The tests were written first. The PR shows the failing test (red) before the change, for meaningful behaviour.
 - [ ] The commands actually run are listed with their results. Every platform and check is marked PASS, FAIL, BLOCKED or NOT RUN, and nothing unrun is described as passing.
-- [ ] `pnpm check:fast` passed, and the selected CI checks passed once CI exists.
+- [ ] `pnpm check:fast` passed, and the selected CI checks passed. While CI is paused, the local checks on Windows and in the WSL clean clone passed instead ([CI.md](CI.md#while-ci-is-paused)).
 - [ ] No test was deleted, skipped or weakened, and no lint rule was relaxed, just to get a pass. Any changed assertion is explained.
 
 ## Correctness and safety

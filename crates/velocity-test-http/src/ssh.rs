@@ -6,7 +6,8 @@
 //! - **Where it can't run** ([`SshServer::start`] returns why): no `sshd` installed. The tests then
 //!   report NOT RUN, never PASS.
 //! - **Password logins** need an `sshd` running as root or an administrator, which a test can't
-//!   start. [`PasswordServer::from_env`] reads one that CI provisions instead.
+//!   start. [`PasswordServer::from_env`] reads one that is provisioned instead: by CI
+//!   (`scripts/ci-sftp-server.sh`), or locally once (`scripts/local-sftp-server.sh`, #176).
 //! - **Host keys:** Ed25519 by default, or ECDSA or RSA. [`SshServer::restart`] can come back with
 //!   a new key, the case a client must always refuse.
 //! - **A cut:** [`SshServer::stop`] kills `sshd` and every session it started.
@@ -236,7 +237,7 @@ impl Drop for SshServer {
     }
 }
 
-/// A password-login SFTP server that CI provisions, since only root or an administrator can run
+/// A password-login SFTP server that CI or a local setup provisions, since only root or an administrator can run
 /// one (`VELOCITY_SFTP_PASSWORD_SERVER`: `host:port|user|password|/path/of/a/file|its SHA-256`).
 pub struct PasswordServer {
     pub addr: String,
@@ -248,7 +249,7 @@ pub struct PasswordServer {
 
 impl PasswordServer {
     /// The provisioned server, or why there is none.
-    /// `VELOCITY_REQUIRE_SFTP_PASSWORD`, set where CI provisions one, turns its absence into a
+    /// `VELOCITY_REQUIRE_SFTP_PASSWORD`, set where one is provisioned, turns its absence into a
     /// panic.
     pub fn from_env() -> Result<Self, String> {
         let value = std::env::var("VELOCITY_SFTP_PASSWORD_SERVER").map_err(|_| {

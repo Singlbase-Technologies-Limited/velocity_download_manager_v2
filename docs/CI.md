@@ -2,7 +2,22 @@
 
 V2's CI runs on GitHub Actions in a private repository on GitHub Free. The plan includes 2,000 runner minutes a month, and usage is **blocked**, not billed, once they run out ([billing](https://docs.github.com/en/billing/concepts/product-billing/github-actions)). Every design choice below protects two things: the checks that matter run on every change, and the monthly quota lasts the month.
 
+> **CI is paused until the end of epic #1** (PO decision, 2026-10-24, recorded in #173). See [below](#while-ci-is-paused).
+
 This page is the design. The workflows are written in #13, #14, #16 to #19 and #91. Every figure below is labelled as **measured** or **assumed**. Assumed CI times get replaced by measured ones as the jobs start running (#14).
+
+## While CI is paused
+
+GitHub Actions stopped starting jobs on this repository (billing), and the PO decided not to depend on Actions minutes while building V2 (#173).
+
+- **Workflows:** `main.yml` (Main checks) and `pr.yml` (PR checks) are disabled with `gh workflow disable`, so a push doesn't start a run that fails in seconds. Dependabot stays on.
+- **The merge gate meanwhile:** the PO's approval of the PR's head commit, plus these local checks, each marked PASS:
+  - on Windows: `pnpm check:fast`;
+  - then, not at the same time, in the WSL clean clone: `pnpm check:fast`, `pnpm check:links` and `pnpm check:guidance`, with the password-login SFTP server described ([platform-verify reference](../.claude/skills/platform-verify/reference.md#local-sftp-password-login-server)).
+
+  CI itself is reported as NOT RUN (paused).
+- **Not covered locally:** a clean machine (the WSL clone reuses tools already installed), and CI as an independent second check. Failures the final run finds are traced back with `git bisect`.
+- **Coming back:** at the end of epic #1, `gh workflow enable main.yml` and `gh workflow enable pr.yml`, then `gh workflow run main.yml --ref main` for one full run. Its first green run closes #173. Then this section is removed.
 
 ## Tiers
 
