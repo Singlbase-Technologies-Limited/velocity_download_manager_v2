@@ -203,17 +203,10 @@ impl StoredDownload {
 }
 
 /// `url` without a login (`scheme://user:password@host/…` becomes `scheme://host/…`), and whether
-/// it had one.
+/// it had one ([`crate::request::split_login`]).
 pub fn without_login(url: &str) -> (String, bool) {
-    let Some(at) = url.find("://") else {
-        return (url.to_owned(), false);
-    };
-    let (scheme, rest) = url.split_at(at + 3);
-    let end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
-    match rest[..end].rfind('@') {
-        Some(login) => (format!("{scheme}{}", &rest[login + 1..]), true),
-        None => (url.to_owned(), false),
-    }
+    let (url, login) = crate::request::split_login(url);
+    (url, login.is_some())
 }
 
 const COLUMNS: &str = "id, engine, kind, status, source_url, directory, file_name, category_id, \

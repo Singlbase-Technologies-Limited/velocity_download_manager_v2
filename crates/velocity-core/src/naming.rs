@@ -206,7 +206,7 @@ fn shorten(name: &str, tag: &str) -> String {
 }
 
 /// Decodes `%XX` escapes; bytes that aren't UTF-8 become U+FFFD.
-fn percent_decode(s: &str) -> String {
+pub(crate) fn percent_decode(s: &str) -> String {
     String::from_utf8_lossy(&percent_decode_bytes(s)).into_owned()
 }
 

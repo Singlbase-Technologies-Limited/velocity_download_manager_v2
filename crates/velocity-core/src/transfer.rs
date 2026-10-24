@@ -58,6 +58,26 @@ impl fmt::Debug for Header {
     }
 }
 
+/// A login for a download's server (#40): sent only to the server of the download's first URL,
+/// never after a redirect leaves it. It crosses the contract in memory only, through the engine's
+/// pipe when the engine is a child process (PO decision on #40, ADR-0012), never a file, a log or
+/// a process argument; `Debug` never prints either part.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct Credentials {
+    pub user_name: String,
+    pub password: String,
+}
+
+impl fmt::Debug for Credentials {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Credentials")
+            .field("user_name", &"<redacted>")
+            .field("password", &"<redacted>")
+            .finish()
+    }
+}
+
 /// Hash algorithms a trusted checksum can use (Metalink and user-entered hashes).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]

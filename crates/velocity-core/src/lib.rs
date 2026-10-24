@@ -11,6 +11,7 @@ pub mod naming;
 pub mod paths;
 pub mod performance;
 pub mod queue;
+pub mod request;
 pub mod transfer;
 
 use serde::Serialize;
