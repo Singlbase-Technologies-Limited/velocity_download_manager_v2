@@ -59,7 +59,21 @@ static NEXT: AtomicU64 = AtomicU64::new(0);
 impl SshServer {
     /// Serves `files` (name, bytes) from a folder of its own, presenting a `host_key`. `Err` says
     /// why it can't run here, such as no `sshd` installed.
+    ///
+    /// Where `VELOCITY_REQUIRE_SSHD` is set, as on CI, a server that can't start panics instead:
+    /// a missing sshd must fail there, never pass as NOT RUN.
     pub fn start(files: Vec<(String, Vec<u8>)>, host_key: HostKey) -> Result<Self, String> {
+        let started = Self::try_start(files, host_key);
+        if let (Err(why), true) = (
+            &started,
+            std::env::var_os("VELOCITY_REQUIRE_SSHD").is_some(),
+        ) {
+            panic!("VELOCITY_REQUIRE_SSHD is set, but sshd can't run: {why}");
+        }
+        started
+    }
+
+    fn try_start(files: Vec<(String, Vec<u8>)>, host_key: HostKey) -> Result<Self, String> {
         let sshd = find_sshd().ok_or_else(|| "no sshd is installed".to_owned())?;
         let keygen = find_keygen().ok_or_else(|| "no ssh-keygen is installed".to_owned())?;
         let user = current_user().ok_or_else(|| "the current user name is unknown".to_owned())?;
@@ -234,9 +248,15 @@ pub struct PasswordServer {
 
 impl PasswordServer {
     /// The provisioned server, or why there is none.
+    /// `VELOCITY_REQUIRE_SFTP_PASSWORD`, set where CI provisions one, turns its absence into a
+    /// panic.
     pub fn from_env() -> Result<Self, String> {
-        let value = std::env::var("VELOCITY_SFTP_PASSWORD_SERVER")
-            .map_err(|_| "VELOCITY_SFTP_PASSWORD_SERVER isn't set".to_owned())?;
+        let value = std::env::var("VELOCITY_SFTP_PASSWORD_SERVER").map_err(|_| {
+            if std::env::var_os("VELOCITY_REQUIRE_SFTP_PASSWORD").is_some() {
+                panic!("VELOCITY_REQUIRE_SFTP_PASSWORD is set, but no server is described");
+            }
+            "VELOCITY_SFTP_PASSWORD_SERVER isn't set".to_owned()
+        })?;
         let parts: Vec<&str> = value.split('|').collect();
         let [addr, user, password, path, sha256] = parts[..] else {
             return Err("VELOCITY_SFTP_PASSWORD_SERVER needs 5 fields".to_owned());
