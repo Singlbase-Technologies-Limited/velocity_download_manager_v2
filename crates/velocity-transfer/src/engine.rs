@@ -24,17 +24,18 @@ use velocity_core::domain::{
     Capabilities, ConnectionDetail, ConnectionLimit, DownloadKind, DownloadStatus, ErrorCode,
     FailureClass, Progress, ProtocolCapabilities, TransferError,
 };
+use velocity_core::request::default_user_agent;
 use velocity_core::transfer::{
     Checkpoint, Checksum, DirectTransfer, EngineLimits, Limits, PieceHashes, Resume, TransferEvent,
     TransferId, TransferSnapshot, TransferSpec,
 };
-use velocity_curl::{CurlLoop, Libcurl, LoopOptions, RateLimit};
+use velocity_curl::{CurlLoop, Libcurl, LoopOptions, RateLimit, RequestOptions};
 
 use crate::adaptive::{AdaptivePolicy, Tuning};
 use crate::budget::{self, Demand, Share};
 use crate::download::{
-    download_resumable, part_path, wait_out, Cadence, ConnectionsNow, Control, DownloadError,
-    DownloadOptions, Expected,
+    download_to, part_path, wait_out, Cadence, ConnectionsNow, Control, DownloadError,
+    DownloadOptions, Expected, Target,
 };
 use crate::files;
 use crate::retry::RetryPolicy;
@@ -93,10 +94,32 @@ struct Entry {
 #[derive(Clone)]
 struct Job {
     url: String,
-    destination: PathBuf,
+    directory: PathBuf,
+    /// The file's path; `None` until the server's first answer names a file in `directory` (#40).
+    destination: Option<PathBuf>,
     connections: u32,
     /// The hashes checked before the file is renamed into place (#46), in lowercase.
     expected: Expected,
+    /// What every request carries (#40).
+    request: RequestOptions,
+}
+
+/// What every request of `spec` carries (#40): its user agent, or Velocity's own; its referrer;
+/// and its custom headers and login, which the libcurl layer sends only to the first URL's origin.
+fn request_options(spec: &TransferSpec) -> RequestOptions {
+    RequestOptions {
+        user_agent: Some(spec.user_agent.clone().unwrap_or_else(default_user_agent)),
+        referrer: spec.referrer.clone(),
+        headers: spec
+            .headers
+            .iter()
+            .map(|h| (h.name.clone(), h.value.clone()))
+            .collect(),
+        login: spec
+            .credentials
+            .as_ref()
+            .map(|c| (c.user_name.clone(), c.password.clone())),
+    }
 }
 
 impl State {
@@ -382,11 +405,11 @@ impl DirectTransfer for InProcessEngine {
             return Err(ErrorCode::InvalidPath);
         }
         spec.check_request()?;
-        // Naming a file from the server's answer comes with the next step of #40.
-        let Some(file_name) = spec.file_name.clone() else {
-            return Err(ErrorCode::Unsupported);
-        };
-        let destination = spec.directory.join(&file_name);
+        // Without a name, the server's first answer names the file (#40).
+        let destination = spec
+            .file_name
+            .as_ref()
+            .map(|name| spec.directory.join(name));
         spec.limits.check()?;
         let expected = Expected {
             checksum: spec
@@ -400,11 +423,7 @@ impl DirectTransfer for InProcessEngine {
                 .map(PieceHashes::normalized)
                 .transpose()?,
         };
-        // What the prototype can't honour is refused, never silently dropped: credentials and
-        // headers (#70).
-        if spec.credentials.is_some() || !spec.headers.is_empty() {
-            return Err(ErrorCode::Unsupported);
-        }
+        let request = request_options(&spec);
         let mut state = lock(&self.shared.state);
         let connections = spec
             .max_connections
@@ -425,7 +444,7 @@ impl DirectTransfer for InProcessEngine {
             wasted_bytes: 0,
             error: None,
             verification: None,
-            file_name: Some(file_name),
+            file_name: spec.file_name.clone(),
         };
         state.transfers.insert(
             id,
@@ -434,9 +453,11 @@ impl DirectTransfer for InProcessEngine {
                 control: Arc::new(Control::default()),
                 job: Job {
                     url,
+                    directory: spec.directory.clone(),
                     destination,
                     connections,
                     expected,
+                    request,
                 },
                 limit: RateLimit::new(spec.limits.max_download_bps),
                 last_checkpoint: None,
@@ -494,8 +515,10 @@ impl DirectTransfer for InProcessEngine {
             entry.control.cancel();
             return Ok(());
         }
-        // Paused: no worker holds the part file, so it is discarded here.
-        if let Err(DownloadError::Io(message)) = discard_part(&entry.job.destination) {
+        // Paused: no worker holds the part file, so it is discarded here. A download into a folder
+        // that was never named has none.
+        let discarded = entry.job.destination.as_deref().map(discard_part);
+        if let Some(Err(DownloadError::Io(message))) = discarded {
             entry.snapshot.status = DownloadStatus::Failed;
             entry.snapshot.error =
                 Some(TransferError::new(FailureClass::Permanent, None, &message));
@@ -581,15 +604,25 @@ fn start_worker(shared: &Arc<Shared>, id: TransferId, resume: Option<Resume>) {
         let Some(entry) = state.transfers.get_mut(&id) else {
             return;
         };
-        let reporter = Arc::clone(shared);
+        let (reporter, namer) = (Arc::clone(shared), Arc::clone(shared));
         let control = Control::with_progress(progress_reporter(shared, id))
             .with_status(status_reporter(shared, id))
             .with_limits(vec![entry.limit.clone(), shared.global.clone()])
+            .with_request(entry.job.request.clone())
             .with_checkpoints(move |checkpoint| {
                 let mut state = lock(&reporter.state);
                 if let Some(entry) = state.transfers.get_mut(&id) {
                     entry.last_checkpoint = Some(checkpoint.clone());
                     state.emit(TransferEvent::Checkpoint { id, checkpoint });
+                }
+            })
+            .with_naming(move |name| {
+                // From now on the transfer is this file: a retry, a pause or a cancel uses it.
+                let mut state = lock(&namer.state);
+                if let Some(entry) = state.transfers.get_mut(&id) {
+                    entry.job.destination = Some(entry.job.directory.join(name));
+                    entry.snapshot.file_name = Some(name.to_owned());
+                    state.changed(id);
                 }
             });
         entry.control = Arc::new(control);
@@ -641,10 +674,16 @@ fn run(shared: &Shared, id: TransferId, job: &Job, resume: Option<&Resume>, cont
     let mut resume = resume.cloned();
     let mut restarts = 0;
     let result = loop {
-        let result = download_resumable(
+        // Named by now when an earlier attempt's answer named it (#40).
+        let destination = destination_of(shared, id).or_else(|| job.destination.clone());
+        let target = match &destination {
+            Some(destination) => Target::File(destination),
+            None => Target::Folder(&job.directory),
+        };
+        let result = download_to(
             &shared.curl,
             &job.url,
-            &job.destination,
+            target,
             options,
             resume.as_ref(),
             &job.expected,
@@ -670,7 +709,8 @@ fn run(shared: &Shared, id: TransferId, job: &Job, resume: Option<&Resume>, cont
         if let Err(stopped) = wait_out(control, wait) {
             if matches!(stopped, DownloadError::Cancelled) {
                 // A failure that had a checkpoint kept the part file for this restart.
-                if let Err(e) = discard_part(&job.destination) {
+                let destination = destination_of(shared, id).or_else(|| job.destination.clone());
+                if let Some(Err(e)) = destination.as_deref().map(discard_part) {
                     break Err(e);
                 }
             }
@@ -727,6 +767,14 @@ fn last_checkpoint(shared: &Shared, id: TransferId) -> Option<Checkpoint> {
         .transfers
         .get(&id)
         .and_then(|e| e.last_checkpoint.clone())
+}
+
+/// The file transfer `id` downloads to now: `None` until the server named a file in its folder.
+fn destination_of(shared: &Shared, id: TransferId) -> Option<PathBuf> {
+    lock(&shared.state)
+        .transfers
+        .get(&id)
+        .and_then(|e| e.job.destination.clone())
 }
 
 /// Removes the part file of a download whose worker is stopping; there may be none.

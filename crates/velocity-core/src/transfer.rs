@@ -259,9 +259,10 @@ pub struct TransferSpec {
     /// after verification (#43, #46).
     pub directory: PathBuf,
     /// The file's name in [`TransferSpec::directory`]; `None` to take the server's (#40): its
-    /// `Content-Disposition`, else the final URL's last segment. A new download whose name is
-    /// taken gets a free one (`a (1).zip`); the engine reports the name it uses in
-    /// [`TransferSnapshot::file_name`]. A resume always gives the name.
+    /// `Content-Disposition`, else the final URL's last segment, sanitised, and made free
+    /// (`a (1).zip`) when taken (PO decision on #40). The engine reports it in
+    /// [`TransferSnapshot::file_name`]. A given name that is taken is refused with `FileExists`,
+    /// as before; #31 adds the conflict settings. A resume always gives the name.
     pub file_name: Option<String>,
     /// A login for the server of the first URL only (#40).
     pub credentials: Option<Credentials>,
