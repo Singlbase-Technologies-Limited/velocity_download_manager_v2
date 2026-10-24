@@ -25,6 +25,8 @@ use crate::tls::{Leaf, TestPki};
 const IDLE: Duration = Duration::from_secs(30);
 /// The bytes the server writes to a data connection at a time.
 const CHUNK: usize = 16 * 1024;
+/// How long closing a connection waits for the client to close its side (#172).
+const CLOSE_WAIT: Duration = Duration::from_secs(5);
 
 /// Whether, and how, the server speaks TLS.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -234,18 +236,23 @@ impl Stream {
         matches!(self, Stream::Tls(_))
     }
 
-    /// Ends the connection: TLS's `close_notify` first, then the socket's write side.
+    /// Ends the connection gracefully: TLS's `close_notify` first, then the socket's write side,
+    /// then whatever the client still sends, until it closes too (at most [`CLOSE_WAIT`]). A socket
+    /// dropped with the client's own TLS close still unread is reset, and Schannel then reports
+    /// the transfer as aborted (#172).
     fn close(self) {
-        match self {
-            Stream::Plain(sock) => {
-                let _ = sock.shutdown(std::net::Shutdown::Write);
-            }
+        let mut sock = match self {
+            Stream::Plain(sock) => sock,
             Stream::Tls(mut tls) => {
                 tls.conn.send_close_notify();
                 let _ = tls.conn.complete_io(&mut tls.sock);
-                let _ = tls.sock.shutdown(std::net::Shutdown::Write);
+                tls.sock
             }
-        }
+        };
+        let _ = sock.shutdown(std::net::Shutdown::Write);
+        let _ = sock.set_read_timeout(Some(CLOSE_WAIT));
+        let mut sink = [0u8; 4096];
+        while matches!(sock.read(&mut sink), Ok(n) if n > 0) {}
     }
 }
 
