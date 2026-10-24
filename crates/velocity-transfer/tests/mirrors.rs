@@ -303,3 +303,77 @@ fn one_source_downloads_as_before() {
         }]
     );
 }
+
+mod engine {
+    use super::*;
+    use std::sync::mpsc::Receiver;
+    use std::time::Instant;
+    use velocity_core::domain::DownloadStatus;
+    use velocity_core::transfer::{
+        DirectTransfer, Limits, TransferEvent, TransferId, TransferSnapshot, TransferSpec,
+    };
+    use velocity_transfer::engine::InProcessEngine;
+
+    fn spec(urls: Vec<String>, dir: &Dir) -> TransferSpec {
+        TransferSpec {
+            urls,
+            directory: dir.0.clone(),
+            file_name: Some("out.bin".to_owned()),
+            credentials: None,
+            headers: Vec::new(),
+            referrer: None,
+            user_agent: None,
+            checksum: None,
+            pieces: None,
+            limits: Limits::default(),
+            max_connections: 4,
+            resume: None,
+            require_encryption: false,
+            ssh_key: None,
+        }
+    }
+
+    fn finished(events: &Receiver<TransferEvent>, id: TransferId) -> TransferSnapshot {
+        let deadline = Instant::now() + Duration::from_secs(30);
+        loop {
+            let left = deadline.saturating_duration_since(Instant::now());
+            if let TransferEvent::Changed { snapshot } =
+                events.recv_timeout(left).expect("an event in time")
+            {
+                if snapshot.id == id
+                    && matches!(
+                        snapshot.status,
+                        DownloadStatus::Completed | DownloadStatus::Failed
+                    )
+                {
+                    return snapshot;
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn the_engine_downloads_from_the_specs_mirrors() {
+        let data = seeded_bytes(512 << 10, 66);
+        let good = serve(&data, ServerOptions::default());
+        let dir = Dir::new("engine");
+        let mut engine = InProcessEngine::start().expect("the engine starts");
+        let events = engine.subscribe();
+        let urls = vec![good.url("missing.bin"), good.url("f.bin")];
+        let id = engine.add(spec(urls, &dir)).unwrap();
+        let done = finished(&events, id);
+        assert_eq!(done.status, DownloadStatus::Completed, "{:?}", done.error);
+        assert_eq!(hex(&std::fs::read(dir.file()).unwrap()), hex(&data));
+    }
+
+    #[test]
+    fn a_mirror_the_engine_may_not_fetch_is_refused_when_added() {
+        let dir = Dir::new("engine-refused");
+        let mut engine = InProcessEngine::start().expect("the engine starts");
+        let urls = vec![
+            "https://example.com/f".to_owned(),
+            "file:///etc/passwd".to_owned(),
+        ];
+        assert!(engine.add(spec(urls, &dir)).is_err());
+    }
+}

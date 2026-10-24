@@ -40,7 +40,7 @@ use velocity_sftp::{SftpOptions, SftpTransport, TrustError};
 use crate::adaptive::{AdaptivePolicy, Tuning};
 use crate::budget::{self, Demand, Share};
 use crate::download::{
-    download_to, part_path, wait_out, Cadence, ConnectionsNow, Control, DownloadError,
+    download_from, part_path, wait_out, Cadence, ConnectionsNow, Control, DownloadError,
     DownloadOptions, Expected, Target,
 };
 use crate::files;
@@ -117,6 +117,8 @@ struct Entry {
 #[derive(Clone)]
 struct Job {
     url: String,
+    /// The URL and its mirrors, `url` first (#55).
+    urls: Vec<String>,
     directory: PathBuf,
     /// The file's path; `None` until the server's first answer names a file in `directory` (#40).
     destination: Option<PathBuf>,
@@ -515,7 +517,10 @@ impl DirectTransfer for InProcessEngine {
 
     fn add(&mut self, spec: TransferSpec) -> Result<TransferId, ErrorCode> {
         let url = spec.urls.first().ok_or(ErrorCode::InvalidInput)?.clone();
-        check_url(&url)?;
+        // Every mirror is held to the same rules as the first URL (#55).
+        for url in &spec.urls {
+            check_url(url)?;
+        }
         if spec.directory.as_os_str().is_empty() {
             return Err(ErrorCode::InvalidPath);
         }
@@ -570,6 +575,7 @@ impl DirectTransfer for InProcessEngine {
                 snapshot,
                 control: Arc::new(Control::default()),
                 job: Job {
+                    urls: spec.urls.clone(),
                     url,
                     directory: spec.directory.clone(),
                     destination,
@@ -831,9 +837,9 @@ fn run(shared: &Shared, id: TransferId, job: &Job, resume: Option<&Resume>, cont
             Some(destination) => Target::File(destination),
             None => Target::Folder(&job.directory),
         };
-        let result = download_to(
+        let result = download_from(
             &shared.transports,
-            &job.url,
+            &job.urls,
             target,
             options,
             resume.as_ref(),
