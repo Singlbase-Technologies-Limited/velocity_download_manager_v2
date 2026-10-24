@@ -13,7 +13,8 @@
 //! - **Trust:** the client trusts the CA through [`TlsFront::ca_file`]; nothing is installed on the
 //!   machine. Verification is never turned off.
 //!
-//! Each front runs on its own tokio runtime, which stops when the front is dropped.
+//! Each front runs on its own tokio runtime, which stops when the front is dropped. The CA, the leaf
+//! and the revocation-list server are a [`TestPki`], which the FTPS server also uses (#51).
 
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::{Path, PathBuf};

@@ -50,6 +50,61 @@ The name is then sanitised ([`naming.rs`](../crates/velocity-core/src/naming.rs)
 - **Reported:** the engine reports the name in the snapshot's `fileName`. From then on, retries, pauses and cancels use that file.
 - **Given names:** a spec that gives `fileName` is saved under it, and it fails with `FileExists` when the name is taken; #31 adds the conflict settings. `naming::file_name_for_link` decides whether a link names its file on its own: `report.pdf` does, `download.php?id=3` and `/files/12345` don't, so those are left to the server. Nothing calls it yet; the add flow that will is R8's.
 
+## FTP and FTPS (#51)
+
+`ftp://` and `ftps://` links download through the same engine as HTTP. FTP has no response head, so the libcurl layer builds one from the server's control replies before the first body byte ([`ftp.rs`](../crates/velocity-curl/src/ftp.rs)). The probe, the gate, the validators, the checkpoints and the completion gate then work as they do for HTTP.
+
+### The head from the replies
+
+libcurl passes FTP's control replies to the header callback (`213 1234` for a `SIZE`), and only its debug output shows which command each reply answers. The libcurl layer turns debug output on for FTP links only, reads the verb of each command sent (`SIZE`, `MDTM`, `REST`, `RETR`), and pairs it with the next reply. It keeps nothing else from that output, so the `PASS` line never leaves the callback.
+
+| What the replies say | The head | When |
+|---|---|---|
+| `RETR` started (`150` or `125`), no range asked | `200`, `Content-Length` from `SIZE` | At the `RETR` reply |
+| `RETR` started, a range from byte a, `SIZE` gave T | `206`, `Content-Range: bytes a-b/T`, where b is the range's end or T−1 | At the `RETR` reply |
+| A range from byte a > 0, and `SIZE` says T ≤ a | `416`, `Content-Range: bytes */T`. libcurl doesn't retrieve such a file, and the fetch ends without a body, like an HTTP `416` | At the `SIZE` reply |
+| Byte 0 of an empty file (T = 0) | `416`, `bytes */0`: an empty file, as for HTTP | At the `RETR` reply |
+| `REST` refused (any reply but `350`) | `200`: the server can't start part way | At the `REST` reply |
+| A range, but no size (`SIZE` refused) | `200` without a length: nothing proves the range | At the `RETR` reply |
+| `MDTM` gave a time | `Last-Modified`, with a `Date` of now | Added to the head |
+| `RETR` failed: `550` | No head; the fetch fails as `NotFound` | — |
+
+- **A range is `REST`:** the start is sent as `REST` (`CURLOPT_RESUME_FROM_LARGE`), and the range's end is the fetch's body limit, which stops the transfer there.
+- **No byte from another offset:** a `200` for a range after byte 0 is aborted before any byte, whatever the gate says, because its bytes would start at the `REST` offset and not at byte 0. A body that arrives before any head is refused too.
+- **The date as a validator:** `MDTM` (RFC 3659 §3) is in UTC, to the second. With the head's `Date` of now, it is a strong date once it is at least a second old ([changed files](#changed-files-45)), so a resume is checked against it as `Last-Modified` is for HTTP. A file whose time changed since its checkpoint starts over. Without `MDTM`, a resume is kept on its size alone and shows "not verified" ([ADR-0010](decisions/0010-resume-without-validator.md)). FTP has nothing like `If-Range`: the time is compared in the gate, before any byte is written.
+
+### One connection, one stream
+
+An FTP download uses one connection, whatever is asked (PO decision on #51): each FTP transfer opens a control and a data connection, and nobody has measured yet whether more help (#77). `set_connections` returns 1 for it. `DownloadOptions::one_connection` makes the probe ask for the whole file, so a download that isn't cut is one transfer. What a cut, a pause or a crash leaves is one lease to the end, so one `REST`. A server that refuses `REST` sends the whole file again, and only the missing bytes are written (`RangesLost`). The per-host cap counts FTP on port 21 and FTPS on 990 unless the link names another.
+
+### Logins and encryption
+
+- **The login** comes from the spec's `credentials` and goes out as FTP's `USER` and `PASS`. Without one, libcurl logs in as `anonymous`. A link with a login in it is refused by the engine; the app splits it off first and never stores it (`database::without_login`). FTP has no redirects, so the origin rules don't apply.
+- **Plain FTP sends the login and the file in clear.** The engine reports what it can encrypt per protocol (`ProtocolCapabilities::encryption`), and the add form (R8) shows `cleartextWarning` from `src/capabilities.ts` before it starts a plain `ftp://` download (PO decision on #51).
+- **Explicit FTPS:** a download that requires encryption (`TransferSpec::require_encryption`) asks `AUTH TLS` before the login, then `PBSZ 0` and `PROT P`, so the data connections are TLS too (`CURLUSESSL_ALL`, `CURLFTPAUTH_TLS`). A server that refuses fails the download at once, as `EncryptionRefused`, before the login is sent. There is no fallback to plain FTP.
+- **Implicit FTPS:** an `ftps://` link is TLS from the first byte, on both connections.
+- **Certificates** are verified as for HTTPS, with the platform's trust store ([SECURITY.md](SECURITY.md#tls-verification-69)). A refused one fails at once, before the login.
+- **Passive mode only,** to the control connection's address: the address in a `PASV` reply is ignored (`CURLOPT_FTP_SKIP_PASV_IP`), so a server can't send the data connection to another host.
+- **An `http://` link that requires encryption is refused** (`InvalidInput`): it can't be encrypted.
+
+### Failures
+
+| What happened | Kind | Retried |
+|---|---|---|
+| The file isn't there (`550`) | `NotFound`: "The file wasn't found on the server." | No |
+| The login was refused (`530`), or access to the file | `AccessDenied` | No |
+| Encryption is required, and `AUTH TLS` was refused | `EncryptionRefused` | No |
+| The data connection broke part way | `Interrupted` | Yes, from the first missing byte, with `REST` |
+
+### FTPS: the evaluation #51 asked for
+
+#51 asked for a written evaluation of FTPS with a recommendation. The PO decided to build it in #51, explicit and implicit, and #22, which the issue names, is the closed parity inventory, so the evaluation is here.
+
+- **Certificate verification (verified):** FTPS uses the same TLS stack as HTTPS: Schannel with the Windows store on Windows, OpenSSL on Linux. The tests run explicit and implicit FTPS against the test CA of #69 on both, and a refused certificate, an untrusted issuer or an expired leaf, fails before the login. The FTP server presents a [`TestPki`](../crates/velocity-test-http/src/tls.rs) leaf, with its revocation list served, as the HTTPS front does.
+- **Server compatibility (partly verified):** explicit FTPS with `AUTH TLS` (RFC 4217) is the common form, and implicit FTPS on port 990 is the older one; both work against the test server. Not verified: some servers require the data connection to resume the control connection's TLS session (vsftpd's `require_ssl_reuse`, for example). libcurl reuses TLS sessions by default, but the test server doesn't require it, so that combination has no test. `CCC` (dropping TLS after the login) isn't used.
+- **Cost (not measured):** each FTPS transfer adds a TLS handshake on the control connection and one on the data connection. No measurement exists (ADR-0009); #77 measures.
+- **Recommendation:** as built. Require encryption wherever the server offers FTPS, and keep plain FTP for servers that don't, with the warning.
+
 ## Later segments: the range scheduler (#42)
 
 After a probe that gave a total, the rest of the file is fetched with leases from the range scheduler ([`scheduler.rs`](../crates/velocity-transfer/src/scheduler.rs), report section 5.2). The downloader's thread owns it and makes every change; no lock is held across I/O.
@@ -545,12 +600,19 @@ Run it with `cargo run --release -p velocity-transfer --example high_offset_writ
   The unit tests in `integrity.rs` check the six algorithms against their standard test vectors, a frontier fed in reverse order, and the piece verifier. `tests/engine_contract.rs` checks checksums and piece hashes in both engine modes.
 - **HTTP/2 fixtures (#47):** `crates/velocity-transfer-h2c/tests/http2.rs` runs against the cleartext HTTP/2 server: #41's probe fixtures, #42's split that resets only its stream, and the multiplex policy against a server throttling each TCP connection and one throttling each stream. They need the `test-h2c` feature, which only test builds have ([TESTING.md](TESTING.md#fixture-servers-v2-needs)). They live in a test-only crate of their own (#46): a dev-dependency's features reach every example of its crate, so while they were in `velocity-transfer`, none of its examples could be built for release.
 - **TLS fixtures (#69):** `crates/velocity-transfer-h2c/tests/tls.rs` downloads in segments over HTTPS and over HTTP/2 negotiated through ALPN, and checks that a refused certificate fails permanently with nothing on disk. It needs the `test-ca` feature, so it lives in the same test-only crate. What each TLS backend accepts and refuses is in [SECURITY.md](SECURITY.md#tls-verification-69).
+- **FTP fixtures (#51):** the FTP server in [`ftp.rs`](../crates/velocity-test-http/src/ftp.rs) is V1's test server ported to the standard library. It serves passive FTP with `SIZE`, `MDTM` and `REST`, explicit and implicit FTPS on a `TestPki`, and switches for no `SIZE`, no `REST`, no `MDTM` and a cut transfer. It records the logins, `RETR`s, `REST` offsets and which connections were encrypted.
+  - `crates/velocity-curl/tests/ftp.rs` checks the head built for each case in the table above, the login, a refused login, a cut, and FTPS: explicit, implicit, required from a plain server, and an untrusted certificate.
+  - `crates/velocity-transfer/tests/ftp.rs` ports V1's tests: a whole file whose SHA-256 matches, a cut transfer resumed with `REST`, and a missing file. It adds a pause resumed from its checkpoint, a resume with and without `MDTM`, a file whose time changed, and a server without `REST`.
+  - `tests/engine_contract.rs` downloads over FTP with a login in both engine modes, on one connection.
+  - `crates/velocity-transfer-h2c/tests/ftps.rs` downloads over explicit and implicit FTPS on the test CA, and checks that requiring encryption from a plain server, and a refused certificate, fail at once without the login.
 - **Unit tests:** the tests in `probe.rs`, `validator.rs`, `failure.rs`, `retry.rs`, `adaptive.rs`, `budget.rs`, the libcurl layer's `rate.rs`, `scheduler.rs`, `files.rs` and the libcurl layer's `tests/curl_loop.rs` (`FetchLimit`, the per-host cap) and `tests/http2.rs` cover each rule on its own.
 
 ## Not yet
 
 - **https→http after confirmation:** such a redirect is refused; #67 adds the confirmation. `redirect.rs`'s unit tests cover the rule; an end-to-end test on the TLS fixture (#69) comes with #67.
 - **Credentials beyond memory:** the keychain, zeroisation and the secret-leak scan are #70 and #71.
+- **Requiring encryption from the add form:** `TransferSpec::require_encryption` and the cleartext warning are ready; the add form that sets one and shows the other is R8's. Until then, the app's FTP downloads are plain unless the link is `ftps://`.
+- **FTP over several connections:** one connection until #77 measures whether more help.
 - **Connection values:** the per-host cap and the smallest piece come from the performance profile (#57). The budget and the ramp's values are engine defaults until the settings model passes the user's (#30). Tuning them by measurement is #77.
 - **Learning per host:** what a host allowed isn't remembered between downloads (a non-goal of #47).
 - **Throttling across downloads:** a `429` or `503` halves the connections of the download that got it, not of the other downloads to that host.
