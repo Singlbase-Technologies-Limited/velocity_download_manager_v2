@@ -135,7 +135,7 @@ Description=Velocity V2 password-login SFTP test server (127.0.0.1:$port)
 After=network.target
 
 [Service]
-ExecStartPre=/usr/bin/mkdir -p /run/sshd
+ExecStartPre=/usr/bin/install -d -o root -g root -m 755 /run/sshd
 ExecStartPre=/usr/sbin/sshd -t -f $conf_dir/sshd_config
 ExecStart=/usr/sbin/sshd -D -f $conf_dir/sshd_config
 Restart=on-failure
@@ -149,6 +149,8 @@ if [ "$(cat "$conf_dir/sshd_config" 2>/dev/null)" != "$config" ]; then
   printf '%s\n' "$config" >"$conf_dir/sshd_config"
   changed=yes
 fi
+# sshd's privilege separation folder. Ubuntu's own ssh starts on demand and makes it only then.
+install -d -o root -g root -m 755 /run/sshd
 /usr/sbin/sshd -t -f "$conf_dir/sshd_config"
 if [ "$(cat "$unit" 2>/dev/null)" != "$unit_text" ]; then
   printf '%s\n' "$unit_text" >"$unit"
