@@ -126,6 +126,11 @@ pub struct Sources {
     pieces: bool,
     /// The most requests one source has open at once.
     per_source: u32,
+    /// The source the download started from: its first answer is the file the others must match.
+    lead: SourceId,
+    /// Which sources may share ranges: HTTP and HTTPS ones. FTP and SFTP run on one connection
+    /// (#51, #53), so they are only ever a fallback.
+    parallel: Vec<bool>,
 }
 
 impl Sources {
@@ -148,10 +153,19 @@ impl Sources {
                 served: Vec::new(),
             })
             .collect();
+        let parallel = urls
+            .iter()
+            .map(|url| {
+                let scheme = url.split_once("://").map_or("", |(scheme, _)| scheme);
+                scheme.eq_ignore_ascii_case("http") || scheme.eq_ignore_ascii_case("https")
+            })
+            .collect();
         Sources {
             sources,
             pieces,
             per_source: per_source.max(1),
+            lead: SourceId(0),
+            parallel,
         }
     }
 
@@ -189,8 +203,10 @@ impl Sources {
         let open = |s: &Source| {
             s.state == SourceState::Usable && !s.cooling(now) && s.active < self.per_source
         };
+        let lead = self.lead.0;
+        let shares = |i: usize| i == lead || (self.parallel[lead] && self.parallel[i]);
         let candidates: Vec<usize> = (0..self.sources.len())
-            .filter(|&i| open(&self.sources[i]))
+            .filter(|&i| shares(i) && open(&self.sources[i]))
             .collect();
         if let Some(&i) = candidates.iter().find(|&&i| !self.sources[i].tried()) {
             return Some(SourceId(i));
@@ -309,9 +325,10 @@ impl Sources {
         }
     }
 
-    /// The bytes `[start, end)` failed their trusted piece hash: every source that sent some of
-    /// them gets a [`Sources::bad_piece`], and they are forgotten, to be fetched again. Returns
-    /// the sources blamed.
+    /// The bytes `[start, end)` failed their trusted piece hash, and are forgotten, to be fetched
+    /// again. A source that sent all of them gets a [`Sources::bad_piece`]; when several sent
+    /// some, which one was wrong can't be told, so each gets an ordinary failure. Returns the
+    /// sources blamed.
     pub fn blame(&mut self, start: u64, end: u64, now: Instant) -> Vec<SourceId> {
         let mut blamed = Vec::new();
         for i in 0..self.sources.len() {
@@ -332,8 +349,17 @@ impl Sources {
             *served = kept;
             blamed.push(SourceId(i));
         }
-        for &id in &blamed {
+        if let [id] = blamed[..] {
             self.bad_piece(id, now);
+        } else {
+            for &id in &blamed {
+                self.failed(
+                    id,
+                    now,
+                    false,
+                    "it sent part of a piece that failed its trusted hash",
+                );
+            }
         }
         blamed
     }
@@ -351,9 +377,31 @@ impl Sources {
         usable.filter_map(|s| s.cooling_until).min()
     }
 
+    /// The source the download started from.
+    pub fn lead(&self) -> SourceId {
+        self.lead
+    }
+
+    /// The download starts over from `id`, a fallback ([`Sources::fallback`]): what the others
+    /// answered was compared with the old lead's file, so each must prove itself again. Disabled
+    /// ones stay disabled.
+    pub fn make_lead(&mut self, id: SourceId) {
+        self.lead = id;
+        for s in &mut self.sources {
+            if !matches!(s.state, SourceState::Disabled(_)) {
+                s.state = SourceState::Usable;
+                s.file = None;
+            }
+        }
+    }
+
     /// No source can serve the download any more, now or after a cooldown.
     pub fn exhausted(&self) -> bool {
-        !self.sources.iter().any(|s| s.state == SourceState::Usable)
+        let lead = self.lead.0;
+        !self.sources.iter().enumerate().any(|(i, s)| {
+            s.state == SourceState::Usable
+                && (i == lead || (self.parallel[lead] && self.parallel[i]))
+        })
     }
 
     /// The next source to start the download over from when the one it used is gone: the first
@@ -603,6 +651,22 @@ mod tests {
     }
 
     #[test]
+    fn a_piece_from_several_sources_cools_them_down_but_doesnt_condemn_them() {
+        let now = Instant::now();
+        let mut s = Sources::new(&urls(2), true, 8);
+        for round in 0..2u64 {
+            let at = round * 1000;
+            s.served(SourceId(0), at, at + 500);
+            s.served(SourceId(1), at + 500, at + 1000);
+            s.blame(at, at + 1000, now);
+        }
+        // Two shared bad pieces: each source has two failures, and neither is disabled yet.
+        assert_eq!(s.state(SourceId(0)), &SourceState::Usable);
+        assert_eq!(s.state(SourceId(1)), &SourceState::Usable);
+        assert_eq!(s.report()[0].failures, 2);
+    }
+
+    #[test]
     fn next_ready_says_when_a_cooling_source_is_back() {
         let now = Instant::now();
         let mut s = Sources::new(&urls(2), true, 8);
@@ -640,6 +704,55 @@ mod tests {
             admission(true, Some(&a), 9, 10, &a),
             Admission::Different(_)
         ));
+    }
+
+    #[test]
+    fn ftp_and_sftp_sources_are_kept_for_failover_only() {
+        let now = Instant::now();
+        let urls = [
+            "https://a.example.com/f".to_owned(),
+            "ftp://b.example.com/f".to_owned(),
+            "https://c.example.com/f".to_owned(),
+        ];
+        let mut s = Sources::new(&urls, true, 8);
+        let picked: Vec<_> = (0..4)
+            .filter_map(|_| s.pick(now).inspect(|&id| s.started(id)))
+            .collect();
+        assert!(!picked.contains(&SourceId(1)), "{picked:?}");
+        assert!(picked.contains(&SourceId(2)), "{picked:?}");
+        assert_eq!(s.fallback(SourceId(0)), Some(SourceId(1)));
+        // An FTP first source shares nothing.
+        let ftp_first = Sources::new(
+            &["sftp://a/f".to_owned(), "https://b/f".to_owned()],
+            true,
+            8,
+        );
+        let mut ftp_first = ftp_first;
+        for _ in 0..3 {
+            let id = ftp_first.pick(now);
+            assert_eq!(id, Some(SourceId(0)));
+            ftp_first.started(SourceId(0));
+        }
+    }
+
+    #[test]
+    fn a_new_lead_makes_the_others_prove_themselves_again() {
+        let now = Instant::now();
+        let mut s = Sources::new(&urls(3), false, 8);
+        s.first_answer(SourceId(0), tagged("\"a\""));
+        s.admit(SourceId(1), 10, 10, tagged("\"b\""));
+        s.admit(SourceId(2), 10, 10, tagged("\"a\""));
+        s.failed(SourceId(0), now, true, "gone");
+        s.make_lead(SourceId(1));
+        assert_eq!(s.lead(), SourceId(1));
+        assert_eq!(s.state(SourceId(1)), &SourceState::Usable);
+        assert_eq!(s.state(SourceId(2)), &SourceState::Usable);
+        assert_eq!(
+            s.file(SourceId(2)),
+            None,
+            "compared with the new lead again"
+        );
+        assert!(matches!(s.state(SourceId(0)), SourceState::Disabled(_)));
     }
 
     #[test]

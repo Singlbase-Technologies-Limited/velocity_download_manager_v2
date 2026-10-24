@@ -58,6 +58,7 @@ use crate::probe::{
 };
 use crate::retry::{self, RetryPolicy};
 use crate::scheduler::{Assignment, Coverage, Lease, LeaseId, Scheduler, Sizes};
+use crate::sources::{self, Admission, SourceId, SourceReport, Sources};
 use crate::validator::Representation;
 
 /// How often a waiting download checks whether it was cancelled.
@@ -418,6 +419,8 @@ pub struct DownloadReport {
     pub peak_requests: u32,
     /// What was proven about the file's bytes (#46, ADR-0010).
     pub verification: Verification,
+    /// Each source, its URL and its mirrors, with the bytes it served and its state (#55).
+    pub sources: Vec<SourceReport>,
 }
 
 #[derive(Debug)]
@@ -512,6 +515,64 @@ pub fn download_to(
     expected: &Expected,
     control: &Control,
 ) -> Result<DownloadReport, DownloadError> {
+    download_from(
+        lp,
+        &[url.to_owned()],
+        target,
+        options,
+        resume,
+        expected,
+        control,
+    )
+}
+
+/// [`download_to`] from several sources (#55, PO decision on #55): `urls`, the first first, never
+/// empty, such as a Metalink file's mirrors ([`Sources`]).
+///
+/// - **Shared ranges:** sources proven to serve the same file (the same size and, without trusted
+///   piece hashes, the same strong validator) take ranges side by side, the faster and healthier
+///   ones more. Only HTTP and HTTPS sources share.
+/// - **Failures:** a source that fails is cooled down or disabled, and its range goes to another;
+///   the download fails only when none is left.
+/// - **Fallback:** when the source the download started from fails and none proven the same is
+///   left, the next one leads, and the download starts over from it: bytes that nothing proved
+///   the same are never mixed.
+/// - **Bad pieces** are blamed on the sources that sent them ([`Sources::blame`]).
+/// - **Logins and custom headers** go only to the first URL's origin.
+///
+/// One URL downloads exactly as before.
+pub fn download_from(
+    lp: &dyn Transport,
+    urls: &[String],
+    target: Target,
+    options: DownloadOptions,
+    resume: Option<&Resume>,
+    expected: &Expected,
+    control: &Control,
+) -> Result<DownloadReport, DownloadError> {
+    let mut sources = if urls.len() > 1 {
+        Sources::new(urls, expected.pieces.is_some(), options.connections)
+    } else {
+        Sources::single(&urls[0])
+    };
+    // A checkpoint names the source it came from; the download resumes from that one.
+    let resumed_from = match resume {
+        Some(Resume::Checkpoint { checkpoint }) => urls
+            .iter()
+            .position(|url| trusted(checkpoint, url).is_some()),
+        _ => None,
+    };
+    if let Some(i) = resumed_from.filter(|&i| i > 0) {
+        sources.make_lead(SourceId(i));
+    }
+    // With mirrors and trusted pieces, the probe and every lease end on a piece boundary, so each
+    // piece comes from one source, and a bad one is blamed on the source that sent it.
+    let options = match (&expected.pieces, urls.len() > 1) {
+        (Some(pieces), true) => piece_aligned(options, pieces.length),
+        _ => options,
+    };
+    let url = sources.url(sources.lead()).to_owned();
+    let url = url.as_str();
     let checksum = expected.checksum.as_ref();
     let mut part = None;
     let mut from = None;
@@ -560,9 +621,11 @@ pub fn download_to(
             resumed_bytes = part.coverage.len();
             ck.file = Representation::recorded(checkpoint);
             ck.resumed = true;
+            let lead = sources.lead();
             fetch_ranges(
                 lp,
-                url,
+                &mut sources,
+                lead,
                 checkpoint.total,
                 options,
                 &mut part,
@@ -576,7 +639,7 @@ pub fn download_to(
                 splits,
             })
         }
-        None => fetch_fresh(lp, url, options, &mut part, &mut ck, control),
+        None => fresh_from_any(lp, &mut sources, options, &mut part, &mut ck, control),
     };
     let start_over = match &outcome {
         Err(DownloadError::Changed(_)) => Some(false),
@@ -589,12 +652,13 @@ pub fn download_to(
         // after an encoding change, as one stream. A second change ends it; the user may retry
         // (report section 5.3, #45).
         part.start_over()?;
-        ck = Checkpointer::new(options.checkpoints, url);
+        let lead = sources.lead();
+        ck = Checkpointer::new(options.checkpoints, sources.url(lead));
         resumed_bytes = 0;
         outcome = if one_stream {
-            fetch_whole(lp, url, &mut part, control, &options.retry)
+            fetch_whole(lp, &mut sources, lead, &mut part, control, &options.retry)
         } else {
-            fetch_fresh(lp, url, options, &mut part, &mut ck, control)
+            fetch_fresh(lp, &mut sources, lead, options, &mut part, &mut ck, control)
         }
         .map_err(|e| match e {
             DownloadError::Changed(t) | DownloadError::EncodingChanged(t) => {
@@ -605,7 +669,15 @@ pub fn download_to(
     }
     // Pieces were checked as they were covered; bad ones are fetched again now (#46).
     outcome = match outcome {
-        Ok(fetched) => repair_pieces(lp, url, options, &mut part, &mut ck, control, fetched),
+        Ok(fetched) => repair_pieces(
+            lp,
+            &mut sources,
+            options,
+            &mut part,
+            &mut ck,
+            control,
+            fetched,
+        ),
         failed => failed,
     };
     control.running(0, false);
@@ -639,6 +711,7 @@ pub fn download_to(
                 peak_buffered_bytes: control.peak_buffered.load(Ordering::Acquire),
                 own_connections: control.own_connections.load(Ordering::Acquire),
                 peak_requests: control.peak_requests.load(Ordering::Acquire),
+                sources: sources.report(),
                 verification: if checksum.is_some() || expected.pieces.is_some() {
                     // `finish` checked the checksum, and `repair_pieces` every piece.
                     Verification::Verified
@@ -671,7 +744,7 @@ pub fn download_to(
 /// without piece hashes is returned as it is.
 fn repair_pieces(
     lp: &dyn Transport,
-    url: &str,
+    sources: &mut Sources,
     options: DownloadOptions,
     part: &mut PartFile,
     ck: &mut Checkpointer,
@@ -696,11 +769,20 @@ fn repair_pieces(
                     PIECE_REFETCHES,
                 )));
             }
+            if sources.len() > 1 {
+                // The sources that sent a bad piece lose standing, so another one sends it next.
+                let now = Instant::now();
+                for &index in &bad {
+                    let (a, b) = pieces.range(index, fetched.total);
+                    sources.blame(a, b, now);
+                }
+            }
             for &index in &bad {
                 part.uncover_piece(index, fetched.total)?;
             }
+            let lead = sources.lead();
             let (fetches, splits, mode) =
-                fetch_ranges(lp, url, fetched.total, options, part, ck, control)?;
+                fetch_ranges(lp, sources, lead, fetched.total, options, part, ck, control)?;
             fetched.fetches += fetches;
             fetched.splits += splits;
             fetched.mode = mode;
@@ -708,8 +790,9 @@ fn repair_pieces(
             // Ranges don't work for this download, so the piece can't come alone.
             started_over = true;
             part.start_over()?;
-            *ck = Checkpointer::new(options.checkpoints, url);
-            let whole = fetch_whole(lp, url, part, control, &options.retry)?;
+            let lead = sources.lead();
+            *ck = Checkpointer::new(options.checkpoints, sources.url(lead));
+            let whole = fetch_whole(lp, sources, lead, part, control, &options.retry)?;
             fetched = Fetched {
                 fetches: fetched.fetches + whole.fetches,
                 ..whole
@@ -776,15 +859,60 @@ struct Fetched {
     splits: u32,
 }
 
-/// A download from the start: the probe decides how the rest is fetched.
-fn fetch_fresh(
+/// `options` with the probe and the leases on multiples of `length`, a piece's (#55).
+fn piece_aligned(mut options: DownloadOptions, length: u64) -> DownloadOptions {
+    let length = length.max(1);
+    let leases = &mut options.leases;
+    leases.align = length;
+    leases.min_split = leases.min_split.max(length);
+    leases.max_lease = leases.max_lease.max(length).next_multiple_of(length);
+    options.probe_bytes = options.probe_bytes.max(1).next_multiple_of(length);
+    options
+}
+
+/// [`fetch_fresh`] from the lead source; when it fails and another source is left, that one leads
+/// and the download starts over from it (#55): what the failed one sent is discarded, since
+/// nothing proved the new one serves the same bytes.
+fn fresh_from_any(
     lp: &dyn Transport,
-    url: &str,
+    sources: &mut Sources,
     options: DownloadOptions,
     part: &mut PartFile,
     ck: &mut Checkpointer,
     control: &Control,
 ) -> Result<Fetched, DownloadError> {
+    loop {
+        let lead = sources.lead();
+        let result = fetch_fresh(lp, sources, lead, options, part, ck, control);
+        let Err(DownloadError::Transfer(t)) = &result else {
+            return result;
+        };
+        if sources.len() < 2 {
+            return result;
+        }
+        sources.failed(lead, Instant::now(), true, &t.message);
+        let Some(next) = sources.fallback(lead) else {
+            return result;
+        };
+        part.start_over()?;
+        sources.make_lead(next);
+        *ck = Checkpointer::new(options.checkpoints, sources.url(next));
+    }
+}
+
+/// A download from the start: the probe decides how the rest is fetched.
+fn fetch_fresh(
+    lp: &dyn Transport,
+    sources: &mut Sources,
+    lead: SourceId,
+    options: DownloadOptions,
+    part: &mut PartFile,
+    ck: &mut Checkpointer,
+    control: &Control,
+) -> Result<Fetched, DownloadError> {
+    let url = sources.url(lead).to_owned();
+    let url = url.as_str();
+    let before = part.written;
     let probe_end = options.probe_bytes.max(1) - 1;
     let mut fetches = 1;
     let mut splits = 0;
@@ -819,6 +947,10 @@ fn fetch_fresh(
         }
     };
     ck.file = file;
+    // The probe's bytes came from the lead.
+    sources.accepted(lead, part.written - before);
+    sources.served(lead, 0, part.written - before);
+    let streamed = part.written;
 
     let (mode, total) = match outcome {
         ProbeOutcome::Empty => (Mode::Empty, 0),
@@ -836,11 +968,12 @@ fn fetch_fresh(
         ProbeOutcome::SequentialRanges { received_end } => {
             let (n, total, mode) =
                 fetch_sequential(lp, url, received_end + 1, &ck.file, part, control, retry)?;
+            sources.accepted(lead, part.written - streamed);
             fetches += n;
             (mode, total)
         }
         ProbeOutcome::RangesOk { total, .. } => {
-            let (n, s, mode) = fetch_ranges(lp, url, total, options, part, ck, control)?;
+            let (n, s, mode) = fetch_ranges(lp, sources, lead, total, options, part, ck, control)?;
             fetches += n;
             splits = s;
             (mode, total)
@@ -858,12 +991,16 @@ fn fetch_fresh(
 /// encoding changed between answers, ranges can't be trusted.
 fn fetch_whole(
     lp: &dyn Transport,
-    url: &str,
+    sources: &mut Sources,
+    lead: SourceId,
     part: &mut PartFile,
     control: &Control,
     policy: &RetryPolicy,
 ) -> Result<Fetched, DownloadError> {
-    let (total, fetches) = stream_gaps(lp, url, None, None, part, control, policy)?;
+    let before = part.written;
+    let url = sources.url(lead).to_owned();
+    let (total, fetches) = stream_gaps(lp, &url, None, None, part, control, policy)?;
+    sources.accepted(lead, part.written.saturating_sub(before));
     Ok(Fetched {
         mode: Mode::SingleStream,
         total,
@@ -1422,6 +1559,11 @@ struct Active {
     retiring: bool,
     /// When the request was made, to measure the round trip to its answer (#47).
     asked: Instant,
+    /// The source it asks (#55).
+    source: SourceId,
+    /// What the answer of a source that hasn't proven itself yet says about the file, for
+    /// [`Sources::admit`]; `None` for one that has.
+    answer: Option<Arc<Mutex<Option<Representation>>>>,
 }
 
 type SegmentVerdict = Arc<Mutex<Option<Result<u64, SegmentRejection>>>>;
@@ -1449,6 +1591,13 @@ struct Asking<'a> {
     base: &'a FetchRequest,
     total: u64,
     file: &'a Representation,
+    /// What the request carries (#40): without the login and custom headers for a source on
+    /// another origin than the first URL's (#55).
+    options: Arc<RequestOptions>,
+    source: SourceId,
+    /// For a source that hasn't proven itself: whether the download has trusted piece hashes,
+    /// and the lead's file, which its answer must match ([`sources::admission`]).
+    admit: Option<(bool, Representation)>,
 }
 
 /// Starts the request for `lease`, `Range: bytes=start-(end−1)`, checked in the header callback.
@@ -1470,11 +1619,28 @@ fn request(
         ..asking.base.clone()
     }
     .if_range(asking.file.if_range())
-    .with_control(control);
+    .limited(&control.limits)
+    .with_options(Arc::clone(&asking.options));
     let (total, file) = (asking.total, asking.file.clone());
+    let admit = asking.admit.clone();
+    let answer = admit.as_ref().map(|_| Arc::new(Mutex::new(None)));
+    let answered = answer.clone();
     let fetch = fetch_on(lp, fetch_request, move |head: &ResponseHead| {
         asked.note(head);
-        let result = check_segment(head, a, b, total, &file);
+        let mut result = check_segment(head, a, b, total, &file);
+        if let (Ok(_), Some((pieces, first)), Some(answered)) = (&result, &admit, &answered) {
+            // A source's first answer: it may serve only when it proves to be the same file.
+            let now = Representation::of(head);
+            let admission = sources::admission(*pieces, Some(first), total, total, &now);
+            *answered.lock().expect("the answer lock") = Some(now);
+            if admission != Admission::Joined {
+                result = Err(SegmentRejection::Anomaly(TransferError::new(
+                    FailureClass::Permanent,
+                    Some(head.status),
+                    "the mirror isn't proven to serve the same file",
+                )));
+            }
+        }
         let gate = match &result {
             Ok(_) => Gate::Accept,
             Err(SegmentRejection::RangesIgnored) => {
@@ -1508,6 +1674,8 @@ fn request(
         quiet: false,
         retiring: false,
         asked: Instant::now(),
+        source: asking.source,
+        answer,
     }
 }
 
@@ -1529,9 +1697,11 @@ fn request(
 ///   while each helps, up to what it may use ([`Ramp`], #47).
 ///
 /// Returns the fetches made, the splits and the mode.
+#[allow(clippy::too_many_arguments)] // The download's parts; grouping them would add a type for one call.
 fn fetch_ranges(
     lp: &dyn Transport,
-    url: &str,
+    sources: &mut Sources,
+    lead: SourceId,
     total: u64,
     options: DownloadOptions,
     part: &mut PartFile,
@@ -1539,6 +1709,22 @@ fn fetch_ranges(
     control: &Control,
 ) -> Result<(u32, u32, Mode), DownloadError> {
     let policy = &options.retry;
+    // With mirrors (#55): each request asks a source the pool picks, and a failing source is
+    // dropped rather than the download. With one source, everything below is as before.
+    let multi = sources.len() > 1;
+    if multi {
+        sources.first_answer(lead, ck.file.clone());
+    }
+    // The login and custom headers go only to the first URL's origin (#40).
+    let first_origin = velocity_curl::origin(sources.url(SourceId(0)));
+    let elsewhere = Arc::new(RequestOptions {
+        headers: Vec::new(),
+        login: None,
+        ..(*control.request).clone()
+    });
+    let pieces = part.pieces.is_some();
+    // Why the last source failed, for the error when none is left.
+    let mut last_source_error: Option<TransferError> = None;
     // The most connections a throttling server leaves this download (#48).
     let mut throttled_to = u32::MAX;
     let mut sched = Scheduler::new(total, &part.coverage, options.leases);
@@ -1628,13 +1814,10 @@ fn fetch_ranges(
             a.limit.stop_at(0);
         }
         // Fill the free connections, unless ranges stopped working for this download.
-        let mut base = FetchRequest::get(url.to_owned());
-        if matches!(
+        let own_connection = matches!(
             multiplex,
             Multiplex::Trying { .. } | Multiplex::Chosen(true)
-        ) {
-            base = base.on_own_connection();
-        }
+        );
         let mut file_bound = false;
         while failure.is_none()
             && changed.is_none()
@@ -1644,6 +1827,20 @@ fn fetch_ranges(
             && ((active.len() + waiting.len()) as u32) < connections
         {
             let idle = connections - (active.len() + waiting.len()) as u32;
+            let Some(source) = sources.pick(now) else {
+                // Every source is busy, cooling down or gone.
+                if multi && active.is_empty() && waiting.is_empty() {
+                    match sources.next_ready(now) {
+                        Some(at) => waiting.push(at),
+                        None => {
+                            failure = failure
+                                .take()
+                                .or_else(|| Some(every_source_failed(last_source_error.as_ref())));
+                        }
+                    }
+                }
+                break;
+            };
             let lease = match sched.assign(idle) {
                 Some(Assignment::Fresh(lease)) => lease,
                 Some(Assignment::Split { new, shrunk }) => {
@@ -1661,6 +1858,26 @@ fn fetch_ranges(
                 }
             };
             fetches += 1;
+            sources.started(source);
+            let url = sources.url(source).to_owned();
+            let same_origin = velocity_curl::origin(&url) == first_origin;
+            let mut base = FetchRequest::get(url);
+            if own_connection {
+                base = base.on_own_connection();
+            }
+            // The lead is held to the download's file, a mirror to its own first answer, and one
+            // that hasn't answered yet to nothing until its answer is admitted.
+            let proven = if multi {
+                sources.file(source).cloned()
+            } else {
+                None
+            };
+            let admit = (multi && proven.is_none()).then(|| (pieces, ck.file.clone()));
+            let file = match (multi, proven) {
+                (false, _) => ck.file.clone(),
+                (true, Some(file)) => file,
+                (true, None) => Representation::default(),
+            };
             active.insert(
                 lease.id,
                 request(
@@ -1668,7 +1885,14 @@ fn fetch_ranges(
                     &Asking {
                         base: &base,
                         total,
-                        file: &ck.file,
+                        file: &file,
+                        options: if same_origin || !multi {
+                            Arc::clone(&control.request)
+                        } else {
+                            Arc::clone(&elsewhere)
+                        },
+                        source,
+                        admit,
                     },
                     lease,
                     tx.clone(),
@@ -1730,7 +1954,13 @@ fn fetch_ranges(
                 // the rest of it is leased again after the wait.
                 if let Some(a) = active.remove(&id) {
                     sched.ended(id);
-                    if !a.retiring {
+                    sources.ended(a.source, a.asked.elapsed());
+                    if a.retiring {
+                    } else if multi {
+                        let t = stall_error(policy);
+                        sources.failed(a.source, Instant::now(), false, &t.message);
+                        last_source_error = Some(t);
+                    } else {
                         retry_later(stall_error(policy), None, part.written);
                     }
                 }
@@ -1742,6 +1972,11 @@ fn fetch_ranges(
                     rtt = Some(rtt.map_or(waited, |r| r.min(waited)));
                     if answered_end(&a.verdict).is_some() {
                         sched.start(id);
+                        // A mirror's first answer, accepted: it proved to be the same file.
+                        let answer = a.answer.as_ref().and_then(|x| x.lock().ok()?.take());
+                        if let Some(file) = answer {
+                            sources.admit(a.source, total, total, file);
+                        }
                     }
                 }
             }
@@ -1756,6 +1991,10 @@ fn fetch_ranges(
                 let accepted =
                     sched.accept(id, offset, &chunk, |at, bytes| part.write_owned(at, bytes))?;
                 part.wasted += accepted.wasted;
+                sources.accepted(a.source, accepted.written);
+                if multi && accepted.written > 0 {
+                    sources.served(a.source, offset, offset + accepted.written);
+                }
                 // Bytes past the end its own Content-Range gave: the server overran its answer.
                 let overran = answered_end(&a.verdict).is_some_and(|end| a.position > end + 1);
                 if overran && !a.overran {
@@ -1773,6 +2012,60 @@ fn fetch_ranges(
                 };
                 let verdict = a.verdict.lock().expect("the segment verdict lock").take();
                 let unfinished = sched.lease(id).is_some_and(|l| l.cursor < l.end);
+                sources.ended(a.source, a.asked.elapsed());
+                if multi {
+                    // A mirror's first answer that wasn't admitted: it serves no range, and the
+                    // lease goes to another source.
+                    let answer = a.answer.as_ref().and_then(|x| x.lock().ok()?.take());
+                    if let Some(file) = answer {
+                        if sources.admit(a.source, total, total, file) != Admission::Joined {
+                            sched.ended(id);
+                            continue;
+                        }
+                    }
+                }
+                if multi && a.source != lead && !a.retiring {
+                    // A mirror's failure is the mirror's, never the download's: it is cooled
+                    // down or disabled, and its range is leased again elsewhere.
+                    let failed = match (verdict, result) {
+                        (Some(Err(SegmentRejection::RangesIgnored)), _) => Some((
+                            true,
+                            TransferError::new(
+                                FailureClass::Permanent,
+                                Some(200),
+                                "the mirror doesn't send ranges",
+                            ),
+                        )),
+                        (Some(Err(SegmentRejection::Anomaly(t))), _) => Some((false, t)),
+                        (Some(Err(SegmentRejection::Invalid(t))), _) => Some((!t.retryable, t)),
+                        (
+                            Some(Err(
+                                SegmentRejection::Changed(t) | SegmentRejection::EncodingChanged(t),
+                            )),
+                            _,
+                        ) => Some((true, t)),
+                        (Some(Ok(_)), Err(e)) => Some((false, fetch_failure(e))),
+                        (Some(Ok(end)), Ok(())) if unfinished && a.position <= end => Some((
+                            false,
+                            TransferError::new(
+                                FailureClass::Transient,
+                                None,
+                                "the mirror's answer ended early",
+                            ),
+                        )),
+                        (None, Err(e)) => {
+                            let t = fetch_failure(e);
+                            Some((!t.retryable, t))
+                        }
+                        _ => None,
+                    };
+                    if let Some((permanent, t)) = failed {
+                        sources.failed(a.source, Instant::now(), permanent, &t.message);
+                        last_source_error = Some(t);
+                    }
+                    sched.ended(id);
+                    continue;
+                }
                 if a.retiring {
                     // Stopped on purpose: only a changed file or encoding still matters.
                     match verdict {
@@ -1788,6 +2081,10 @@ fn fetch_ranges(
                 match (verdict, result) {
                     (Some(Err(SegmentRejection::RangesIgnored)), _) => ranges_ignored = true,
                     (Some(Err(SegmentRejection::Anomaly(_))), _) => anomalies += 1,
+                    (Some(Err(SegmentRejection::Invalid(t))), _) if multi => {
+                        sources.failed(lead, Instant::now(), !t.retryable, &t.message);
+                        last_source_error = Some(t);
+                    }
                     (Some(Err(SegmentRejection::Invalid(t))), _) => {
                         retry_later(t, a.retry_after.get(), part.written)
                     }
@@ -1806,6 +2103,11 @@ fn fetch_ranges(
                         }
                     }
                     // Never answered: the connection itself failed.
+                    (None, Err(e)) if multi => {
+                        let t = fetch_failure(e);
+                        sources.failed(lead, Instant::now(), !t.retryable, &t.message);
+                        last_source_error = Some(t);
+                    }
                     (None, Err(e)) => retry_later(fetch_failure(e), None, part.written),
                     (None, Ok(())) => {}
                 }
@@ -1827,7 +2129,10 @@ fn fetch_ranges(
         return Ok((fetches, splits, Mode::Ranges));
     }
     if ranges_ignored || anomalies >= MAX_ANOMALIES {
-        let n = stream_gaps(lp, url, Some(total), Some(&ck.file), part, control, policy)?.1;
+        let before = part.written;
+        let url = sources.url(lead).to_owned();
+        let n = stream_gaps(lp, &url, Some(total), Some(&ck.file), part, control, policy)?.1;
+        sources.accepted(lead, part.written.saturating_sub(before));
         return Ok((fetches + n, splits, Mode::RangesLost));
     }
     // C, the live leases and the unassigned bytes always make up the file, so with no lease left
@@ -1838,6 +2143,26 @@ fn fetch_ranges(
         "the range scheduler stopped before the file was covered",
     )
     .into())
+}
+
+/// What a download fails with when none of its sources is left (#55): the last one's failure,
+/// which decides whether the engine retries it.
+fn every_source_failed(last: Option<&TransferError>) -> TransferError {
+    match last {
+        Some(t) => TransferError::new(
+            t.class,
+            t.http_status,
+            &format!(
+                "Every source of the download failed; the last: {}",
+                t.message
+            ),
+        ),
+        None => TransferError::new(
+            FailureClass::Transient,
+            None,
+            "Every source of the download failed.",
+        ),
+    }
 }
 
 /// Fetches the rest of a file whose total the server doesn't give: one open range at a time from
