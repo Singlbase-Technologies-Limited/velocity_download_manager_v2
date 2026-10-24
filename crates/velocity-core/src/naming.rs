@@ -65,6 +65,78 @@ pub fn file_name_from_url(url: &str) -> Option<String> {
     (!decoded.trim().is_empty()).then(|| sanitize_file_name(&decoded))
 }
 
+/// The file name a `Content-Disposition` header value gives (RFC 6266), sanitised, or `None` when
+/// it gives none. `filename*` (RFC 8187: UTF-8 or ISO-8859-1, percent-encoded) wins over
+/// `filename`, wherever each comes; one it can't decode is ignored. Any path in the name is
+/// dropped, keeping its last component (RFC 6266 §4.3), so `../../x.sh` gives `x.sh`.
+pub fn file_name_from_content_disposition(value: &str) -> Option<String> {
+    let (mut plain, mut encoded) = (None, None);
+    // The disposition type comes first; only its parameters can name the file.
+    let mut rest = value.split_once(';')?.1;
+    loop {
+        rest = rest.trim_start_matches([' ', '\t', ';']);
+        let Some(eq) = rest.find(['=', ';']) else {
+            break;
+        };
+        if rest[eq..].starts_with(';') {
+            rest = &rest[eq..]; // a parameter without a value
+            continue;
+        }
+        let name = rest[..eq].trim().to_ascii_lowercase();
+        let after_eq = rest[eq + 1..].trim_start_matches([' ', '\t']);
+        let (parameter, after) = match after_eq.strip_prefix('"') {
+            Some(quoted) => match unquote(quoted) {
+                Some(parsed) => parsed,
+                // An unterminated quoted string: nothing after it is reliable.
+                None => break,
+            },
+            None => {
+                let end = after_eq.find(';').unwrap_or(after_eq.len());
+                (after_eq[..end].trim().to_owned(), &after_eq[end..])
+            }
+        };
+        match name.as_str() {
+            "filename" if plain.is_none() => plain = Some(parameter),
+            "filename*" if encoded.is_none() => encoded = Some(parameter),
+            _ => {}
+        }
+        rest = after;
+    }
+    let raw = encoded.and_then(|e| decode_ext_value(&e)).or(plain)?;
+    let last = raw.rsplit(['/', '\\']).next().unwrap_or("");
+    let usable = !last.trim().trim_matches('.').trim().is_empty();
+    usable.then(|| sanitize_file_name(last))
+}
+
+/// The content of a quoted string whose opening quote is already gone, and what follows its closing
+/// quote; a backslash escapes the next character (RFC 9110 §5.6.4). `None` without a closing quote.
+fn unquote(s: &str) -> Option<(String, &str)> {
+    let mut out = String::new();
+    let mut chars = s.char_indices();
+    while let Some((i, c)) = chars.next() {
+        match c {
+            '"' => return Some((out, &s[i + 1..])),
+            '\\' => out.push(chars.next()?.1),
+            c => out.push(c),
+        }
+    }
+    None
+}
+
+/// An RFC 8187 `charset'language'value`, decoded; `None` for another charset or bad UTF-8.
+fn decode_ext_value(value: &str) -> Option<String> {
+    let mut parts = value.splitn(3, '\'');
+    let (charset, _language, encoded) = (parts.next()?, parts.next()?, parts.next()?);
+    let bytes = percent_decode_bytes(encoded);
+    if charset.eq_ignore_ascii_case("utf-8") {
+        String::from_utf8(bytes).ok()
+    } else if charset.eq_ignore_ascii_case("iso-8859-1") {
+        Some(bytes.into_iter().map(char::from).collect())
+    } else {
+        None
+    }
+}
+
 /// The lowercase extension of a file name: `zip` for `a.ZIP`.
 pub fn extension_of(name: &str) -> Option<String> {
     let (stem, ext) = name.rsplit_once('.')?;
@@ -135,6 +207,11 @@ fn shorten(name: &str, tag: &str) -> String {
 
 /// Decodes `%XX` escapes; bytes that aren't UTF-8 become U+FFFD.
 fn percent_decode(s: &str) -> String {
+    String::from_utf8_lossy(&percent_decode_bytes(s)).into_owned()
+}
+
+/// Decodes `%XX` escapes; a `%` without two hexadecimal digits stays as it is.
+fn percent_decode_bytes(s: &str) -> Vec<u8> {
     let bytes = s.as_bytes();
     let mut out = Vec::with_capacity(bytes.len());
     let mut i = 0;
@@ -150,7 +227,7 @@ fn percent_decode(s: &str) -> String {
         out.push(bytes[i]);
         i += 1;
     }
-    String::from_utf8_lossy(&out).into_owned()
+    out
 }
 
 #[cfg(test)]
@@ -289,5 +366,108 @@ mod tests {
     #[test]
     fn no_free_name_when_every_number_is_taken() {
         assert_eq!(free_file_name("a.zip", |_| true), None);
+    }
+
+    fn disposition(value: &str) -> Option<String> {
+        file_name_from_content_disposition(value)
+    }
+
+    #[test]
+    fn a_disposition_names_its_plain_or_quoted_filename() {
+        assert_eq!(
+            disposition("attachment; filename=report.pdf").as_deref(),
+            Some("report.pdf")
+        );
+        assert_eq!(
+            disposition(r#"attachment; filename="Annual report.pdf""#).as_deref(),
+            Some("Annual report.pdf")
+        );
+        // Any disposition type, parameter names in any case, spaces around `=` and `;`.
+        assert_eq!(
+            disposition("INLINE ; FileName = a.txt").as_deref(),
+            Some("a.txt")
+        );
+        // A `;` inside quotes is part of the name; a backslash escapes the next character.
+        assert_eq!(
+            disposition(r#"attachment; filename="a;b \"c\".txt"; size=3"#).as_deref(),
+            Some("a;b _c_.txt")
+        );
+        // A server that sends the name's UTF-8 bytes as they are (header lines arrive as UTF-8).
+        assert_eq!(
+            disposition("attachment; filename=\"résumé.pdf\"").as_deref(),
+            Some("résumé.pdf")
+        );
+    }
+
+    #[test]
+    fn a_disposition_prefers_the_encoded_filename_star() {
+        let both = r#"attachment; filename="fallback.pdf"; filename*=UTF-8''%E2%82%AC%20rates.pdf"#;
+        assert_eq!(disposition(both).as_deref(), Some("€ rates.pdf"));
+        // Whichever comes first.
+        let star_first = r#"attachment; filename*=utf-8'en'%C3%A9t%C3%A9.txt; filename="ete.txt""#;
+        assert_eq!(disposition(star_first).as_deref(), Some("été.txt"));
+        // ISO-8859-1 is the other charset RFC 8187 names.
+        assert_eq!(
+            disposition("attachment; filename*=iso-8859-1''%E9t%E9.txt").as_deref(),
+            Some("été.txt")
+        );
+    }
+
+    #[test]
+    fn a_filename_star_it_cannot_read_falls_back_to_filename() {
+        for value in [
+            r#"attachment; filename*=x-unknown''abc.txt; filename="plain.txt""#,
+            r#"attachment; filename*=UTF-8''%FF%FE.txt; filename="plain.txt""#,
+            r#"attachment; filename*=no-quotes.txt; filename="plain.txt""#,
+        ] {
+            assert_eq!(disposition(value).as_deref(), Some("plain.txt"), "{value}");
+        }
+    }
+
+    #[test]
+    fn a_disposition_name_loses_any_path_and_is_sanitised() {
+        let cases = [
+            (r#"attachment; filename="../../etc/passwd""#, Some("passwd")),
+            (
+                r#"attachment; filename="C:\\Windows\\evil.exe""#,
+                Some("evil.exe"),
+            ),
+            // Unescaped, `\W` is a quoted pair for `W` (RFC 9110 §5.6.4): still one component.
+            (
+                r#"attachment; filename="C:\Windows\evil.exe""#,
+                Some("C_Windowsevil.exe"),
+            ),
+            ("attachment; filename*=UTF-8''..%2F..%2Fx.sh", Some("x.sh")),
+            (r#"attachment; filename="CON.txt""#, Some("_CON.txt")),
+            (
+                r#"attachment; filename="a.zip.vdmpart""#,
+                Some("a.zip.vdmpart_"),
+            ),
+            (
+                "attachment; filename*=UTF-8''new%0Aline%00.txt",
+                Some("new_line_.txt"),
+            ),
+            (r#"attachment; filename=".bashrc""#, Some("bashrc")),
+        ];
+        for (value, want) in cases {
+            assert_eq!(disposition(value).as_deref(), want, "{value}");
+        }
+    }
+
+    #[test]
+    fn a_disposition_without_a_usable_name_gives_none() {
+        for value in [
+            "attachment",
+            "inline",
+            "",
+            "attachment; filename=",
+            r#"attachment; filename="""#,
+            r#"attachment; filename="   ""#,
+            r#"attachment; filename="../""#,
+            r#"attachment; filename="unterminated"#,
+            "attachment; name=field",
+        ] {
+            assert_eq!(disposition(value), None, "{value:?}");
+        }
     }
 }
