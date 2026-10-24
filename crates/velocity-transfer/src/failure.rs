@@ -160,6 +160,10 @@ pub(crate) fn fetch_failure(e: FetchError) -> TransferError {
                 &format!("{words} (libcurl error {code}: {message})"),
             )
         }
+        FetchError::RedirectRefused { kind, message } => {
+            let (class, words) = curl_failure(kind);
+            TransferError::new(class, None, &format!("{words} ({message})"))
+        }
         FetchError::LoopStopped => {
             TransferError::new(FailureClass::Transient, None, "the libcurl loop stopped")
         }
@@ -185,6 +189,10 @@ fn curl_failure(kind: CurlFailure) -> (FailureClass, &'static str) {
         CurlFailure::Refused => (
             Permanent,
             "The address, or a redirect, uses a protocol that is not allowed.",
+        ),
+        CurlFailure::InsecureRedirect => (
+            Permanent,
+            "The server redirected to an insecure http:// address, which isn't allowed.",
         ),
         CurlFailure::Protocol => (Permanent, "The server sent an unexpected response."),
         CurlFailure::Local => (Permanent, "A local error stopped the transfer."),
@@ -226,6 +234,7 @@ mod tests {
                 .map(|(k, v)| ((*k).to_owned(), (*v).to_owned()))
                 .collect(),
             http2: false,
+            url: "http://example.com/f".to_owned(),
         }
     }
 
@@ -308,6 +317,11 @@ mod tests {
                 "unexpected response",
             ),
             (CurlFailure::Local, FailureClass::Permanent, "local"),
+            (
+                CurlFailure::InsecureRedirect,
+                FailureClass::Permanent,
+                "insecure http://",
+            ),
         ] {
             let e = curl(kind);
             assert_eq!(e.class, class, "{kind:?}");
@@ -319,6 +333,22 @@ mod tests {
                 e.message
             );
         }
+    }
+
+    #[test]
+    fn a_refused_redirect_is_permanent_and_says_why() {
+        let e = fetch_failure(FetchError::RedirectRefused {
+            kind: CurlFailure::InsecureRedirect,
+            message: "a redirect from https:// to http://, which isn't allowed".to_owned(),
+        });
+        assert_eq!((e.class, e.http_status), (FailureClass::Permanent, None));
+        assert!(e.message.contains("insecure http://"), "{}", e.message);
+        assert!(
+            e.message.contains("from https:// to http://"),
+            "{}",
+            e.message
+        );
+        assert!(!e.message.contains("libcurl error"), "{}", e.message);
     }
 
     #[test]

@@ -98,6 +98,9 @@ pub struct FileHeaders {
     pub content_disposition: Option<String>,
 }
 
+/// The body of every redirect the server sends (#40).
+pub const REDIRECT_BODY: &str = "<html><body>Moved</body></html>";
+
 /// One request as the server read it: its path and headers (#40).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SeenRequest {
@@ -543,9 +546,15 @@ fn serve_connection(
             }
         }
         if let Some((_, location)) = options.redirects.iter().find(|(p, _)| *p == req.path) {
+            // With a body, as servers send one: a client must never take it for the file's bytes.
+            let body = REDIRECT_BODY;
             let _ = out.write_all(
-                format!("HTTP/1.1 302 Found\r\nLocation: {location}\r\nContent-Length: 0\r\n\r\n")
-                    .as_bytes(),
+                format!(
+                    "HTTP/1.1 302 Found\r\nLocation: {location}\r\nContent-Type: text/html\r\n\
+                     Content-Length: {}\r\n\r\n{body}",
+                    body.len()
+                )
+                .as_bytes(),
             );
             if close {
                 return;
