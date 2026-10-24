@@ -178,6 +178,45 @@ As aria2's `follow-metalink` did for V1: while Metalink is on, a completed HTTP 
 - **One that can't be used** fails, with the reason: "Velocity downloaded this Metalink file but couldn't add its files: …". The file is kept.
 - **Never twice:** a download that came from a Metalink is never followed, so one document can't chain to another.
 
+## Mirrors (#55)
+
+A download can have several sources: its URL and its mirrors, such as a Metalink file's (#54), in `TransferSpec::urls`, best first. Several are used at once, as V1's aria2 did (`uri-selector=feedback`; PO decision on #55). `download::download_from` takes them; `crates/velocity-transfer/src/sources.rs` keeps each one's health. A download with one URL takes exactly the path it took before.
+
+### Which sources may share a file
+
+Bytes from two sources are mixed only when they are proven to be the same file. A mirror's first answer to a range decides; until then it serves nothing (`sources::admission`, checked in the request's header callback before a byte is written):
+
+- **Always:** the same total and the same `Content-Encoding` as the download's first answer. Another total or encoding disables the mirror for this download.
+- **With trusted piece hashes:** that is enough. Every piece is checked as it is covered, so a mirror that sends other bytes is caught (below).
+- **Without them:** it must also give the same strong validator (an entity tag, or a strong date) as the first answer. A mirror that doesn't is *unproven*: it serves no range, and is kept only as a fallback.
+- **After that,** each mirror is held to its own first answer, as the first source is (#45), with its own `If-Range`.
+- **Only HTTP and HTTPS** sources share. FTP and SFTP run on one connection (#51, #53), so they are only ever a fallback; a download whose first source is FTP or SFTP uses one source at a time.
+
+### Who gets the next range
+
+For each new request the pool picks a usable source that isn't cooling down and has room (at most the download's connections each):
+
+1. One never asked yet goes first, once, so its speed gets measured.
+2. Otherwise the one with the most speed to spare: its measured speed (bytes over the time its requests were busy) divided by its open requests plus one, halved for each failure. A source tried but not yet measured counts as fast as the fastest measured one. Ties go to the earlier source.
+
+So two equal mirrors share a file about evenly, and one twice as fast takes about two thirds of the requests. With mirrors and piece hashes, the probe and every lease end on a piece boundary, so each piece comes from one source.
+
+### When a source fails
+
+- **A mirror's failure is the mirror's,** never the download's: a refused or reset connection, an error status, a cut-off or short answer, a `200` for a range, or an answer whose file changed. Its range is leased again, at once, from another source.
+- **A transient failure** cools the source down for 2 s, doubled for each further one (`sources::COOLDOWN`); the third disables it for the download (`MAX_FAILURES`). A permanent one, such as a `404`, disables it at once. Both are starting values for #77 to measure.
+- **A bad piece** is blamed on the source that sent it (`Sources::blame`): its standing halves and it cools down, and a second bad piece disables it. The piece is fetched again, from the healthiest source. When a piece came from several sources, which can only happen when a cut-off lease's rest went elsewhere, each gets an ordinary failure instead.
+- **The first source** failing its probe, or every proven source failing, hands the download to the next source that isn't disabled. The download then starts over from it, since nothing proved its bytes the same, and the others must prove themselves against it again (`Sources::make_lead`).
+- **None left:** the download fails with "Every source of the download failed; the last: …", and that failure's class decides whether the engine retries it.
+
+### What a mirror is sent
+
+The user agent and the referrer go to every source. The login and custom headers go only to the first URL's origin (#40), so a mirror elsewhere never sees them ([SECURITY.md](SECURITY.md#mirrors-55)). The engine checks every URL in the spec as it checks the first: one it may not fetch refuses the download.
+
+### What the report says
+
+`DownloadReport::sources` gives each source's URL, state (usable, unproven or disabled, with why), the bytes it served and its failures. Checkpoints name the source the download led with; a resume leads with that one again.
+
 ## Later segments: the range scheduler (#42)
 
 After a probe that gave a total, the rest of the file is fetched with leases from the range scheduler ([`scheduler.rs`](../crates/velocity-transfer/src/scheduler.rs), report section 5.2). The downloader's thread owns it and makes every change; no lock is held across I/O.
@@ -542,7 +581,7 @@ Hashes don't compose: the digests of separate segments can't be combined into th
 - **Without ranges** (a single stream, or ranges lost), a piece can't come alone, so the whole file is downloaded once more as one stream (PO decision on #46). A bad piece again fails it.
 - **A list that doesn't fit** the file, with more or fewer pieces than its size needs, fails at once as Permanent.
 - **With a checksum as well,** the frontier starts again from byte 0 after a piece is fetched again, because it may have hashed the bad bytes.
-- **Mirrors:** a Metalink download carries its mirrors in `TransferSpec::urls` (#54), but the engine fetches from the first one only. Preferring another mirror for a bad piece, and failing over, come with #55.
+- **Mirrors:** a bad piece is blamed on the source that sent it, and fetched again from the healthiest one ([Mirrors](#mirrors-55)).
 
 ### A failed check
 
@@ -693,7 +732,9 @@ Run it with `cargo run --release -p velocity-transfer --example high_offset_writ
 - **Saving the verification state:** `verification` isn't saved in the database yet (#58).
 - **Integrity without the app:** a whole-file hash that a server gives (`Repr-Digest`) is deferred (report section 5.3).
 - **Metalink in the app:** the Metalink switch's storage and Settings page are #30's; the file chooser, the file selection and the Tauri commands are #58's and #60's. Until then `Manager::add_metalink` and following a link are reachable from code only.
-- **Metalink mirrors:** a Metalink download uses its first source only; failover between its sources is #55.
+- **Mirror health isn't remembered** between downloads, or between the engine's restarts of one download, like the per-host learning #47 left out.
+- **Connections to mirrors** count against the first URL's host in the engine's budget (#47), so a download with mirrors never opens more connections than one without; they're only spread. Per-mirror budgets, and more connections across several hosts as aria2's `split` allowed, are #77's to measure.
+- **Mirror values:** the cooldown, the failure limit and the scoring are starting values; #77 measures them.
 - **Folders a Metalink download creates** stay when it's cancelled or fails, even when empty. Only part files are removed.
 - **A fuzz target for the Metalink parser** comes with #73, which brings the fuzzing tool.
 - **Saving checkpoints in the app:** the manager saves the engine's checkpoint events in the database and resumes unfinished downloads at startup with `StoredDownload::resume` (#58).
