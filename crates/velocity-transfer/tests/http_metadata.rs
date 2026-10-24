@@ -370,3 +370,38 @@ fn the_login_and_headers_reach_the_first_origin_with_every_request() {
         assert_secrets(mode, &server.counters().requests[before..], true);
     }
 }
+
+#[test]
+fn the_files_media_type_is_reported_without_its_parameters() {
+    let data = seeded_bytes(50_000, 54);
+    for (sent, reported) in [
+        (
+            Some("Application/Metalink4+XML; charset=utf-8"),
+            Some("application/metalink4+xml"),
+        ),
+        (Some("text/plain"), Some("text/plain")),
+        (Some("not a media type"), None),
+        (None, None),
+    ] {
+        let server = TestServer::start(
+            vec![("files".into(), data.clone())],
+            ServerOptions {
+                file_headers: FileHeaders {
+                    content_type: sent.map(str::to_owned),
+                    ..FileHeaders::default()
+                },
+                ..ServerOptions::default()
+            },
+        );
+        for (mode, mut engine) in engines() {
+            let dir = Dir::new(&format!("type-{}", mode.replace(' ', "-")));
+            let events = engine.subscribe();
+            let id = engine
+                .add(unnamed(server.url("files"), dir.downloads()))
+                .unwrap();
+            let done = finished(&events, id);
+            completed(mode, &done);
+            assert_eq!(done.content_type.as_deref(), reported, "{mode}: {sent:?}");
+        }
+    }
+}

@@ -162,6 +162,7 @@ impl State {
             error: None,
             verification: None,
             file_name: None,
+            content_type: None,
         };
         if generation == self.generation {
             self.current.entry(id).or_insert(queued);

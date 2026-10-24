@@ -670,6 +670,20 @@ pub fn parse(document: &[u8]) -> Result<Metalink, MetalinkError> {
 /// absolute path to a plain file named `.metalink` or `.meta4`, never a link, at most
 /// [`MAX_DOCUMENT_BYTES`].
 pub fn read_file(path: &Path) -> Result<Metalink, MetalinkError> {
+    let extension = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(str::to_ascii_lowercase);
+    if path.is_absolute() && !matches!(extension.as_deref(), Some("metalink" | "meta4")) {
+        return Err(MetalinkError::Unreadable(ErrorCode::InvalidInput));
+    }
+    read_document(path)
+}
+
+/// Reads and parses the Metalink document at `path`, whatever its name, such as a download the
+/// server called `application/metalink4+xml`: an absolute path to a plain file, never a link, at
+/// most [`MAX_DOCUMENT_BYTES`].
+pub fn read_document(path: &Path) -> Result<Metalink, MetalinkError> {
     use std::io::Read;
     let unreadable = |e: std::io::Error| {
         MetalinkError::Unreadable(match e.kind() {
@@ -680,13 +694,6 @@ pub fn read_file(path: &Path) -> Result<Metalink, MetalinkError> {
     };
     if !path.is_absolute() {
         return Err(MetalinkError::Unreadable(ErrorCode::InvalidPath));
-    }
-    let extension = path
-        .extension()
-        .and_then(|e| e.to_str())
-        .map(str::to_ascii_lowercase);
-    if !matches!(extension.as_deref(), Some("metalink" | "meta4")) {
-        return Err(MetalinkError::Unreadable(ErrorCode::InvalidInput));
     }
     let meta = std::fs::symlink_metadata(path).map_err(unreadable)?;
     if meta.file_type().is_symlink() || !meta.is_file() || reparse_point(&meta) {

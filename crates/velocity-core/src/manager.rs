@@ -43,6 +43,8 @@ struct Download {
     paused: bool,
     /// It runs only while the schedule's window is open.
     scheduled: bool,
+    /// The file's media type, as the engine reported it (#54).
+    content_type: Option<String>,
 }
 
 /// How a new download starts (V1's `startPaused` and `scheduled`).
@@ -91,6 +93,9 @@ pub struct Manager {
     window_open: bool,
     /// Metalink is turned on (#54).
     metalink_enabled: bool,
+    /// Downloads that completed in the events being applied, to follow when they are Metalink
+    /// files.
+    just_completed: Vec<String>,
 }
 
 /// Statuses a direct engine may report. The torrent-only ones (fetching metadata, choosing files,
@@ -133,6 +138,7 @@ impl Manager {
             local: None,
             window_open: false,
             metalink_enabled: false,
+            just_completed: Vec::new(),
         }
     }
 
@@ -215,6 +221,7 @@ impl Manager {
             running: false,
             paused,
             scheduled: options.scheduled,
+            content_type: None,
         };
         download.record.status = download.waiting_status();
         let starts_now = download.may_run(self.window_open) && self.free_slots() > 0;
@@ -519,8 +526,69 @@ impl Manager {
                 applied += 1;
             }
         }
+        for id in std::mem::take(&mut self.just_completed) {
+            self.follow_metalink(&id, now_ms);
+        }
         self.fill();
         applied
+    }
+
+    /// Follows a completed download that is a Metalink file, as aria2's `follow-metalink` did for
+    /// V1 (#54): while Metalink is on, an HTTP or FTP download named `.meta4` or `.metalink`, or
+    /// that the server called `application/metalink4+xml` or `application/metalink+xml`, adds
+    /// every file it lists, in its folder. The Metalink file stays on disk as a completed
+    /// download. One that can't be used fails, with the reason, so the user knows its files
+    /// weren't added. A download from a Metalink is never followed, so one can't list another.
+    fn follow_metalink(&mut self, id: &str, now_ms: u64) {
+        let Some(download) = self.downloads.get(id) else {
+            return;
+        };
+        let record = &download.record;
+        let followed = matches!(record.kind, DownloadKind::Http | DownloadKind::Ftp);
+        let Some(name) = record
+            .file_name
+            .clone()
+            .filter(|_| followed && self.metalink_enabled)
+        else {
+            return;
+        };
+        let by_name = crate::naming::extension_of(&name)
+            .is_some_and(|e| matches!(e.to_ascii_lowercase().as_str(), "meta4" | "metalink"));
+        let by_type = download
+            .content_type
+            .as_deref()
+            .is_some_and(|t| matches!(t, "application/metalink4+xml" | "application/metalink+xml"));
+        if !by_name && !by_type {
+            return;
+        }
+        let directory = PathBuf::from(&record.directory);
+        let options = AddOptions {
+            start_paused: false,
+            scheduled: download.scheduled,
+        };
+        let result = metalink::read_document(&directory.join(&name))
+            .map_err(|e| e.to_string())
+            .and_then(|document| {
+                let selection = MetalinkSelection {
+                    directory,
+                    files: None,
+                    limits: Limits::default(),
+                };
+                self.add_metalink(&document, &selection, options, now_ms)
+                    .map_err(|code| code.user_message().to_owned())
+            });
+        if let (Err(why), Some(download)) = (result, self.downloads.get_mut(id)) {
+            let record = &mut download.record;
+            record.status = DownloadStatus::Failed;
+            record.completed_at_ms = None;
+            record.error = Some(TransferError::new(
+                FailureClass::Permanent,
+                None,
+                &format!(
+                    "Velocity downloaded this Metalink file but couldn't add its files: {why}"
+                ),
+            ));
+        }
     }
 
     /// The unfinished downloads in queue order, as the database saves them
@@ -635,8 +703,13 @@ impl Manager {
                 if snapshot.file_name.is_some() {
                     record.file_name = snapshot.file_name;
                 }
+                if snapshot.content_type.is_some() {
+                    download.content_type = snapshot.content_type;
+                }
+                let record = &mut download.record;
                 if record.status == DownloadStatus::Completed && record.completed_at_ms.is_none() {
                     record.completed_at_ms = Some(now_ms);
+                    self.just_completed.push(app_id.clone());
                 }
                 if record.status.is_terminal() {
                     download.running = false;
@@ -869,6 +942,7 @@ mod tests {
             error: None,
             verification: None,
             file_name: None,
+            content_type: None,
         };
         stray.progress.completed_bytes = 999;
         control.emit(TransferEvent::Changed { snapshot: stray });
@@ -1370,7 +1444,11 @@ mod tests {
         use crate::metalink::parse;
 
         fn document() -> Metalink {
-            let doc = format!(
+            parse(xml().as_bytes()).unwrap()
+        }
+
+        fn xml() -> String {
+            format!(
                 "<metalink xmlns=\"urn:ietf:params:xml:ns:metalink\">\
                  <file name=\"disc/image.iso\"><size>2048</size>\
                  <hash type=\"sha-256\">{a}</hash>\
@@ -1382,8 +1460,7 @@ mod tests {
                 a = "a".repeat(64),
                 b = "b".repeat(64),
                 c = "c".repeat(64),
-            );
-            parse(doc.as_bytes()).unwrap()
+            )
         }
 
         fn with_metalink() -> Capabilities {
@@ -1551,6 +1628,118 @@ mod tests {
                 m.add_metalink(&document(), &readme, AddOptions::default(), T0),
                 Err(ErrorCode::Unsupported)
             );
+            std::fs::remove_dir_all(&dir).unwrap();
+        }
+
+        /// A link added as any download, which the server names `file_name`.
+        fn link(m: &mut Manager, dir: &std::path::Path) -> String {
+            let spec = TransferSpec {
+                urls: vec!["https://example.com/get?id=1".to_owned()],
+                directory: dir.to_path_buf(),
+                file_name: None,
+                ..spec()
+            };
+            m.add(DownloadKind::Http, spec, T0).unwrap()
+        }
+
+        #[test]
+        fn a_finished_link_to_a_metalink_file_adds_the_files_it_lists() {
+            let dir = folder("follow");
+            let (mut m, control) = manager(with_metalink(), true);
+            let id = link(&mut m, &dir);
+            std::fs::write(dir.join("files.meta4"), xml()).unwrap();
+            control.named(TransferId(1), "files.meta4");
+            control.complete(TransferId(1));
+            m.pump(T0 + 1);
+            // The Metalink file itself stays a completed download, on disk.
+            assert_eq!(status(&m, &id), DownloadStatus::Completed);
+            assert!(dir.join("files.meta4").is_file());
+            let queue: Vec<String> = m.queue().into_iter().map(|e| e.id).collect();
+            assert_eq!(queue.len(), 2, "{queue:?}");
+            let image = m.get(&queue[0]).unwrap();
+            assert_eq!(image.kind, DownloadKind::Metalink);
+            assert_eq!(image.file_name.as_deref(), Some("image.iso"));
+            assert_eq!(PathBuf::from(&image.directory), dir.join("disc"));
+            assert_eq!(
+                control.spec(TransferId(2)).pieces,
+                document().files[0].pieces
+            );
+            assert_eq!(
+                m.get(&queue[1]).unwrap().file_name.as_deref(),
+                Some("readme.txt")
+            );
+            std::fs::remove_dir_all(&dir).unwrap();
+        }
+
+        #[test]
+        fn a_link_is_known_as_metalink_by_its_media_type_too() {
+            for media_type in ["application/metalink4+xml", "application/metalink+xml"] {
+                let dir = folder("follow-type");
+                let (mut m, control) = manager(with_metalink(), true);
+                link(&mut m, &dir);
+                std::fs::write(dir.join("get"), xml()).unwrap();
+                control.named(TransferId(1), "get");
+                control.typed(TransferId(1), media_type);
+                control.complete(TransferId(1));
+                m.pump(T0 + 1);
+                assert_eq!(m.queue().len(), 2, "{media_type}");
+                std::fs::remove_dir_all(&dir).unwrap();
+            }
+        }
+
+        #[test]
+        fn while_metalink_is_off_a_metalink_file_is_just_a_file() {
+            let dir = folder("follow-off");
+            let (mut m, control) = manager(with_metalink(), false);
+            let id = link(&mut m, &dir);
+            std::fs::write(dir.join("files.meta4"), xml()).unwrap();
+            control.named(TransferId(1), "files.meta4");
+            control.complete(TransferId(1));
+            m.pump(T0 + 1);
+            assert_eq!(status(&m, &id), DownloadStatus::Completed);
+            assert!(m.queue().is_empty());
+            assert_eq!(control.log(), ["add"]);
+            std::fs::remove_dir_all(&dir).unwrap();
+        }
+
+        #[test]
+        fn a_metalink_file_that_cant_be_used_fails_with_the_reason() {
+            let dir = folder("follow-bad");
+            let (mut m, control) = manager(with_metalink(), true);
+            let id = link(&mut m, &dir);
+            std::fs::write(dir.join("files.meta4"), "<rss/>").unwrap();
+            control.named(TransferId(1), "files.meta4");
+            control.complete(TransferId(1));
+            m.pump(T0 + 1);
+            let r = m.get(&id).unwrap();
+            assert_eq!(r.status, DownloadStatus::Failed);
+            let error = r.error.as_ref().unwrap();
+            assert_eq!(error.class, FailureClass::Permanent);
+            assert!(error.message.contains("Metalink"), "{}", error.message);
+            assert_eq!(r.completed_at_ms, None);
+            assert!(m.queue().is_empty());
+            // The file the user downloaded is kept.
+            assert!(dir.join("files.meta4").is_file());
+            std::fs::remove_dir_all(&dir).unwrap();
+        }
+
+        #[test]
+        fn a_metalink_file_listed_in_a_metalink_is_not_followed_again() {
+            let dir = folder("follow-nested");
+            let (mut m, control) = manager(with_metalink(), true);
+            let nested = parse(
+                b"<metalink xmlns=\"urn:ietf:params:xml:ns:metalink\"><file name=\"inner.meta4\">\
+                  <url>https://example.com/inner.meta4</url></file></metalink>",
+            )
+            .unwrap();
+            let ids = m
+                .add_metalink(&nested, &selection(&dir, None), AddOptions::default(), T0)
+                .unwrap();
+            std::fs::write(dir.join("inner.meta4"), xml()).unwrap();
+            control.complete(TransferId(1));
+            m.pump(T0 + 1);
+            assert_eq!(status(&m, &ids[0]), DownloadStatus::Completed);
+            assert!(m.queue().is_empty());
             std::fs::remove_dir_all(&dir).unwrap();
         }
 

@@ -217,6 +217,14 @@ impl FakeControl {
         s.changed(id);
     }
 
+    /// Reports the file's media type, as an engine does once the server answered (#54).
+    pub fn typed(&self, id: TransferId, content_type: &str) {
+        let mut s = lock(&self.state);
+        let t = s.transfers.get_mut(&id).expect("known transfer");
+        t.snapshot.content_type = Some(content_type.to_owned());
+        s.changed(id);
+    }
+
     /// Sends an arbitrary event, for example one about a transfer that doesn't exist.
     pub fn emit(&self, event: TransferEvent) {
         lock(&self.state).emit(event);
@@ -266,6 +274,7 @@ impl DirectTransfer for FakeTransfer {
             error: None,
             verification: None,
             file_name: spec.file_name.clone(),
+            content_type: None,
         };
         s.transfers.insert(id, Transfer { spec, snapshot });
         s.changed(id);
