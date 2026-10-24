@@ -26,6 +26,8 @@ struct State {
     engine_limits: EngineLimits,
     /// Makes every command fail with this code, like an engine that stopped responding.
     unavailable: Option<ErrorCode>,
+    /// Makes `add` refuse a transfer with this file name, as an engine refuses a name taken.
+    refused_name: Option<(String, ErrorCode)>,
 }
 
 struct Transfer {
@@ -220,6 +222,11 @@ impl FakeControl {
         lock(&self.state).emit(event);
     }
 
+    /// From now on `add` refuses a transfer named `name` with `code`.
+    pub fn refuse_file_name(&self, name: &str, code: ErrorCode) {
+        lock(&self.state).refused_name = Some((name.to_owned(), code));
+    }
+
     /// From now on every command fails with `code`; `None` makes the engine respond again.
     pub fn set_unavailable(&self, code: Option<ErrorCode>) {
         lock(&self.state).unavailable = code;
@@ -236,6 +243,11 @@ impl DirectTransfer for FakeTransfer {
         s.command("add".to_owned())?;
         if spec.urls.is_empty() {
             return Err(ErrorCode::InvalidInput);
+        }
+        if let Some((name, code)) = &s.refused_name {
+            if spec.file_name.as_ref() == Some(name) {
+                return Err(*code);
+            }
         }
         s.next_id += 1;
         let id = TransferId(s.next_id);

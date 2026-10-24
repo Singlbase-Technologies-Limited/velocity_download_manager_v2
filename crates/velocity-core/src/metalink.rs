@@ -15,7 +15,7 @@
 //! - **Hashes:** the strongest supported whole-file hash, and the strongest piece list, which must
 //!   fit the file's size when it has one. Elements in other namespaces are ignored.
 
-use crate::domain::ErrorCode;
+use crate::domain::{DownloadKind, ErrorCode};
 use crate::naming::check_file_name;
 use crate::request::{split_login, MAX_URL_BYTES};
 use crate::transfer::{Checksum, HashAlgorithm, PieceHashes};
@@ -25,6 +25,7 @@ use quick_xml::reader::NsReader;
 use quick_xml::XmlVersion;
 use std::collections::BTreeSet;
 use std::fmt;
+use std::path::{Path, PathBuf};
 
 /// The largest document read (as V1's torrent parser's limit).
 pub const MAX_DOCUMENT_BYTES: usize = 16 << 20;
@@ -71,6 +72,8 @@ pub enum MetalinkError {
     BadHash(String),
     BadPieces(String),
     NoFiles,
+    /// A Metalink file on disk that can't be read: why, as the app's code.
+    Unreadable(ErrorCode),
 }
 
 impl MetalinkError {
@@ -79,6 +82,7 @@ impl MetalinkError {
             MetalinkError::UnsafeName(_) | MetalinkError::DuplicateName(_) => {
                 ErrorCode::InvalidFilename
             }
+            MetalinkError::Unreadable(code) => *code,
             _ => ErrorCode::InvalidInput,
         }
     }
@@ -119,6 +123,11 @@ impl fmt::Display for MetalinkError {
             MetalinkError::BadPieces(name) => write!(
                 f,
                 "The Metalink file's piece hashes of {name:?} aren't valid or don't fit the file."
+            ),
+            MetalinkError::Unreadable(code) => write!(
+                f,
+                "The Metalink file can't be read: {}",
+                code.user_message()
             ),
             MetalinkError::NoFiles => f.write_str(
                 "The Metalink file has no file Velocity can download: it uses only http, https, \
@@ -219,6 +228,20 @@ fn source(url: &str) -> Option<String> {
     let (scheme, rest) = url.split_once("://").filter(|_| well_formed)?;
     let supported = SCHEMES.iter().any(|s| s.eq_ignore_ascii_case(scheme));
     (supported && !rest.is_empty() && split_login(url).1.is_none()).then(|| url.to_owned())
+}
+
+/// The protocol of a source [`MetalinkFile::urls`] holds: HTTP for `http` and `https`, FTP for
+/// `ftp` and `ftps`.
+pub fn source_kind(url: &str) -> Option<DownloadKind> {
+    let (scheme, _) = url.split_once("://")?;
+    let is = |s: &str| scheme.eq_ignore_ascii_case(s);
+    if is("http") || is("https") {
+        Some(DownloadKind::Http)
+    } else if is("ftp") || is("ftps") {
+        Some(DownloadKind::Ftp)
+    } else {
+        None
+    }
 }
 
 /// A number made of ASCII digits only (`u64::from_str` would take a `+`).
@@ -643,6 +666,97 @@ pub fn parse(document: &[u8]) -> Result<Metalink, MetalinkError> {
     parser.finish()
 }
 
+/// Reads and parses a Metalink file the user chose (as V1's `validate_local_metadata_file`): an
+/// absolute path to a plain file named `.metalink` or `.meta4`, never a link, at most
+/// [`MAX_DOCUMENT_BYTES`].
+pub fn read_file(path: &Path) -> Result<Metalink, MetalinkError> {
+    use std::io::Read;
+    let unreadable = |e: std::io::Error| {
+        MetalinkError::Unreadable(match e.kind() {
+            std::io::ErrorKind::NotFound => ErrorCode::NotFound,
+            std::io::ErrorKind::PermissionDenied => ErrorCode::PermissionDenied,
+            _ => ErrorCode::Io,
+        })
+    };
+    if !path.is_absolute() {
+        return Err(MetalinkError::Unreadable(ErrorCode::InvalidPath));
+    }
+    let extension = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(str::to_ascii_lowercase);
+    if !matches!(extension.as_deref(), Some("metalink" | "meta4")) {
+        return Err(MetalinkError::Unreadable(ErrorCode::InvalidInput));
+    }
+    let meta = std::fs::symlink_metadata(path).map_err(unreadable)?;
+    if meta.file_type().is_symlink() || !meta.is_file() || reparse_point(&meta) {
+        return Err(MetalinkError::Unreadable(ErrorCode::InvalidPath));
+    }
+    if meta.len() > MAX_DOCUMENT_BYTES as u64 {
+        return Err(MetalinkError::TooLarge);
+    }
+    let mut document = Vec::new();
+    std::fs::File::open(path)
+        .map_err(unreadable)?
+        // One byte over the limit tells a file that grew since the check.
+        .take(MAX_DOCUMENT_BYTES as u64 + 1)
+        .read_to_end(&mut document)
+        .map_err(unreadable)?;
+    parse(&document)
+}
+
+/// Creates a file's `folders` inside `directory`, one level at a time, and returns the innermost
+/// (PO decision on #54: subfolders are kept). A folder already there is used; anything else at a
+/// level is refused with `InvalidPath` and never followed: a file, a link, or on Windows any
+/// reparse point, such as a junction. So the result is always inside `directory`, which is the
+/// user's choice and must be an existing folder (`DestinationMissing` otherwise).
+pub fn create_folders(directory: &Path, folders: &[String]) -> Result<PathBuf, ErrorCode> {
+    if folders.iter().any(|f| check_file_name(f).is_err()) {
+        return Err(ErrorCode::InvalidFilename);
+    }
+    if !std::fs::metadata(directory).is_ok_and(|m| m.is_dir()) {
+        return Err(ErrorCode::DestinationMissing);
+    }
+    let mut path = directory.to_path_buf();
+    for folder in folders {
+        path.push(folder);
+        match std::fs::create_dir(&path) {
+            Ok(()) => {}
+            // Made by an earlier file, or by another program: used only if it's a real folder.
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => plain_folder(&path)?,
+            Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {
+                return Err(ErrorCode::PermissionDenied)
+            }
+            Err(_) => return Err(ErrorCode::Io),
+        }
+    }
+    Ok(path)
+}
+
+/// `Ok` when `path` is a folder itself, not a link or reparse point to one (checked without
+/// following it).
+fn plain_folder(path: &Path) -> Result<(), ErrorCode> {
+    let meta = std::fs::symlink_metadata(path).map_err(|_| ErrorCode::Io)?;
+    if meta.file_type().is_symlink() || !meta.is_dir() || reparse_point(&meta) {
+        return Err(ErrorCode::InvalidPath);
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+fn reparse_point(meta: &std::fs::Metadata) -> bool {
+    use std::os::windows::fs::MetadataExt;
+    // FILE_ATTRIBUTE_REPARSE_POINT: junctions and mount points as well as symbolic links.
+    const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
+    meta.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
+}
+
+/// Unix has no reparse points; its links are caught by `is_symlink`.
+#[cfg(not(windows))]
+fn reparse_point(_meta: &std::fs::Metadata) -> bool {
+    false
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -968,6 +1082,157 @@ mod tests {
             "<file name=\"f\"><metaurl mediatype=\"torrent\">https://example.com/f.torrent</metaurl></file>",
         );
         assert_eq!(err(&torrent_only), MetalinkError::NoFiles);
+    }
+
+    /// A fresh folder for one test.
+    fn scratch(test: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("v2-metalink-{test}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn names(parts: &[&str]) -> Vec<String> {
+        parts.iter().map(|p| (*p).to_owned()).collect()
+    }
+
+    #[test]
+    fn folders_are_created_inside_the_chosen_folder_and_reused() {
+        let base = scratch("create");
+        let inner = create_folders(&base, &names(&["disc", "extras"])).unwrap();
+        assert_eq!(inner, base.join("disc").join("extras"));
+        assert!(inner.is_dir());
+        // Again, and with a sibling: what is there is used.
+        assert_eq!(
+            create_folders(&base, &names(&["disc", "extras"])),
+            Ok(inner)
+        );
+        assert!(create_folders(&base, &names(&["disc", "more"]))
+            .unwrap()
+            .is_dir());
+        // No folders: the chosen folder itself.
+        assert_eq!(create_folders(&base, &[]), Ok(base.clone()));
+        std::fs::remove_dir_all(&base).unwrap();
+    }
+
+    #[test]
+    fn a_file_where_a_folder_should_be_is_refused() {
+        let base = scratch("file");
+        std::fs::write(base.join("disc"), b"x").unwrap();
+        assert_eq!(
+            create_folders(&base, &names(&["disc", "inner"])),
+            Err(ErrorCode::InvalidPath)
+        );
+        std::fs::remove_dir_all(&base).unwrap();
+    }
+
+    #[test]
+    fn a_link_where_a_folder_should_be_is_never_followed() {
+        let base = scratch("link");
+        let outside = scratch("link-outside");
+        let link = base.join("disc");
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&outside, &link).unwrap();
+        // A junction needs no administrator rights, unlike a symbolic link.
+        #[cfg(windows)]
+        {
+            let made = std::process::Command::new("cmd")
+                .args(["/C", "mklink", "/J"])
+                .arg(&link)
+                .arg(&outside)
+                .output()
+                .unwrap();
+            assert!(made.status.success(), "{made:?}");
+        }
+        assert_eq!(
+            create_folders(&base, &names(&["disc", "inner"])),
+            Err(ErrorCode::InvalidPath)
+        );
+        assert!(!outside.join("inner").exists());
+        assert_eq!(
+            create_folders(&base, &names(&["disc"])),
+            Err(ErrorCode::InvalidPath)
+        );
+        #[cfg(windows)]
+        std::fs::remove_dir(&link).unwrap();
+        #[cfg(unix)]
+        std::fs::remove_file(&link).unwrap();
+        std::fs::remove_dir_all(&base).unwrap();
+        std::fs::remove_dir_all(&outside).unwrap();
+    }
+
+    #[test]
+    fn the_chosen_folder_must_exist_and_names_must_be_safe() {
+        let base = scratch("missing");
+        assert_eq!(
+            create_folders(&base.join("absent"), &names(&["a"])),
+            Err(ErrorCode::DestinationMissing)
+        );
+        for bad in ["..", "a/b", "", "CON"] {
+            assert_eq!(
+                create_folders(&base, &names(&[bad])),
+                Err(ErrorCode::InvalidFilename),
+                "{bad}"
+            );
+        }
+        assert_eq!(std::fs::read_dir(&base).unwrap().count(), 0);
+        std::fs::remove_dir_all(&base).unwrap();
+    }
+
+    #[test]
+    fn a_metalink_file_on_disk_is_read() {
+        let dir = scratch("read");
+        let path = dir.join("files.META4");
+        std::fs::write(&path, RFC5854).unwrap();
+        assert_eq!(read_file(&path), parse(RFC5854.as_bytes()));
+        let v3 = dir.join("old.metalink");
+        std::fs::write(&v3, V3).unwrap();
+        assert_eq!(read_file(&v3).unwrap().files.len(), 1);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn only_a_plain_metalink_file_within_the_limit_is_read() {
+        let dir = scratch("read-refused");
+        let unreadable = |path: &Path| read_file(path).unwrap_err();
+        assert_eq!(
+            unreadable(Path::new("relative.meta4")),
+            MetalinkError::Unreadable(ErrorCode::InvalidPath)
+        );
+        let xml = dir.join("files.xml");
+        std::fs::write(&xml, RFC5854).unwrap();
+        assert_eq!(
+            unreadable(&xml),
+            MetalinkError::Unreadable(ErrorCode::InvalidInput)
+        );
+        assert_eq!(
+            unreadable(&dir.join("absent.meta4")),
+            MetalinkError::Unreadable(ErrorCode::NotFound)
+        );
+        let folder = dir.join("folder.meta4");
+        std::fs::create_dir(&folder).unwrap();
+        assert_eq!(
+            unreadable(&folder),
+            MetalinkError::Unreadable(ErrorCode::InvalidPath)
+        );
+        let big = dir.join("big.meta4");
+        std::fs::File::create(&big)
+            .unwrap()
+            .set_len(MAX_DOCUMENT_BYTES as u64 + 1)
+            .unwrap();
+        assert_eq!(unreadable(&big), MetalinkError::TooLarge);
+        #[cfg(unix)]
+        {
+            let real = dir.join("real.meta4");
+            std::fs::write(&real, RFC5854).unwrap();
+            let link = dir.join("link.meta4");
+            std::os::unix::fs::symlink(&real, &link).unwrap();
+            assert_eq!(
+                unreadable(&link),
+                MetalinkError::Unreadable(ErrorCode::InvalidPath)
+            );
+        }
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
