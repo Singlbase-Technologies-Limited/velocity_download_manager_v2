@@ -47,7 +47,21 @@ function lacking(kind: DownloadKind, feature: ProtocolFeature): string {
       return `A resumed download over ${name} isn’t checked against the server’s version of the file.`;
     case 'http2':
       return kind === 'http' ? 'This version of Velocity doesn’t use HTTP/2.' : 'HTTP/2 is only for HTTP and HTTPS.';
+    case 'encryption':
+      return `Downloads over ${name} can’t be encrypted in this version of Velocity.`;
   }
+}
+
+/**
+ * The warning the add form shows before it starts a download whose link travels unencrypted, or
+ * `null` (PO decision on #51): a plain `ftp://` link, unless the download requires encryption.
+ * `ftps://` is always encrypted; plain `http://` links are #67's.
+ */
+export function cleartextWarning(link: string, requireEncryption: boolean): string | null {
+  const plainFtp = /^ftp:\/\//i.test(link.trim());
+  return plainFtp && !requireEncryption
+    ? 'This FTP download isn’t encrypted: the login and the file can be read on the network.'
+    : null;
 }
 
 /** Whether this build downloads `kind`, and, given `feature`, whether it does that for it. */

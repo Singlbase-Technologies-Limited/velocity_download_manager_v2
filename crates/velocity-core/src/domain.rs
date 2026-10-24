@@ -235,6 +235,10 @@ pub struct ProtocolCapabilities {
     pub validator_resume: bool,
     /// HTTP/2, with several requests as streams of one connection (#47).
     pub http2: bool,
+    /// The connection can be encrypted, with the server's certificate verified: `https://` for
+    /// HTTP, FTPS for FTP (#51). A plain `ftp://` link is encrypted only when the download requires
+    /// it; the add form warns before it starts one that isn't (PO decision on #51).
+    pub encryption: bool,
 }
 
 impl Capabilities {
@@ -376,13 +380,15 @@ impl Capabilities {
                     resume: true,
                     validator_resume: true,
                     http2: true,
+                    encryption: true,
                 },
                 ProtocolCapabilities {
                     kind: DownloadKind::Ftp,
                     segmented: false,
                     resume: true,
-                    validator_resume: false,
+                    validator_resume: true,
                     http2: false,
+                    encryption: true,
                 },
             ],
             live_connection_changes: true,
@@ -606,7 +612,7 @@ mod tests {
                 .is_some_and(|p| p.segmented && p.http2));
             assert!(c
                 .protocol(DownloadKind::Ftp)
-                .is_some_and(|p| !p.segmented && p.resume));
+                .is_some_and(|p| !p.segmented && p.resume && p.encryption));
             assert_eq!(
                 c.protocol(DownloadKind::Sftp),
                 None,

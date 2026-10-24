@@ -195,6 +195,15 @@ fn curl_failure(kind: CurlFailure) -> (FailureClass, &'static str) {
             "The server redirected to an insecure http:// address, which isn't allowed.",
         ),
         CurlFailure::Protocol => (Permanent, "The server sent an unexpected response."),
+        CurlFailure::NotFound => (Permanent, "The file wasn't found on the server."),
+        CurlFailure::AccessDenied => (
+            Permanent,
+            "The server refused the login, or access to the file.",
+        ),
+        CurlFailure::EncryptionRefused => (
+            Permanent,
+            "The server can't encrypt the connection, and this download requires encryption.",
+        ),
         CurlFailure::Local => (Permanent, "A local error stopped the transfer."),
         CurlFailure::Other => (Transient, "A network problem occurred."),
     }
@@ -321,6 +330,21 @@ mod tests {
                 CurlFailure::InsecureRedirect,
                 FailureClass::Permanent,
                 "insecure http://",
+            ),
+            (
+                CurlFailure::NotFound,
+                FailureClass::Permanent,
+                "wasn't found",
+            ),
+            (
+                CurlFailure::AccessDenied,
+                FailureClass::Permanent,
+                "refused the login",
+            ),
+            (
+                CurlFailure::EncryptionRefused,
+                FailureClass::Permanent,
+                "can't encrypt",
             ),
         ] {
             let e = curl(kind);

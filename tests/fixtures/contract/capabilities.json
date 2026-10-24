@@ -4,6 +4,7 @@
   "metalink": false,
   "protocols": [
     {
+      "encryption": true,
       "http2": true,
       "kind": "http",
       "resume": true,
@@ -11,11 +12,12 @@
       "validatorResume": true
     },
     {
+      "encryption": true,
       "http2": false,
       "kind": "ftp",
       "resume": true,
       "segmented": false,
-      "validatorResume": false
+      "validatorResume": true
     }
   ]
 }

@@ -65,6 +65,7 @@ fn spec(url: String, destination: PathBuf) -> TransferSpec {
         // One connection each, so the server's count of answers at once is the downloads'.
         max_connections: 1,
         resume: None,
+        require_encryption: false,
     }
 }
 

@@ -99,6 +99,7 @@ fn spec(url: String, destination: &Path, resume: Option<Resume>) -> TransferSpec
         limits: Limits::default(),
         max_connections: CONNECTIONS,
         resume,
+        require_encryption: false,
     }
 }
 

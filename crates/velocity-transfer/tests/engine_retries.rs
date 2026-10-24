@@ -70,6 +70,7 @@ fn spec(url: String, destination: PathBuf, connections: u32) -> TransferSpec {
         limits: Limits::default(),
         max_connections: connections,
         resume: None,
+        require_encryption: false,
     }
 }
 

@@ -5,7 +5,7 @@
 import { z } from 'zod';
 
 /** Must equal `velocity_core::COMMAND_API_VERSION`; the app refuses to start on a mismatch. */
-export const COMMAND_API_VERSION = 4;
+export const COMMAND_API_VERSION = 5;
 
 const bytes = z.number().int().nonnegative();
 
@@ -94,6 +94,8 @@ export const ProtocolCapabilitiesSchema = z.strictObject({
   resume: z.boolean(),
   validatorResume: z.boolean(),
   http2: z.boolean(),
+  /** The connection can be encrypted, with the certificate checked: https://, FTPS (#51). */
+  encryption: z.boolean(),
 });
 export type ProtocolCapabilities = z.infer<typeof ProtocolCapabilitiesSchema>;
 

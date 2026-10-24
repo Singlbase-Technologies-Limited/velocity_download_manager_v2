@@ -13,9 +13,10 @@ use velocity_core::domain::{
     ProtocolCapabilities, Verification,
 };
 use velocity_core::transfer::{
-    Checkpoint, Checksum, DirectTransfer, EngineLimits, HashAlgorithm, Limits, PieceHashes,
-    TransferEvent, TransferId, TransferSnapshot, TransferSpec,
+    Checkpoint, Checksum, Credentials, DirectTransfer, EngineLimits, HashAlgorithm, Limits,
+    PieceHashes, TransferEvent, TransferId, TransferSnapshot, TransferSpec,
 };
+use velocity_test_http::ftp::{FtpOptions, FtpServer};
 use velocity_test_http::{seeded_bytes, ServerOptions, TestServer};
 use velocity_transfer::engine::InProcessEngine;
 use velocity_transfer::stdio::ChildProcessEngine;
@@ -71,6 +72,7 @@ fn spec(url: String, destination: PathBuf) -> TransferSpec {
         limits: Limits::default(),
         max_connections: 4,
         resume: None,
+        require_encryption: false,
     }
 }
 
@@ -102,23 +104,80 @@ fn part_of(dest: &Path) -> PathBuf {
 fn reports_its_capabilities_honestly() {
     for (mode, engine) in engines() {
         let c = engine.capabilities();
-        // Only HTTP(S) in the prototype: segmented (#42), resumed (#43) against a strong validator
-        // (#45), over HTTP/2 when the server offers it (#47).
+        // HTTP(S): segmented (#42), resumed (#43) against a strong validator (#45), over HTTP/2
+        // when the server offers it (#47), encrypted over https://. FTP (#51): one connection,
+        // resumed with REST against MDTM when the server gives it, encrypted as FTPS.
         assert_eq!(
             c.protocols,
-            vec![ProtocolCapabilities {
-                kind: DownloadKind::Http,
-                segmented: true,
-                resume: true,
-                validator_resume: true,
-                http2: true,
-            }],
+            vec![
+                ProtocolCapabilities {
+                    kind: DownloadKind::Http,
+                    segmented: true,
+                    resume: true,
+                    validator_resume: true,
+                    http2: true,
+                    encryption: true,
+                },
+                ProtocolCapabilities {
+                    kind: DownloadKind::Ftp,
+                    segmented: false,
+                    resume: true,
+                    validator_resume: true,
+                    http2: false,
+                    encryption: true,
+                },
+            ],
             "{mode}"
         );
         // Live connection changes came with #47.
         assert!(c.live_connection_changes, "{mode}");
         assert!(!c.metalink, "{mode}");
         assert!(c.max_connections_per_host >= 1, "{mode}");
+    }
+}
+
+#[test]
+fn downloads_over_ftp_on_one_connection_with_its_login() {
+    let data = seeded_bytes(700_000, 51);
+    for (mode, mut engine) in engines() {
+        let server = FtpServer::start(
+            vec![("/pub/f.bin".into(), data.clone())],
+            FtpOptions {
+                login: Some(("alice".into(), "TOPSECRETFTP".into())),
+                ..FtpOptions::default()
+            },
+        );
+        let dir = Dir::new(&format!("ftp-{}", mode.replace(' ', "-")));
+        let dest = dir.0.join("out.bin");
+        let events = engine.subscribe();
+        let id = engine
+            .add(TransferSpec {
+                credentials: Some(Credentials {
+                    user_name: "alice".into(),
+                    password: "TOPSECRETFTP".into(),
+                }),
+                // FTP uses one connection, whatever is asked (PO decision on #51).
+                max_connections: 8,
+                ..spec(server.url("pub/f.bin"), dest.clone())
+            })
+            .expect("add");
+        let done = wait_for(&events, id, |s| {
+            matches!(s, DownloadStatus::Completed | DownloadStatus::Failed)
+        });
+        assert_eq!(done.status, DownloadStatus::Completed, "{mode}: {done:?}");
+        assert!(std::fs::read(&dest).unwrap() == data, "{mode}");
+        assert_eq!(done.progress.total_bytes, Some(data.len() as u64), "{mode}");
+        let record = server.record();
+        assert_eq!(record.retrs, 1, "{mode}: one transfer, no probe of its own");
+        assert!(
+            record
+                .logins
+                .iter()
+                .all(|l| *l == ("alice".to_owned(), "TOPSECRETFTP".to_owned())),
+            "{mode}: {:?}",
+            record.logins
+        );
+        assert_eq!(engine.set_connections(id, 4), Ok(1), "{mode}");
     }
 }
 
@@ -447,12 +506,16 @@ fn refuses_bad_commands_with_their_codes() {
         );
         assert_eq!(
             engine.add(spec(
-                "ftp://example.com/a".into(),
+                "sftp://example.com/a".into(),
                 PathBuf::from(".").join("a")
             )),
             Err(ErrorCode::UnsupportedScheme),
             "{mode}"
         );
+        // A plain http:// link can't be encrypted (#51).
+        let mut plain = spec("http://example.com/a".into(), PathBuf::from(".").join("a"));
+        plain.require_encryption = true;
+        assert_eq!(engine.add(plain), Err(ErrorCode::InvalidInput), "{mode}");
         assert_eq!(
             engine.add(spec("not a url".into(), PathBuf::from(".").join("a"))),
             Err(ErrorCode::InvalidUrl),

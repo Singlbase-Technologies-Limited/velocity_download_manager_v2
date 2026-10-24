@@ -23,7 +23,8 @@ use serde::Serialize;
 /// Version 3 (#46) added [`domain::DownloadRecord::verification`].
 /// Version 4 (#57) gave [`domain::Capabilities`] what each protocol does
 /// ([`domain::ProtocolCapabilities`]), in place of a list of kinds and one `validatorResume`.
-pub const COMMAND_API_VERSION: u32 = 4;
+/// Version 5 (#51) added [`domain::ProtocolCapabilities::encryption`].
+pub const COMMAND_API_VERSION: u32 = 5;
 
 /// Name, version and contract version of the running application.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
