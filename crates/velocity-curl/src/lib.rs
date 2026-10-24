@@ -10,6 +10,7 @@ mod capabilities;
 mod fetch;
 mod rate;
 mod runtime;
+mod url;
 
 pub use capabilities::{
     check, IncompatibleCurl, LinkedCurl, Problem, ALLOWED_PROTOCOLS, EXPECTED_TLS, LIBCURL_FLOOR,
@@ -21,3 +22,4 @@ pub use fetch::{
 };
 pub use rate::RateLimit;
 pub use runtime::{Libcurl, StartError};
+pub use url::{origin, Origin};
