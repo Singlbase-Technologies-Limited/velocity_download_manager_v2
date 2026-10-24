@@ -14,11 +14,14 @@ curl-sys.workspace = true
 # refuses to compile with it (src/lib.rs).
 [features]
 test-h2c = []
+# Test-only: trust a test CA file (CURLOPT_CAINFO), for the TLS tests (PO decision on #69). A
+# release build refuses to compile with it (src/lib.rs).
+test-ca = []
 
 [dev-dependencies]
 velocity-test-http = { path = "../velocity-test-http" }
-# This crate's own tests enable test-h2c.
-velocity-curl = { path = ".", features = ["test-h2c"] }
+# This crate's own tests enable the test-only features.
+velocity-curl = { path = ".", features = ["test-h2c", "test-ca"] }
 
 [build-dependencies]
 serde_json.workspace = true

@@ -173,11 +173,19 @@ jobs:
         env:
           CARGO_INCREMENTAL: 0
         run: cargo test -p velocity-curl --no-fail-fast
+      # The path users take (#69): the test CA in the machine's Root store, removed afterwards. It
+      # needs an administrator, which the runner is; locally the test is ignored.
+      - id: store-test
+        name: Windows certificate-store test (cargo test -p velocity-curl --test windows_store -- --ignored)
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        env:
+          CARGO_INCREMENTAL: 0
+        run: cargo test -p velocity-curl --test windows_store -- --ignored --nocapture
       - name: Write the job report
         if: ${{ !cancelled() && steps.checkout.outcome == 'success' }}
         env:
           STEPS: ${{ toJSON(steps) }}
-        run: node scripts/ci-report.mjs job --job native-windows --infra checkout,node,toolchain --step-check "build=Native build (Windows)" --step-check "curl-tests=libcurl layer tests (Windows)"
+        run: node scripts/ci-report.mjs job --job native-windows --infra checkout,node,toolchain --step-check "build=Native build (Windows)" --step-check "curl-tests=libcurl layer tests (Windows)" --step-check "store-test=Windows certificate-store test"
       - name: Upload the job report
         if: ${{ !cancelled() && steps.checkout.outcome == 'success' }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2

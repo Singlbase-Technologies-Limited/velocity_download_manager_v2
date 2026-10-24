@@ -14,6 +14,9 @@ bytes.workspace = true
 h2.workspace = true
 http.workspace = true
 tokio.workspace = true
+rustls.workspace = true
+tokio-rustls.workspace = true
+rcgen.workspace = true
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { workspace = true, features = ["Win32_System_Diagnostics_Debug"] }
