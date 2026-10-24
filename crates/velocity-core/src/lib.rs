@@ -24,7 +24,8 @@ use serde::Serialize;
 /// Version 4 (#57) gave [`domain::Capabilities`] what each protocol does
 /// ([`domain::ProtocolCapabilities`]), in place of a list of kinds and one `validatorResume`.
 /// Version 5 (#51) added [`domain::ProtocolCapabilities::encryption`].
-pub const COMMAND_API_VERSION: u32 = 5;
+/// Version 6 (#53) added [`domain::TransferError::host_key`].
+pub const COMMAND_API_VERSION: u32 = 6;
 
 /// Name, version and contract version of the running application.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]

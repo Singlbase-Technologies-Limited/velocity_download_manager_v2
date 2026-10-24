@@ -21,8 +21,8 @@
 
 use std::collections::HashMap;
 use std::ffi::CString;
-use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
-use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::Arc;
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, SystemTime};
@@ -31,6 +31,7 @@ use curl::easy::{Easy2, Handler, InfoType, List, WriteError};
 use curl::multi::{Easy2Handle, Multi, MultiWaker};
 
 use crate::ftp::{is_ftp, FtpReplies};
+use crate::pipe::{Fetch, FetchControl, Flow, GateFn, Offered, Sink, Transport};
 use crate::rate::{self, RateLimit};
 use crate::redirect::{next_hop, Refusal};
 use crate::runtime::Libcurl;
@@ -86,6 +87,28 @@ pub struct RequestOptions {
     /// FTP only: insist on TLS (`AUTH TLS`) for the login and the file, and fail if the server
     /// can't, never falling back to plain FTP (#51). `ftps://` is always encrypted.
     pub require_encryption: bool,
+    /// SFTP only: log in with this private key, as the user of `login` (#53).
+    pub ssh_key: Option<SshKeyFile>,
+}
+
+/// A private key file for an SFTP login, and its passphrase if it is encrypted (#53). `Debug`
+/// never shows the passphrase.
+#[derive(Clone, PartialEq, Eq)]
+pub struct SshKeyFile {
+    pub path: std::path::PathBuf,
+    pub passphrase: Option<String>,
+}
+
+impl std::fmt::Debug for SshKeyFile {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SshKeyFile")
+            .field("path", &self.path)
+            .field(
+                "passphrase",
+                &self.passphrase.as_ref().map(|_| "<redacted>"),
+            )
+            .finish()
+    }
 }
 
 impl std::fmt::Debug for RequestOptions {
@@ -97,6 +120,7 @@ impl std::fmt::Debug for RequestOptions {
             .field("headers", &names)
             .field("login", &self.login.as_ref().map(|_| "<redacted>"))
             .field("require_encryption", &self.require_encryption)
+            .field("ssh_key", &self.ssh_key)
             .finish()
     }
 }
@@ -193,8 +217,24 @@ pub enum FetchError {
     /// Velocity refused to follow a redirect (`redirect.rs`, #40): too many, to another
     /// protocol, or from `https` to `http`. The message names no URL.
     RedirectRefused { kind: CurlFailure, message: String },
+    /// SFTP failed (#53): what kind of failure it is, and what went wrong, for diagnostics.
+    Sftp { kind: CurlFailure, message: String },
+    /// The SFTP server's host key isn't one the user has trusted (#53): unknown, or changed.
+    HostKey(HostKeyProblem),
     /// The loop stopped before the fetch finished.
     LoopStopped,
+}
+
+/// An SFTP server's host key that wasn't trusted (#53). An unknown key waits for the user to
+/// confirm its fingerprint; a changed one is always refused.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HostKeyProblem {
+    pub host: String,
+    pub port: u16,
+    /// The key the server presented, as OpenSSH prints its SHA-256 fingerprint: `SHA256:…`.
+    pub fingerprint: String,
+    /// The fingerprint of the key pinned for this server before, when the key changed.
+    pub pinned: Option<String>,
 }
 
 /// What kind of failure libcurl reported, so that callers can decide about retries without
@@ -368,29 +408,6 @@ impl std::fmt::Display for LoopError {
 
 impl std::error::Error for LoopError {}
 
-/// State a fetch shares between the loop's callbacks and its reader.
-struct Flow {
-    buffered: AtomicUsize,
-    peak: AtomicUsize,
-    paused: AtomicBool,
-    /// Paused because a speed limit had no tokens; the loop thread resumes it (#49).
-    rate_paused: AtomicBool,
-    /// The most body bytes the transfer may deliver ([`Fetch::stop_at`]).
-    limit: AtomicU64,
-}
-
-impl Default for Flow {
-    fn default() -> Self {
-        Flow {
-            buffered: AtomicUsize::new(0),
-            peak: AtomicUsize::new(0),
-            paused: AtomicBool::new(false),
-            rate_paused: AtomicBool::new(false),
-            limit: AtomicU64::new(u64::MAX),
-        }
-    }
-}
-
 enum Command {
     Start(usize, Box<Easy2<Collector>>),
     Cancel(usize),
@@ -451,16 +468,18 @@ impl CurlLoop {
                 Ordering::Release,
             );
         }
+        let cap = self.options.buffer_bytes_per_fetch;
         let collector = Collector {
-            events: events_tx.clone(),
+            sink: Sink::new(
+                events_tx.clone(),
+                Arc::clone(&flow),
+                cap,
+                request.limits.clone(),
+            ),
             gate: Box::new(gate),
-            flow: Arc::clone(&flow),
-            cap: self.options.buffer_bytes_per_fetch,
-            limits: request.limits.clone(),
             lines: Vec::new(),
             accepted: false,
             abort: None,
-            delivered: 0,
             stopped_at_limit: false,
             first: origin(&request.url),
             request,
@@ -468,15 +487,12 @@ impl CurlLoop {
             redirecting: false,
             ftp,
         };
-        let fetch = Fetch {
+        let control = CurlControl {
             token,
-            events,
-            flow,
-            cap: self.options.buffer_bytes_per_fetch,
             commands: self.commands.clone(),
             waker: self.waker.clone(),
-            done: AtomicBool::new(false),
         };
+        let fetch = Fetch::new(events, flow, cap, Arc::new(control));
         match configure(collector, &self.options) {
             Ok(easy) => self.send(Command::Start(token, Box::new(easy))),
             Err(e) => {
@@ -513,62 +529,20 @@ impl Drop for CurlLoop {
     }
 }
 
-/// One fetch's events, read by one thread.
-pub struct Fetch {
-    token: usize,
-    events: Receiver<FetchEvent>,
-    flow: Arc<Flow>,
-    cap: usize,
-    commands: Sender<Command>,
-    waker: MultiWaker,
-    done: AtomicBool,
+impl Transport for CurlLoop {
+    fn fetch(&self, request: FetchRequest, gate: GateFn) -> Fetch {
+        CurlLoop::fetch(self, request, gate)
+    }
 }
 
-impl Fetch {
-    /// The next event, or `None` if none arrives within `timeout`. Taking a `Data` event frees its
-    /// bytes from the fetch's buffer, and resumes a paused transfer once half the buffer is free.
-    pub fn next_event(&self, timeout: Duration) -> Option<FetchEvent> {
-        let event = match self.events.recv_timeout(timeout) {
-            Ok(e) => e,
-            Err(RecvTimeoutError::Timeout) => return None,
-            Err(RecvTimeoutError::Disconnected) => FetchEvent::Done(Err(FetchError::LoopStopped)),
-        };
-        match &event {
-            FetchEvent::Data(chunk) => {
-                let left =
-                    self.flow.buffered.fetch_sub(chunk.len(), Ordering::AcqRel) - chunk.len();
-                if left <= self.cap / 2 && self.flow.paused.swap(false, Ordering::AcqRel) {
-                    self.send(Command::Unpause(self.token));
-                }
-            }
-            FetchEvent::Done(_) => self.done.store(true, Ordering::Release),
-            FetchEvent::Head(_) => {}
-        }
-        Some(event)
-    }
+/// How a fetch's reader reaches the loop thread: commands with the fetch's token, and a wakeup.
+struct CurlControl {
+    token: usize,
+    commands: Sender<Command>,
+    waker: MultiWaker,
+}
 
-    /// Stops the fetch; its last event is `Done(Err(Cancelled))`.
-    pub fn cancel(&self) {
-        self.send(Command::Cancel(self.token));
-    }
-
-    /// Stops the transfer once it has delivered `body_bytes` body bytes; it then ends with
-    /// `Done(Ok)`. The limit may be lowered while the fetch runs, for example when its range is
-    /// split (#42); bytes already delivered are not taken back.
-    pub fn stop_at(&self, body_bytes: u64) {
-        self.limit().stop_at(body_bytes);
-    }
-
-    /// A handle that sets [`Fetch::stop_at`] from another thread than the one reading the fetch.
-    pub fn limit(&self) -> FetchLimit {
-        FetchLimit(Arc::clone(&self.flow))
-    }
-
-    /// The most body bytes this fetch held for its reader at one time.
-    pub fn peak_buffered_bytes(&self) -> usize {
-        self.flow.peak.load(Ordering::Acquire)
-    }
-
+impl CurlControl {
     fn send(&self, command: Command) {
         if self.commands.send(command).is_ok() {
             let _ = self.waker.wakeup();
@@ -576,43 +550,26 @@ impl Fetch {
     }
 }
 
-/// Lowers a fetch's body limit ([`Fetch::stop_at`]); it may be kept by another thread than the
-/// fetch's reader.
-#[derive(Clone)]
-pub struct FetchLimit(Arc<Flow>);
-
-impl FetchLimit {
-    /// See [`Fetch::stop_at`].
-    pub fn stop_at(&self, body_bytes: u64) {
-        // Only ever lowered. A transfer paused for a slow reader sees it when it next writes.
-        self.0.limit.fetch_min(body_bytes, Ordering::AcqRel);
+impl FetchControl for CurlControl {
+    fn cancel(&self) {
+        self.send(Command::Cancel(self.token));
     }
-}
 
-impl Drop for Fetch {
-    /// An abandoned fetch is cancelled, so its transfer doesn't keep running.
-    fn drop(&mut self) {
-        if !self.done.load(Ordering::Acquire) {
-            self.send(Command::Cancel(self.token));
-        }
+    fn resume(&self) {
+        self.send(Command::Unpause(self.token));
     }
 }
 
 /// libcurl's callbacks for one fetch. They run on the loop thread: they never block and never
 /// call back into the caller; they only send events.
 struct Collector {
-    events: Sender<FetchEvent>,
+    /// The reader's buffer, the speed limits and the body limit (`pipe.rs`).
+    sink: Sink,
     gate: Box<dyn Fn(&ResponseHead) -> Gate + Send>,
-    flow: Arc<Flow>,
-    cap: usize,
-    /// The speed limits this fetch draws from.
-    limits: Vec<RateLimit>,
     /// Header lines of the response being received.
     lines: Vec<String>,
     accepted: bool,
     abort: Option<String>,
-    /// Body bytes delivered so far.
-    delivered: u64,
     /// The transfer was stopped at its limit: it ends as completed, not as an error.
     stopped_at_limit: bool,
     /// The request, with the URL of the current hop (#40).
@@ -637,7 +594,7 @@ impl Collector {
         let unproven = self.ftp.is_some()
             && head.status == 200
             && self.request.range.is_some_and(|(start, _)| start > 0);
-        let _ = self.events.send(FetchEvent::Head(head));
+        let _ = self.sink.events.send(FetchEvent::Head(head));
         match gate {
             Gate::Accept if !unproven => {
                 self.accepted = true;
@@ -714,34 +671,18 @@ impl Handler for Collector {
             // A body without a head: nothing to gate.
             self.accepted = true;
         }
-        // Up to the limit, which another thread may have lowered since the last write.
-        let room = self
-            .flow
-            .limit
-            .load(Ordering::Acquire)
-            .saturating_sub(self.delivered);
-        let take = data.len().min(usize::try_from(room).unwrap_or(usize::MAX));
-        let buffered = self.flow.buffered.load(Ordering::Acquire);
-        if take > 0 && buffered > 0 && buffered + take > self.cap {
-            self.flow.paused.store(true, Ordering::Release);
-            return Err(WriteError::Pause);
+        match self.sink.offer(data) {
+            // The reader's buffer is full, or a speed limit is out of tokens: libcurl keeps these
+            // bytes and offers them again once resumed (by the reader, or by the loop thread).
+            Offered::Full | Offered::Throttled => Err(WriteError::Pause),
+            Offered::Took(take) => {
+                if take < data.len() {
+                    // A short count makes libcurl stop the transfer (CURLE_WRITE_ERROR).
+                    self.stopped_at_limit = true;
+                }
+                Ok(take)
+            }
         }
-        if take > 0 && !rate::take(&self.limits, take) {
-            // Out of tokens: libcurl keeps these bytes and offers them again once resumed.
-            self.flow.rate_paused.store(true, Ordering::Release);
-            return Err(WriteError::Pause);
-        }
-        if take > 0 {
-            let now = self.flow.buffered.fetch_add(take, Ordering::AcqRel) + take;
-            self.flow.peak.fetch_max(now, Ordering::AcqRel);
-            let _ = self.events.send(FetchEvent::Data(data[..take].to_vec()));
-            self.delivered += take as u64;
-        }
-        if take < data.len() {
-            // A short count makes libcurl stop the transfer (CURLE_WRITE_ERROR).
-            self.stopped_at_limit = true;
-        }
-        Ok(take)
     }
 }
 
@@ -927,7 +868,7 @@ fn follow(
     token: usize,
     options: &LoopOptions,
 ) -> Result<Easy2Handle<Collector>, (Sender<FetchEvent>, FetchError)> {
-    let events = handle.get_ref().events.clone();
+    let events = handle.get_ref().sink.events.clone();
     let fail = |e: FetchError| (events.clone(), e);
     let local = |what: &str, code: i64, e: String| FetchError::Curl {
         kind: CurlFailure::Local,
@@ -1053,7 +994,7 @@ fn run_loop(
             match command {
                 Command::Start(token, easy) => {
                     // add2 consumes the handle even when it fails, so keep a way to report it.
-                    let events = easy.get_ref().events.clone();
+                    let events = easy.get_ref().sink.events.clone();
                     let started = multi
                         .add2(*easy)
                         .map_err(|e| (i64::from(e.code()), e.to_string()))
@@ -1110,7 +1051,7 @@ fn run_loop(
         // last.
         let mut waiting: Vec<usize> = active
             .iter()
-            .filter(|(_, h)| h.get_ref().flow.rate_paused.load(Ordering::Acquire))
+            .filter(|(_, h)| h.get_ref().sink.flow.rate_paused.load(Ordering::Acquire))
             .map(|(token, _)| *token)
             .collect();
         let rate_paused = !waiting.is_empty();
@@ -1123,8 +1064,12 @@ fn run_loop(
         for token in waiting {
             let handle = &active[&token];
             let collector = handle.get_ref();
-            if rate::ready(&collector.limits) {
-                collector.flow.rate_paused.store(false, Ordering::Release);
+            if rate::ready(&collector.sink.limits) {
+                collector
+                    .sink
+                    .flow
+                    .rate_paused
+                    .store(false, Ordering::Release);
                 let _ = handle.unpause_write();
             }
         }
@@ -1185,7 +1130,7 @@ fn run_loop(
 /// Removes a transfer from the `Multi` (on the loop thread, as libcurl requires) and sends its
 /// last event.
 fn finish(multi: &Multi, handle: Easy2Handle<Collector>, outcome: Result<(), FetchError>) {
-    let events = handle.get_ref().events.clone();
+    let events = handle.get_ref().sink.events.clone();
     // A failed removal is reported to the fetch rather than dropped; a successful outcome then
     // becomes that error.
     let outcome = match multi.remove2(handle) {

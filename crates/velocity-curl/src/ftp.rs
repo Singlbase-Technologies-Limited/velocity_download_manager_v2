@@ -17,9 +17,10 @@
 //! Commands are read from libcurl's debug output only for their verb. The line that carries the
 //! password is never kept.
 
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::SystemTime;
 
 use crate::fetch::ResponseHead;
+use crate::head::{days_from_civil, format_http_date, head_with};
 
 /// The command whose reply comes next.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -120,34 +121,14 @@ impl FtpReplies {
 
     /// The head with `status`, from what the replies said.
     fn head(&self, status: u16, now: SystemTime) -> ResponseHead {
-        let mut headers = Vec::new();
-        match (status, self.range, self.size) {
-            (206, Some((start, end)), Some(size)) => {
-                let last = end.unwrap_or(u64::MAX).min(size - 1);
-                headers.push((
-                    "Content-Range".to_owned(),
-                    format!("bytes {start}-{last}/{size}"),
-                ));
-                headers.push(("Content-Length".to_owned(), (last - start + 1).to_string()));
-            }
-            (416, _, Some(size)) => {
-                headers.push(("Content-Range".to_owned(), format!("bytes */{size}")));
-            }
-            (200, _, Some(size)) => headers.push(("Content-Length".to_owned(), size.to_string())),
-            _ => {}
-        }
-        if let Some(modified) = &self.modified {
-            headers.push(("Last-Modified".to_owned(), modified.clone()));
-        }
-        if let Some(date) = http_date(now) {
-            headers.push(("Date".to_owned(), date));
-        }
-        ResponseHead {
+        head_with(
             status,
-            headers,
-            http2: false,
-            url: self.url.clone(),
-        }
+            self.range,
+            self.size,
+            self.modified.clone(),
+            &self.url,
+            now,
+        )
     }
 
     /// The head said `416`: the transfer ends without a body, as an HTTP `416` does, even when
@@ -200,59 +181,10 @@ fn http_date_of_mdtm(value: &str) -> Option<String> {
     Some(format_http_date(seconds))
 }
 
-/// `now` as an HTTP date; `None` before 1970.
-fn http_date(now: SystemTime) -> Option<String> {
-    let seconds = now.duration_since(UNIX_EPOCH).ok()?.as_secs();
-    Some(format_http_date(i64::try_from(seconds).ok()?))
-}
-
-/// Seconds since the Unix epoch as an IMF-fixdate: `Sun, 06 Nov 1994 08:49:37 GMT`.
-fn format_http_date(seconds: i64) -> String {
-    const DAYS: [&str; 7] = ["Thu", "Fri", "Sat", "Sun", "Mon", "Tue", "Wed"];
-    const MONTHS: [&str; 12] = [
-        "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
-    ];
-    let (days, time) = (seconds.div_euclid(86_400), seconds.rem_euclid(86_400));
-    let (year, month, day) = civil_from_days(days);
-    format!(
-        "{}, {day:02} {} {year} {:02}:{:02}:{:02} GMT",
-        DAYS[days.rem_euclid(7) as usize],
-        MONTHS[(month - 1) as usize],
-        time / 3600,
-        time / 60 % 60,
-        time % 60
-    )
-}
-
-/// Days since 1970-01-01 of a proleptic Gregorian date (Howard Hinnant's `days_from_civil`).
-fn days_from_civil(year: i64, month: u32, day: u32) -> i64 {
-    let y = if month <= 2 { year - 1 } else { year };
-    let era = y.div_euclid(400);
-    let yoe = y - era * 400;
-    let m = i64::from(month);
-    let doy = (153 * (if m > 2 { m - 3 } else { m + 9 }) + 2) / 5 + i64::from(day) - 1;
-    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
-    era * 146_097 + doe - 719_468
-}
-
-/// The date of a day since 1970-01-01 (Howard Hinnant's `civil_from_days`).
-fn civil_from_days(days: i64) -> (i64, u32, u32) {
-    let z = days + 719_468;
-    let era = z.div_euclid(146_097);
-    let doe = z - era * 146_097;
-    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let day = (doy - (153 * mp + 2) / 5 + 1) as u32;
-    let month = if mp < 10 { mp + 3 } else { mp - 9 } as u32;
-    let year = yoe + era * 400 + i64::from(month <= 2);
-    (year, month, day)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::time::Duration;
+    use std::time::{Duration, UNIX_EPOCH};
 
     const NOW: u64 = 1_792_600_000;
 
@@ -445,14 +377,6 @@ mod tests {
             ("", None),
         ] {
             assert_eq!(http_date_of_mdtm(mdtm).as_deref(), date, "{mdtm}");
-        }
-    }
-
-    #[test]
-    fn days_and_dates_round_trip() {
-        for days in [-1, 0, 59, 10_957, 11_016, 20_000, 2_932_896] {
-            let (y, m, d) = civil_from_days(days);
-            assert_eq!(days_from_civil(y, m, d), days, "{y}-{m}-{d}");
         }
     }
 

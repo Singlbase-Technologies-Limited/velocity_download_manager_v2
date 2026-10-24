@@ -4,7 +4,7 @@ These rules apply to every contributor, human or AI agent. Each rule has one hom
 
 ## Project and authority
 
-- **What V2 is:** a desktop download manager with a Tauri 2 shell (`src-tauri/`), a React and TypeScript UI (`src/`) and Rust crates (`crates/`). It has its own direct-download engine on libcurl for HTTP, HTTPS, FTP and SFTP, and uses libtorrent for BitTorrent ([ADR-0001](docs/decisions/0001-v2-direction.md)).
+- **What V2 is:** a desktop download manager with a Tauri 2 shell (`src-tauri/`), a React and TypeScript UI (`src/`) and Rust crates (`crates/`). It has its own direct-download engine, on libcurl for HTTP, HTTPS and FTP and on russh for SFTP, and uses libtorrent for BitTorrent ([ADR-0001](docs/decisions/0001-v2-direction.md), [ADR-0013](docs/decisions/0013-sftp-russh.md)).
 - **No aria2:** V2 never bundles, calls, falls back to or copies aria2. V1, the original Velocity Download Manager, may serve only as a feature and benchmark reference, and is never modified from V2 work.
 - **Separate from V1:** V2 runs beside V1, so it never reuses V1's identifiers, data directories, ports or registrations (#11, #27).
 - **Platforms:** Windows and Linux are verified for development. macOS is not yet established (#83).
@@ -23,7 +23,7 @@ The components and who owns what state are in [docs/ARCHITECTURE.md](docs/ARCHIT
 - **`src/`:** UI and presentation state. It reaches native code only through the typed commands and events, never directly.
 - **`src-tauri/`:** the desktop shell. Its commands validate input and delegate to the core, without duplicating core logic.
 - **`crates/velocity-core/`:** reusable domain logic: the manager, policy, validation and persistence.
-- **Engine code:** the transfer engine lives in `crates/velocity-transfer` and the libcurl layer in `crates/velocity-curl` ([ADR-0002](docs/decisions/0002-engine-crate-layout.md)). Only the libcurl layer calls libcurl, and only the torrent bridge calls libtorrent.
+- **Engine code:** the transfer engine lives in `crates/velocity-transfer` and the libcurl layer in `crates/velocity-curl` ([ADR-0002](docs/decisions/0002-engine-crate-layout.md)), and the SFTP layer in `crates/velocity-sftp` ([ADR-0013](docs/decisions/0013-sftp-russh.md)). Only the libcurl layer calls libcurl, only the SFTP layer calls russh, and only the torrent bridge calls libtorrent.
 - **Abstractions:** create them for real boundaries, not for hypothetical reuse. Prefer small, cohesive modules and composition over large conditional ones.
 
 ## Reuse before you add

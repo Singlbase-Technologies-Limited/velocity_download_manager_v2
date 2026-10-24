@@ -35,9 +35,18 @@ use velocity_core::transfer::{
     Checkpoint, Checksum, HashAlgorithm, PieceHashes, Resume, CHECKPOINT_FORMAT,
 };
 use velocity_curl::{
-    CurlLoop, Fetch, FetchError, FetchEvent, FetchLimit, FetchRequest, Gate, RateLimit,
-    RequestOptions, ResponseHead,
+    Fetch, FetchError, FetchEvent, FetchLimit, FetchRequest, Gate, RateLimit, RequestOptions,
+    ResponseHead, Transport,
 };
+
+/// Starts a fetch on whichever transport carries the download (#53): libcurl's loop, or SFTP.
+fn fetch_on(
+    lp: &dyn Transport,
+    request: FetchRequest,
+    gate: impl Fn(&ResponseHead) -> Gate + Send + 'static,
+) -> Fetch {
+    lp.fetch(request, Box::new(gate))
+}
 
 use crate::adaptive::{AdaptivePolicy, Ramp, Tuning};
 use crate::failure::{self, fetch_failure};
@@ -443,7 +452,7 @@ pub struct Expected {
 
 /// Downloads `url` to `destination`, through a part file beside it (`<destination>.vdmpart`).
 pub fn download(
-    lp: &CurlLoop,
+    lp: &dyn Transport,
     url: &str,
     destination: &Path,
     options: DownloadOptions,
@@ -461,7 +470,7 @@ pub fn download(
 /// - A paused download, or one that fails in a way worth retrying after a checkpoint was taken,
 ///   keeps its part file; any other failure removes it.
 pub fn download_resumable(
-    lp: &CurlLoop,
+    lp: &dyn Transport,
     url: &str,
     destination: &Path,
     options: DownloadOptions,
@@ -485,7 +494,7 @@ pub fn download_resumable(
 /// hears of ([`Control::with_naming`]); before that nothing is on disk, so a `resume` for it is
 /// ignored.
 pub fn download_to(
-    lp: &CurlLoop,
+    lp: &dyn Transport,
     url: &str,
     target: Target,
     options: DownloadOptions,
@@ -651,7 +660,7 @@ pub fn download_to(
 /// [`PIECE_REFETCHES`] times; without them, the whole file once more as one stream. A download
 /// without piece hashes is returned as it is.
 fn repair_pieces(
-    lp: &CurlLoop,
+    lp: &dyn Transport,
     url: &str,
     options: DownloadOptions,
     part: &mut PartFile,
@@ -732,7 +741,7 @@ fn changed_again(t: &TransferError) -> TransferError {
 
 /// [`download`], followed and stoppable through `control`.
 pub fn download_with(
-    lp: &CurlLoop,
+    lp: &dyn Transport,
     url: &str,
     destination: &Path,
     options: DownloadOptions,
@@ -759,7 +768,7 @@ struct Fetched {
 
 /// A download from the start: the probe decides how the rest is fetched.
 fn fetch_fresh(
-    lp: &CurlLoop,
+    lp: &dyn Transport,
     url: &str,
     options: DownloadOptions,
     part: &mut PartFile,
@@ -838,7 +847,7 @@ fn fetch_fresh(
 /// The whole file as one stream, from the start, in whatever encoding it comes (#45): after the
 /// encoding changed between answers, ranges can't be trusted.
 fn fetch_whole(
-    lp: &CurlLoop,
+    lp: &dyn Transport,
     url: &str,
     part: &mut PartFile,
     control: &Control,
@@ -1070,7 +1079,7 @@ fn retryable(
 /// [`probe`], tried again after each failure worth retrying, until the policy gives up (#48).
 /// Returns what it found and how many retries it made.
 fn probe_retrying(
-    lp: &CurlLoop,
+    lp: &dyn Transport,
     request: &FetchRequest,
     probe_end: u64,
     part: &mut PartFile,
@@ -1118,7 +1127,7 @@ struct ProbeAsk<'a> {
 /// [`Retryable`]; a probe whose answer gave the file's total and was then cut off returns its
 /// outcome, and the range scheduler fetches the rest.
 fn probe(
-    lp: &CurlLoop,
+    lp: &dyn Transport,
     ask: ProbeAsk,
     part: &mut PartFile,
     ck: &mut Checkpointer,
@@ -1146,33 +1155,37 @@ fn probe(
         Arc::clone(&name_source),
     );
     let earlier = earlier.cloned();
-    let fetch = lp.fetch(request.with_control(control), move |head: &ResponseHead| {
-        asked.note(head);
-        if is_multipart(head) {
-            saw_multipart.store(true, Ordering::Release);
-            return Gate::Abort("a multipart/byteranges answer to one range".to_owned());
-        }
-        let result = classify_probe(head, probe_end);
-        if let Ok(outcome) = &result {
-            if let Some(Err(why)) = earlier.as_ref().map(|e| e.check(head, outcome)) {
-                // The bytes written so far are another answer's (#45).
-                let e = TransferError::new(FailureClass::Permanent, Some(head.status), &why);
-                *other.lock().expect("the changed lock") = Some(e);
-                return Gate::Abort(why);
+    let fetch = fetch_on(
+        lp,
+        request.with_control(control),
+        move |head: &ResponseHead| {
+            asked.note(head);
+            if is_multipart(head) {
+                saw_multipart.store(true, Ordering::Release);
+                return Gate::Abort("a multipart/byteranges answer to one range".to_owned());
             }
-            *seen.lock().expect("the validators lock") = Some(Answered {
-                file: Representation::of(head),
-                length: single_stream_length(outcome),
-            });
-            *naming.lock().expect("the name source lock") = Some(NameSource::of(head));
-        }
-        let gate = match &result {
-            Ok(_) => Gate::Accept,
-            Err(e) => Gate::Abort(e.message.clone()),
-        };
-        *verdict.lock().expect("the probe verdict lock") = Some(result);
-        gate
-    });
+            let result = classify_probe(head, probe_end);
+            if let Ok(outcome) = &result {
+                if let Some(Err(why)) = earlier.as_ref().map(|e| e.check(head, outcome)) {
+                    // The bytes written so far are another answer's (#45).
+                    let e = TransferError::new(FailureClass::Permanent, Some(head.status), &why);
+                    *other.lock().expect("the changed lock") = Some(e);
+                    return Gate::Abort(why);
+                }
+                *seen.lock().expect("the validators lock") = Some(Answered {
+                    file: Representation::of(head),
+                    length: single_stream_length(outcome),
+                });
+                *naming.lock().expect("the name source lock") = Some(NameSource::of(head));
+            }
+            let gate = match &result {
+                Ok(_) => Gate::Accept,
+                Err(e) => Gate::Abort(e.message.clone()),
+            };
+            *verdict.lock().expect("the probe verdict lock") = Some(result);
+            gate
+        },
+    );
     // The probe's bytes start at 0; how far they may go depends on its outcome.
     let mut cursor = 0u64;
     let drained = drain(&fetch, control, policy, |chunk| {
@@ -1422,7 +1435,7 @@ struct Asking<'a> {
 
 /// Starts the request for `lease`, `Range: bytes=start-(end−1)`, checked in the header callback.
 fn request(
-    lp: &CurlLoop,
+    lp: &dyn Transport,
     asking: &Asking,
     lease: Lease,
     tx: mpsc::SyncSender<(LeaseId, Segment)>,
@@ -1441,7 +1454,7 @@ fn request(
     .if_range(asking.file.if_range())
     .with_control(control);
     let (total, file) = (asking.total, asking.file.clone());
-    let fetch = lp.fetch(fetch_request, move |head: &ResponseHead| {
+    let fetch = fetch_on(lp, fetch_request, move |head: &ResponseHead| {
         asked.note(head);
         let result = check_segment(head, a, b, total, &file);
         let gate = match &result {
@@ -1499,7 +1512,7 @@ fn request(
 ///
 /// Returns the fetches made, the splits and the mode.
 fn fetch_ranges(
-    lp: &CurlLoop,
+    lp: &dyn Transport,
     url: &str,
     total: u64,
     options: DownloadOptions,
@@ -1814,7 +1827,7 @@ fn fetch_ranges(
 /// for the same range again after a wait (#48). Returns the fetches made, the file's length and
 /// the mode.
 fn fetch_sequential(
-    lp: &CurlLoop,
+    lp: &dyn Transport,
     url: &str,
     start: u64,
     file: &Representation,
@@ -1835,7 +1848,8 @@ fn fetch_sequential(
         let retry_after = RetryAfter::default();
         let asked = retry_after.clone();
         let same = file.clone();
-        let fetch = lp.fetch(
+        let fetch = fetch_on(
+            lp,
             FetchRequest::range(url.to_owned(), from, None)
                 .if_range(file.if_range())
                 .with_control(control),
@@ -1932,7 +1946,7 @@ fn fetch_sequential(
 /// `total`, the stream must be that long. A failure worth retrying starts the stream again after
 /// a wait (#48). Returns the stream's length and the fetches made.
 fn stream_gaps(
-    lp: &CurlLoop,
+    lp: &dyn Transport,
     url: &str,
     total: Option<u64>,
     file: Option<&Representation>,
@@ -1950,7 +1964,8 @@ fn stream_gaps(
         let retry_after = RetryAfter::default();
         let asked = retry_after.clone();
         let same = file.cloned();
-        let fetch = lp.fetch(
+        let fetch = fetch_on(
+            lp,
             FetchRequest::get(url.to_owned()).with_control(control),
             move |head: &ResponseHead| {
                 asked.note(head);

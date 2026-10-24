@@ -351,6 +351,26 @@ impl Manager {
         Ok(())
     }
 
+    /// Trusts the SFTP host key the user confirmed (#53), as a download's error showed it
+    /// ([`crate::domain::TransferError::host_key`]). The engine pins only the key it saw with
+    /// that fingerprint; the download is then retried by the caller. `InvalidInput`, with
+    /// nothing sent, for an empty host or a fingerprint that isn't `SHA256:` and base64.
+    pub fn trust_host_key(
+        &mut self,
+        host: &str,
+        port: u16,
+        fingerprint: &str,
+    ) -> Result<(), ErrorCode> {
+        let base64 = |c: char| c.is_ascii_alphanumeric() || "+/".contains(c);
+        let well_formed = fingerprint
+            .strip_prefix("SHA256:")
+            .is_some_and(|b| !b.is_empty() && b.chars().all(base64));
+        if host.is_empty() || !well_formed {
+            return Err(ErrorCode::InvalidInput);
+        }
+        self.engine.trust_host_key(host, port, fingerprint)
+    }
+
     /// The connections a new download asks for under the current profile: its per-server cap.
     pub fn connections_for_new_downloads(&self) -> u32 {
         self.performance.engine_limits().max_connections_per_host
@@ -541,6 +561,7 @@ mod tests {
             max_connections: 4,
             resume: None,
             require_encryption: false,
+            ssh_key: None,
         }
     }
 
@@ -742,6 +763,31 @@ mod tests {
             m.pump(T0);
             assert_eq!(status(&m, &id), DownloadStatus::Unknown, "{s:?}");
         }
+    }
+
+    #[test]
+    fn a_confirmed_host_key_goes_to_the_engine_and_a_malformed_one_never_does() {
+        let fake = FakeTransfer::new();
+        let control = fake.control();
+        let mut m = Manager::new(Box::new(fake));
+        assert_eq!(
+            m.trust_host_key("files.example.org", 22, "SHA256:abc+/def"),
+            Ok(())
+        );
+        assert!(control
+            .log()
+            .contains(&"trust_host_key files.example.org:22 SHA256:abc+/def".to_owned()));
+        for bad in ["", "abc", "MD5:aa:bb", "SHA256:", "SHA256:a b"] {
+            assert_eq!(
+                m.trust_host_key("files.example.org", 22, bad),
+                Err(ErrorCode::InvalidInput),
+                "{bad}"
+            );
+        }
+        assert_eq!(
+            m.trust_host_key("", 22, "SHA256:abc"),
+            Err(ErrorCode::InvalidInput)
+        );
     }
 
     #[test]

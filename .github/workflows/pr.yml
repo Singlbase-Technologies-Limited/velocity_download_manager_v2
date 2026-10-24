@@ -97,6 +97,12 @@ jobs:
         uses: ./.github/actions/setup
         with:
           rust: ${{ needs.select.outputs.rust }}
+      # The SFTP tests' OpenSSH server, and a password-login server they can't start themselves
+      # (#53, scripts/ci-sftp-server.sh). Only when Rust runs.
+      - id: sftp
+        name: SFTP test servers
+        if: ${{ needs.select.outputs.rust == 'true' }}
+        run: bash scripts/ci-sftp-server.sh
       - id: checks
         name: Run the selected checks
         env:
@@ -120,7 +126,7 @@ jobs:
         if: ${{ !cancelled() && steps.checkout.outcome == 'success' }}
         env:
           STEPS: ${{ toJSON(steps) }}
-        run: node scripts/ci-report.mjs job --job code --infra checkout,setup --step-check "checks=Code checks"
+        run: node scripts/ci-report.mjs job --job code --infra checkout,setup,sftp --step-check "checks=Code checks"
       - name: Upload the job report
         if: ${{ !cancelled() && steps.checkout.outcome == 'success' }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2

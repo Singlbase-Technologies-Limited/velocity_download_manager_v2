@@ -24,12 +24,18 @@ use velocity_core::domain::{
     Capabilities, ConnectionDetail, ConnectionLimit, DownloadKind, DownloadStatus, ErrorCode,
     FailureClass, Progress, ProtocolCapabilities, TransferError,
 };
+use velocity_core::paths::Paths;
 use velocity_core::request::default_user_agent;
 use velocity_core::transfer::{
     Checkpoint, Checksum, DirectTransfer, EngineLimits, Limits, PieceHashes, Resume, TransferEvent,
     TransferId, TransferSnapshot, TransferSpec,
 };
-use velocity_curl::{CurlLoop, Libcurl, LoopOptions, RateLimit, RequestOptions};
+use velocity_curl::{
+    CurlLoop, Fetch, FetchRequest, GateFn, Libcurl, LoopOptions, RateLimit, RequestOptions,
+    SshKeyFile, Transport,
+};
+use velocity_sftp::known_hosts::KnownHosts;
+use velocity_sftp::{SftpOptions, SftpTransport, TrustError};
 
 use crate::adaptive::{AdaptivePolicy, Tuning};
 use crate::budget::{self, Demand, Share};
@@ -57,8 +63,25 @@ pub struct InProcessEngine {
     shared: Arc<Shared>,
 }
 
-struct Shared {
+/// What the engine fetches through, by the link's scheme (#53): SFTP on russh, everything else
+/// on libcurl's loop.
+struct Transports {
     curl: CurlLoop,
+    sftp: SftpTransport,
+}
+
+impl Transport for Transports {
+    fn fetch(&self, request: FetchRequest, gate: GateFn) -> Fetch {
+        if is_sftp(&request.url) {
+            self.sftp.fetch(request, gate)
+        } else {
+            self.curl.fetch(request, gate)
+        }
+    }
+}
+
+struct Shared {
+    transports: Transports,
     state: Mutex<State>,
     /// When downloads retry and wait (#48); the user's settings once #30 passes them.
     retry: RetryPolicy,
@@ -120,6 +143,10 @@ fn request_options(spec: &TransferSpec) -> RequestOptions {
             .as_ref()
             .map(|c| (c.user_name.clone(), c.password.clone())),
         require_encryption: spec.require_encryption,
+        ssh_key: spec.ssh_key.as_ref().map(|key| SshKeyFile {
+            path: key.path.clone(),
+            passphrase: key.passphrase.clone(),
+        }),
     }
 }
 
@@ -229,6 +256,7 @@ fn host_of(url: &str) -> String {
         "https" => 443,
         "ftp" => 21,
         "ftps" => 990,
+        "sftp" => 22,
         _ => 80,
     };
     format!("{host}:{port}")
@@ -265,7 +293,24 @@ impl InProcessEngine {
         Self::start_with_policy(TransferId(1), retry)
     }
 
+    /// Starts the engine with `known_hosts` as its file of trusted SFTP host keys, in place of
+    /// the one in the app's data folder (#53).
+    pub fn start_with_known_hosts(known_hosts: PathBuf) -> Result<Self, String> {
+        Self::start_all(TransferId(1), RetryPolicy::DEFAULT, known_hosts)
+    }
+
     fn start_with_policy(first: TransferId, retry: RetryPolicy) -> Result<Self, String> {
+        // V2's own known_hosts file, beside its database (#53).
+        let paths = Paths::resolve()
+            .map_err(|code| format!("the app's data folder is unknown ({code:?})"))?;
+        Self::start_all(first, retry, paths.known_hosts())
+    }
+
+    fn start_all(
+        first: TransferId,
+        retry: RetryPolicy,
+        known_hosts: PathBuf,
+    ) -> Result<Self, String> {
         let libcurl = Libcurl::start().map_err(|e| e.to_string())?;
         let options = LoopOptions {
             // libcurl's own cap follows the profile's (#57): with many small downloads, each
@@ -274,9 +319,11 @@ impl InProcessEngine {
             ..LoopOptions::default()
         };
         let curl = CurlLoop::start(&libcurl, options).map_err(|e| e.to_string())?;
+        let sftp = SftpTransport::start(KnownHosts::new(known_hosts), SftpOptions::default())
+            .map_err(|e| format!("the SFTP transport couldn't start: {e}"))?;
         Ok(InProcessEngine {
             shared: Arc::new(Shared {
-                curl,
+                transports: Transports { curl, sftp },
                 state: Mutex::new(State {
                     next_id: first.0.saturating_sub(1),
                     ..State::default()
@@ -329,17 +376,30 @@ fn is_ftp(url: &str) -> bool {
     })
 }
 
-/// The connections a transfer of `url` uses when `asked` are asked for: one for FTP (PO decision
-/// on #51), otherwise up to the per-host cap.
+/// Whether `url`, checked by [`check_url`], is SFTP (#53).
+fn is_sftp(url: &str) -> bool {
+    url.split_once("://")
+        .is_some_and(|(scheme, _)| scheme.eq_ignore_ascii_case("sftp"))
+}
+
+/// Whether a transfer of `url` uses one connection and one stream: FTP (PO decision on #51) and
+/// SFTP (#53), until #77 measures whether more help.
+fn one_stream(url: &str) -> bool {
+    is_ftp(url) || is_sftp(url)
+}
+
+/// The connections a transfer of `url` uses when `asked` are asked for: one for FTP and SFTP,
+/// otherwise up to the per-host cap.
 fn connections_for(url: &str, asked: u32, cap: u32) -> u32 {
-    if is_ftp(url) {
+    if one_stream(url) {
         1
     } else {
         asked.clamp(1, cap)
     }
 }
 
-/// Checks a URL as untrusted input: `http`, `https`, `ftp` or `ftps` (#51), with a host.
+/// Checks a URL as untrusted input: `http`, `https`, `ftp`, `ftps` (#51) or `sftp` (#53), with
+/// a host.
 fn check_url(url: &str) -> Result<(), ErrorCode> {
     let Some((scheme, rest)) = url.split_once("://") else {
         return Err(ErrorCode::InvalidUrl);
@@ -353,7 +413,7 @@ fn check_url(url: &str) -> Result<(), ErrorCode> {
     }
     if !matches!(
         scheme.to_ascii_lowercase().as_str(),
-        "http" | "https" | "ftp" | "ftps"
+        "http" | "https" | "ftp" | "ftps" | "sftp"
     ) {
         return Err(ErrorCode::UnsupportedScheme);
     }
@@ -429,6 +489,19 @@ impl DirectTransfer for InProcessEngine {
                     http2: false,
                     // FTPS, explicit and implicit, verified as for HTTPS; libcurl is refused at
                     // start without ftps (velocity-curl's capability check).
+                    encryption: true,
+                },
+                ProtocolCapabilities {
+                    kind: DownloadKind::Sftp,
+                    // One connection, as for FTP, until #77 measures more.
+                    segmented: false,
+                    // From a checkpoint, at an offset, checked against the file's time as a
+                    // strong Last-Modified (#53, ADR-0010).
+                    resume: true,
+                    validator_resume: true,
+                    http2: false,
+                    // SSH is always encrypted, and the host key is checked against V2's own
+                    // known_hosts file (#53).
                     encryption: true,
                 },
             ],
@@ -601,6 +674,7 @@ impl DirectTransfer for InProcessEngine {
         limits.check()?;
         // libcurl first: if it refuses, nothing changed.
         self.shared
+            .transports
             .curl
             .set_max_connections_per_host(limits.max_connections_per_host as usize)
             .map_err(|_| ErrorCode::Internal)?;
@@ -622,6 +696,23 @@ impl DirectTransfer for InProcessEngine {
         entry.control.set_connections(applied);
         state.rebalance();
         Ok(applied)
+    }
+
+    fn trust_host_key(
+        &mut self,
+        host: &str,
+        port: u16,
+        fingerprint: &str,
+    ) -> Result<(), ErrorCode> {
+        self.shared
+            .transports
+            .sftp
+            .trust_host_key(host, port, fingerprint)
+            .map_err(|e| match e {
+                TrustError::NotSeen => ErrorCode::NotFound,
+                TrustError::Changed => ErrorCode::InvalidState,
+                TrustError::Io(_) => ErrorCode::Io,
+            })
     }
 
     fn snapshot(&self) -> Result<Vec<TransferSnapshot>, ErrorCode> {
@@ -714,7 +805,7 @@ fn run(shared: &Shared, id: TransferId, job: &Job, resume: Option<&Resume>, cont
         // The asked-for count is a ceiling, not a must (PO decision on #47).
         adaptive: Some(AdaptivePolicy::DEFAULT),
     };
-    let options = if is_ftp(&job.url) {
+    let options = if one_stream(&job.url) {
         options.one_connection()
     } else {
         options
@@ -729,7 +820,7 @@ fn run(shared: &Shared, id: TransferId, job: &Job, resume: Option<&Resume>, cont
             None => Target::Folder(&job.directory),
         };
         let result = download_to(
-            &shared.curl,
+            &shared.transports,
             &job.url,
             target,
             options,
@@ -903,11 +994,12 @@ mod tests {
     fn checks_urls_as_untrusted_input() {
         assert_eq!(check_url("https://example.com/a.zip"), Ok(()));
         assert_eq!(check_url("HTTP://example.com"), Ok(()));
-        // FTP and FTPS since #51; SFTP comes with #53.
+        // FTP and FTPS since #51, SFTP since #53; SCP is a non-goal.
         assert_eq!(check_url("ftp://example.com/a"), Ok(()));
         assert_eq!(check_url("FTPS://example.com/a"), Ok(()));
+        assert_eq!(check_url("sftp://example.com/a"), Ok(()));
         assert_eq!(
-            check_url("sftp://example.com/a"),
+            check_url("scp://example.com/a"),
             Err(ErrorCode::UnsupportedScheme)
         );
         assert_eq!(
@@ -934,12 +1026,17 @@ mod tests {
         assert_eq!(host_of("ftp://ftp.example.org/f"), "ftp.example.org:21");
         assert_eq!(host_of("FTPS://ftp.example.org/f"), "ftp.example.org:990");
         assert_eq!(host_of("ftp://h:2121/f"), "h:2121");
+        assert_eq!(
+            host_of("sftp://files.example.org/f"),
+            "files.example.org:22"
+        );
     }
 
     #[test]
     fn ftp_uses_one_connection_whatever_is_asked() {
         assert_eq!(connections_for("ftp://h/f", 8, 6), 1);
         assert_eq!(connections_for("ftps://h/f", 0, 6), 1);
+        assert_eq!(connections_for("sftp://h/f", 8, 6), 1);
         assert_eq!(connections_for("https://h/f", 8, 6), 6);
         assert_eq!(connections_for("https://h/f", 0, 6), 1);
     }

@@ -52,7 +52,8 @@ Every document in `docs/` is listed here. A new document is added to this map in
 | [decisions/0008-proxy-support.md](decisions/0008-proxy-support.md) | Read ADR-0008: full proxy settings in the first release |
 | [decisions/0009-no-aria2-benchmark-gate.md](decisions/0009-no-aria2-benchmark-gate.md) | Read ADR-0009: build the engine first, with no aria2 benchmark comparison for now |
 | [decisions/0010-resume-without-validator.md](decisions/0010-resume-without-validator.md) | Read ADR-0010: without a validator, resume after a length check and show "not verified" |
-| [decisions/0011-sftp-libssh2.md](decisions/0011-sftp-libssh2.md) | Read ADR-0011: SFTP uses libssh2 through libcurl |
+| [decisions/0011-sftp-libssh2.md](decisions/0011-sftp-libssh2.md) | Read ADR-0011: SFTP uses libssh2 through libcurl (superseded by ADR-0013) |
+| [decisions/0013-sftp-russh.md](decisions/0013-sftp-russh.md) | Read ADR-0013: SFTP uses russh, in its own crate behind a shared transport interface |
 | [decisions/0012-engine-child-process.md](decisions/0012-engine-child-process.md) | Read ADR-0012: the direct-download engine runs as a supervised child process |
 | [research/README.md](research/README.md) | See the research index; research is input, not decisions |
 | [research/2026-10-21-libcurl-engine-research-r2.md](research/2026-10-21-libcurl-engine-research-r2.md) | Read the libcurl download-engine research report, revision 2 |

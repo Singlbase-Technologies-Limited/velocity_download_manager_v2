@@ -1,6 +1,6 @@
 # Velocity Download Manager V2
 
-Velocity Download Manager V2 is a desktop download manager under development: a Tauri 2 and React application with its own Rust direct-download engine (HTTP, HTTPS, FTP and SFTP over libcurl) and libtorrent for BitTorrent. It is a separate application from the original Velocity Download Manager and is designed to be installed side by side with it.
+Velocity Download Manager V2 is a desktop download manager under development: a Tauri 2 and React application with its own Rust direct-download engine (HTTP, HTTPS and FTP over libcurl, SFTP over russh) and libtorrent for BitTorrent. It is a separate application from the original Velocity Download Manager and is designed to be installed side by side with it.
 
 ## Getting started
 

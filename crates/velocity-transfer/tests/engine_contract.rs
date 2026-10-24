@@ -73,6 +73,7 @@ fn spec(url: String, destination: PathBuf) -> TransferSpec {
         max_connections: 4,
         resume: None,
         require_encryption: false,
+        ssh_key: None,
     }
 }
 
@@ -106,7 +107,8 @@ fn reports_its_capabilities_honestly() {
         let c = engine.capabilities();
         // HTTP(S): segmented (#42), resumed (#43) against a strong validator (#45), over HTTP/2
         // when the server offers it (#47), encrypted over https://. FTP (#51): one connection,
-        // resumed with REST against MDTM when the server gives it, encrypted as FTPS.
+        // resumed with REST against MDTM when the server gives it, encrypted as FTPS. SFTP (#53):
+        // one connection, resumed at an offset against the file's time, always encrypted.
         assert_eq!(
             c.protocols,
             vec![
@@ -120,6 +122,14 @@ fn reports_its_capabilities_honestly() {
                 },
                 ProtocolCapabilities {
                     kind: DownloadKind::Ftp,
+                    segmented: false,
+                    resume: true,
+                    validator_resume: true,
+                    http2: false,
+                    encryption: true,
+                },
+                ProtocolCapabilities {
+                    kind: DownloadKind::Sftp,
                     segmented: false,
                     resume: true,
                     validator_resume: true,
@@ -506,7 +516,7 @@ fn refuses_bad_commands_with_their_codes() {
         );
         assert_eq!(
             engine.add(spec(
-                "sftp://example.com/a".into(),
+                "scp://example.com/a".into(),
                 PathBuf::from(".").join("a")
             )),
             Err(ErrorCode::UnsupportedScheme),

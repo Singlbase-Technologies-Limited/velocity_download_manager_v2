@@ -323,6 +323,16 @@ impl DirectTransfer for FakeTransfer {
         Ok(applied)
     }
 
+    fn trust_host_key(
+        &mut self,
+        host: &str,
+        port: u16,
+        fingerprint: &str,
+    ) -> Result<(), ErrorCode> {
+        let mut s = lock(&self.state);
+        s.command(format!("trust_host_key {host}:{port} {fingerprint}"))
+    }
+
     fn snapshot(&self) -> Result<Vec<TransferSnapshot>, ErrorCode> {
         let mut s = lock(&self.state);
         s.command("snapshot".to_owned())?;

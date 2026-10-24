@@ -90,6 +90,23 @@ pub struct TransferError {
     pub http_status: Option<u16>,
     pub message: String,
     pub retryable: bool,
+    /// An SFTP server's host key that wasn't trusted (#53): the download waits for the user to
+    /// confirm an unknown key's fingerprint, and a changed key is always refused. `None` otherwise.
+    pub host_key: Option<HostKeyCheck>,
+}
+
+/// An SFTP server's host key, as the user must see it before trusting it (#53, research report
+/// section 8).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct HostKeyCheck {
+    pub host: String,
+    pub port: u16,
+    /// The key the server presented, as OpenSSH prints its SHA-256 fingerprint: `SHA256:…`.
+    pub fingerprint: String,
+    /// When the key changed: the fingerprint of the one pinned before. A changed key is never
+    /// trusted; `None` for a key that is only unknown.
+    pub pinned: Option<String>,
 }
 
 impl TransferError {
@@ -100,7 +117,14 @@ impl TransferError {
             http_status,
             message: message.to_owned(),
             retryable: class != FailureClass::Permanent,
+            host_key: None,
         }
+    }
+
+    /// The same error, about an SFTP server's untrusted host key (#53).
+    pub fn with_host_key(mut self, check: HostKeyCheck) -> Self {
+        self.host_key = Some(check);
+        self
     }
 }
 
@@ -472,7 +496,7 @@ mod tests {
         .unwrap();
         assert_eq!(
             json,
-            r#"{"class":"throttled","httpStatus":503,"message":"Service unavailable","retryable":true}"#
+            r#"{"class":"throttled","httpStatus":503,"message":"Service unavailable","retryable":true,"hostKey":null}"#
         );
     }
 

@@ -66,6 +66,7 @@ fn spec(url: String, destination: PathBuf) -> TransferSpec {
         max_connections: 2,
         resume: None,
         require_encryption: false,
+        ssh_key: None,
     }
 }
 

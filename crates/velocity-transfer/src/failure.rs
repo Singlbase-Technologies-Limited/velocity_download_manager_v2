@@ -6,9 +6,9 @@
 use std::io;
 use std::time::{Duration, SystemTime};
 
-use velocity_core::domain::{FailureClass, TransferError};
+use velocity_core::domain::{FailureClass, HostKeyCheck, TransferError};
 use velocity_core::transfer::HashAlgorithm;
-use velocity_curl::{CurlFailure, FetchError, ResponseHead};
+use velocity_curl::{CurlFailure, FetchError, HostKeyProblem, ResponseHead};
 
 /// The failure an error status stands for, or `None` for a status that isn't one here (`416` is
 /// read by the probe and the segment checks).
@@ -164,10 +164,43 @@ pub(crate) fn fetch_failure(e: FetchError) -> TransferError {
             let (class, words) = curl_failure(kind);
             TransferError::new(class, None, &format!("{words} ({message})"))
         }
+        FetchError::Sftp { kind, message } => {
+            let (class, words) = curl_failure(kind);
+            TransferError::new(class, None, &format!("{words} (SFTP: {message})"))
+        }
+        FetchError::HostKey(problem) => host_key_failure(problem),
         FetchError::LoopStopped => {
             TransferError::new(FailureClass::Transient, None, "the libcurl loop stopped")
         }
     }
+}
+
+/// An SFTP server's untrusted host key (#53): permanent, so the engine never retries it on its
+/// own, with the key for the app to show. An unknown key waits for the user to confirm its
+/// fingerprint; a changed one is refused for good.
+fn host_key_failure(problem: HostKeyProblem) -> TransferError {
+    let HostKeyProblem {
+        host,
+        port,
+        fingerprint,
+        pinned,
+    } = problem;
+    let message = match &pinned {
+        None => format!(
+            "The server's identity isn't confirmed yet. Check that its host key fingerprint is \
+             {fingerprint}, then trust it to continue."
+        ),
+        Some(before) => format!(
+            "The server's host key changed (it was {before}, it is now {fingerprint}). This could \
+             be an attack, so the connection was refused."
+        ),
+    };
+    TransferError::new(FailureClass::Permanent, None, &message).with_host_key(HostKeyCheck {
+        host,
+        port,
+        fingerprint,
+        pinned,
+    })
 }
 
 /// A libcurl failure's class and message. Network trouble is worth retrying; a certificate that
@@ -357,6 +390,60 @@ mod tests {
                 e.message
             );
         }
+    }
+
+    #[test]
+    fn an_untrusted_host_key_is_permanent_and_carries_the_key() {
+        let unknown = fetch_failure(FetchError::HostKey(HostKeyProblem {
+            host: "files.example.org".to_owned(),
+            port: 22,
+            fingerprint: "SHA256:new".to_owned(),
+            pinned: None,
+        }));
+        assert_eq!(unknown.class, FailureClass::Permanent);
+        assert!(!unknown.retryable);
+        assert!(
+            unknown.message.contains("SHA256:new"),
+            "{}",
+            unknown.message
+        );
+        assert!(unknown.message.contains("trust it"), "{}", unknown.message);
+        let check = unknown.host_key.expect("the key for the app to show");
+        assert_eq!(
+            (check.host.as_str(), check.port, check.fingerprint.as_str()),
+            ("files.example.org", 22, "SHA256:new")
+        );
+        assert_eq!(check.pinned, None);
+
+        let changed = fetch_failure(FetchError::HostKey(HostKeyProblem {
+            host: "files.example.org".to_owned(),
+            port: 22,
+            fingerprint: "SHA256:new".to_owned(),
+            pinned: Some("SHA256:old".to_owned()),
+        }));
+        assert_eq!(changed.class, FailureClass::Permanent);
+        assert!(changed.message.contains("changed"), "{}", changed.message);
+        assert!(
+            changed.message.contains("SHA256:old"),
+            "{}",
+            changed.message
+        );
+        assert_eq!(
+            changed.host_key.and_then(|c| c.pinned).as_deref(),
+            Some("SHA256:old")
+        );
+    }
+
+    #[test]
+    fn an_sftp_failure_keeps_its_kind_and_its_own_words() {
+        let e = fetch_failure(FetchError::Sftp {
+            kind: CurlFailure::NotFound,
+            message: "no such file".to_owned(),
+        });
+        assert_eq!(e.class, FailureClass::Permanent);
+        assert!(e.message.contains("wasn't found"), "{}", e.message);
+        assert!(e.message.contains("SFTP: no such file"), "{}", e.message);
+        assert!(e.host_key.is_none());
     }
 
     #[test]

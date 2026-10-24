@@ -481,6 +481,19 @@ impl ChildProcessEngine {
         }
     }
 
+    pub fn trust_host_key(
+        &self,
+        host: &str,
+        port: u16,
+        fingerprint: &str,
+    ) -> Result<(), ErrorCode> {
+        self.done(TransferCommand::TrustHostKey {
+            host: host.to_owned(),
+            port,
+            fingerprint: fingerprint.to_owned(),
+        })
+    }
+
     pub fn snapshot(&self) -> Result<Vec<TransferSnapshot>, ErrorCode> {
         match self.connection.request(TransferCommand::Snapshot {})? {
             TransferReply::Snapshot { transfers } => Ok(transfers),
@@ -541,6 +554,15 @@ impl DirectTransfer for ChildProcessEngine {
 
     fn set_connections(&mut self, id: TransferId, connections: u32) -> Result<u32, ErrorCode> {
         ChildProcessEngine::set_connections(self, id, connections)
+    }
+
+    fn trust_host_key(
+        &mut self,
+        host: &str,
+        port: u16,
+        fingerprint: &str,
+    ) -> Result<(), ErrorCode> {
+        ChildProcessEngine::trust_host_key(self, host, port, fingerprint)
     }
 
     fn snapshot(&self) -> Result<Vec<TransferSnapshot>, ErrorCode> {

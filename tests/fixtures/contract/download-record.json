@@ -5,6 +5,7 @@
   "directory": "/home/user/Downloads",
   "error": {
     "class": "throttled",
+    "hostKey": null,
     "httpStatus": 503,
     "message": "Service unavailable",
     "retryable": true

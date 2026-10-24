@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/velocity-core", "crates/velocity-curl", "crates/velocity-test-http", "crates/velocity-transfer", "crates/velocity-transfer-h2c", "src-tauri"]
+members = ["crates/velocity-core", "crates/velocity-curl", "crates/velocity-sftp", "crates/velocity-test-http", "crates/velocity-transfer", "crates/velocity-transfer-h2c", "src-tauri"]
 
 [workspace.package]
 version = "0.1.0"
@@ -52,6 +52,12 @@ curl = { version = "0.4.51", default-features = false, features = ["poll_7_68_0"
 # 2026-10-23): h2 directly rather than through hyper, run on tokio. http and bytes are h2's own
 # types. tokio 1.54.1 also fixes RUSTSEC-2026-0384 in the Tauri app's tokio.
 h2 = "=0.4.20"
+# SFTP for the engine, in crates/velocity-sftp only (PO-approved on #53, 2026-10-24; ADR-0013, which
+# replaces libssh2). ring as the crypto, as for the TLS fixture: no aws-lc-rs, no OpenSSL. `rsa`
+# keeps RSA host and login keys working; its open Marvin advisory (RUSTSEC-2023-0071) is accepted
+# and recorded in docs/DEPENDENCIES.md.
+russh = { version = "=0.64.1", default-features = false, features = ["ring", "rsa"] }
+russh-sftp = "=3.0.1"
 tokio = { version = "=1.54.1", default-features = false, features = ["rt", "rt-multi-thread", "net", "time", "io-util"] }
 http = "=1.5.0"
 bytes = "=1.12.1"

@@ -235,7 +235,7 @@ Behaviours V2 adds by PO decision. They aren't parity rows, because V1 didn't ha
 
 | Addition | Decision | V2 issue |
 |---|---|---|
-| SFTP downloads with strict host-key checks | [ADR-0001](decisions/0001-v2-direction.md) (HTTP, HTTPS, FTP and SFTP required) | #52, #53 |
+| SFTP downloads with strict host-key checks | [ADR-0001](decisions/0001-v2-direction.md) (HTTP, HTTPS, FTP and SFTP required); built on russh ([ADR-0013](decisions/0013-sftp-russh.md)): velocity-sftp `tests/sftp.rs`, velocity-transfer `tests/sftp.rs` | #52, #53 |
 | Proxy settings (HTTP, HTTPS, SOCKS) with passwords in the OS keychain; ambient proxy variables ignored | [ADR-0008](decisions/0008-proxy-support.md) | #30, #40, #70 |
 | Confirmation for browser links to loopback or private addresses | [ADR-0006](decisions/0006-browser-links-to-local-networks.md) | #67, #65 |
 | Changed-object detection, validator-checked resume and atomic no-clobber completion | [ADR-0001](decisions/0001-v2-direction.md), research report section 5 | #43, #45, #46 |

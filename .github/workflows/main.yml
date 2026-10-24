@@ -112,6 +112,12 @@ jobs:
         uses: ./.github/actions/setup
         with:
           rust: ${{ needs.select.outputs.rust }}
+      # The SFTP tests' OpenSSH server, and a password-login server they can't start themselves
+      # (#53, scripts/ci-sftp-server.sh). Only when Rust runs.
+      - id: sftp
+        name: SFTP test servers
+        if: ${{ needs.select.outputs.rust == 'true' }}
+        run: bash scripts/ci-sftp-server.sh
       - id: checks
         name: Run the selected checks
         env:
@@ -132,7 +138,7 @@ jobs:
         if: ${{ !cancelled() && steps.checkout.outcome == 'success' }}
         env:
           STEPS: ${{ toJSON(steps) }}
-        run: node scripts/ci-report.mjs job --job linux --infra checkout,setup --step-check "checks=Linux checks"
+        run: node scripts/ci-report.mjs job --job linux --infra checkout,setup,sftp --step-check "checks=Linux checks"
       - name: Upload the job report
         if: ${{ !cancelled() && steps.checkout.outcome == 'success' }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -188,6 +194,20 @@ jobs:
         uses: ./.github/actions/setup
         with:
           rust: 'true'
+      # The SFTP tests' OpenSSH server (#53): the Windows feature, if the image lacks it. The tests
+      # start their own unprivileged sshd; a password-login server needs one run as SYSTEM with a
+      # local account, so password logins are NOT RUN on Windows.
+      - id: sftp
+        name: SFTP test server (OpenSSH Server feature)
+        shell: pwsh
+        run: |
+          $sshd = Join-Path $env:SystemRoot 'System32/OpenSSH/sshd.exe'
+          if (-not (Test-Path $sshd)) {
+            Add-WindowsCapability -Online -Name OpenSSH.Server~~~~0.0.1.0 | Out-Null
+          }
+          if (-not (Test-Path $sshd)) { throw "the OpenSSH Server feature didn't install $sshd" }
+          & $sshd -V 2>&1 | Select-Object -First 1
+          "VELOCITY_REQUIRE_SSHD=1" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
       - id: checks
         name: All L1 checks
         run: node scripts/check-fast.mjs
@@ -202,7 +222,7 @@ jobs:
         if: ${{ !cancelled() && steps.checkout.outcome == 'success' }}
         env:
           STEPS: ${{ toJSON(steps) }}
-        run: node scripts/ci-report.mjs job --job windows --infra checkout,setup --step-check "checks=Windows checks"
+        run: node scripts/ci-report.mjs job --job windows --infra checkout,setup,sftp --step-check "checks=Windows checks"
       - name: Upload the job report
         if: ${{ !cancelled() && steps.checkout.outcome == 'success' }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2

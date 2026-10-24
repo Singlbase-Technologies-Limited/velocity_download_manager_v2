@@ -105,6 +105,49 @@ An FTP download uses one connection, whatever is asked (PO decision on #51): eac
 - **Cost (not measured):** each FTPS transfer adds a TLS handshake on the control connection and one on the data connection. No measurement exists (ADR-0009); #77 measures.
 - **Recommendation:** as built. Require encryption wherever the server offers FTPS, and keep plain FTP for servers that don't, with the warning.
 
+## SFTP (#53)
+
+`sftp://` links download on russh, in `crates/velocity-sftp` ([ADR-0013](decisions/0013-sftp-russh.md)). The engine fetches through one interface, `velocity_curl::Transport`, so SFTP shares everything after the connection with HTTP and FTP: the probe, the gate, checkpoints, retries, speed limits and the completion gate.
+
+### One transport interface
+
+- **`Transport`:** the engine's downloads take a `&dyn Transport`. In the engine, a router sends `sftp://` links to the SFTP transport and every other link to libcurl's loop.
+- **`FetchPipe`:** a transport other than libcurl writes its fetch through one, with the same events as libcurl's (a head through the gate, the body, then the end). It has the same reader's buffer, speed limits and body limit as libcurl's write callback; both use one `Sink` (`velocity-curl/src/pipe.rs`). A range's end is the body limit.
+- **`file_head`:** the head an HTTP server would send for a file of a known size and time (`velocity-curl/src/head.rs`), shared by FTP and SFTP: `200`, `206` for a range, `416` past the end, `Last-Modified` from the file's time with a `Date` of now.
+
+### A fetch
+
+Each SFTP fetch is a task on the transport's own tokio runtime (2 worker threads):
+
+1. **Connect,** within 30 s (as libcurl's connect timeout), to the link's host and port, 22 by default.
+2. **The host key** is checked against V2's known_hosts file before anything else is sent ([below](#host-keys)).
+3. **Log in** as the user of the spec's `credentials`: with `sshKey` (a private key file and its passphrase) when the spec has one, otherwise with the password.
+4. **`stat`** gives the file's size and modification time, which make the head. The gate decides before a byte is read.
+5. **Read** from the range's start, 64 KiB at a time, through the `FetchPipe`. A full buffer waits for the reader; a speed limit without tokens is checked again every 10 ms.
+
+Cancelling the fetch, or dropping it, ends the task at its next step.
+
+- **One connection, one stream:** as for FTP (`DownloadOptions::one_connection`), until #77 measures whether more help. A cut or a pause resumes at its offset with one read from there.
+- **The resume check:** the file's time is a strong `Last-Modified` once it is a second old, so a resume is checked against it ([changed files](#changed-files-45)). A file whose time changed starts over.
+
+### Host keys
+
+- **The store:** `<data folder>/known_hosts` (`Paths::known_hosts`), V2's own, never `~/.ssh/known_hosts`. It is unhashed, one OpenSSH line per host (`[host]:port key-type base64-key`), and compares the whole key. A host is shown by its key's SHA-256 fingerprint (`SHA256:…`, as OpenSSH prints it). Writes go to a temporary file, then a rename.
+- **Unknown key:** refused before the login. The download fails at once, permanently, and `TransferError.hostKey` carries the host, port and fingerprint for the user to check. The transport remembers that key.
+- **Trusting it:** `DirectTransfer::trust_host_key(host, port, fingerprint)` pins the key the transport saw with that fingerprint, and only that one: a fingerprint it didn't see is `NotFound`. The caller then retries the download. The app's command (#58) calls it through `Manager::trust_host_key`, and the dialog that shows the fingerprint is #60's.
+- **Changed key:** always refused, before the login. `hostKey.pinned` holds the pinned key's fingerprint. Such a key is never offered for trust, and `trust_host_key` never replaces a pinned key (`InvalidState`).
+- **Host certificates** are refused: V2 trusts no SSH certificate authority.
+
+### Failures
+
+| What happened | Kind | Retried |
+|---|---|---|
+| The host key is unknown, or changed | Permanent, with `hostKey` | No |
+| The login was refused, or there's no user name | `AccessDenied` | No |
+| The private key can't be opened (a wrong passphrase, for example) | `AccessDenied` | No |
+| No such file | `NotFound` | No |
+| The connection was refused, or broke part way | `Connect`, `Interrupted` | Yes, from the first missing byte |
+
 ## Later segments: the range scheduler (#42)
 
 After a probe that gave a total, the rest of the file is fetched with leases from the range scheduler ([`scheduler.rs`](../crates/velocity-transfer/src/scheduler.rs), report section 5.2). The downloader's thread owns it and makes every change; no lock is held across I/O.
