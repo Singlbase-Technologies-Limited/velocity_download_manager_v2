@@ -7,6 +7,7 @@ pub mod branding;
 pub mod database;
 pub mod domain;
 pub mod manager;
+pub mod naming;
 pub mod paths;
 pub mod performance;
 pub mod queue;

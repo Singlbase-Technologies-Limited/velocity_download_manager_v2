@@ -27,6 +27,7 @@ use std::thread;
 use std::time::{Duration, Instant, SystemTime};
 
 use velocity_core::domain::{DownloadStatus, FailureClass, TransferError, Verification};
+use velocity_core::naming::PART_FILE_SUFFIX;
 use velocity_core::transfer::{
     Checkpoint, Checksum, HashAlgorithm, PieceHashes, Resume, CHECKPOINT_FORMAT,
 };
@@ -892,10 +893,10 @@ impl Checkpointer {
     }
 }
 
-/// `<destination>.vdmpart`.
+/// `<destination>.vdmpart` ([`PART_FILE_SUFFIX`]).
 pub(crate) fn part_path(destination: &Path) -> PathBuf {
     let mut p = destination.as_os_str().to_owned();
-    p.push(".vdmpart");
+    p.push(PART_FILE_SUFFIX);
     PathBuf::from(p)
 }
 
