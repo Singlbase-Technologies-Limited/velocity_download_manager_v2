@@ -6,6 +6,7 @@
 pub mod branding;
 pub mod database;
 pub mod domain;
+mod links;
 pub mod manager;
 pub mod metalink;
 pub mod naming;
@@ -16,6 +17,7 @@ pub mod request;
 pub mod seeding;
 pub mod torrent;
 pub mod torrent_engine;
+pub mod torrent_files;
 pub mod transfer;
 
 use serde::Serialize;
