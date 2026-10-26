@@ -54,9 +54,11 @@ impl<S: Tracked> Ledger<S> {
         self.current.clear();
     }
 
-    /// The running child reported `snapshot`.
+    /// The running child reported `snapshot`. An orphan it reports is its own again: the torrent
+    /// helper's supervisor gives a new helper a crashed one's torrents under their ids (#62).
     pub fn changed(&mut self, snapshot: &S) {
         self.saw(snapshot.id());
+        self.orphans.remove(&snapshot.id());
         self.current.insert(snapshot.id(), snapshot.clone());
     }
 
@@ -235,5 +237,29 @@ mod tests {
             "only once"
         );
         assert_eq!(ledger.highest_id(), 2);
+    }
+
+    /// The torrent helper's supervisor adds a crashed helper's torrents to the next one under
+    /// their own ids (#62): reported by the running child again, an orphan is its item again.
+    #[test]
+    fn an_orphan_the_running_child_reports_again_is_its_own_again() {
+        let mut ledger = Ledger::default();
+        ledger.changed(&item(1, false));
+        ledger.changed(&item(2, false));
+        ledger.retired("gone");
+        ledger.installed();
+        ledger.changed(&item(1, false));
+        assert!(!ledger.is_orphan(1));
+        assert!(ledger.is_orphan(2));
+        assert_eq!(
+            ledger.orphans(),
+            [Item {
+                failed: Some("gone".into()),
+                ..item(2, false)
+            }]
+        );
+        // Lost again with the next child.
+        assert_eq!(ledger.retired("again").len(), 1);
+        assert!(ledger.is_orphan(1));
     }
 }

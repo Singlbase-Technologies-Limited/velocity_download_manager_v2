@@ -9,8 +9,9 @@ use std::time::Duration;
 use velocity_child::client::{ChildProcess, SpawnOptions};
 use velocity_child::serve::Server;
 use velocity_core::domain::ErrorCode;
+use velocity_core::seeding::SeedPolicy;
 use velocity_core::torrent_engine::{
-    dispatch, MetadataChunk, TorrentCommand, TorrentEngine, TorrentEvent, TorrentId, TorrentReply,
+    dispatch, Chunk, TorrentCommand, TorrentEngine, TorrentEvent, TorrentId, TorrentReply,
     TorrentSettings, TorrentSnapshot, TorrentSpec,
 };
 
@@ -41,6 +42,7 @@ pub const STARTING_SETTINGS: TorrentSettings = TorrentSettings {
     dht: false,
     peer_exchange: false,
     local_peer_discovery: false,
+    max_active_seeds: 0,
 };
 
 /// Runs the child's side: serves the torrent engine on stdin and stdout until stdin closes.
@@ -103,6 +105,10 @@ impl ChildTorrentEngine {
         }
     }
 
+    pub fn restore(&self, id: TorrentId, spec: TorrentSpec) -> Result<(), ErrorCode> {
+        self.done(TorrentCommand::Restore { id, spec })
+    }
+
     pub fn pause(&self, id: TorrentId) -> Result<(), ErrorCode> {
         self.done(TorrentCommand::Pause { id })
     }
@@ -119,12 +125,27 @@ impl ChildTorrentEngine {
         self.done(TorrentCommand::SetFiles { id, files })
     }
 
-    pub fn metadata(&self, id: TorrentId, offset: u64) -> Result<MetadataChunk, ErrorCode> {
+    pub fn metadata(&self, id: TorrentId, offset: u64) -> Result<Chunk, ErrorCode> {
         match self
             .process
             .request(TorrentCommand::Metadata { id, offset })?
         {
             TorrentReply::Metadata { chunk } => Ok(chunk),
+            _ => Err(ErrorCode::EngineIncompatible),
+        }
+    }
+
+    pub fn set_seeding(&self, id: TorrentId, seeding: SeedPolicy) -> Result<(), ErrorCode> {
+        self.done(TorrentCommand::SetSeeding { id, seeding })
+    }
+
+    pub fn upload(&self, chunk: Chunk) -> Result<(), ErrorCode> {
+        self.done(TorrentCommand::Upload { chunk })
+    }
+
+    pub fn save_resume(&self) -> Result<Vec<TorrentId>, ErrorCode> {
+        match self.process.request(TorrentCommand::SaveResume {})? {
+            TorrentReply::Saved { ids } => Ok(ids),
             _ => Err(ErrorCode::EngineIncompatible),
         }
     }
@@ -162,6 +183,10 @@ impl TorrentEngine for ChildTorrentEngine {
         ChildTorrentEngine::add(self, spec)
     }
 
+    fn restore(&mut self, id: TorrentId, spec: TorrentSpec) -> Result<(), ErrorCode> {
+        ChildTorrentEngine::restore(self, id, spec)
+    }
+
     fn pause(&mut self, id: TorrentId) -> Result<(), ErrorCode> {
         ChildTorrentEngine::pause(self, id)
     }
@@ -178,8 +203,20 @@ impl TorrentEngine for ChildTorrentEngine {
         ChildTorrentEngine::set_files(self, id, files)
     }
 
-    fn metadata(&self, id: TorrentId, offset: u64) -> Result<MetadataChunk, ErrorCode> {
+    fn metadata(&self, id: TorrentId, offset: u64) -> Result<Chunk, ErrorCode> {
         ChildTorrentEngine::metadata(self, id, offset)
+    }
+
+    fn set_seeding(&mut self, id: TorrentId, seeding: SeedPolicy) -> Result<(), ErrorCode> {
+        ChildTorrentEngine::set_seeding(self, id, seeding)
+    }
+
+    fn upload(&mut self, chunk: Chunk) -> Result<(), ErrorCode> {
+        ChildTorrentEngine::upload(self, chunk)
+    }
+
+    fn save_resume(&mut self) -> Result<Vec<TorrentId>, ErrorCode> {
+        ChildTorrentEngine::save_resume(self)
     }
 
     fn snapshot(&self) -> Result<Vec<TorrentSnapshot>, ErrorCode> {

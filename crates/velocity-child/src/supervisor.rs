@@ -122,7 +122,8 @@ pub trait Book<Ch: Child>: Send + 'static {
     /// What a new child is given before it takes commands, such as the limits last set.
     type Setup: Send;
     fn setup(&self) -> Self::Setup;
-    /// Gives a new child its setup. No lock is held.
+    /// Gives a new child its setup. No lock is held. Events the child sends meanwhile reach
+    /// [`Book::event`] once it is [`Book::installed`].
     fn prepare(child: &Ch, setup: Self::Setup) -> Result<(), ErrorCode>;
     /// The highest id any child assigned; a new child starts after it.
     fn highest_id(&self) -> u64;
@@ -203,8 +204,9 @@ impl<Ch: Child, B: Book<Ch>> Shared<Ch, B> {
     /// Makes `child` the running child, and forwards its events until its stdout ends.
     fn install(self: &Arc<Self>, child: Ch) -> Result<(), ErrorCode> {
         let setup = self.state().book.setup();
-        B::prepare(&child, setup).map_err(|_| ErrorCode::EngineStartFailed)?;
+        // Subscribed first, so nothing the child sends while it is prepared is lost.
         let events = child.subscribe();
+        B::prepare(&child, setup).map_err(|_| ErrorCode::EngineStartFailed)?;
         let child = Arc::new(child);
         let generation = {
             let mut state = self.state();

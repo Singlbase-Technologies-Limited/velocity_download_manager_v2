@@ -16,6 +16,7 @@
 //!   fit the file's size when it has one. Elements in other namespaces are ignored.
 
 use crate::domain::{DownloadKind, ErrorCode};
+use crate::links::is_link;
 use crate::naming::check_file_name;
 use crate::request::{split_login, MAX_URL_BYTES};
 use crate::transfer::{Checksum, HashAlgorithm, PieceHashes};
@@ -696,7 +697,7 @@ pub fn read_document(path: &Path) -> Result<Metalink, MetalinkError> {
         return Err(MetalinkError::Unreadable(ErrorCode::InvalidPath));
     }
     let meta = std::fs::symlink_metadata(path).map_err(unreadable)?;
-    if meta.file_type().is_symlink() || !meta.is_file() || reparse_point(&meta) {
+    if is_link(&meta) || !meta.is_file() {
         return Err(MetalinkError::Unreadable(ErrorCode::InvalidPath));
     }
     if meta.len() > MAX_DOCUMENT_BYTES as u64 {
@@ -744,24 +745,10 @@ pub fn create_folders(directory: &Path, folders: &[String]) -> Result<PathBuf, E
 /// following it).
 fn plain_folder(path: &Path) -> Result<(), ErrorCode> {
     let meta = std::fs::symlink_metadata(path).map_err(|_| ErrorCode::Io)?;
-    if meta.file_type().is_symlink() || !meta.is_dir() || reparse_point(&meta) {
+    if is_link(&meta) || !meta.is_dir() {
         return Err(ErrorCode::InvalidPath);
     }
     Ok(())
-}
-
-#[cfg(windows)]
-fn reparse_point(meta: &std::fs::Metadata) -> bool {
-    use std::os::windows::fs::MetadataExt;
-    // FILE_ATTRIBUTE_REPARSE_POINT: junctions and mount points as well as symbolic links.
-    const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
-    meta.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
-}
-
-/// Unix has no reparse points; its links are caught by `is_symlink`.
-#[cfg(not(windows))]
-fn reparse_point(_meta: &std::fs::Metadata) -> bool {
-    false
 }
 
 #[cfg(test)]
