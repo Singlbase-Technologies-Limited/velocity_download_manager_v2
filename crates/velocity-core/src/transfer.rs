@@ -8,6 +8,9 @@
 
 #[cfg(test)]
 pub(crate) mod fake;
+mod missing;
+
+pub use missing::MissingEngine;
 
 use crate::domain::{
     Capabilities, DownloadStatus, EngineHealth, ErrorCode, Progress, TransferError, Verification,
