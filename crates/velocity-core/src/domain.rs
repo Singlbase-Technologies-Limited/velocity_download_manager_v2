@@ -294,6 +294,17 @@ pub enum KeptReason {
     Failed,
 }
 
+impl KeptReason {
+    /// Every value, in contract order (the fixture shared with `src/contract.ts`).
+    pub const ALL: [KeptReason; 5] = [
+        KeptReason::NotPlain,
+        KeptReason::TooLarge,
+        KeptReason::BehindLink,
+        KeptReason::NotEmpty,
+        KeptReason::Failed,
+    ];
+}
+
 /// A stored download this build can't act on (an engine, kind, status or options it doesn't know),
 /// with what can be shown of it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -480,6 +491,50 @@ impl DownloadRecord {
             verification: None,
             created_at_ms: 1_792_600_000_000,
             completed_at_ms: None,
+        }
+    }
+}
+
+impl DownloadsSnapshot {
+    /// A fixed example for the contract fixtures and UI tests.
+    pub fn sample() -> Self {
+        Self {
+            downloads: vec![DownloadRecord::sample()],
+            unavailable: vec![UnavailableDownload {
+                id: "d-0002".to_owned(),
+                source_url: "https://example.com/files/later.iso".to_owned(),
+                file_name: None,
+                directory: "/home/user/Downloads".to_owned(),
+                created_at_ms: 1_792_600_000_000,
+            }],
+            needs_login: vec!["d-0001".to_owned()],
+            engine: EngineHealth::Restarting { attempt: 1 },
+            storage_error: Some(ErrorCode::Database),
+        }
+    }
+}
+
+impl BatchResult {
+    /// A fixed example for the contract fixtures and UI tests.
+    pub fn sample() -> Self {
+        Self {
+            done: vec!["d-0001".to_owned()],
+            failed: vec![BatchFailure {
+                id: "d-0002".to_owned(),
+                code: ErrorCode::InvalidState,
+            }],
+            kept: vec![
+                KeptFile {
+                    path: "/home/user/Downloads/archive.zip".to_owned(),
+                    reason: KeptReason::TooLarge,
+                    code: None,
+                },
+                KeptFile {
+                    path: "/home/user/Downloads/archive.zip.vdmpart".to_owned(),
+                    reason: KeptReason::Failed,
+                    code: Some(ErrorCode::PermissionDenied),
+                },
+            ],
         }
     }
 }
@@ -740,6 +795,42 @@ mod tests {
             check(
                 "capabilities.json",
                 serde_json::to_value(Capabilities::sample()).unwrap(),
+            );
+        }
+
+        #[test]
+        fn contract_downloads_snapshot() {
+            check(
+                "downloads-snapshot.json",
+                serde_json::to_value(DownloadsSnapshot::sample()).unwrap(),
+            );
+        }
+
+        #[test]
+        fn contract_engine_health() {
+            let all = [
+                EngineHealth::Running,
+                EngineHealth::Restarting { attempt: 2 },
+                EngineHealth::Unavailable {
+                    code: ErrorCode::EngineMissing,
+                },
+            ];
+            check("engine-health.json", serde_json::to_value(all).unwrap());
+        }
+
+        #[test]
+        fn contract_batch_result() {
+            check(
+                "batch-result.json",
+                serde_json::to_value(BatchResult::sample()).unwrap(),
+            );
+        }
+
+        #[test]
+        fn contract_kept_reasons() {
+            check(
+                "kept-reasons.json",
+                serde_json::to_value(KeptReason::ALL).unwrap(),
             );
         }
 

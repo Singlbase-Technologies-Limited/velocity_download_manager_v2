@@ -1,0 +1,23 @@
+{
+  "done": [
+    "d-0001"
+  ],
+  "failed": [
+    {
+      "code": "INVALID_STATE",
+      "id": "d-0002"
+    }
+  ],
+  "kept": [
+    {
+      "code": null,
+      "path": "/home/user/Downloads/archive.zip",
+      "reason": "tooLarge"
+    },
+    {
+      "code": "PERMISSION_DENIED",
+      "path": "/home/user/Downloads/archive.zip.vdmpart",
+      "reason": "failed"
+    }
+  ]
+}
