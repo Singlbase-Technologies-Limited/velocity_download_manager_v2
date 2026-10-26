@@ -246,10 +246,10 @@ fn the_helper_listens_on_the_port_set_and_reports_one_it_cant_open() {
         engine.network().unwrap().listen_port == port
     });
 
-    // Taken by someone else, on every interface. On Linux the helper can't listen there and says
-    // so. Windows lets libtorrent's socket, opened for address reuse, share a port with one that
-    // didn't ask for exclusive use, as Rust's listener doesn't: the helper then listens and
-    // reports no error (docs/TORRENTS.md).
+    // Taken by someone else, on every interface. On Linux libtorrent moves on to the next free
+    // port, and the helper says so (PO decision on #62). Windows lets libtorrent's socket, opened
+    // for address reuse, share a port with one that didn't ask for exclusive use, as Rust's
+    // listener doesn't: the helper then listens on it, with nothing to report (docs/TORRENTS.md).
     #[cfg(unix)]
     {
         let taken = TcpListener::bind(("0.0.0.0", 0)).unwrap();
@@ -260,13 +260,23 @@ fn the_helper_listens_on_the_port_set_and_reports_one_it_cant_open() {
                 ..OFF
             })
             .unwrap();
-        let mut error = None;
-        wait_for("the listen error", 30, || {
-            error = engine.network().unwrap().listen_error;
-            error.is_some()
+        let mut network = engine.network().unwrap();
+        wait_for("the move to be reported", 30, || {
+            network = engine.network().unwrap();
+            network.listen_error.is_some()
         });
-        let error = error.unwrap();
-        assert!(error.contains(&busy.to_string()), "{error}");
+        assert_ne!(network.listen_port, busy);
+        assert_ne!(network.listen_port, 0);
+        assert_eq!(
+            network.listen_error.as_deref(),
+            Some(
+                format!(
+                    "port {busy} couldn't be opened; listening on {}",
+                    network.listen_port
+                )
+                .as_str()
+            )
+        );
         drop(taken);
     }
     assert_eq!(
