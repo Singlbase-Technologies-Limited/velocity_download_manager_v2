@@ -37,6 +37,29 @@ use std::sync::Arc;
 
 struct Download {
     record: DownloadRecord,
+    /// What its engine needs.
+    job: Job,
+    /// The engine runs it now, so it holds a slot.
+    running: bool,
+    /// The user paused it, or it was added paused: it waits for a resume.
+    paused: bool,
+    /// It runs only while the schedule's window is open.
+    scheduled: bool,
+    /// When the engine's events last saved it; progress alone is saved at most every
+    /// [`persist::PROGRESS_SAVE_MS`].
+    saved_at_ms: Option<u64>,
+    /// It came back after a restart without the login it had (#70); it waits, paused, for
+    /// [`Manager::set_login`].
+    needs_login: bool,
+}
+
+/// What a download's engine needs: the direct-download engine's or the torrent helper's.
+enum Job {
+    Direct(DirectJob),
+}
+
+/// A direct download's part.
+struct DirectJob {
     /// What the engine is given to start it, without a resume. It keeps any login in memory only,
     /// for a retry in this session (#70).
     request: TransferSpec,
@@ -45,20 +68,19 @@ struct Download {
     resume: Option<Resume>,
     /// `None` until the engine is given the download, and once it has forgotten the transfer.
     transfer: Option<TransferId>,
-    /// The engine runs it now, so it holds a slot.
-    running: bool,
-    /// The user paused it, or it was added paused: it waits for a resume.
-    paused: bool,
-    /// It runs only while the schedule's window is open.
-    scheduled: bool,
     /// The file's media type, as the engine reported it (#54).
     content_type: Option<String>,
-    /// When the engine's events last saved it; progress alone is saved at most every
-    /// [`persist::PROGRESS_SAVE_MS`].
-    saved_at_ms: Option<u64>,
-    /// It came back after a restart without the login it had (#70); it waits, paused, for
-    /// [`Manager::resume_with`].
-    needs_login: bool,
+}
+
+impl DirectJob {
+    fn new(request: TransferSpec, resume: Option<Resume>) -> Self {
+        DirectJob {
+            request,
+            resume,
+            transfer: None,
+            content_type: None,
+        }
+    }
 }
 
 /// How a new download starts (V1's `startPaused` and `scheduled`).
@@ -132,6 +154,23 @@ fn is_direct_status(status: DownloadStatus) -> bool {
 }
 
 impl Download {
+    fn direct(&self) -> &DirectJob {
+        match &self.job {
+            Job::Direct(job) => job,
+        }
+    }
+
+    fn direct_mut(&mut self) -> &mut DirectJob {
+        match &mut self.job {
+            Job::Direct(job) => job,
+        }
+    }
+
+    /// Its transfer, while the engine has it.
+    fn transfer(&self) -> Option<TransferId> {
+        self.direct().transfer
+    }
+
     /// It may take a slot: not paused, not finished, and not waiting for the schedule.
     fn may_run(&self, window_open: bool) -> bool {
         !self.paused && !self.record.status.is_terminal() && (!self.scheduled || window_open)
@@ -246,18 +285,15 @@ impl Manager {
                 created_at_ms: now_ms,
                 completed_at_ms: None,
             },
-            request: spec,
-            resume: None,
-            transfer: None,
+            job: Job::Direct(DirectJob::new(spec, None)),
             running: false,
             paused,
             scheduled: options.scheduled,
-            content_type: None,
             saved_at_ms: None,
             needs_login: false,
         };
         download.record.status = download.waiting_status();
-        let mut new = NewDownload::from_transfer(&id, kind, &download.request, now_ms);
+        let mut new = NewDownload::from_transfer(&id, kind, &download.direct().request, now_ms);
         new.status = download.record.status;
         self.database.insert_download(&new).map_err(|e| e.code)?;
         let starts_now = download.may_run(self.window_open) && self.free_slots() > 0;
@@ -381,7 +417,7 @@ impl Manager {
         if d.paused || d.record.status.is_terminal() {
             return Err(ErrorCode::InvalidState);
         }
-        if let (true, Some(transfer)) = (d.running, d.transfer) {
+        if let (true, Some(transfer)) = (d.running, d.transfer()) {
             // Its status comes from the engine's event.
             self.engine.pause(transfer)?;
         }
@@ -419,7 +455,7 @@ impl Manager {
         if d.record.status.is_terminal() {
             return Err(ErrorCode::InvalidState);
         }
-        match d.transfer {
+        match d.transfer() {
             Some(transfer) => self.engine.cancel(transfer),
             None => {
                 d.record.status = DownloadStatus::Removed;
@@ -475,7 +511,7 @@ impl Manager {
             if d.paused {
                 continue;
             }
-            if let (true, Some(transfer)) = (d.running, d.transfer) {
+            if let (true, Some(transfer)) = (d.running, d.transfer()) {
                 // Its status comes from the engine's event.
                 if let Err(code) = self.engine.pause(transfer) {
                     first_error.get_or_insert(code);
@@ -612,10 +648,10 @@ impl Manager {
         };
         let by_name = crate::naming::extension_of(&name)
             .is_some_and(|e| matches!(e.to_ascii_lowercase().as_str(), "meta4" | "metalink"));
-        let by_type = download
-            .content_type
-            .as_deref()
-            .is_some_and(|t| matches!(t, "application/metalink4+xml" | "application/metalink+xml"));
+        let by_type =
+            download.direct().content_type.as_deref().is_some_and(|t| {
+                matches!(t, "application/metalink4+xml" | "application/metalink+xml")
+            });
         if !by_name && !by_type {
             return;
         }
@@ -723,7 +759,7 @@ impl Manager {
             .iter()
             .filter_map(|id| {
                 let d = &self.downloads[id];
-                (d.running && !d.may_run(window_open)).then_some((id.clone(), d.transfer?))
+                (d.running && !d.may_run(window_open)).then_some((id.clone(), d.transfer()?))
             })
             .collect();
         for (id, transfer) in stopping {
@@ -769,19 +805,21 @@ impl Manager {
     /// on disk, under the name it was saved as.
     fn start(&mut self, id: &str) -> Result<(), ErrorCode> {
         let d = self.downloads.get_mut(id).expect("known");
-        match d.transfer {
+        let name = d.record.file_name.clone();
+        let job = d.direct_mut();
+        match job.transfer {
             Some(transfer) => self.engine.resume(transfer)?,
             None => {
-                let mut spec = d.request.clone();
+                let mut spec = job.request.clone();
                 // A resume gives the name the file is saved as; a download the server never named
                 // has nothing on disk to resume, and starts afresh.
-                if let (Some(resume), Some(name)) = (d.resume.clone(), &d.record.file_name) {
-                    spec.file_name = Some(name.clone());
+                if let (Some(resume), Some(name)) = (job.resume.clone(), name) {
+                    spec.file_name = Some(name);
                     spec.resume = Some(resume);
                 }
                 let transfer = self.engine.add(spec)?;
-                d.transfer = Some(transfer);
-                d.resume = None;
+                job.transfer = Some(transfer);
+                job.resume = None;
                 self.by_transfer.insert(transfer, id.to_owned());
             }
         }
@@ -825,7 +863,7 @@ impl Manager {
                     record.file_name = snapshot.file_name;
                 }
                 if snapshot.content_type.is_some() {
-                    download.content_type = snapshot.content_type;
+                    download.direct_mut().content_type = snapshot.content_type;
                 }
                 let record = &mut download.record;
                 if record.status == DownloadStatus::Completed && record.completed_at_ms.is_none() {
@@ -856,7 +894,7 @@ impl Manager {
                     return false;
                 };
                 if let Some(download) = self.downloads.get_mut(&app_id) {
-                    download.transfer = None;
+                    download.direct_mut().transfer = None;
                     download.running = false;
                 }
                 true

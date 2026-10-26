@@ -17,7 +17,7 @@ impl Manager {
             self.engine.set_limits(transfer, limits)?;
         }
         let d = self.downloads.get_mut(id).expect("known");
-        d.request.limits = limits;
+        d.direct_mut().request.limits = limits;
         self.store_options(id);
         Ok(())
     }
@@ -38,7 +38,7 @@ impl Manager {
             None => connections.min(self.connections_for_new_downloads()),
         };
         let d = self.downloads.get_mut(id).expect("known");
-        d.request.max_connections = applied;
+        d.direct_mut().request.max_connections = applied;
         self.store_options(id);
         Ok(applied)
     }
@@ -49,11 +49,11 @@ impl Manager {
         if d.record.status.is_terminal() {
             return Err(ErrorCode::InvalidState);
         }
-        Ok(d.transfer)
+        Ok(d.transfer())
     }
 
     fn store_options(&mut self, id: &str) {
-        let options = StoredOptions::of(&self.downloads[id].request);
+        let options = StoredOptions::of(&self.downloads[id].direct().request);
         if let Err(e) = self.database.update_options(id, &options) {
             self.storage_error = Some(e);
         }

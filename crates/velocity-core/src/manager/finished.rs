@@ -45,7 +45,7 @@ impl Manager {
         let checkpoint = self.database.checkpoint(id).map_err(|e| e.code)?;
         let d = self.downloads.get_mut(id).expect("known");
         let removed = d.record.status == DownloadStatus::Removed;
-        d.resume = Some(resume_from(&d.record.source_url, checkpoint.as_ref()));
+        d.direct_mut().resume = Some(resume_from(&d.record.source_url, checkpoint.as_ref()));
         d.paused = false;
         d.running = false;
         let record = &mut d.record;
@@ -86,7 +86,7 @@ impl Manager {
     ) -> Result<Vec<(PathBuf, Kept)>, ErrorCode> {
         let d = self.downloads.get(id).ok_or(ErrorCode::NotFound)?;
         let finished = d.record.status.is_terminal();
-        let engine_had_it = d.transfer.is_some();
+        let engine_had_it = d.transfer().is_some();
         self.forget_transfer(id, finished)?;
         let mut d = self.take(id);
         if !finished {
@@ -137,7 +137,7 @@ impl Manager {
     /// Has the engine forget the download's transfer: `remove` for a finished one, `cancel` for
     /// one still running. One the engine no longer knows is forgotten already.
     fn forget_transfer(&mut self, id: &str, finished: bool) -> Result<(), ErrorCode> {
-        let Some(transfer) = self.downloads.get(id).and_then(|d| d.transfer) else {
+        let Some(transfer) = self.downloads.get(id).and_then(|d| d.transfer()) else {
             return Ok(());
         };
         let result = if finished {
@@ -150,7 +150,11 @@ impl Manager {
             Err(code) => return Err(code),
         }
         self.by_transfer.remove(&transfer);
-        self.downloads.get_mut(id).expect("known").transfer = None;
+        self.downloads
+            .get_mut(id)
+            .expect("known")
+            .direct_mut()
+            .transfer = None;
         Ok(())
     }
 

@@ -19,7 +19,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use super::{Download, Manager};
+use super::{DirectJob, Download, Job, Manager};
 use crate::database::{
     resume_from, Database, DatabaseError, Engine, StoredDownload, StoredOptions,
 };
@@ -150,13 +150,10 @@ impl Manager {
                     created_at_ms: stored.created_at_ms,
                     completed_at_ms: stored.completed_at_ms,
                 },
-                request: request_of(&stored, options),
-                resume,
-                transfer: None,
+                job: Job::Direct(DirectJob::new(request_of(&stored, options), resume)),
                 running: false,
                 paused,
                 scheduled,
-                content_type: None,
                 saved_at_ms: None,
                 needs_login,
             };
@@ -200,9 +197,11 @@ impl Manager {
         let Some(d) = self.downloads.get_mut(id) else {
             return;
         };
-        d.transfer = None;
+        let resume = resume_from(&d.record.source_url, checkpoint.as_ref());
+        let job = d.direct_mut();
+        job.transfer = None;
+        job.resume = Some(resume);
         d.running = false;
-        d.resume = Some(resume_from(&d.record.source_url, checkpoint.as_ref()));
         d.record.progress.download_speed_bps = 0;
         d.record.progress.connections = 0;
         d.record.error = Some(error);
@@ -229,9 +228,10 @@ impl Manager {
         if !d.needs_login {
             return Err(ErrorCode::InvalidState);
         }
-        d.request.credentials = options.credentials;
-        d.request.ssh_key = options.ssh_key;
-        d.request.headers = options.headers;
+        let request = &mut d.direct_mut().request;
+        request.credentials = options.credentials;
+        request.ssh_key = options.ssh_key;
+        request.headers = options.headers;
         d.needs_login = false;
         if d.record
             .error
