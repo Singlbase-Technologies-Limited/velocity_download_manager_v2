@@ -14,3 +14,6 @@ rusqlite.workspace = true
 rusqlite_migration.workspace = true
 jiff.workspace = true
 quick-xml.workspace = true
+# Info hashes for torrents (#62): the SHA-1 and SHA-2 the engine already uses (#46).
+sha1.workspace = true
+sha2.workspace = true

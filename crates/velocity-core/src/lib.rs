@@ -13,6 +13,7 @@ pub mod paths;
 pub mod performance;
 pub mod queue;
 pub mod request;
+pub mod torrent;
 pub mod transfer;
 
 use serde::Serialize;

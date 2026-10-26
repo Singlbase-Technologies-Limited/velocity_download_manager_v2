@@ -1,0 +1,516 @@
+{
+  "badMagnets": {
+    "mismatched-pair": "magnet:?xt=urn:btih:fd530b031ce1fe5fd5142973172fd15ac32a34a5&xt=urn:btmh:1220cfba544762ac332f4cabe1b58989d0565071633da79c4e8597810a2727b52449",
+    "non-hex-v2-hash": "magnet:?xt=urn:btmh:1220zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz",
+    "short-v2-hash": "magnet:?xt=urn:btmh:1220cfba544762ac332f4cabe1b58989d0565071633da79c4e8597810a2727b524",
+    "two-v2-hashes": "magnet:?xt=urn:btmh:1220cfba544762ac332f4cabe1b58989d0565071633da79c4e8597810a2727b52449&xt=urn:btmh:12200000000000000000000000000000000000000000000000000000000000000000",
+    "wrong-multihash-code": "magnet:?xt=urn:btmh:1120cfba544762ac332f4cabe1b58989d0565071633da79c4e8597810a2727b52449"
+  },
+  "generator": "libtorrent 2.0.10.0",
+  "invalid": {
+    "hybrid-length-mismatch.torrent": {
+      "base": "hybrid-multi",
+      "libtorrent": {
+        "error": "the v1 and v2 file metadata does not match [libtorrent:213]",
+        "loads": false
+      }
+    },
+    "hybrid-name-mismatch.torrent": {
+      "base": "hybrid-multi",
+      "libtorrent": {
+        "error": "the v1 and v2 file metadata does not match [libtorrent:213]",
+        "loads": false
+      }
+    },
+    "v2-meta-version-3.torrent": {
+      "base": "v2-multi",
+      "libtorrent": {
+        "error": "the torrent file has an unknown meta version [libtorrent:210]",
+        "loads": false
+      }
+    },
+    "v2-path-traversal.torrent": {
+      "base": "v2-multi",
+      "libtorrent": {
+        "files": [
+          {
+            "length": 150000,
+            "pad": false,
+            "path": "v2-multi"
+          },
+          {
+            "length": 13840,
+            "pad": true,
+            "path": "v2-multi/.pad/13840"
+          },
+          {
+            "length": 0,
+            "pad": false,
+            "path": "v2-multi/empty.txt"
+          },
+          {
+            "length": 32768,
+            "pad": false,
+            "path": "v2-multi/exact.bin"
+          },
+          {
+            "length": 70000,
+            "pad": false,
+            "path": "v2-multi/sub/b.bin"
+          },
+          {
+            "length": 11920,
+            "pad": true,
+            "path": "v2-multi/.pad/11920"
+          },
+          {
+            "length": 5000,
+            "pad": false,
+            "path": "v2-multi/sub/deeper/c.bin"
+          },
+          {
+            "length": 11384,
+            "pad": true,
+            "path": "v2-multi/.pad/11384"
+          }
+        ],
+        "loads": true,
+        "pieces": 18,
+        "v1": null,
+        "v2": "d96bd3b763c180c87a6dda6e2be2594d34cf7d469faf2717b361414345c7b729"
+      }
+    },
+    "v2-piece-layer-corrupt.torrent": {
+      "base": "v2-multi",
+      "libtorrent": {
+        "files": [
+          {
+            "length": 150000,
+            "pad": false,
+            "path": "v2-multi/a.bin"
+          },
+          {
+            "length": 13840,
+            "pad": true,
+            "path": "v2-multi/.pad/13840"
+          },
+          {
+            "length": 0,
+            "pad": false,
+            "path": "v2-multi/empty.txt"
+          },
+          {
+            "length": 32768,
+            "pad": false,
+            "path": "v2-multi/exact.bin"
+          },
+          {
+            "length": 70000,
+            "pad": false,
+            "path": "v2-multi/sub/b.bin"
+          },
+          {
+            "length": 11920,
+            "pad": true,
+            "path": "v2-multi/.pad/11920"
+          },
+          {
+            "length": 5000,
+            "pad": false,
+            "path": "v2-multi/sub/deeper/c.bin"
+          },
+          {
+            "length": 11384,
+            "pad": true,
+            "path": "v2-multi/.pad/11384"
+          }
+        ],
+        "loads": true,
+        "pieces": 18,
+        "v1": null,
+        "v2": "cfba544762ac332f4cabe1b58989d0565071633da79c4e8597810a2727b52449"
+      }
+    },
+    "v2-piece-layer-missing.torrent": {
+      "base": "v2-multi",
+      "libtorrent": {
+        "files": [
+          {
+            "length": 150000,
+            "pad": false,
+            "path": "v2-multi/a.bin"
+          },
+          {
+            "length": 13840,
+            "pad": true,
+            "path": "v2-multi/.pad/13840"
+          },
+          {
+            "length": 0,
+            "pad": false,
+            "path": "v2-multi/empty.txt"
+          },
+          {
+            "length": 32768,
+            "pad": false,
+            "path": "v2-multi/exact.bin"
+          },
+          {
+            "length": 70000,
+            "pad": false,
+            "path": "v2-multi/sub/b.bin"
+          },
+          {
+            "length": 11920,
+            "pad": true,
+            "path": "v2-multi/.pad/11920"
+          },
+          {
+            "length": 5000,
+            "pad": false,
+            "path": "v2-multi/sub/deeper/c.bin"
+          },
+          {
+            "length": 11384,
+            "pad": true,
+            "path": "v2-multi/.pad/11384"
+          }
+        ],
+        "loads": true,
+        "pieces": 18,
+        "v1": null,
+        "v2": "cfba544762ac332f4cabe1b58989d0565071633da79c4e8597810a2727b52449"
+      }
+    },
+    "v2-piece-layer-short.torrent": {
+      "base": "v2-multi",
+      "libtorrent": {
+        "error": "a piece layer is invalid [libtorrent:215]",
+        "loads": false
+      }
+    },
+    "v2-pieces-root-size.torrent": {
+      "base": "v2-multi",
+      "libtorrent": {
+        "error": "a v2 file entry has no root hash [libtorrent:216]",
+        "loads": false
+      }
+    }
+  },
+  "magnets": {
+    "hybrid-multi": "magnet:?xt=urn:btih:f0dcd45ec729697149e7c4ca6ee528bc74ba0f16&xt=urn:btmh:12205c86c1d2bf013d5f89698036a6b18ea1156a471598c4fd8a91ee12fe920d02fc&dn=hybrid-multi",
+    "hybrid-single": "magnet:?xt=urn:btih:22dd429f371711c2a77462847678fb8f17163b90&xt=urn:btmh:1220e6c814d017e90b67c8c03e4b130da12566dbdd90fbe3fadf2c5dd1b85da41a9b&dn=hybrid-single",
+    "v1-multi": "magnet:?xt=urn:btih:fd530b031ce1fe5fd5142973172fd15ac32a34a5&dn=v1-multi",
+    "v1-single": "magnet:?xt=urn:btih:81e1c6679384a423424efd292dd7bf9ced6b2e07&dn=v1-single",
+    "v2-multi": "magnet:?xt=urn:btmh:1220cfba544762ac332f4cabe1b58989d0565071633da79c4e8597810a2727b52449&dn=v2-multi",
+    "v2-single": "magnet:?xt=urn:btmh:1220cb0db840eabeba181bf4ffe1d87e3fd3b23bc8a47f4af5f1accca9a0306c2559&dn=v2-single"
+  },
+  "pieceLength": 16384,
+  "torrents": {
+    "hybrid-multi": {
+      "content": [
+        {
+          "length": 150000,
+          "path": "a.bin",
+          "seed": 2,
+          "sha256": "a85b6332eaca5c6b74f49316f1550b5a8b120101b7eda085f326cb4d0eb42b2c"
+        },
+        {
+          "length": 0,
+          "path": "empty.txt",
+          "seed": 3,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        {
+          "length": 32768,
+          "path": "exact.bin",
+          "seed": 4,
+          "sha256": "07a233f9e14a7233d2f4cd2e24bd1ecf392f586faef462a3de4302e529a41749"
+        },
+        {
+          "length": 70000,
+          "path": "sub/b.bin",
+          "seed": 5,
+          "sha256": "2f5aea1b80634018a570591da8c5aa57ec614ccefe183e58b91318d4bcccfcd7"
+        },
+        {
+          "length": 5000,
+          "path": "sub/deeper/c.bin",
+          "seed": 6,
+          "sha256": "41c468b9c2543f8aec8f7cd5333ec1f422f40afc800625a4c722de9bf1a2d336"
+        }
+      ],
+      "files": [
+        {
+          "length": 150000,
+          "pad": false,
+          "path": "hybrid-multi/a.bin"
+        },
+        {
+          "length": 13840,
+          "pad": true,
+          "path": "hybrid-multi/.pad/13840"
+        },
+        {
+          "length": 0,
+          "pad": false,
+          "path": "hybrid-multi/empty.txt"
+        },
+        {
+          "length": 32768,
+          "pad": false,
+          "path": "hybrid-multi/exact.bin"
+        },
+        {
+          "length": 70000,
+          "pad": false,
+          "path": "hybrid-multi/sub/b.bin"
+        },
+        {
+          "length": 11920,
+          "pad": true,
+          "path": "hybrid-multi/.pad/11920"
+        },
+        {
+          "length": 5000,
+          "pad": false,
+          "path": "hybrid-multi/sub/deeper/c.bin"
+        },
+        {
+          "length": 11384,
+          "pad": true,
+          "path": "hybrid-multi/.pad/11384"
+        }
+      ],
+      "kind": "hybrid",
+      "loads": true,
+      "pieces": 18,
+      "singleFile": false,
+      "v1": "f0dcd45ec729697149e7c4ca6ee528bc74ba0f16",
+      "v2": "5c86c1d2bf013d5f89698036a6b18ea1156a471598c4fd8a91ee12fe920d02fc"
+    },
+    "hybrid-single": {
+      "content": [
+        {
+          "length": 200000,
+          "path": "payload.bin",
+          "seed": 1,
+          "sha256": "9694e3472536736d973d93d0d4aa56b319afc9322571d1dae2cc01fc848e058c"
+        }
+      ],
+      "files": [
+        {
+          "length": 200000,
+          "pad": false,
+          "path": "hybrid-single"
+        }
+      ],
+      "kind": "hybrid",
+      "loads": true,
+      "pieces": 13,
+      "singleFile": true,
+      "v1": "22dd429f371711c2a77462847678fb8f17163b90",
+      "v2": "e6c814d017e90b67c8c03e4b130da12566dbdd90fbe3fadf2c5dd1b85da41a9b"
+    },
+    "v1-multi": {
+      "content": [
+        {
+          "length": 150000,
+          "path": "a.bin",
+          "seed": 2,
+          "sha256": "a85b6332eaca5c6b74f49316f1550b5a8b120101b7eda085f326cb4d0eb42b2c"
+        },
+        {
+          "length": 0,
+          "path": "empty.txt",
+          "seed": 3,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        {
+          "length": 32768,
+          "path": "exact.bin",
+          "seed": 4,
+          "sha256": "07a233f9e14a7233d2f4cd2e24bd1ecf392f586faef462a3de4302e529a41749"
+        },
+        {
+          "length": 70000,
+          "path": "sub/b.bin",
+          "seed": 5,
+          "sha256": "2f5aea1b80634018a570591da8c5aa57ec614ccefe183e58b91318d4bcccfcd7"
+        },
+        {
+          "length": 5000,
+          "path": "sub/deeper/c.bin",
+          "seed": 6,
+          "sha256": "41c468b9c2543f8aec8f7cd5333ec1f422f40afc800625a4c722de9bf1a2d336"
+        }
+      ],
+      "files": [
+        {
+          "length": 150000,
+          "pad": false,
+          "path": "v1-multi/a.bin"
+        },
+        {
+          "length": 0,
+          "pad": false,
+          "path": "v1-multi/empty.txt"
+        },
+        {
+          "length": 70000,
+          "pad": false,
+          "path": "v1-multi/sub/b.bin"
+        },
+        {
+          "length": 5000,
+          "pad": false,
+          "path": "v1-multi/sub/deeper/c.bin"
+        },
+        {
+          "length": 32768,
+          "pad": false,
+          "path": "v1-multi/exact.bin"
+        }
+      ],
+      "kind": "v1",
+      "loads": true,
+      "pieces": 16,
+      "singleFile": false,
+      "v1": "fd530b031ce1fe5fd5142973172fd15ac32a34a5",
+      "v2": null
+    },
+    "v1-single": {
+      "content": [
+        {
+          "length": 200000,
+          "path": "payload.bin",
+          "seed": 1,
+          "sha256": "9694e3472536736d973d93d0d4aa56b319afc9322571d1dae2cc01fc848e058c"
+        }
+      ],
+      "files": [
+        {
+          "length": 200000,
+          "pad": false,
+          "path": "v1-single"
+        }
+      ],
+      "kind": "v1",
+      "loads": true,
+      "pieces": 13,
+      "singleFile": true,
+      "v1": "81e1c6679384a423424efd292dd7bf9ced6b2e07",
+      "v2": null
+    },
+    "v2-multi": {
+      "content": [
+        {
+          "length": 150000,
+          "path": "a.bin",
+          "seed": 2,
+          "sha256": "a85b6332eaca5c6b74f49316f1550b5a8b120101b7eda085f326cb4d0eb42b2c"
+        },
+        {
+          "length": 0,
+          "path": "empty.txt",
+          "seed": 3,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        {
+          "length": 32768,
+          "path": "exact.bin",
+          "seed": 4,
+          "sha256": "07a233f9e14a7233d2f4cd2e24bd1ecf392f586faef462a3de4302e529a41749"
+        },
+        {
+          "length": 70000,
+          "path": "sub/b.bin",
+          "seed": 5,
+          "sha256": "2f5aea1b80634018a570591da8c5aa57ec614ccefe183e58b91318d4bcccfcd7"
+        },
+        {
+          "length": 5000,
+          "path": "sub/deeper/c.bin",
+          "seed": 6,
+          "sha256": "41c468b9c2543f8aec8f7cd5333ec1f422f40afc800625a4c722de9bf1a2d336"
+        }
+      ],
+      "files": [
+        {
+          "length": 150000,
+          "pad": false,
+          "path": "v2-multi/a.bin"
+        },
+        {
+          "length": 13840,
+          "pad": true,
+          "path": "v2-multi/.pad/13840"
+        },
+        {
+          "length": 0,
+          "pad": false,
+          "path": "v2-multi/empty.txt"
+        },
+        {
+          "length": 32768,
+          "pad": false,
+          "path": "v2-multi/exact.bin"
+        },
+        {
+          "length": 70000,
+          "pad": false,
+          "path": "v2-multi/sub/b.bin"
+        },
+        {
+          "length": 11920,
+          "pad": true,
+          "path": "v2-multi/.pad/11920"
+        },
+        {
+          "length": 5000,
+          "pad": false,
+          "path": "v2-multi/sub/deeper/c.bin"
+        },
+        {
+          "length": 11384,
+          "pad": true,
+          "path": "v2-multi/.pad/11384"
+        }
+      ],
+      "kind": "v2",
+      "loads": true,
+      "pieces": 18,
+      "singleFile": false,
+      "v1": null,
+      "v2": "cfba544762ac332f4cabe1b58989d0565071633da79c4e8597810a2727b52449"
+    },
+    "v2-single": {
+      "content": [
+        {
+          "length": 200000,
+          "path": "payload.bin",
+          "seed": 1,
+          "sha256": "9694e3472536736d973d93d0d4aa56b319afc9322571d1dae2cc01fc848e058c"
+        }
+      ],
+      "files": [
+        {
+          "length": 200000,
+          "pad": false,
+          "path": "v2-single"
+        },
+        {
+          "length": 12992,
+          "pad": true,
+          "path": "v2-single/.pad/12992"
+        }
+      ],
+      "kind": "v2",
+      "loads": true,
+      "pieces": 13,
+      "singleFile": true,
+      "v1": null,
+      "v2": "cb0db840eabeba181bf4ffe1d87e3fd3b23bc8a47f4af5f1accca9a0306c2559"
+    }
+  }
+}
