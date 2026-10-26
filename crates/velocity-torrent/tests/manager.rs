@@ -87,7 +87,11 @@ fn status_is(id: &str, status: DownloadStatus) -> impl Fn(&Manager) -> bool + '_
 
 fn every_file_is_right(dir: &Path) {
     for (path, _) in files_of(NAME) {
-        assert_eq!(digest_on_disk(dir, &path), content_digest(NAME, &path), "{path}");
+        assert_eq!(
+            digest_on_disk(dir, &path),
+            content_digest(NAME, &path),
+            "{path}"
+        );
     }
 }
 
@@ -101,9 +105,18 @@ fn a_torrent_downloads_through_the_manager_and_keeps_its_metadata_and_resume_dat
     let db = Arc::new(Database::open(&data.0.join("velocity.db")).unwrap());
     let (mut m, _pid) = app(&db, &tracker);
     let id = m
-        .add_torrent(request(&dir.0, SeedPolicy::Never {}), AddOptions::default(), now())
+        .add_torrent(
+            request(&dir.0, SeedPolicy::Never {}),
+            AddOptions::default(),
+            now(),
+        )
         .unwrap();
-    until(&mut m, &id, "completed", status_is(&id, DownloadStatus::Completed));
+    until(
+        &mut m,
+        &id,
+        "completed",
+        status_is(&id, DownloadStatus::Completed),
+    );
     every_file_is_right(&dir.0);
     let r = m.get(&id).unwrap();
     assert_eq!(r.kind, DownloadKind::Torrent);
@@ -123,7 +136,10 @@ fn a_torrent_downloads_through_the_manager_and_keeps_its_metadata_and_resume_dat
         .resume_data
         .expect("its resume data is kept");
     let text = String::from_utf8_lossy(&resume);
-    assert!(!text.contains("announce"), "no tracker in the stored resume data");
+    assert!(
+        !text.contains("announce"),
+        "no tracker in the stored resume data"
+    );
 }
 
 #[test]
@@ -143,7 +159,12 @@ fn a_seeding_torrent_comes_back_from_its_resume_data_after_the_app_starts_again(
                 now(),
             )
             .unwrap();
-        until(&mut m, &id, "seeding", status_is(&id, DownloadStatus::Seeding));
+        until(
+            &mut m,
+            &id,
+            "seeding",
+            status_is(&id, DownloadStatus::Seeding),
+        );
         m.prepare_to_close(Duration::from_secs(10), now());
         assert!(db.torrent(&id).unwrap().unwrap().resume_data.is_some());
         id
@@ -176,7 +197,12 @@ fn a_torrent_comes_back_on_its_own_when_the_helper_crashes() {
             now(),
         )
         .unwrap();
-    until(&mut m, &id, "seeding", status_is(&id, DownloadStatus::Seeding));
+    until(
+        &mut m,
+        &id,
+        "seeding",
+        status_is(&id, DownloadStatus::Seeding),
+    );
     velocity_test_http::kill_process(pid).unwrap();
     until(&mut m, &id, "noticed the crash", |m| {
         m.torrent_helper_health() != EngineHealth::Running
@@ -203,9 +229,18 @@ fn removing_a_torrent_with_its_files_deletes_only_its_own() {
     let db = Arc::new(Database::open(&data.0.join("velocity.db")).unwrap());
     let (mut m, _pid) = app(&db, &tracker);
     let id = m
-        .add_torrent(request(&dir.0, SeedPolicy::Never {}), AddOptions::default(), now())
+        .add_torrent(
+            request(&dir.0, SeedPolicy::Never {}),
+            AddOptions::default(),
+            now(),
+        )
         .unwrap();
-    until(&mut m, &id, "completed", status_is(&id, DownloadStatus::Completed));
+    until(
+        &mut m,
+        &id,
+        "completed",
+        status_is(&id, DownloadStatus::Completed),
+    );
     std::fs::write(dir.0.join("not-the-torrents.txt"), b"keep me").unwrap();
     assert_eq!(m.remove(&id, true), Ok(Vec::new()));
     assert_eq!(files_under(&dir.0), vec!["not-the-torrents.txt".to_owned()]);
