@@ -1846,3 +1846,198 @@ mod retry {
         assert_eq!(db.queue().unwrap()[0].id, id);
     }
 }
+
+/// Removing downloads and clearing completed ones (V1's `remove_downloads` and `clear_completed`,
+/// #58): they leave the list and stay in the history; files go only when asked, and only the
+/// download's own (PO decision on #58).
+mod removal {
+    use super::*;
+    use crate::naming::PART_FILE_SUFFIX;
+    use crate::torrent_files::Kept;
+    use std::fs;
+
+    fn folder(test: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("v2-removal-{test}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn in_folder(dir: &std::path::Path, name: &str) -> TransferSpec {
+        TransferSpec {
+            directory: dir.to_path_buf(),
+            file_name: Some(name.to_owned()),
+            ..spec()
+        }
+    }
+
+    /// A manager with a database, and a completed 4096-byte `a.zip` in `dir`.
+    fn completed_in(dir: &std::path::Path) -> (Manager, FakeControl, Arc<Database>, String) {
+        let fake = FakeTransfer::new();
+        let control = fake.control();
+        let db = Arc::new(Database::open_in_memory().unwrap());
+        let mut m = Manager::open(Box::new(fake), Arc::clone(&db)).unwrap();
+        let id = m
+            .add(DownloadKind::Http, in_folder(dir, "a.zip"), T0)
+            .unwrap();
+        control.progress(TransferId(1), 4096, Some(4096));
+        control.complete(TransferId(1));
+        m.pump(T0 + 1);
+        fs::write(dir.join("a.zip"), vec![7u8; 4096]).unwrap();
+        (m, control, db, id)
+    }
+
+    #[test]
+    fn a_removed_download_leaves_the_list_stays_in_the_history_and_keeps_its_file() {
+        let dir = folder("keep");
+        let (mut m, control, db, id) = completed_in(&dir);
+        assert_eq!(m.remove(&id, false), Ok(Vec::new()));
+        assert!(m.get(&id).is_none());
+        assert!(
+            control.log().contains(&"remove 1".to_owned()),
+            "the engine forgets it"
+        );
+        let d = db.downloads().unwrap().remove(0);
+        assert!(!d.in_list);
+        assert!(d.in_history);
+        assert_eq!(d.status, Stored::Known(DownloadStatus::Completed));
+        assert!(dir.join("a.zip").exists());
+        assert_eq!(m.remove(&id, false), Err(ErrorCode::NotFound));
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn removing_with_files_deletes_the_finished_file_and_its_part_file() {
+        let dir = folder("delete");
+        let (mut m, _control, _db, id) = completed_in(&dir);
+        fs::write(dir.join(format!("a.zip{PART_FILE_SUFFIX}")), b"left over").unwrap();
+        fs::write(dir.join("other.txt"), b"not the download's").unwrap();
+        assert_eq!(m.remove(&id, true), Ok(Vec::new()));
+        assert!(!dir.join("a.zip").exists());
+        assert!(!dir.join(format!("a.zip{PART_FILE_SUFFIX}")).exists());
+        assert!(dir.join("other.txt").exists());
+        assert!(dir.exists(), "the folder is never removed");
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_file_larger_than_the_download_is_kept_and_reported() {
+        let dir = folder("larger");
+        let (mut m, _control, _db, id) = completed_in(&dir);
+        // Something else now has the name: it isn't the download's file.
+        fs::write(dir.join("a.zip"), vec![7u8; 5000]).unwrap();
+        assert_eq!(
+            m.remove(&id, true),
+            Ok(vec![(dir.join("a.zip"), Kept::TooLarge)])
+        );
+        assert!(dir.join("a.zip").exists());
+        assert!(m.get(&id).is_none(), "the download is removed all the same");
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_removed_unfinished_download_is_cancelled_and_never_comes_back() {
+        let dir = folder("unfinished");
+        let fake = FakeTransfer::new();
+        let control = fake.control();
+        let db = Arc::new(Database::open_in_memory().unwrap());
+        let mut m = Manager::open(Box::new(fake), Arc::clone(&db)).unwrap();
+        let id = m
+            .add(DownloadKind::Http, in_folder(&dir, "a.zip"), T0)
+            .unwrap();
+        control.progress(TransferId(1), 1024, Some(4096));
+        m.pump(T0 + 1);
+        assert_eq!(m.remove(&id, false), Ok(Vec::new()));
+        assert!(control.log().contains(&"cancel 1".to_owned()));
+        m.pump(T0 + 2);
+        assert!(m.get(&id).is_none());
+        let d = db.downloads().unwrap().remove(0);
+        assert_eq!(d.status, Stored::Known(DownloadStatus::Removed));
+        assert_eq!(db.queue(), Ok(Vec::new()));
+        assert_eq!(db.checkpoint(&id), Ok(None));
+        drop(m);
+
+        let fake = FakeTransfer::new();
+        let control = fake.control();
+        let mut m = Manager::open(Box::new(fake), Arc::clone(&db)).unwrap();
+        m.pump(T0 + 3);
+        assert!(m.get(&id).is_none());
+        assert!(control.log().is_empty());
+        let next = m
+            .add(DownloadKind::Http, in_folder(&dir, "b.zip"), T0)
+            .unwrap();
+        assert_eq!(next, "d-0002", "a hidden download's id isn't given again");
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_waiting_download_the_engine_never_had_loses_its_part_file_when_removed() {
+        let dir = folder("waiting");
+        let db = Arc::new(Database::open_in_memory().unwrap());
+        let id = {
+            let fake = FakeTransfer::new();
+            let mut m = Manager::open(Box::new(fake), Arc::clone(&db)).unwrap();
+            let id = m
+                .add_with(
+                    DownloadKind::Http,
+                    in_folder(&dir, "a.zip"),
+                    AddOptions {
+                        start_paused: true,
+                        scheduled: false,
+                    },
+                    T0,
+                )
+                .unwrap();
+            id
+        };
+        // What an earlier run left on disk.
+        let part = dir.join(format!("a.zip{PART_FILE_SUFFIX}"));
+        fs::write(&part, b"partial").unwrap();
+        let fake = FakeTransfer::new();
+        let control = fake.control();
+        let mut m = Manager::open(Box::new(fake), Arc::clone(&db)).unwrap();
+        assert_eq!(m.remove(&id, false), Ok(Vec::new()));
+        assert!(!part.exists());
+        assert!(control.log().is_empty(), "the engine never had it");
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn the_engine_being_unavailable_stops_the_removal_of_a_running_download() {
+        let (mut m, control, id) = setup();
+        control.set_unavailable(Some(ErrorCode::EngineUnavailable));
+        assert_eq!(m.remove(&id, false), Err(ErrorCode::EngineUnavailable));
+        assert!(m.get(&id).is_some(), "it is still there, still running");
+    }
+
+    #[test]
+    fn clear_completed_hides_completed_downloads_only_and_keeps_their_files() {
+        let dir = folder("clear");
+        let (mut m, control, db, done) = completed_in(&dir);
+        let failed = m
+            .add(DownloadKind::Http, in_folder(&dir, "b.zip"), T0)
+            .unwrap();
+        let running = m
+            .add(DownloadKind::Http, in_folder(&dir, "c.zip"), T0)
+            .unwrap();
+        control.fail(
+            TransferId(2),
+            TransferError::new(FailureClass::Permanent, Some(404), "Not found"),
+        );
+        m.pump(T0 + 2);
+        assert_eq!(m.clear_completed(), Ok(1));
+        assert!(m.get(&done).is_none());
+        assert!(m.get(&failed).is_some());
+        assert!(m.get(&running).is_some());
+        assert!(dir.join("a.zip").exists());
+        let hidden: Vec<String> = db
+            .downloads()
+            .unwrap()
+            .into_iter()
+            .filter(|d| !d.in_list)
+            .map(|d| d.id)
+            .collect();
+        assert_eq!(hidden, vec![done]);
+        fs::remove_dir_all(&dir).unwrap();
+    }
+}

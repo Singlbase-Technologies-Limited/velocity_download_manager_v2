@@ -324,6 +324,22 @@ impl Database {
             .unwrap();
     }
 
+    /// Takes a download out of the list; it stays in the history (V1's `in_list`), and out of the
+    /// queue. `NotFound` for a download that isn't stored.
+    pub fn hide_download(&self, id: &str) -> Result<(), DatabaseError> {
+        let changed = self.conn().execute(
+            "UPDATE downloads SET in_list = 0, queue_position = NULL WHERE id = ?1",
+            [id],
+        )?;
+        if changed != 1 {
+            return Err(DatabaseError::new(
+                ErrorCode::NotFound,
+                format!("no download {id} to hide"),
+            ));
+        }
+        Ok(())
+    }
+
     /// Forgets a download, with its checkpoint. Nothing happens for an unknown id.
     pub fn delete_download(&self, id: &str) -> Result<(), DatabaseError> {
         self.conn()

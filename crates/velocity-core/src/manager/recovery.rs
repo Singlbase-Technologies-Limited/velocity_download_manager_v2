@@ -12,7 +12,8 @@
 //!   once they are given again too.
 //! - **A record this build can't read** is listed by [`Manager::unavailable`], and never acted on
 //!   (report section 6). Torrent records are too, until the manager runs torrents (#58, part 2).
-//! - **Ids** continue after the highest one stored, so none is given twice.
+//! - **Downloads removed from the list** stay in the history only (#32), and aren't loaded.
+//! - **Ids** continue after the highest one stored, hidden ones included, so none is given twice.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -91,6 +92,10 @@ impl Manager {
         for stored in m.database.downloads()? {
             if let Some(n) = id_number(&stored.id) {
                 m.next_id = m.next_id.max(n);
+            }
+            // Removed from the list: history only (#32).
+            if !stored.in_list {
+                continue;
             }
             let (Ok(Engine::Velocity), Some(kind), Some(&status), Some(options)) = (
                 stored.route(),
