@@ -24,7 +24,7 @@ use crate::domain::{
 use crate::metalink::{self, Metalink};
 use crate::performance::PerformanceSettings;
 use crate::queue::QueueSettings;
-use crate::transfer::{DirectTransfer, Limits, TransferEvent, TransferId, TransferSpec};
+use crate::transfer::{DirectTransfer, Limits, Resume, TransferEvent, TransferId, TransferSpec};
 use jiff::civil::DateTime;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -34,8 +34,12 @@ use std::sync::Arc;
 
 struct Download {
     record: DownloadRecord,
-    /// What the engine is given when the download first starts; `None` once it has been.
-    spec: Option<TransferSpec>,
+    /// What the engine is given to start it, without a resume. It keeps any login in memory only,
+    /// for a retry in this session (#70).
+    request: TransferSpec,
+    /// What the next start resumes from (#43): set for a download recovered after a restart, or
+    /// retried; `None` for a new one.
+    resume: Option<Resume>,
     /// `None` until the engine is given the download, and once it has forgotten the transfer.
     transfer: Option<TransferId>,
     /// The engine runs it now, so it holds a slot.
@@ -49,6 +53,9 @@ struct Download {
     /// When the engine's events last saved it; progress alone is saved at most every
     /// [`persist::PROGRESS_SAVE_MS`].
     saved_at_ms: Option<u64>,
+    /// It came back after a restart without the login it had (#70); it waits, paused, for
+    /// [`Manager::resume_with`].
+    needs_login: bool,
 }
 
 /// How a new download starts (V1's `startPaused` and `scheduled`).
@@ -92,6 +99,8 @@ pub struct Manager {
     storage_error: Option<DatabaseError>,
     /// The queue as it was last saved.
     saved_queue: Vec<QueueEntry>,
+    /// Stored records this build can't read, or whose engine it doesn't run yet.
+    unavailable: Vec<crate::database::StoredDownload>,
     events: Receiver<TransferEvent>,
     downloads: BTreeMap<String, Download>,
     by_transfer: HashMap<TransferId, String>,
@@ -136,7 +145,8 @@ impl Download {
 }
 
 impl Manager {
-    pub fn new(mut engine: Box<dyn DirectTransfer>, database: Arc<Database>) -> Self {
+    /// An empty manager; [`Manager::open`] loads what the database kept.
+    fn new(mut engine: Box<dyn DirectTransfer>, database: Arc<Database>) -> Self {
         let events = engine.subscribe();
         Self {
             engine,
@@ -144,6 +154,7 @@ impl Manager {
             unsaved: BTreeSet::new(),
             storage_error: None,
             saved_queue: Vec::new(),
+            unavailable: Vec::new(),
             events,
             downloads: BTreeMap::new(),
             by_transfer: HashMap::new(),
@@ -232,21 +243,18 @@ impl Manager {
                 created_at_ms: now_ms,
                 completed_at_ms: None,
             },
-            spec: Some(spec),
+            request: spec,
+            resume: None,
             transfer: None,
             running: false,
             paused,
             scheduled: options.scheduled,
             content_type: None,
             saved_at_ms: None,
+            needs_login: false,
         };
         download.record.status = download.waiting_status();
-        let mut new = NewDownload::from_transfer(
-            &id,
-            kind,
-            download.spec.as_ref().expect("a new download has its spec"),
-            now_ms,
-        );
+        let mut new = NewDownload::from_transfer(&id, kind, &download.request, now_ms);
         new.status = download.record.status;
         self.database.insert_download(&new).map_err(|e| e.code)?;
         let starts_now = download.may_run(self.window_open) && self.free_slots() > 0;
@@ -391,6 +399,9 @@ impl Manager {
         if !d.paused {
             return Err(ErrorCode::InvalidState);
         }
+        if d.needs_login {
+            return Err(ErrorCode::ConfirmationRequired);
+        }
         d.paused = false;
         d.record.status = d.waiting_status();
         self.unsaved.insert(id.to_owned());
@@ -408,7 +419,6 @@ impl Manager {
         match d.transfer {
             Some(transfer) => self.engine.cancel(transfer),
             None => {
-                d.spec = None;
                 d.record.status = DownloadStatus::Removed;
                 self.order.retain(|o| o != id);
                 self.mark(id);
@@ -486,7 +496,7 @@ impl Manager {
                 .downloads
                 .get_mut(id)
                 .expect("queued downloads are known");
-            if d.paused {
+            if d.paused && !d.needs_login {
                 d.paused = false;
                 d.record.status = d.waiting_status();
                 self.unsaved.insert(id.clone());
@@ -687,7 +697,6 @@ impl Manager {
                     None,
                     code.user_message(),
                 ));
-                d.spec = None;
                 self.order.retain(|o| *o != id);
                 self.mark(&id);
             }
@@ -695,18 +704,24 @@ impl Manager {
         self.flush();
     }
 
-    /// Gives the engine a waiting download: a new transfer the first time, a resume after that.
+    /// Gives the engine a waiting download: a new transfer while the engine doesn't know it, a
+    /// resume after that. A new transfer for a download that ran before resumes from what it left
+    /// on disk, under the name it was saved as.
     fn start(&mut self, id: &str) -> Result<(), ErrorCode> {
         let d = self.downloads.get_mut(id).expect("known");
-        match (d.transfer, &d.spec) {
-            (Some(transfer), _) => self.engine.resume(transfer)?,
-            (None, Some(spec)) => {
-                let transfer = self.engine.add(spec.clone())?;
+        match d.transfer {
+            Some(transfer) => self.engine.resume(transfer)?,
+            None => {
+                let mut spec = d.request.clone();
+                if let Some(resume) = d.resume.clone() {
+                    spec.file_name = d.record.file_name.clone();
+                    spec.resume = Some(resume);
+                }
+                let transfer = self.engine.add(spec)?;
                 d.transfer = Some(transfer);
-                d.spec = None;
+                d.resume = None;
                 self.by_transfer.insert(transfer, id.to_owned());
             }
-            (None, None) => return Err(ErrorCode::InvalidState),
         }
         self.downloads.get_mut(id).expect("known").running = true;
         Ok(())
@@ -794,6 +809,9 @@ impl Manager {
 }
 
 mod persist;
+mod recovery;
+
+pub use recovery::SensitiveOptions;
 
 #[cfg(test)]
 mod tests;

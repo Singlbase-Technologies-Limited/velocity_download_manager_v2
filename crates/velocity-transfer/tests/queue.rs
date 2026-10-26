@@ -100,7 +100,7 @@ fn no_more_than_the_limit_run_at_once_against_the_real_engine() {
     );
     for (mode, engine) in engines() {
         let dir = Dir::new(&mode.replace(' ', "-"));
-        let mut m = Manager::new(engine, Arc::new(Database::open_in_memory().unwrap()));
+        let mut m = Manager::open(engine, Arc::new(Database::open_in_memory().unwrap())).unwrap();
         m.set_queue_settings(QueueSettings {
             max_concurrent_downloads: 2,
             ..QueueSettings::default()

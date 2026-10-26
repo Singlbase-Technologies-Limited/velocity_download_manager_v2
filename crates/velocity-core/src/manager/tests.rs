@@ -29,10 +29,11 @@ fn spec() -> TransferSpec {
 
 /// A manager over `fake`, saving to a database in memory.
 fn in_memory(fake: FakeTransfer) -> Manager {
-    Manager::new(
+    Manager::open(
         Box::new(fake),
         Arc::new(Database::open_in_memory().unwrap()),
     )
+    .unwrap()
 }
 
 fn setup() -> (Manager, FakeControl, String) {
@@ -1058,7 +1059,11 @@ mod persistence {
         let fake = FakeTransfer::new();
         let control = fake.control();
         let db = Arc::new(Database::open_in_memory().unwrap());
-        (Manager::new(Box::new(fake), Arc::clone(&db)), control, db)
+        (
+            Manager::open(Box::new(fake), Arc::clone(&db)).unwrap(),
+            control,
+            db,
+        )
     }
 
     #[test]
@@ -1369,5 +1374,262 @@ mod persistence {
             Err(ErrorCode::FileExists)
         );
         assert_eq!(db.downloads().unwrap(), Vec::new());
+    }
+}
+
+/// Bringing the downloads back when the app starts (#58): the records, the queue and the
+/// checkpoints the database kept.
+mod recovery {
+    use super::*;
+    use crate::database::{NewDownload, QueueEntry};
+    use crate::queue::QueueSettings;
+    use crate::transfer::{Checkpoint, Credentials, Resume, CHECKPOINT_FORMAT};
+
+    fn named(name: &str) -> TransferSpec {
+        TransferSpec {
+            file_name: Some(name.to_owned()),
+            ..spec()
+        }
+    }
+
+    fn checkpoint() -> Checkpoint {
+        Checkpoint {
+            format: CHECKPOINT_FORMAT,
+            source: "https://example.com/files/a.zip".to_owned(),
+            total: 4096,
+            etag: Some("\"v1\"".to_owned()),
+            last_modified: None,
+            content_encoding: None,
+            durable: vec![(0, 1024)],
+        }
+    }
+
+    /// The app starting again over `db`, with a new engine.
+    fn restart(db: &Arc<Database>, max: u32) -> (Manager, FakeControl) {
+        let fake = FakeTransfer::new();
+        let control = fake.control();
+        let mut m = Manager::open(Box::new(fake), Arc::clone(db)).expect("opens");
+        m.set_queue_settings(QueueSettings {
+            max_concurrent_downloads: max,
+            ..QueueSettings::default()
+        })
+        .unwrap();
+        (m, control)
+    }
+
+    #[test]
+    fn downloads_come_back_with_their_ids_statuses_and_progress_and_unfinished_ones_resume() {
+        let db = Arc::new(Database::open_in_memory().unwrap());
+        let (done, running, paused) = {
+            let (mut m, control) = restart(&db, 1);
+            let done = m.add(DownloadKind::Http, named("done.zip"), T0).unwrap();
+            control.progress(TransferId(1), 4096, Some(4096));
+            control.complete(TransferId(1));
+            m.pump(T0 + 1);
+            let running = m
+                .add(
+                    DownloadKind::Http,
+                    TransferSpec {
+                        file_name: None,
+                        ..spec()
+                    },
+                    T0 + 2,
+                )
+                .unwrap();
+            let paused = m
+                .add(DownloadKind::Http, named("paused.zip"), T0 + 3)
+                .unwrap();
+            m.pause(&paused).unwrap();
+            control.named(TransferId(2), "server.zip");
+            control.progress(TransferId(2), 1024, Some(4096));
+            control.emit(TransferEvent::Checkpoint {
+                id: TransferId(2),
+                checkpoint: checkpoint(),
+            });
+            m.pump(T0 + 4);
+            (done, running, paused)
+        };
+
+        let (mut m, control) = restart(&db, 1);
+        let r = m.get(&done).unwrap();
+        assert_eq!(r.status, DownloadStatus::Completed);
+        assert_eq!(r.verification, Some(Verification::SizeVerified));
+        assert_eq!(r.completed_at_ms, Some(T0 + 1));
+        assert_eq!(r.progress.completed_bytes, 4096);
+        assert_eq!(r.created_at_ms, T0);
+
+        assert_eq!(
+            control.log(),
+            ["add"],
+            "only the unfinished, unpaused download starts"
+        );
+        let started = control.spec(TransferId(1));
+        assert_eq!(
+            started.resume,
+            Some(Resume::Checkpoint {
+                checkpoint: checkpoint()
+            })
+        );
+        assert_eq!(
+            started.file_name.as_deref(),
+            Some("server.zip"),
+            "a resume gives the name it was saved as"
+        );
+        assert_eq!(started.urls, spec().urls);
+        assert_eq!(started.max_connections, 4);
+        let r = m.get(&running).unwrap();
+        assert_eq!(r.progress.completed_bytes, 1024);
+        assert_eq!(r.progress.total_bytes, Some(4096));
+
+        assert_eq!(status(&m, &paused), DownloadStatus::Paused);
+        m.resume(&paused).unwrap();
+        assert_eq!(
+            status(&m, &paused),
+            DownloadStatus::Queued,
+            "it waits for the slot"
+        );
+
+        let next = m.add(DownloadKind::Http, named("new.zip"), T0 + 5).unwrap();
+        assert_eq!(next, "d-0004", "ids are never given twice");
+    }
+
+    #[test]
+    fn the_queue_order_and_schedule_come_back() {
+        let db = Arc::new(Database::open_in_memory().unwrap());
+        let paused = |scheduled| AddOptions {
+            start_paused: true,
+            scheduled,
+        };
+        let order = {
+            let (mut m, _control) = restart(&db, 1);
+            let a = m
+                .add_with(DownloadKind::Http, named("a.zip"), paused(false), T0)
+                .unwrap();
+            let b = m
+                .add_with(DownloadKind::Http, named("b.zip"), paused(false), T0)
+                .unwrap();
+            let c = m
+                .add_with(DownloadKind::Http, named("c.zip"), paused(true), T0)
+                .unwrap();
+            m.move_download(&c, MoveDirection::Top).unwrap();
+            m.move_download(&a, MoveDirection::Bottom).unwrap();
+            vec![c, b, a]
+        };
+        let (m, control) = restart(&db, 1);
+        let ids: Vec<String> = m.queue().into_iter().map(|e| e.id).collect();
+        assert_eq!(ids, order);
+        assert!(m.queue()[0].scheduled);
+        assert!(control.log().is_empty(), "paused, so nothing starts");
+        for id in &order {
+            assert_eq!(status(&m, id), DownloadStatus::Paused);
+        }
+    }
+
+    #[test]
+    fn an_unfinished_download_without_a_usable_checkpoint_starts_over() {
+        let db = Arc::new(Database::open_in_memory().unwrap());
+        {
+            let (mut m, control) = restart(&db, 1);
+            m.add(DownloadKind::Http, spec(), T0).unwrap();
+            control.progress(TransferId(1), 1024, Some(4096));
+            m.pump(T0 + 1);
+        }
+        let (_m, control) = restart(&db, 1);
+        assert_eq!(
+            control.spec(TransferId(1)).resume,
+            Some(Resume::DiscardPartFile {})
+        );
+    }
+
+    #[test]
+    fn a_failed_download_comes_back_failed_and_is_not_started() {
+        let db = Arc::new(Database::open_in_memory().unwrap());
+        let id = {
+            let (mut m, control) = restart(&db, 1);
+            let id = m.add(DownloadKind::Http, spec(), T0).unwrap();
+            control.fail(
+                TransferId(1),
+                TransferError::new(FailureClass::Permanent, Some(404), "Not found"),
+            );
+            m.pump(T0 + 1);
+            id
+        };
+        let (m, control) = restart(&db, 1);
+        let r = m.get(&id).unwrap();
+        assert_eq!(r.status, DownloadStatus::Failed);
+        assert_eq!(r.error.as_ref().and_then(|e| e.http_status), Some(404));
+        assert!(control.log().is_empty());
+        assert!(m.queue().is_empty());
+    }
+
+    #[test]
+    fn a_download_that_had_a_login_comes_back_paused_and_resumes_only_with_it() {
+        let db = Arc::new(Database::open_in_memory().unwrap());
+        let login = Credentials {
+            user_name: "user".to_owned(),
+            password: "secret".to_owned(),
+        };
+        let id = {
+            let (mut m, _control) = restart(&db, 1);
+            let s = TransferSpec {
+                credentials: Some(login.clone()),
+                ..spec()
+            };
+            m.add(DownloadKind::Http, s, T0).unwrap()
+        };
+        let (mut m, control) = restart(&db, 1);
+        let r = m.get(&id).unwrap();
+        assert_eq!(r.status, DownloadStatus::Paused);
+        assert!(
+            r.error
+                .as_ref()
+                .is_some_and(|e| e.message.contains("login")),
+            "the note says why: {:?}",
+            r.error
+        );
+        assert!(m.needs_login(&id));
+        assert_eq!(m.resume(&id), Err(ErrorCode::ConfirmationRequired));
+        assert_eq!(m.resume_all(), Ok(()));
+        assert_eq!(
+            status(&m, &id),
+            DownloadStatus::Paused,
+            "resume all skips it"
+        );
+        assert!(control.log().is_empty());
+
+        let login_again = SensitiveOptions {
+            credentials: Some(login.clone()),
+            ..SensitiveOptions::default()
+        };
+        m.resume_with(&id, login_again).unwrap();
+        assert_eq!(control.spec(TransferId(1)).credentials, Some(login));
+        assert_eq!(m.get(&id).unwrap().error, None, "the note is gone");
+        assert!(!m.needs_login(&id));
+    }
+
+    #[test]
+    fn a_record_this_build_cant_read_is_listed_as_unavailable_and_never_started() {
+        let db = Arc::new(Database::open_in_memory().unwrap());
+        let new = NewDownload::from_transfer("d-0007", DownloadKind::Http, &spec(), T0);
+        db.insert_download(&new).unwrap();
+        db.save_queue(&[QueueEntry {
+            id: "d-0007".to_owned(),
+            scheduled: false,
+        }])
+        .unwrap();
+        db.set_raw_status_for_test("d-0007", "teleporting");
+        let (mut m, control) = restart(&db, 1);
+        assert!(m.get("d-0007").is_none());
+        let unavailable = m.unavailable();
+        assert_eq!(unavailable.len(), 1);
+        assert_eq!(unavailable[0].id, "d-0007");
+        assert_eq!(
+            unavailable[0].status,
+            Stored::Unknown("teleporting".to_owned())
+        );
+        assert!(control.log().is_empty());
+        assert_eq!(m.pause("d-0007"), Err(ErrorCode::NotFound));
+        let next = m.add(DownloadKind::Http, spec(), T0).unwrap();
+        assert_eq!(next, "d-0008", "its id isn't given again either");
     }
 }

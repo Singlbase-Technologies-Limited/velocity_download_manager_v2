@@ -309,6 +309,15 @@ impl Database {
         Ok(())
     }
 
+    /// Writes a status this build doesn't know, as a later V2 could have: for tests of what an
+    /// unreadable record does.
+    #[cfg(test)]
+    pub(crate) fn set_raw_status_for_test(&self, id: &str, raw: &str) {
+        self.conn()
+            .execute("UPDATE downloads SET status = ?2 WHERE id = ?1", [id, raw])
+            .unwrap();
+    }
+
     /// Forgets a download, with its checkpoint. Nothing happens for an unknown id.
     pub fn delete_download(&self, id: &str) -> Result<(), DatabaseError> {
         self.conn()

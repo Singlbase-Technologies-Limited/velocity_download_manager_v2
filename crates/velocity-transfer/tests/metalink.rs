@@ -108,10 +108,11 @@ fn a_followed_metalink_downloads_its_file_and_fetches_only_a_bad_piece_again() {
         ServerOptions::default(),
     );
     let dir = Dir::new("follow");
-    let mut m = Manager::new(
+    let mut m = Manager::open(
         Box::new(InProcessEngine::start().expect("the in-process engine starts")),
         Arc::new(Database::open_in_memory().unwrap()),
-    );
+    )
+    .unwrap();
     m.set_metalink_enabled(true);
     let link = TransferSpec {
         urls: vec![documents.url("files.meta4")],
