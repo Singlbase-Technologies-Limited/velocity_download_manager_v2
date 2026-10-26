@@ -20,6 +20,7 @@ import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { checkBuildInfo, checkLinked, createBuildInfo, parseCurlVersion } from './native-lib.mjs';
 import { NATIVE_DIR, REPO, fetchSources, hostTarget } from './fetch.mjs';
+import { buildLibtorrent } from './libtorrent.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const JOBS = String(availableParallelism());
@@ -250,6 +251,12 @@ function reusable(outDir, key, lock) {
 async function main() {
   const force = process.argv.includes('--force');
   const target = hostTarget();
+  await buildCurl(target, force);
+  // libtorrent and its libraries, with vcpkg (#62): its own record, cache key and reuse check.
+  buildLibtorrent({ target, force });
+}
+
+async function buildCurl(target, force) {
   const outDir = join(NATIVE_DIR, target);
   const prefix = join(outDir, 'prefix');
   const key = cacheKey(target);
