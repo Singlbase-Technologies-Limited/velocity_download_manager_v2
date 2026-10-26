@@ -233,6 +233,11 @@ impl SshServer {
 impl Drop for SshServer {
     fn drop(&mut self) {
         self.stop();
+        // A failing test shows what sshd said, since its folder goes next.
+        if thread::panicking() {
+            let log = std::fs::read_to_string(self.dir.join("sshd.log")).unwrap_or_default();
+            eprintln!("sshd.log of the failed test:\n{log}");
+        }
         let _ = std::fs::remove_dir_all(&self.dir);
     }
 }

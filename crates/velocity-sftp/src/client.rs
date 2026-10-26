@@ -478,6 +478,11 @@ fn sftp_failure(e: russh_sftp::client::error::Error) -> FetchError {
             CurlFailure::AccessDenied
         }
         Error::IO(_) => CurlFailure::Interrupted,
+        // russh-sftp 3.0.1 has no variant of its own for a session that ended while a request
+        // waited: it says so in these words. The connection broke; a retry may succeed.
+        Error::UnexpectedBehavior(m) if m == "sender dropped" || m == "session closed" => {
+            CurlFailure::Interrupted
+        }
         Error::Timeout => CurlFailure::Timeout,
         _ => CurlFailure::Protocol,
     };
@@ -510,6 +515,32 @@ mod tests {
         let v6 = target("sftp://[::1]:2200/f").unwrap();
         assert_eq!((v6.host.as_str(), v6.port), ("::1", 2200));
         assert_eq!(target("sftp://[::1]/f").unwrap().port, 22);
+    }
+
+    fn kind(e: russh_sftp::client::error::Error) -> CurlFailure {
+        match sftp_failure(e) {
+            FetchError::Sftp { kind, .. } => kind,
+            other => panic!("{other:?}"),
+        }
+    }
+
+    /// A session that ends while a request waits is a broken connection, which may be retried,
+    /// not a server that answered wrongly (#62, seen with Windows OpenSSH's SFTP child process).
+    #[test]
+    fn a_session_that_ends_under_a_request_is_interrupted_not_a_protocol_error() {
+        use russh_sftp::client::error::Error;
+        for lost in ["sender dropped", "session closed"] {
+            assert_eq!(
+                kind(Error::UnexpectedBehavior(lost.to_owned())),
+                CurlFailure::Interrupted,
+                "{lost}"
+            );
+        }
+        assert_eq!(
+            kind(Error::UnexpectedBehavior("Duplicate version".to_owned())),
+            CurlFailure::Protocol
+        );
+        assert_eq!(kind(Error::Timeout), CurlFailure::Timeout);
     }
 
     #[test]
