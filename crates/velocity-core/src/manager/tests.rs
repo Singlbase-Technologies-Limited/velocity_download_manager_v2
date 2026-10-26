@@ -1977,18 +1977,16 @@ mod removal {
         let id = {
             let fake = FakeTransfer::new();
             let mut m = Manager::open(Box::new(fake), Arc::clone(&db)).unwrap();
-            let id = m
-                .add_with(
-                    DownloadKind::Http,
-                    in_folder(&dir, "a.zip"),
-                    AddOptions {
-                        start_paused: true,
-                        scheduled: false,
-                    },
-                    T0,
-                )
-                .unwrap();
-            id
+            m.add_with(
+                DownloadKind::Http,
+                in_folder(&dir, "a.zip"),
+                AddOptions {
+                    start_paused: true,
+                    scheduled: false,
+                },
+                T0,
+            )
+            .unwrap()
         };
         // What an earlier run left on disk.
         let part = dir.join(format!("a.zip{PART_FILE_SUFFIX}"));
