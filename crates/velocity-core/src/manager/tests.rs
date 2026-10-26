@@ -2421,3 +2421,117 @@ mod snapshot {
         }
     }
 }
+
+/// Commands over several downloads at once (V1's batch commands, #58): each id is tried, and the
+/// result says which were done and why the others weren't.
+mod batch {
+    use super::*;
+    use crate::domain::{BatchFailure, BatchResult, KeptFile, KeptReason};
+    use std::fs;
+
+    #[test]
+    fn each_id_is_tried_and_failures_carry_their_code() {
+        let (mut m, control, running) = setup();
+        let done = m
+            .add(
+                DownloadKind::Http,
+                TransferSpec {
+                    file_name: Some("b.zip".to_owned()),
+                    ..spec()
+                },
+                T0,
+            )
+            .unwrap();
+        control.complete(TransferId(2));
+        m.pump(T0 + 1);
+        let ids = vec![running.clone(), "d-9999".to_owned(), done.clone()];
+        let result = m.batch(&ids, Manager::pause).unwrap();
+        assert_eq!(
+            result,
+            BatchResult {
+                done: vec![running],
+                failed: vec![
+                    BatchFailure {
+                        id: "d-9999".to_owned(),
+                        code: ErrorCode::NotFound
+                    },
+                    BatchFailure {
+                        id: done,
+                        code: ErrorCode::InvalidState
+                    },
+                ],
+                kept: Vec::new(),
+            }
+        );
+    }
+
+    #[test]
+    fn too_many_ids_or_an_overlong_one_is_refused_with_nothing_done() {
+        let (mut m, control, id) = setup();
+        let many = vec![id.clone(); MAX_BATCH + 1];
+        assert_eq!(m.batch(&many, Manager::pause), Err(ErrorCode::InvalidInput));
+        let long = vec![id, "d".repeat(65)];
+        assert_eq!(m.batch(&long, Manager::pause), Err(ErrorCode::InvalidInput));
+        assert_eq!(control.log(), ["add"]);
+    }
+
+    #[test]
+    fn removing_several_reports_the_files_kept_and_why() {
+        let dir = std::env::temp_dir().join(format!("v2-batch-remove-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let fake = FakeTransfer::new();
+        let control = fake.control();
+        let mut m = in_memory(fake);
+        let id = m
+            .add(
+                DownloadKind::Http,
+                TransferSpec {
+                    directory: dir.clone(),
+                    ..spec()
+                },
+                T0,
+            )
+            .unwrap();
+        control.progress(TransferId(1), 10, Some(10));
+        control.complete(TransferId(1));
+        m.pump(T0 + 1);
+        fs::write(dir.join("a.zip"), vec![1u8; 11]).unwrap();
+        let result = m.remove_many(std::slice::from_ref(&id), true).unwrap();
+        assert_eq!(result.done, vec![id]);
+        assert_eq!(
+            result.kept,
+            vec![KeptFile {
+                path: dir.join("a.zip").to_string_lossy().into_owned(),
+                reason: KeptReason::TooLarge,
+                code: None,
+            }]
+        );
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_batch_result_serialises_in_camel_case() {
+        let json = serde_json::to_value(BatchResult {
+            done: vec!["d-0001".to_owned()],
+            failed: vec![BatchFailure {
+                id: "d-0002".to_owned(),
+                code: ErrorCode::NotFound,
+            }],
+            kept: vec![KeptFile {
+                path: "x".to_owned(),
+                reason: KeptReason::Failed,
+                code: Some(ErrorCode::PermissionDenied),
+            }],
+        })
+        .unwrap();
+        assert_eq!(
+            json,
+            serde_json::json!({
+                "done": ["d-0001"],
+                "failed": [{"id": "d-0002", "code": "NOT_FOUND"}],
+                "kept": [{"path": "x", "reason": "failed", "code": "PERMISSION_DENIED"}],
+            })
+        );
+    }
+}

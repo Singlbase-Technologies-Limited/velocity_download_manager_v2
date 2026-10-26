@@ -876,12 +876,14 @@ impl Manager {
     }
 }
 
+mod batch;
 mod finished;
 mod options;
 mod persist;
 mod recovery;
 mod service;
 
+pub use batch::MAX_BATCH;
 pub use recovery::SensitiveOptions;
 pub use service::{ManagerService, SNAPSHOT_EVERY, TICK};
 

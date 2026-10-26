@@ -250,6 +250,50 @@ pub struct DownloadsSnapshot {
     pub storage_error: Option<ErrorCode>,
 }
 
+/// What a command over several downloads did (#58, V1's batch result): the ids it was done for,
+/// in order, those it failed for with why, and, when removing with files, the files kept.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct BatchResult {
+    pub done: Vec<String>,
+    pub failed: Vec<BatchFailure>,
+    pub kept: Vec<KeptFile>,
+}
+
+/// One id a command over several downloads failed for.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct BatchFailure {
+    pub id: String,
+    pub code: ErrorCode,
+}
+
+/// A file a removal with files left in place, and why (PO decision on #58).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct KeptFile {
+    pub path: String,
+    pub reason: KeptReason,
+    /// For [`KeptReason::Failed`]: what deleting it failed with.
+    pub code: Option<ErrorCode>,
+}
+
+/// Why a file wasn't deleted.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum KeptReason {
+    /// A link, a reparse point or not a plain file: never followed.
+    NotPlain,
+    /// Larger than the download: not its own.
+    TooLarge,
+    /// Reached through a folder that is a link: never followed.
+    BehindLink,
+    /// A folder with something else in it.
+    NotEmpty,
+    /// Deleting it failed.
+    Failed,
+}
+
 /// A stored download this build can't act on (an engine, kind, status or options it doesn't know),
 /// with what can be shown of it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
