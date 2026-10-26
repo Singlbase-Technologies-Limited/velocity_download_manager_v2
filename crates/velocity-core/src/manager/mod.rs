@@ -19,8 +19,8 @@
 
 use crate::database::{Database, DatabaseError, NewDownload, QueueEntry};
 use crate::domain::{
-    DownloadKind, DownloadRecord, DownloadStatus, EngineHealth, ErrorCode, FailureClass, Progress,
-    TransferError,
+    DownloadKind, DownloadRecord, DownloadStatus, DownloadsSnapshot, EngineHealth, ErrorCode,
+    FailureClass, Progress, TransferError, UnavailableDownload,
 };
 use crate::metalink::{self, Metalink};
 use crate::performance::PerformanceSettings;
@@ -660,6 +660,47 @@ impl Manager {
                 scheduled: self.downloads[id].scheduled,
             })
             .collect()
+    }
+
+    /// What the UI is sent: the unfinished downloads in queue order, then the finished ones,
+    /// newest first.
+    pub fn snapshot(&self) -> DownloadsSnapshot {
+        let mut finished: Vec<&DownloadRecord> = self
+            .downloads
+            .values()
+            .map(|d| &d.record)
+            .filter(|r| r.status.is_terminal())
+            .collect();
+        finished.sort_by(|a, b| (b.created_at_ms, &b.id).cmp(&(a.created_at_ms, &a.id)));
+        let downloads = self
+            .order
+            .iter()
+            .map(|id| &self.downloads[id].record)
+            .chain(finished)
+            .cloned()
+            .collect();
+        DownloadsSnapshot {
+            downloads,
+            unavailable: self
+                .unavailable
+                .iter()
+                .map(|d| UnavailableDownload {
+                    id: d.id.clone(),
+                    source_url: d.source_url.clone(),
+                    file_name: d.file_name.clone(),
+                    directory: d.directory.clone(),
+                    created_at_ms: d.created_at_ms,
+                })
+                .collect(),
+            needs_login: self
+                .downloads
+                .iter()
+                .filter(|(_, d)| d.needs_login)
+                .map(|(id, _)| id.clone())
+                .collect(),
+            engine: self.engine_health(),
+            storage_error: self.storage_error.as_ref().map(|e| e.code),
+        }
     }
 
     pub fn get(&self, id: &str) -> Option<&DownloadRecord> {

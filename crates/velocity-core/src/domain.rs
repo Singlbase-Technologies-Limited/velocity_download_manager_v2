@@ -232,6 +232,36 @@ pub struct DownloadRecord {
     pub completed_at_ms: Option<u64>,
 }
 
+/// What the UI is sent about the downloads (#58, V1's `get_snapshot`), whenever something in it
+/// changed, at most every 250 ms.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct DownloadsSnapshot {
+    /// The downloads in the list: the unfinished ones in queue order, then the finished ones,
+    /// newest first.
+    pub downloads: Vec<DownloadRecord>,
+    /// Stored downloads this build can't act on: shown, never acted on (report section 6).
+    pub unavailable: Vec<UnavailableDownload>,
+    /// Downloads that came back after a restart without the login they had: resuming or retrying
+    /// one asks for it first (PO decision on #58).
+    pub needs_login: Vec<String>,
+    pub engine: EngineHealth,
+    /// The last failure to save a download, if any.
+    pub storage_error: Option<ErrorCode>,
+}
+
+/// A stored download this build can't act on (an engine, kind, status or options it doesn't know),
+/// with what can be shown of it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct UnavailableDownload {
+    pub id: String,
+    pub source_url: String,
+    pub file_name: Option<String>,
+    pub directory: String,
+    pub created_at_ms: u64,
+}
+
 /// Whether a supervised engine, or the torrent helper, can take commands (#39, #58), as the app
 /// shows it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

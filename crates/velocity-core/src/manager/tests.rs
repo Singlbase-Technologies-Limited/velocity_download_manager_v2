@@ -2327,3 +2327,97 @@ mod engine_health {
         );
     }
 }
+
+/// What the UI is sent (#58, V1's `get_snapshot`): every download in the list, those this build
+/// can't act on, the engine's health and the last failure to save.
+mod snapshot {
+    use super::*;
+    use crate::database::NewDownload;
+    use crate::domain::{DownloadsSnapshot, EngineHealth, UnavailableDownload};
+    use crate::transfer::Credentials;
+
+    #[test]
+    fn the_snapshot_lists_the_downloads_in_queue_order_then_the_finished_ones_newest_first() {
+        let fake = FakeTransfer::new();
+        let control = fake.control();
+        let mut m = in_memory(fake);
+        let named = |name: &str| TransferSpec {
+            file_name: Some(name.to_owned()),
+            ..spec()
+        };
+        let a = m.add(DownloadKind::Http, named("a"), T0).unwrap();
+        let b = m.add(DownloadKind::Http, named("b"), T0 + 1).unwrap();
+        let c = m.add(DownloadKind::Http, named("c"), T0 + 2).unwrap();
+        let d = m.add(DownloadKind::Http, named("d"), T0 + 3).unwrap();
+        control.complete(TransferId(1));
+        control.complete(TransferId(2));
+        m.pump(T0 + 4);
+        let s: DownloadsSnapshot = m.snapshot();
+        let ids: Vec<&str> = s.downloads.iter().map(|r| r.id.as_str()).collect();
+        assert_eq!(ids, [c.as_str(), d.as_str(), b.as_str(), a.as_str()]);
+        assert_eq!(s.engine, EngineHealth::Running);
+        assert_eq!(s.storage_error, None);
+        assert!(s.unavailable.is_empty());
+        assert!(s.needs_login.is_empty());
+    }
+
+    #[test]
+    fn the_snapshot_names_downloads_waiting_for_a_login_and_records_it_cant_act_on() {
+        let db = Arc::new(Database::open_in_memory().unwrap());
+        let login = {
+            let mut m = Manager::open(Box::new(FakeTransfer::new()), Arc::clone(&db)).unwrap();
+            let s = TransferSpec {
+                credentials: Some(Credentials {
+                    user_name: "u".to_owned(),
+                    password: "p".to_owned(),
+                }),
+                ..spec()
+            };
+            m.add(DownloadKind::Http, s, T0).unwrap()
+        };
+        let odd = NewDownload::from_transfer("d-0009", DownloadKind::Http, &spec(), T0 + 1);
+        db.insert_download(&odd).unwrap();
+        db.set_raw_status_for_test("d-0009", "teleporting");
+        let m = Manager::open(Box::new(FakeTransfer::new()), Arc::clone(&db)).unwrap();
+        let s = m.snapshot();
+        assert_eq!(s.needs_login, vec![login]);
+        assert_eq!(
+            s.unavailable,
+            vec![UnavailableDownload {
+                id: "d-0009".to_owned(),
+                source_url: "https://example.com/files/a.zip".to_owned(),
+                file_name: Some("a.zip".to_owned()),
+                directory: "downloads".to_owned(),
+                created_at_ms: T0 + 1,
+            }]
+        );
+    }
+
+    #[test]
+    fn a_failed_save_is_in_the_snapshot() {
+        let fake = FakeTransfer::new();
+        let control = fake.control();
+        let db = Arc::new(Database::open_in_memory().unwrap());
+        let mut m = Manager::open(Box::new(fake), Arc::clone(&db)).unwrap();
+        let id = m.add(DownloadKind::Http, spec(), T0).unwrap();
+        db.delete_download(&id).unwrap();
+        control.progress(TransferId(1), 10, Some(20));
+        m.pump(T0 + 1);
+        assert_eq!(m.snapshot().storage_error, Some(ErrorCode::NotFound));
+    }
+
+    #[test]
+    fn the_snapshot_serialises_in_camel_case() {
+        let (m, _control, _id) = setup();
+        let json = serde_json::to_value(m.snapshot()).unwrap();
+        for key in [
+            "downloads",
+            "unavailable",
+            "needsLogin",
+            "engine",
+            "storageError",
+        ] {
+            assert!(json.get(key).is_some(), "{key} in {json}");
+        }
+    }
+}
