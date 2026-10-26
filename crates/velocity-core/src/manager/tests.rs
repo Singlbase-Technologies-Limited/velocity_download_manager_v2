@@ -581,22 +581,28 @@ mod queue {
         assert_eq!(status(&m, &b), DownloadStatus::Queued);
     }
 
+    /// Since #58, an engine that is unavailable leaves waiting downloads waiting
+    /// (`engine_loss::while_the_engine_is_unavailable_waiting_downloads_keep_waiting`); any other
+    /// refusal still fails the download.
     #[test]
     fn a_waiting_download_the_engine_refuses_fails_with_the_reason_and_frees_its_turn() {
         let (mut m, control) = queue_of(1);
         add(&mut m, "a");
         let b = add(&mut m, "b");
+        let c = add(&mut m, "c");
         m.pump(T0);
-        control.set_unavailable(Some(ErrorCode::EngineUnavailable));
+        control.refuse_file_name("b", ErrorCode::FileExists);
         control.complete(TransferId(1));
         m.pump(T0);
         let r = m.get(&b).unwrap();
         assert_eq!(r.status, DownloadStatus::Failed);
         let message = r.error.as_ref().map(|e| e.message.as_str());
-        assert_eq!(message, Some(ErrorCode::EngineUnavailable.user_message()));
-        control.set_unavailable(None);
-        add(&mut m, "c");
+        assert_eq!(message, Some(ErrorCode::FileExists.user_message()));
         assert_eq!(control.spec(TransferId(2)).file_name.as_deref(), Some("c"));
+        assert_eq!(
+            m.queue().into_iter().map(|e| e.id).collect::<Vec<_>>(),
+            vec![c]
+        );
     }
 
     #[test]
@@ -2037,5 +2043,124 @@ mod removal {
             .collect();
         assert_eq!(hidden, vec![done]);
         fs::remove_dir_all(&dir).unwrap();
+    }
+}
+
+/// The engine stopping (#39, #58): what a crash, a hang or a restart by hand loses comes back on
+/// its own once the engine runs again (PO decision on #58), and nothing waiting fails meanwhile.
+mod engine_loss {
+    use super::*;
+    use crate::transfer::{Checkpoint, Resume, CHECKPOINT_FORMAT, ENGINE_STOPPED};
+
+    fn checkpoint() -> Checkpoint {
+        Checkpoint {
+            format: CHECKPOINT_FORMAT,
+            source: "https://example.com/files/a.zip".to_owned(),
+            total: 4096,
+            etag: None,
+            last_modified: None,
+            content_encoding: None,
+            durable: vec![(0, 2048)],
+        }
+    }
+
+    fn lost() -> TransferError {
+        TransferError::new(FailureClass::Transient, None, ENGINE_STOPPED)
+    }
+
+    #[test]
+    fn a_download_the_engine_lost_waits_and_resumes_from_its_checkpoint_once_it_runs_again() {
+        let (mut m, control, id) = setup();
+        control.emit(TransferEvent::Checkpoint {
+            id: TransferId(1),
+            checkpoint: checkpoint(),
+        });
+        control.progress(TransferId(1), 2048, Some(4096));
+        m.pump(T0 + 1);
+        // The supervisor reports it lost, and has no engine for a while.
+        control.fail(TransferId(1), lost());
+        control.set_unavailable(Some(ErrorCode::EngineUnavailable));
+        m.pump(T0 + 2);
+        let r = m.get(&id).unwrap();
+        assert_eq!(r.status, DownloadStatus::Queued, "it waits, it didn't fail");
+        assert_eq!(r.error, Some(lost()), "with the reason shown");
+        assert_eq!(r.progress.completed_bytes, 2048);
+        assert_eq!(m.queue()[0].id, id);
+
+        control.set_unavailable(None);
+        m.pump(T0 + 3);
+        assert_eq!(
+            control.log().last().map(String::as_str),
+            Some("add"),
+            "added again once the engine answers"
+        );
+        let again = control.spec(TransferId(2));
+        assert_eq!(
+            again.resume,
+            Some(Resume::Checkpoint {
+                checkpoint: checkpoint()
+            })
+        );
+        control.progress(TransferId(2), 3000, Some(4096));
+        m.pump(T0 + 4);
+        let r = m.get(&id).unwrap();
+        assert_eq!(r.status, DownloadStatus::Downloading);
+        assert_eq!(r.error, None);
+    }
+
+    #[test]
+    fn an_ordinary_retryable_failure_stays_failed() {
+        let (mut m, control, id) = setup();
+        control.fail(
+            TransferId(1),
+            TransferError::new(FailureClass::Transient, None, "Connection reset"),
+        );
+        m.pump(T0 + 1);
+        assert_eq!(status(&m, &id), DownloadStatus::Failed);
+        assert_eq!(
+            control.log(),
+            ["add"],
+            "the engine already retried it (#48)"
+        );
+    }
+
+    #[test]
+    fn a_paused_download_the_engine_lost_stays_paused() {
+        let (mut m, control, id) = setup();
+        m.pause(&id).unwrap();
+        control.fail(TransferId(1), lost());
+        m.pump(T0 + 1);
+        assert_eq!(status(&m, &id), DownloadStatus::Paused);
+        m.resume(&id).unwrap();
+        // The supervisor's record of the lost transfer is dropped (`remove 1`).
+        assert_eq!(control.log(), ["add", "pause 1", "remove 1", "add"]);
+    }
+
+    #[test]
+    fn while_the_engine_is_unavailable_waiting_downloads_keep_waiting() {
+        let fake = FakeTransfer::new();
+        let control = fake.control();
+        let mut m = in_memory(fake);
+        let id = m
+            .add_with(
+                DownloadKind::Http,
+                spec(),
+                AddOptions {
+                    start_paused: true,
+                    scheduled: false,
+                },
+                T0,
+            )
+            .unwrap();
+        control.set_unavailable(Some(ErrorCode::EngineUnavailable));
+        m.resume(&id).unwrap();
+        m.pump(T0 + 1);
+        let r = m.get(&id).unwrap();
+        assert_eq!(r.status, DownloadStatus::Queued);
+        assert_eq!(r.error, None);
+        control.set_unavailable(None);
+        m.pump(T0 + 2);
+        assert_eq!(control.log().last().map(String::as_str), Some("add"));
+        assert!(m.get(&id).unwrap().error.is_none());
     }
 }

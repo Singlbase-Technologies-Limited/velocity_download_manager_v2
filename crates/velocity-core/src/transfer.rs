@@ -465,6 +465,20 @@ pub enum TransferEvent {
     },
 }
 
+/// What the engine's supervisor fails a transfer with when its engine stopped unexpectedly (#39).
+pub const ENGINE_STOPPED: &str = "the transfer engine stopped unexpectedly";
+/// ... when its engine stopped responding and was killed (#48).
+pub const ENGINE_HUNG: &str = "the transfer engine stopped responding and was restarted";
+/// ... when the engine was restarted by hand ("Restart transfer engine").
+pub const ENGINE_RESTARTED: &str = "the transfer engine was restarted";
+
+/// Whether `error` is the supervisor's report of a transfer its engine lost, rather than a
+/// failure of the transfer itself: the manager then starts it again on its own once an engine runs
+/// (PO decision on #58).
+pub fn lost_by_engine(error: &TransferError) -> bool {
+    [ENGINE_STOPPED, ENGINE_HUNG, ENGINE_RESTARTED].contains(&error.message.as_str())
+}
+
 /// A direct-download engine, in the app's process or behind a client for a child process.
 ///
 /// Commands fail with an [`ErrorCode`]: `NotFound` for an unknown id, `InvalidState` when the

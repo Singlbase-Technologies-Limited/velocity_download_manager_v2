@@ -26,7 +26,9 @@ use crate::database::{
 use crate::domain::{
     DownloadRecord, DownloadStatus, ErrorCode, FailureClass, Progress, TransferError,
 };
-use crate::transfer::{Credentials, DirectTransfer, Header, Limits, SshKey, TransferSpec};
+use crate::transfer::{
+    Credentials, DirectTransfer, Header, Limits, SshKey, TransferId, TransferSpec,
+};
 
 /// The note on a download that came back without the login it had.
 const LOGIN_NOTE: &str = "Velocity doesn't keep logins, custom headers or SSH keys after it \
@@ -181,6 +183,31 @@ impl Manager {
         m.order = unfinished.into_iter().map(|(_, _, id)| id).collect();
         m.saved_queue = queue;
         Ok(m)
+    }
+
+    /// A download whose engine was lost under it (#39): it waits again, with the reason shown, to
+    /// resume from its checkpoint once an engine runs (PO decision on #58). A paused one stays
+    /// paused.
+    pub(super) fn lose(&mut self, id: &str, transfer: TransferId, error: TransferError) {
+        self.by_transfer.remove(&transfer);
+        // The supervisor keeps a lost transfer as failed until it is removed. Failing to remove it
+        // only leaves that finished entry in its memory; the download no longer refers to it.
+        let _ = self.engine.remove(transfer);
+        let checkpoint = self.database.checkpoint(id).unwrap_or_else(|e| {
+            self.storage_error = Some(e);
+            None
+        });
+        let Some(d) = self.downloads.get_mut(id) else {
+            return;
+        };
+        d.transfer = None;
+        d.running = false;
+        d.resume = Some(resume_from(&d.record.source_url, checkpoint.as_ref()));
+        d.record.progress.download_speed_bps = 0;
+        d.record.progress.connections = 0;
+        d.record.error = Some(error);
+        d.record.status = d.waiting_status();
+        self.mark(id);
     }
 
     /// Records this build can't read, or whose engine the manager doesn't run yet: shown, never

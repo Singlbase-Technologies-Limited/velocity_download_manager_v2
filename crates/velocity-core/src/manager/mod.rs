@@ -24,7 +24,9 @@ use crate::domain::{
 use crate::metalink::{self, Metalink};
 use crate::performance::PerformanceSettings;
 use crate::queue::QueueSettings;
-use crate::transfer::{DirectTransfer, Limits, Resume, TransferEvent, TransferId, TransferSpec};
+use crate::transfer::{
+    lost_by_engine, DirectTransfer, Limits, Resume, TransferEvent, TransferId, TransferSpec,
+};
 use jiff::civil::DateTime;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -689,16 +691,21 @@ impl Manager {
             if self.free_slots() == 0 {
                 break;
             }
-            if let Err(code) = self.start(&id) {
-                let d = self.downloads.get_mut(&id).expect("known");
-                d.record.status = DownloadStatus::Failed;
-                d.record.error = Some(TransferError::new(
-                    FailureClass::Permanent,
-                    None,
-                    code.user_message(),
-                ));
-                self.order.retain(|o| *o != id);
-                self.mark(&id);
+            match self.start(&id) {
+                Ok(()) => {}
+                // No engine now: it keeps waiting, and the next fill tries again (#58).
+                Err(ErrorCode::EngineUnavailable) => break,
+                Err(code) => {
+                    let d = self.downloads.get_mut(&id).expect("known");
+                    d.record.status = DownloadStatus::Failed;
+                    d.record.error = Some(TransferError::new(
+                        FailureClass::Permanent,
+                        None,
+                        code.user_message(),
+                    ));
+                    self.order.retain(|o| *o != id);
+                    self.mark(&id);
+                }
             }
         }
         self.flush();
@@ -735,6 +742,12 @@ impl Manager {
                 let Some(app_id) = self.by_transfer.get(&snapshot.id).cloned() else {
                     return false;
                 };
+                if snapshot.status == DownloadStatus::Failed {
+                    if let Some(error) = snapshot.error.clone().filter(lost_by_engine) {
+                        self.lose(&app_id, snapshot.id, error);
+                        return true;
+                    }
+                }
                 let Some(download) = self.downloads.get_mut(&app_id) else {
                     return false;
                 };
