@@ -72,7 +72,7 @@ For example:
 - **What's checked:** the protocol version and the child's contract version must match exactly, and both sides check them.
   - **The protocol** (`PROTOCOL_VERSION`) is now 3. Version 1 was the #37 prototype's JSON lines; version 2 named the first id `firstTransferId`; version 3 (#62) names it `firstId`, for every contract.
   - **The engine's contract** (`TRANSFER_CONTRACT_VERSION`) is now 11; what each version added is in [ENGINE_CONTRACT.md](ENGINE_CONTRACT.md).
-  - **The helper's contract** (`TORRENT_CONTRACT_VERSION`) is now 3 ([TORRENTS.md](TORRENTS.md#the-torrent-contract)): version 2 added file choice, and version 3 seeding, resume data and `restore`.
+  - **The helper's contract** (`TORRENT_CONTRACT_VERSION`) is now 4 ([TORRENTS.md](TORRENTS.md#the-torrent-contract)): version 2 added file choice, version 3 seeding, resume data and `restore`, and version 4 trackers, peers, limits and the port settings.
 - **The first frame:** the app refuses a child whose `hello` has other versions, or whose first frame isn't a `hello`, as `ENGINE_INCOMPATIBLE`. An engine that still speaks protocol 1 or 2 is refused this way.
 - **The answer:** the child refuses a `start` with other versions by exiting, with the reason on stderr.
 - **A child that exits before `hello`** failed to start: `ENGINE_START_FAILED`. A program that isn't there is `ENGINE_MISSING`.
