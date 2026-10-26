@@ -37,16 +37,31 @@ Torrent metadata and magnet links are untrusted input. `velocity_core::torrent` 
   - **What reaches libtorrent:** only the canonical form: the hashes, the display name and the trackers. Other parameters, such as `x.pe` peer addresses, are dropped.
 - **Trackers:** `http`, `https` or `udp` with a host, and no spaces or control characters. Others are dropped from a torrent, and refused when given with `add`.
 - **Folders:** a torrent's folder must be an existing absolute folder, not a link.
+- **A magnet's metadata** comes from peers. Every magnet is added wanting nothing, so libtorrent fetches its metadata and writes no file. When the metadata arrives, the helper checks it with the core's `parse_metadata`, with every rule above:
+  - **If it passes:** the metadata-only torrent is removed and added again from the checked metadata, as an ordinary torrent with its files wanted, as V1 did. The torrent then waits in Choosing files if the user is to choose them.
+  - **If it fails:** the torrent fails with the reason, before any byte of it is written. libtorrent alone would rename unsafe names and download anyway.
+
+## File choice
+
+- **When:** a torrent added with `chooseFiles` downloads nothing and waits in **Choosing files**: a magnet once its metadata is checked, a `.torrent` file at once. A `.torrent` file can instead be added with its first choice in `files`.
+- **Choosing:** `setFiles` names the files to download by their index in the torrent (`TorrentFile::index`, libtorrent's index plus one). Padding files can never be chosen. An empty choice, a duplicate or an index the torrent hasn't is refused (`INVALID_INPUT`), and so is a choice before the metadata is known (`INVALID_STATE`).
+- **Changing the choice:** choosing again adds or drops files while the torrent downloads. A completed torrent that gets more files downloads them and completes again. Dropping a file never deletes what is on disk.
+- **Peers:** a torrent that wanted nothing, or completed and stopped, has dropped its peers. Leaving Choosing files, or getting more files after completing, removes it from the session and adds it again with the new choice, so it finds peers as a new torrent does, and libtorrent checks the files already on disk. In the tests, without this a torrent waited longer than 120 s for peers.
+- **Libtorrent's part file:** in a v1 or hybrid torrent a piece can span two files. When only one of them is chosen, libtorrent keeps the other file's part of that piece in a file of its own, `.<info hash>.parts`, in the torrent's folder, never in the unchosen file.
+- **Progress:** with only some files chosen, progress is the chosen files' bytes, from libtorrent's per-file progress. libtorrent's own count is in whole pieces.
+- **The metadata:** `metadata` returns a torrent's metadata (`d4:info…e`) in chunks of at most 1 MiB, as hex, because metadata may be up to 16 MiB and a message at most 4 MiB. The app joins the chunks, checks them with `parse_metadata`, and keeps them (#58).
 
 ## The torrent contract
 
-`TORRENT_CONTRACT_VERSION` is 1. Every wire form refuses unknown fields.
+`TORRENT_CONTRACT_VERSION` is 2: version 1 had no file choice. Every wire form refuses unknown fields.
 
 | Command | Reply | What it does |
 |---|---|---|
 | `version {}` | `version { libtorrent }` | The libtorrent version, for diagnostics; also the supervisor's hang check |
 | `setSettings { settings }` | `done {}` | DHT, peer exchange and local peer discovery |
-| `add { spec }` | `added { id }` | `spec`: `source` (`{"kind":"file","path":…}` or `{"kind":"magnet","uri":…}`), `directory`, `trackers`, `paused` |
+| `add { spec }` | `added { id }` | `spec`: `source` (`{"kind":"file","path":…}` or `{"kind":"magnet","uri":…}`), `directory`, `trackers`, `paused`, `chooseFiles`, and `files` (a `.torrent` file's first choice, or `null` for every file) |
+| `setFiles { id, files }` | `done {}` | Downloads exactly these files ([File choice](#file-choice)) |
+| `metadata { id, offset }` | `metadata { chunk }` | `chunk`: `total`, `offset`, `hex`: at most 1 MiB of the metadata from `offset`; `INVALID_STATE` before it is known |
 | `pause { id }`, `resume { id }` | `done {}` | `INVALID_STATE` for a completed torrent |
 | `remove { id }` | `done {}` | Forgets the torrent. Its files are always kept |
 | `snapshot {}` | `snapshot { torrents }` | The state of every torrent |
@@ -66,13 +81,15 @@ The helper reads libtorrent's state every 250 ms (a starting value) and sends `c
 | An error | Failed, with libtorrent's message (not retryable) |
 | Paused | Paused |
 | Checking files or resume data | Verifying |
-| Downloading metadata (a magnet) | Fetching metadata |
+| A magnet whose metadata isn't known and checked yet | Fetching metadata |
+| Files known, none chosen yet | Choosing files |
+| Metadata that failed V2's check | Failed, with the reason (not retryable) |
 | Downloading | Downloading |
 | Finished, being flushed | Verifying |
 | Flushed and stopped | Completed |
 
 - **Completion:** a torrent is Completed only after every wanted piece has passed its hash check and libtorrent has flushed its files to disk. It then stops uploading, because seeding is off by default (ADR-0005).
-- **Progress:** it counts the bytes of the wanted files. Padding is never counted.
+- **Progress:** it counts the bytes of the wanted files. Padding is never counted, and the size is unknown until the files are chosen.
 - **A crashed helper:** the torrents it had fail with a retryable error. Their files stay.
 
 ## Settings and identity
@@ -86,9 +103,7 @@ The helper reads libtorrent's state every 250 ms (a starting value) and sends `c
 
 These come with #62's later parts:
 
-- **Magnets and file choice:**
-  - a metadata-only step, file choice and file priorities;
-  - storing a magnet's metadata.
+- **The app's side of file choice:** storing a magnet's metadata, and the file chooser (#58, #60, #63).
 - **Lifecycle and seeding:**
   - resume data, and recovery after a restart;
   - seeding policies and their queue;
@@ -106,6 +121,7 @@ These come with #62's later parts:
 | Parsing, hashes, piece layers, names, limits, magnets, trackers, against hand-built torrents and the corpus | `velocity-core` `torrent.rs` unit tests |
 | How libtorrent states map to V2 statuses; the folder and file checks; the peer-id prefix | `velocity-torrent` `engine.rs` unit tests |
 | The helper as a child process: a v1, a v2-only and a hybrid torrent and a v2 magnet downloaded from a seeder found through a loopback tracker; refused input; pause, resume and remove; a crash and its restart | `velocity-torrent` `tests/helper.rs` |
+| File choice through the helper: a magnet waiting in Choosing files without writing anything, its metadata in chunks, only the chosen files downloaded and one more after completing; a `.torrent` file's first choice; unsafe metadata from a peer failing the torrent before any write; every refused choice | `velocity-torrent` `tests/helper.rs` |
 
 - **Isolation:** the tests never leave the machine. DHT, peer exchange and local peer discovery are off, and peers are found through a tracker on 127.0.0.1.
 - **The corpus:** [`tests/fixtures/torrents`](../tests/fixtures/torrents) comes from V1. [`scripts/make-torrent-corpus.py`](../scripts/make-torrent-corpus.py) generated it with libtorrent's own torrent creator (2.0.10, through its Python bindings). Running the script again needs those bindings; the committed files don't.
