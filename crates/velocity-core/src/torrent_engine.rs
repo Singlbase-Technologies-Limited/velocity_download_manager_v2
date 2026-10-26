@@ -3,8 +3,7 @@
 //! (ADR-0014, `crates/velocity-torrent`); only `crates/velocity-lt` calls it. Direct downloads
 //! never pass through this contract, and torrents never pass through `DirectTransfer`.
 //!
-//! The contract grows with #62's later parts: file selection and metadata (magnets), seeding
-//! policies, trackers and port mapping.
+//! The contract grows with #62's later parts: seeding policies, trackers and port mapping.
 
 use std::path::PathBuf;
 use std::sync::mpsc::Receiver;
@@ -16,7 +15,17 @@ use crate::domain::{DownloadStatus, ErrorCode, Progress, TransferError};
 /// Raised whenever a command, reply, event or shared type here changes incompatibly.
 /// Version 1 (#62): settings for finding peers; add a `.torrent` file or a magnet link, pause,
 /// resume, remove, snapshot.
-pub const TORRENT_CONTRACT_VERSION: u32 = 1;
+/// Version 2 (#62's file choice): [`TorrentSpec::choose_files`] and [`TorrentSpec::files`], the
+/// [`TorrentCommand::SetFiles`] and [`TorrentCommand::Metadata`] commands, and the Choosing files
+/// status.
+pub const TORRENT_CONTRACT_VERSION: u32 = 2;
+
+/// The most metadata bytes one [`TorrentCommand::Metadata`] reply carries. As hex, twice that fits
+/// in one message of the child-process protocol (4 MiB); a torrent's metadata may be up to 16 MiB.
+pub const METADATA_CHUNK_BYTES: usize = 1024 * 1024;
+
+// A chunk as hex, with its envelope, fits in one message (`velocity_child`'s 4 MiB).
+const _: () = assert!(METADATA_CHUNK_BYTES * 2 + 1024 < 4 * 1024 * 1024);
 
 /// The torrent engine's id for one torrent. Assigned by the engine, never reused, and never shown
 /// as the app's download id.
@@ -53,6 +62,12 @@ pub struct TorrentSpec {
     pub trackers: Vec<String>,
     /// Added paused: nothing is downloaded until it is resumed.
     pub paused: bool,
+    /// Download nothing until [`TorrentEngine::set_files`] chooses the files: a magnet fetches
+    /// its metadata, then waits in Choosing files; a `.torrent` file waits there at once.
+    pub choose_files: bool,
+    /// For a `.torrent` file, the files to download, by [`crate::torrent::TorrentFile::index`];
+    /// `None` downloads every file. Not with a magnet link, nor with `choose_files`.
+    pub files: Option<Vec<u32>>,
 }
 
 /// The state of one torrent.
@@ -100,6 +115,55 @@ impl Default for TorrentSettings {
     }
 }
 
+/// Part of a torrent's metadata: `d4:info<info dictionary>e`, `total` bytes in all, of which this
+/// chunk holds the bytes from `offset` as lowercase hex. The app joins the chunks and checks them
+/// with [`crate::torrent::parse_metadata`] before keeping them.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct MetadataChunk {
+    pub total: u64,
+    pub offset: u64,
+    pub hex: String,
+}
+
+impl MetadataChunk {
+    /// At most `max` bytes of `metadata` from `offset`; empty past the end.
+    pub fn of(metadata: &[u8], offset: u64, max: usize) -> Self {
+        let start = usize::try_from(offset)
+            .unwrap_or(usize::MAX)
+            .min(metadata.len());
+        let end = start.saturating_add(max).min(metadata.len());
+        MetadataChunk {
+            total: metadata.len() as u64,
+            offset,
+            hex: metadata[start..end]
+                .iter()
+                .map(|b| format!("{b:02x}"))
+                .collect(),
+        }
+    }
+
+    /// The chunk's bytes. Hex that isn't lowercase pairs of digits is refused: it came from
+    /// another process.
+    pub fn bytes(&self) -> Result<Vec<u8>, ErrorCode> {
+        let digit = |c: u8| match c {
+            b'0'..=b'9' => Some(c - b'0'),
+            b'a'..=b'f' => Some(c - b'a' + 10),
+            _ => None,
+        };
+        let hex = self.hex.as_bytes();
+        if !hex.len().is_multiple_of(2) {
+            return Err(ErrorCode::EngineIncompatible);
+        }
+        hex.chunks(2)
+            .map(|pair| match (digit(pair[0]), digit(pair[1])) {
+                (Some(h), Some(l)) => Ok(h * 16 + l),
+                _ => Err(ErrorCode::EngineIncompatible),
+            })
+            .collect()
+    }
+}
+
 /// What the torrent engine reports on its own.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "camelCase", deny_unknown_fields)]
@@ -128,6 +192,13 @@ pub trait TorrentEngine: Send {
     fn resume(&mut self, id: TorrentId) -> Result<(), ErrorCode>;
     /// Forgets a torrent. Its files are always kept: deleting them is the manager's decision.
     fn remove(&mut self, id: TorrentId) -> Result<(), ErrorCode>;
+    /// Downloads exactly `files`, by [`crate::torrent::TorrentFile::index`], and none of the
+    /// others: at once, after Choosing files, and later to add or drop files. Files already on
+    /// disk are never deleted. `InvalidInput` for an empty list, a duplicate, a padding file or an
+    /// index the torrent hasn't; `InvalidState` before the metadata is known.
+    fn set_files(&mut self, id: TorrentId, files: Vec<u32>) -> Result<(), ErrorCode>;
+    /// Part of the torrent's metadata, from `offset`. `InvalidState` before it is known.
+    fn metadata(&self, id: TorrentId, offset: u64) -> Result<MetadataChunk, ErrorCode>;
     /// The current state of every torrent the engine has.
     fn snapshot(&self) -> Result<Vec<TorrentSnapshot>, ErrorCode>;
     /// A new receiver for this engine's events, from the moment it subscribed.
@@ -145,6 +216,8 @@ pub enum TorrentCommand {
     Pause { id: TorrentId },
     Resume { id: TorrentId },
     Remove { id: TorrentId },
+    SetFiles { id: TorrentId, files: Vec<u32> },
+    Metadata { id: TorrentId, offset: u64 },
     Snapshot {},
 }
 
@@ -155,6 +228,7 @@ pub enum TorrentReply {
     Version { libtorrent: String },
     Added { id: TorrentId },
     Done {},
+    Metadata { chunk: MetadataChunk },
     Snapshot { torrents: Vec<TorrentSnapshot> },
 }
 
@@ -187,6 +261,13 @@ pub fn dispatch(
             engine.remove(id)?;
             TorrentReply::Done {}
         }
+        TorrentCommand::SetFiles { id, files } => {
+            engine.set_files(id, files)?;
+            TorrentReply::Done {}
+        }
+        TorrentCommand::Metadata { id, offset } => TorrentReply::Metadata {
+            chunk: engine.metadata(id, offset)?,
+        },
         TorrentCommand::Snapshot {} => TorrentReply::Snapshot {
             torrents: engine.snapshot()?,
         },
@@ -207,11 +288,30 @@ mod tests {
                 directory: PathBuf::from("d"),
                 trackers: vec!["udp://t.example:1".into()],
                 paused: true,
+                choose_files: true,
+                files: None,
             },
         };
+        // Contract 2 (#62's file choice) added `chooseFiles` and `files`.
         assert_eq!(
             serde_json::to_string(&add).unwrap(),
-            r#"{"command":"add","spec":{"source":{"kind":"magnet","uri":"magnet:?xt=urn:btih:557f8c61bcecd14914e421389d4f46c5d7c336db"},"directory":"d","trackers":["udp://t.example:1"],"paused":true}}"#
+            r#"{"command":"add","spec":{"source":{"kind":"magnet","uri":"magnet:?xt=urn:btih:557f8c61bcecd14914e421389d4f46c5d7c336db"},"directory":"d","trackers":["udp://t.example:1"],"paused":true,"chooseFiles":true,"files":null}}"#
+        );
+        let set = TorrentCommand::SetFiles {
+            id: TorrentId(2),
+            files: vec![1, 3],
+        };
+        assert_eq!(
+            serde_json::to_string(&set).unwrap(),
+            r#"{"command":"setFiles","id":2,"files":[1,3]}"#
+        );
+        let ask = TorrentCommand::Metadata {
+            id: TorrentId(2),
+            offset: 0,
+        };
+        assert_eq!(
+            serde_json::to_string(&ask).unwrap(),
+            r#"{"command":"metadata","id":2,"offset":0}"#
         );
         let file = TorrentSource::File {
             path: "a.torrent".into(),
@@ -227,8 +327,10 @@ mod tests {
         for json in [
             r#"{"command":"snapshot","extra":1}"#,
             r#"{"command":"pause","id":1,"extra":1}"#,
-            r#"{"command":"add","spec":{"source":{"kind":"file","path":"a","extra":1},"directory":"d","trackers":[],"paused":false}}"#,
-            r#"{"command":"add","spec":{"source":{"kind":"file","path":"a"},"directory":"d","trackers":[],"paused":false,"extra":1}}"#,
+            r#"{"command":"add","spec":{"source":{"kind":"file","path":"a","extra":1},"directory":"d","trackers":[],"paused":false,"chooseFiles":false,"files":null}}"#,
+            r#"{"command":"add","spec":{"source":{"kind":"file","path":"a"},"directory":"d","trackers":[],"paused":false,"chooseFiles":false,"files":null,"extra":1}}"#,
+            r#"{"command":"setFiles","id":1,"files":[1],"extra":1}"#,
+            r#"{"command":"metadata","id":1,"offset":0,"extra":1}"#,
         ] {
             assert!(
                 serde_json::from_str::<TorrentCommand>(json).is_err(),
@@ -239,6 +341,35 @@ mod tests {
             serde_json::from_str::<TorrentEvent>(r#"{"type":"removed","id":1,"extra":1}"#).is_err()
         );
         assert!(serde_json::from_str::<TorrentReply>(r#"{"reply":"done","extra":1}"#).is_err());
+        assert!(serde_json::from_str::<TorrentReply>(
+            r#"{"reply":"metadata","chunk":{"total":2,"offset":0,"hex":"6465","extra":1}}"#
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn a_metadata_chunk_carries_its_bytes_as_hex() {
+        let chunk = MetadataChunk::of(b"d4:infoe", 2, 4);
+        assert_eq!(
+            chunk,
+            MetadataChunk {
+                total: 8,
+                offset: 2,
+                hex: "3a696e66".into()
+            }
+        );
+        assert_eq!(chunk.bytes(), Ok(b":inf".to_vec()));
+        // Past the end: an empty chunk, never a panic.
+        assert_eq!(MetadataChunk::of(b"de", 5, 4).hex, "");
+        // Hex from the other side is untrusted.
+        for bad in ["3", "zz", "3A6"] {
+            let chunk = MetadataChunk {
+                total: 1,
+                offset: 0,
+                hex: bad.into(),
+            };
+            assert_eq!(chunk.bytes(), Err(ErrorCode::EngineIncompatible), "{bad}");
+        }
     }
 
     #[test]

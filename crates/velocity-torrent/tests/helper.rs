@@ -12,8 +12,10 @@ use std::time::{Duration, Instant};
 
 use sha2::{Digest, Sha256};
 use velocity_core::domain::{DownloadStatus, ErrorCode};
+use velocity_core::torrent::{parse_metadata, parse_torrent, TorrentMeta};
 use velocity_core::torrent_engine::{
-    TorrentEngine, TorrentEvent, TorrentSettings, TorrentSnapshot, TorrentSource, TorrentSpec,
+    TorrentEngine, TorrentEvent, TorrentId, TorrentSettings, TorrentSnapshot, TorrentSource,
+    TorrentSpec,
 };
 use velocity_lt::{new_session, AddParams, Session, SessionConfig, UniquePtr};
 use velocity_torrent::supervisor::{EngineHealth, SupervisedTorrentEngine, SupervisorOptions};
@@ -200,7 +202,88 @@ fn spec(source: TorrentSource, dir: &Path, trackers: Vec<String>) -> TorrentSpec
         directory: dir.to_path_buf(),
         trackers,
         paused: false,
+        choose_files: false,
+        files: None,
     }
+}
+
+/// Every file under `dir`, as paths relative to it.
+fn files_under(dir: &Path) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut stack = vec![dir.to_path_buf()];
+    while let Some(d) = stack.pop() {
+        for entry in std::fs::read_dir(&d).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                stack.push(path);
+            } else {
+                let rel = path.strip_prefix(dir).unwrap().to_string_lossy();
+                out.push(rel.replace('\\', "/"));
+            }
+        }
+    }
+    out.sort();
+    out
+}
+
+/// A torrent's whole metadata, fetched from the helper chunk by chunk.
+fn fetched_metadata(engine: &SupervisedTorrentEngine, id: TorrentId) -> Vec<u8> {
+    let mut bytes = Vec::new();
+    loop {
+        let chunk = engine.metadata(id, bytes.len() as u64).unwrap();
+        assert_eq!(chunk.offset, bytes.len() as u64);
+        bytes.extend(chunk.bytes().unwrap());
+        if bytes.len() as u64 >= chunk.total {
+            return bytes;
+        }
+    }
+}
+
+/// The index of the file at `path` (inside the torrent's folder).
+fn index_of(meta: &TorrentMeta, path: &str) -> u32 {
+    meta.files
+        .iter()
+        .find(|f| f.path.join("/") == path)
+        .unwrap_or_else(|| panic!("{path}"))
+        .index
+}
+
+/// A libtorrent session on loopback that has `name`'s metadata and none of its data: it can give a
+/// magnet's metadata to a peer, and nothing else. It wants the files, so a peer that wants nothing
+/// yet still interests it and isn't dropped before the metadata is exchanged.
+fn metadata_seeder(name: &str, dir: &Path) -> Seeder {
+    let session = new_session(&SessionConfig {
+        listen_interfaces: "127.0.0.1:0".into(),
+        user_agent: "velocity-test-seeder".into(),
+        ..Default::default()
+    })
+    .unwrap();
+    session
+        .add(&AddParams {
+            torrent: std::fs::read(corpus().join(format!("{name}.torrent"))).unwrap(),
+            save_path: dir.to_string_lossy().into_owned(),
+            ..Default::default()
+        })
+        .unwrap();
+    wait_for("the seeder to listen", 30, || session.listen_port() != 0);
+    let port = session.listen_port();
+    Seeder {
+        _session: session,
+        port,
+    }
+}
+
+/// The SHA-256 of the corpus content at `path` inside the torrent `name`.
+fn content_digest(name: &str, path: &str) -> String {
+    let (_, data) = files_of(name)
+        .into_iter()
+        .find(|(p, _)| p == path)
+        .unwrap_or_else(|| panic!("{path}"));
+    hex(&Sha256::digest(&data))
+}
+
+fn digest_on_disk(dir: &Path, path: &str) -> String {
+    hex(&Sha256::digest(std::fs::read(dir.join(path)).unwrap()))
 }
 
 fn file(name: &str) -> TorrentSource {
@@ -379,6 +462,206 @@ fn a_torrent_can_be_paused_resumed_and_removed_without_losing_its_files() {
     assert!(engine.version().unwrap().starts_with("2.0.15"));
 }
 
+/// File choice (#62): a magnet fetches its metadata, waits for the choice without writing
+/// anything, downloads only the chosen files, and downloads a file chosen after it completed.
+#[test]
+fn a_magnet_waits_for_the_file_choice_and_downloads_only_the_chosen_files() {
+    let name = "v2-multi";
+    let seed_dir = Dir::new("choose-seed");
+    let get_dir = Dir::new("choose-get");
+    let seeder = seed(name, &seed_dir.0);
+    let mut engine = helper();
+    let events = engine.subscribe();
+    let uri = manifest()["magnets"][name].as_str().unwrap().to_owned();
+    let id = engine
+        .add(TorrentSpec {
+            choose_files: true,
+            ..spec(
+                TorrentSource::Magnet { uri },
+                &get_dir.0,
+                vec![tracker(seeder.port)],
+            )
+        })
+        .unwrap();
+    let choosing = wait_status(&events, DownloadStatus::ChoosingFiles, 60);
+    assert_eq!(choosing.progress.total_bytes, None);
+    assert_eq!(
+        files_under(&get_dir.0),
+        Vec::<String>::new(),
+        "nothing is written while choosing"
+    );
+
+    // The metadata, in chunks, is the torrent's: the app checks and keeps it.
+    let meta = parse_metadata(&fetched_metadata(&engine, id)).unwrap();
+    let want = &manifest()["torrents"][name];
+    assert_eq!(meta.info_hash_v2.as_deref(), want["v2"].as_str());
+
+    let a = index_of(&meta, "v2-multi/a.bin");
+    let b = index_of(&meta, "v2-multi/sub/b.bin");
+    engine.set_files(id, vec![a, b]).unwrap();
+    let done = wait_status(&events, DownloadStatus::Completed, 120);
+    assert_eq!(done.progress.completed_bytes, 150_000 + 70_000);
+    assert_eq!(done.progress.total_bytes, Some(150_000 + 70_000));
+    assert_eq!(
+        files_under(&get_dir.0),
+        ["v2-multi/a.bin", "v2-multi/sub/b.bin"],
+        "only the chosen files are on disk"
+    );
+    for path in ["v2-multi/a.bin", "v2-multi/sub/b.bin"] {
+        assert_eq!(
+            digest_on_disk(&get_dir.0, path),
+            content_digest(name, path),
+            "{path}"
+        );
+    }
+
+    // A file chosen after it completed: it downloads again and completes again.
+    let c = index_of(&meta, "v2-multi/sub/deeper/c.bin");
+    engine.set_files(id, vec![a, b, c]).unwrap();
+    let again = wait_status(&events, DownloadStatus::Completed, 120);
+    assert_eq!(again.progress.completed_bytes, 150_000 + 70_000 + 5_000);
+    assert_eq!(
+        digest_on_disk(&get_dir.0, "v2-multi/sub/deeper/c.bin"),
+        content_digest(name, "v2-multi/sub/deeper/c.bin")
+    );
+    drop(seeder);
+}
+
+#[test]
+fn a_torrent_file_downloads_only_its_first_choice() {
+    let name = "v1-multi";
+    let seed_dir = Dir::new("first-choice-seed");
+    let get_dir = Dir::new("first-choice-get");
+    let seeder = seed(name, &seed_dir.0);
+    let meta = parse_torrent(&std::fs::read(corpus().join("v1-multi.torrent")).unwrap()).unwrap();
+    let b = index_of(&meta, "v1-multi/sub/b.bin");
+    let mut engine = helper();
+    let events = engine.subscribe();
+    engine
+        .add(TorrentSpec {
+            files: Some(vec![b]),
+            ..spec(file(name), &get_dir.0, vec![tracker(seeder.port)])
+        })
+        .unwrap();
+    let done = wait_status(&events, DownloadStatus::Completed, 120);
+    assert_eq!(
+        done.progress.completed_bytes, 70_000,
+        "only the chosen file's bytes count"
+    );
+    // A v1 piece spans files: libtorrent keeps the parts of the files nobody chose in a part file
+    // of its own, named by the info hash, never in those files.
+    let parts = format!(".{}.parts", meta.info_hash.as_deref().unwrap());
+    assert_eq!(
+        files_under(&get_dir.0),
+        [parts.as_str(), "v1-multi/sub/b.bin"]
+    );
+    assert_eq!(
+        digest_on_disk(&get_dir.0, "v1-multi/sub/b.bin"),
+        content_digest(name, "v1-multi/sub/b.bin")
+    );
+    drop(seeder);
+}
+
+/// A magnet's metadata comes from peers: unsafe names in it fail the torrent before any byte is
+/// written, where libtorrent alone would rename them and download.
+#[test]
+fn a_magnet_whose_metadata_is_unsafe_fails_before_writing_anything() {
+    let seed_dir = Dir::new("unsafe-seed");
+    let get_dir = Dir::new("unsafe-get");
+    let seeder = metadata_seeder("v2-path-traversal", &seed_dir.0);
+    let v2 = manifest()["invalid"]["v2-path-traversal.torrent"]["libtorrent"]["v2"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let mut engine = helper();
+    let events = engine.subscribe();
+    let id = engine
+        .add(spec(
+            TorrentSource::Magnet {
+                uri: format!("magnet:?xt=urn:btmh:1220{v2}"),
+            },
+            &get_dir.0,
+            vec![tracker(seeder.port)],
+        ))
+        .unwrap();
+    let failed = wait_status(&events, DownloadStatus::Failed, 60);
+    let error = failed.error.unwrap();
+    assert!(
+        error.message.contains("unsafe file name"),
+        "{}",
+        error.message
+    );
+    assert!(!error.retryable);
+    assert_eq!(files_under(&get_dir.0), Vec::<String>::new());
+    assert_eq!(engine.set_files(id, vec![1]), Err(ErrorCode::InvalidState));
+    drop(seeder);
+}
+
+#[test]
+fn file_choices_are_checked() {
+    let dir = Dir::new("choices");
+    let mut engine = helper();
+    let events = engine.subscribe();
+    // A torrent file waits in Choosing files at once.
+    let id = engine
+        .add(TorrentSpec {
+            choose_files: true,
+            ..spec(file("v2-multi"), &dir.0, vec![])
+        })
+        .unwrap();
+    wait_status(&events, DownloadStatus::ChoosingFiles, 30);
+    let meta = parse_torrent(&std::fs::read(corpus().join("v2-multi.torrent")).unwrap()).unwrap();
+    let pad = meta.files.iter().find(|f| f.pad).unwrap().index;
+    for (bad, why) in [
+        (vec![], "nothing"),
+        (vec![pad], "a padding file"),
+        (vec![99], "an index the torrent hasn't"),
+        (vec![1, 1], "a duplicate"),
+    ] {
+        assert_eq!(
+            engine.set_files(id, bad),
+            Err(ErrorCode::InvalidInput),
+            "{why}"
+        );
+    }
+    assert_eq!(files_under(&dir.0), Vec::<String>::new());
+    // Its metadata is known from the start.
+    assert_eq!(
+        parse_metadata(&fetched_metadata(&engine, id))
+            .unwrap()
+            .info_hash_v2,
+        meta.info_hash_v2
+    );
+    // A choice and "choose later" together, or a choice for a magnet: refused.
+    let both = TorrentSpec {
+        choose_files: true,
+        files: Some(vec![1]),
+        ..spec(file("v1-single"), &dir.0, vec![])
+    };
+    assert_eq!(engine.add(both), Err(ErrorCode::InvalidInput));
+    let uri = manifest()["magnets"]["v1-multi"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let magnet_with_files = TorrentSpec {
+        files: Some(vec![1]),
+        ..spec(TorrentSource::Magnet { uri: uri.clone() }, &dir.0, vec![])
+    };
+    assert_eq!(engine.add(magnet_with_files), Err(ErrorCode::InvalidInput));
+    // A magnet without peers: no metadata, so nothing can be chosen yet.
+    let waiting = engine
+        .add(spec(TorrentSource::Magnet { uri }, &dir.0, vec![]))
+        .unwrap();
+    assert_eq!(
+        engine.set_files(waiting, vec![1]),
+        Err(ErrorCode::InvalidState)
+    );
+    assert_eq!(
+        engine.metadata(waiting, 0).unwrap_err(),
+        ErrorCode::InvalidState
+    );
+}
+
 /// Dropping the supervisor stops the helper before it returns, so the helper's files can be
 /// removed straight after; on Windows an open file can't be.
 #[test]
@@ -421,7 +704,11 @@ fn a_crashed_helper_is_restarted_and_its_torrents_fail_as_retryable() {
     assert!(error.retryable, "{error:?}");
     assert_eq!(error.message, "the torrent helper stopped unexpectedly");
     let deadline = Instant::now() + Duration::from_secs(30);
-    while engine.health() != EngineHealth::Running || engine.process_id() == Some(pid) {
+    // A new helper: running, with a process of its own. Just after the kill, the old one is
+    // already retired (no process) while the health may still say Running.
+    while engine.health() != EngineHealth::Running
+        || engine.process_id().is_none_or(|now| now == pid)
+    {
         let _ = health.recv_timeout(Duration::from_millis(100));
         assert!(Instant::now() < deadline, "the helper never came back");
     }

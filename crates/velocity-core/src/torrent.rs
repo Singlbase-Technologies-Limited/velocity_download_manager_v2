@@ -718,6 +718,31 @@ pub fn normalize_info_hash(s: &str) -> Option<String> {
     }
 }
 
+/// libtorrent's priority for a file it downloads, and for one it doesn't.
+const WANTED: u8 = 4;
+const SKIPPED: u8 = 0;
+
+/// The file priorities for downloading exactly `wanted`, by [`TorrentFile::index`]: one per file
+/// in `files`' order, padding files included and never wanted. Refuses an empty choice, a
+/// duplicate, a padding file and an index `files` hasn't.
+pub fn file_priorities(files: &[TorrentFile], wanted: &[u32]) -> TorrentResult<Vec<u8>> {
+    if wanted.is_empty() {
+        return Err(bad("Choose at least one file to download."));
+    }
+    let mut priorities = vec![SKIPPED; files.len()];
+    for index in wanted {
+        let slot = files
+            .iter()
+            .position(|f| f.index == *index && !f.pad)
+            .ok_or_else(|| bad("The chosen files aren't all files of this torrent."))?;
+        if priorities[slot] == WANTED {
+            return Err(bad("A file is chosen twice."));
+        }
+        priorities[slot] = WANTED;
+    }
+    Ok(priorities)
+}
+
 /// Check a tracker URL from the settings or the user (`http`, `https` or `udp`).
 pub fn check_tracker(t: &str) -> TorrentResult<()> {
     if tracker(t.as_bytes()).as_deref() == Some(t) {
@@ -1220,6 +1245,30 @@ mod tests {
         );
         let m = parse_torrent(&torrent(info, vec![])).unwrap();
         assert_eq!(m.files[0].path, ["src", ".gitignore"]);
+    }
+
+    /// File choice (#62): one priority per file, padding included, in libtorrent's order.
+    #[test]
+    fn a_file_choice_becomes_one_priority_per_file() {
+        let f = |index: u32, pad: bool| TorrentFile {
+            index,
+            path: vec![format!("f{index}")],
+            length: 10,
+            pad,
+        };
+        let files = [f(1, false), f(2, true), f(3, false), f(4, false)];
+        assert_eq!(file_priorities(&files, &[1, 4]), Ok(vec![4, 0, 0, 4]));
+        assert_eq!(file_priorities(&files, &[4, 3, 1]), Ok(vec![4, 0, 4, 4]));
+        for (wanted, why) in [
+            (&[][..], "nothing chosen"),
+            (&[2][..], "a padding file"),
+            (&[5][..], "an index the torrent hasn't"),
+            (&[0][..], "index 0"),
+            (&[1, 1][..], "a duplicate"),
+        ] {
+            let e = file_priorities(&files, wanted).unwrap_err();
+            assert_eq!(e.code(), ErrorCode::InvalidInput, "{why}");
+        }
     }
 
     #[test]
