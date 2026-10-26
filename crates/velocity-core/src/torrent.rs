@@ -24,7 +24,8 @@ pub const MAX_FILES: usize = 100_000;
 const MAX_DEPTH: usize = 64;
 const MAX_NODES: usize = 2_000_000;
 const MAX_PATH_COMPONENTS: usize = 64;
-const MAX_TRACKERS: usize = 64;
+/// The most trackers a torrent, a magnet link or the settings may name.
+pub const MAX_TRACKERS: usize = 64;
 const MAX_TRACKER_LEN: usize = 2048;
 
 /// Which BitTorrent metadata a torrent carries.

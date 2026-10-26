@@ -11,6 +11,7 @@ use velocity_core::torrent_engine::{
 };
 
 pub mod engine;
+pub mod portmap;
 pub mod stdio;
 pub mod supervisor;
 
