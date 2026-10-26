@@ -20,6 +20,10 @@
 //!   default, ADR-0005), until its first limit is reached, and only while the seeding queue gives
 //!   it a slot ([`TorrentSettings::max_active_seeds`]). The limits count libtorrent's own seeding
 //!   time and upload totals, which its resume data keeps across restarts.
+//! - **Resume data:** libtorrent's resume data for each torrent is sent out in chunks when it
+//!   changed (at most every [`RESUME_EVERY`]), when the torrent completes, and when asked. Added
+//!   back, it is checked with the core's `check_resume_data` first, and libtorrent gets the
+//!   metadata V2 checked, not the copy inside it.
 //! - **Files are never deleted** here: removing a torrent keeps its data.
 //!
 //! libtorrent has no push status, so a poller reads every torrent's state each [`POLL_INTERVAL`]
@@ -32,22 +36,26 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::thread::{self, JoinHandle};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use velocity_core::domain::{DownloadStatus, ErrorCode, FailureClass, Progress, TransferError};
 use velocity_core::seeding::{seed_queue_plan, SeedPolicy};
 use velocity_core::torrent::{
-    check_tracker, file_priorities, parse_magnet, parse_metadata, parse_torrent, TorrentFile,
-    MAX_TORRENT_BYTES,
+    check_resume_data, check_tracker, file_priorities, parse_magnet, parse_metadata, parse_torrent,
+    TorrentFile, MAX_RESUME_BYTES, MAX_TORRENT_BYTES,
 };
 use velocity_core::torrent_engine::{
-    MetadataChunk, TorrentEngine, TorrentEvent, TorrentId, TorrentSettings, TorrentSnapshot,
-    TorrentSource, TorrentSpec, METADATA_CHUNK_BYTES,
+    Chunk, TorrentEngine, TorrentEvent, TorrentId, TorrentSettings, TorrentSnapshot, TorrentSource,
+    TorrentSpec, CHUNK_BYTES,
 };
 use velocity_lt::{state, AddParams, FileEntry, Session, SessionConfig, TorrentStatus, UniquePtr};
 
 /// How often the poller reads libtorrent's state. A starting value, not a measured one.
 pub const POLL_INTERVAL: Duration = Duration::from_millis(250);
+
+/// How often a torrent's resume data is sent at most while it changes. A starting value, not a
+/// measured one: a crash loses at most this much of the record of what was downloaded.
+pub const RESUME_EVERY: Duration = Duration::from_secs(10);
 
 /// The Azureus-style peer-id prefix: `-VD0100-` for version 0.1.0 (PO decision on #62; V1 used
 /// `-VL`, which V2 doesn't reuse).
@@ -299,6 +307,8 @@ struct Torrent {
     readd: Option<AddParams>,
     /// The last snapshot sent.
     last: Option<TorrentSnapshot>,
+    /// When its resume data was last asked for.
+    resume_asked: Option<Instant>,
 }
 
 struct State {
@@ -306,6 +316,9 @@ struct State {
     settings: TorrentSettings,
     torrents: BTreeMap<TorrentId, Torrent>,
     subscribers: Vec<Sender<TorrentEvent>>,
+    /// Resume data uploaded for the next [`TorrentSource::Resume`], and its announced size.
+    upload: Vec<u8>,
+    upload_total: u64,
 }
 
 impl State {
@@ -333,6 +346,7 @@ struct Seen {
     choose_after_metadata: bool,
     seeding: SeedPolicy,
     base: AddParams,
+    resume_asked: Option<Instant>,
 }
 
 impl Shared {
@@ -376,8 +390,10 @@ impl Shared {
                 choose_after_metadata: t.choose_after_metadata,
                 seeding: t.seeding,
                 base: t.base.clone(),
+                resume_asked: t.resume_asked,
             })
             .collect();
+        self.send_resume_data(&alerts);
         for seen in torrents {
             if let Some(params) = &seen.readd {
                 self.add_again(seen.id, params);
@@ -387,6 +403,51 @@ impl Shared {
             self.poll_one(&seen, lt, &alerts);
         }
         self.run_seed_queue();
+    }
+
+    /// Sends the resume data libtorrent saved, in chunks, for the torrents still here.
+    fn send_resume_data(&self, alerts: &[velocity_lt::AlertEntry]) {
+        let mut state = self.state();
+        for alert in alerts {
+            let saved = match alert.kind.as_str() {
+                "save_resume_data" => true,
+                "save_resume_data_failed" => false,
+                _ => continue,
+            };
+            let Some(id) = state
+                .torrents
+                .iter()
+                .find(|(_, t)| t.lt == Some(alert.id))
+                .map(|(id, _)| *id)
+            else {
+                // Removed, or added again meanwhile.
+                continue;
+            };
+            if !saved {
+                eprintln!(
+                    "the resume data of torrent {} couldn't be saved: {}",
+                    id.0, alert.message
+                );
+                continue;
+            }
+            let mut offset = 0;
+            while offset < alert.data.len() {
+                let chunk = Chunk::of(&alert.data, offset as u64, CHUNK_BYTES);
+                offset += CHUNK_BYTES;
+                state.emit(TorrentEvent::ResumeData { id, chunk });
+            }
+        }
+    }
+
+    /// Asks libtorrent for `lt`'s resume data, and notes when.
+    fn ask_resume(&self, id: TorrentId, lt: u64) -> bool {
+        if self.session.request_resume_data(lt).is_err() {
+            return false;
+        }
+        if let Some(t) = self.state().torrents.get_mut(&id) {
+            t.resume_asked = Some(Instant::now());
+        }
+        true
     }
 
     fn tick(&self) -> u64 {
@@ -593,6 +654,16 @@ impl Shared {
         drop(state);
         if removed {
             self.session.remove(lt);
+            return;
+        }
+        // Without metadata there is nothing to add it back from: a magnet is added again by its
+        // link.
+        let due = seen
+            .resume_asked
+            .is_none_or(|asked| asked.elapsed() >= RESUME_EVERY);
+        let completed = finish.complete() && !seen.finish.complete();
+        if status.has_metadata && ((status.need_save_resume && due) || completed) {
+            self.ask_resume(seen.id, lt);
         }
     }
 
@@ -644,6 +715,8 @@ impl LtEngine {
                 settings,
                 torrents: BTreeMap::new(),
                 subscribers: Vec::new(),
+                upload: Vec::new(),
+                upload_total: 0,
             }),
             stop: AtomicBool::new(false),
             clock: AtomicU64::new(0),
@@ -721,6 +794,45 @@ impl TorrentEngine for LtEngine {
                 };
                 (first, phase, Some(meta.files), partial, Some(bytes))
             }
+            TorrentSource::Resume {} => {
+                let bytes = {
+                    let mut state = self.shared.state();
+                    let complete =
+                        !state.upload.is_empty() && state.upload.len() as u64 == state.upload_total;
+                    let bytes = std::mem::take(&mut state.upload);
+                    state.upload_total = 0;
+                    if !complete {
+                        return Err(ErrorCode::InvalidInput);
+                    }
+                    bytes
+                };
+                // The resume data holds the choice; there is none to wait for.
+                if spec.choose_files {
+                    return Err(ErrorCode::InvalidInput);
+                }
+                let checked = check_resume_data(&bytes).map_err(|e| e.code())?;
+                let priorities = match &spec.files {
+                    Some(wanted) => {
+                        file_priorities(&checked.meta.files, wanted).map_err(|e| e.code())?
+                    }
+                    // The resume data's own choice.
+                    None => Vec::new(),
+                };
+                let first = AddParams {
+                    torrent: checked.metadata.clone(),
+                    resume_data: bytes,
+                    file_priorities: priorities,
+                    ..base.clone()
+                };
+                // Its phase is known once libtorrent has read the choice.
+                (
+                    first,
+                    Phase::Wanted,
+                    Some(checked.meta.files),
+                    false,
+                    Some(checked.metadata),
+                )
+            }
             TorrentSource::Magnet { uri } => {
                 // Its files are chosen once its metadata is known and checked.
                 if spec.files.is_some() {
@@ -749,6 +861,19 @@ impl TorrentEngine for LtEngine {
                 ErrorCode::InvalidInput
             }
         })?;
+        let (phase, partial) = if let TorrentSource::Resume {} = spec.source {
+            // From the files libtorrent wants now: none chosen means Choosing files.
+            let entries = self.shared.session.files(lt).unwrap_or_default();
+            let all = entries.iter().filter(|f| !f.pad).count();
+            let wanted = entries.iter().filter(|f| !f.pad && f.priority > 0).count();
+            if wanted == 0 && all > 0 {
+                (Phase::Choosing, false)
+            } else {
+                (Phase::Wanted, wanted < all)
+            }
+        } else {
+            (phase, partial)
+        };
         let mut state = self.shared.state();
         let id = TorrentId(state.next_id);
         state.next_id += 1;
@@ -766,6 +891,7 @@ impl TorrentEngine for LtEngine {
                 metadata,
                 readd: None,
                 last: None,
+                resume_asked: None,
             },
         );
         Ok(id)
@@ -868,14 +994,14 @@ impl TorrentEngine for LtEngine {
         Ok(())
     }
 
-    fn metadata(&self, id: TorrentId, offset: u64) -> Result<MetadataChunk, ErrorCode> {
+    fn metadata(&self, id: TorrentId, offset: u64) -> Result<Chunk, ErrorCode> {
         let (lt, _) = self.shared.lt_of(id)?;
         let bytes = self
             .shared
             .session
             .metadata(lt)
             .map_err(|_| ErrorCode::InvalidState)?;
-        Ok(MetadataChunk::of(&bytes, offset, METADATA_CHUNK_BYTES))
+        Ok(Chunk::of(&bytes, offset, CHUNK_BYTES))
     }
 
     fn set_seeding(&mut self, id: TorrentId, seeding: SeedPolicy) -> Result<(), ErrorCode> {
@@ -890,6 +1016,47 @@ impl TorrentEngine for LtEngine {
             torrent.finish = Finish::SeedQueued { since };
         }
         Ok(())
+    }
+
+    fn upload(&mut self, chunk: Chunk) -> Result<(), ErrorCode> {
+        let bytes = chunk.bytes().map_err(|_| ErrorCode::InvalidInput)?;
+        let mut state = self.shared.state();
+        if chunk.offset == 0 {
+            state.upload.clear();
+            state.upload_total = chunk.total;
+        }
+        let fits = chunk.total <= MAX_RESUME_BYTES as u64
+            && chunk.total == state.upload_total
+            && chunk.offset == state.upload.len() as u64
+            && (state.upload.len() + bytes.len()) as u64 <= chunk.total;
+        if !fits {
+            state.upload = Vec::new();
+            state.upload_total = 0;
+            return Err(ErrorCode::InvalidInput);
+        }
+        state.upload.extend(bytes);
+        Ok(())
+    }
+
+    fn save_resume(&mut self) -> Result<Vec<TorrentId>, ErrorCode> {
+        let torrents: Vec<(TorrentId, u64)> = self
+            .shared
+            .state()
+            .torrents
+            .iter()
+            .filter_map(|(id, t)| t.lt.map(|lt| (*id, lt)))
+            .collect();
+        Ok(torrents
+            .into_iter()
+            .filter(|(_, lt)| {
+                self.shared
+                    .session
+                    .status(*lt)
+                    .is_ok_and(|s| s.has_metadata)
+            })
+            .filter(|(id, lt)| self.shared.ask_resume(*id, *lt))
+            .map(|(id, _)| id)
+            .collect())
     }
 
     fn snapshot(&self) -> Result<Vec<TorrentSnapshot>, ErrorCode> {

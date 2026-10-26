@@ -16,8 +16,8 @@ pub use velocity_core::domain::{DownloadStatus, ErrorCode};
 pub use velocity_core::seeding::SeedPolicy;
 pub use velocity_core::torrent::{parse_metadata, parse_torrent, TorrentMeta};
 pub use velocity_core::torrent_engine::{
-    TorrentEngine, TorrentEvent, TorrentId, TorrentSettings, TorrentSnapshot, TorrentSource,
-    TorrentSpec,
+    Chunk, TorrentEngine, TorrentEvent, TorrentId, TorrentSettings, TorrentSnapshot, TorrentSource,
+    TorrentSpec, CHUNK_BYTES,
 };
 pub use velocity_lt::{new_session, AddParams, Session, SessionConfig, UniquePtr};
 pub use velocity_torrent::supervisor::{EngineHealth, SupervisedTorrentEngine, SupervisorOptions};

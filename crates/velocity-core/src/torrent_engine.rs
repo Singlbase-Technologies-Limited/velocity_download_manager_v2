@@ -3,7 +3,7 @@
 //! (ADR-0014, `crates/velocity-torrent`); only `crates/velocity-lt` calls it. Direct downloads
 //! never pass through this contract, and torrents never pass through `DirectTransfer`.
 //!
-//! The contract grows with #62's later parts: seeding policies, trackers and port mapping.
+//! The contract grows with #62's last part: trackers and port mapping.
 
 use std::path::PathBuf;
 use std::sync::mpsc::Receiver;
@@ -19,14 +19,20 @@ use crate::seeding::{SeedPolicy, MAX_ACTIVE_SEEDS};
 /// Version 2 (#62's file choice): [`TorrentSpec::choose_files`] and [`TorrentSpec::files`], the
 /// [`TorrentCommand::SetFiles`] and [`TorrentCommand::Metadata`] commands, and the Choosing files
 /// status.
-pub const TORRENT_CONTRACT_VERSION: u32 = 2;
+/// Version 3 (#62's lifecycle part): seeding ([`TorrentSpec::seeding`],
+/// [`TorrentSettings::max_active_seeds`], the seeding fields of [`TorrentSnapshot`] and
+/// [`TorrentCommand::SetSeeding`]); resume data ([`TorrentSource::Resume`],
+/// [`TorrentEvent::ResumeData`], [`TorrentCommand::Upload`] and [`TorrentCommand::SaveResume`]);
+/// `MetadataChunk` renamed [`Chunk`], with the same JSON.
+pub const TORRENT_CONTRACT_VERSION: u32 = 3;
 
-/// The most metadata bytes one [`TorrentCommand::Metadata`] reply carries. As hex, twice that fits
-/// in one message of the child-process protocol (4 MiB); a torrent's metadata may be up to 16 MiB.
-pub const METADATA_CHUNK_BYTES: usize = 1024 * 1024;
+/// The most bytes one [`Chunk`] carries. As hex, twice that fits in one message of the
+/// child-process protocol (4 MiB); a torrent's metadata may be up to 16 MiB, and its resume data
+/// up to [`crate::torrent::MAX_RESUME_BYTES`].
+pub const CHUNK_BYTES: usize = 1024 * 1024;
 
 // A chunk as hex, with its envelope, fits in one message (`velocity_child`'s 4 MiB).
-const _: () = assert!(METADATA_CHUNK_BYTES * 2 + 1024 < 4 * 1024 * 1024);
+const _: () = assert!(CHUNK_BYTES * 2 + 1024 < 4 * 1024 * 1024);
 
 /// The torrent engine's id for one torrent. Assigned by the engine, never reused, and never shown
 /// as the app's download id.
@@ -49,6 +55,11 @@ pub enum TorrentSource {
     /// A magnet link, checked with [`crate::torrent::parse_magnet`]; libtorrent gets its
     /// canonical form only.
     Magnet { uri: String },
+    /// libtorrent resume data, sent before with [`TorrentCommand::Upload`] and checked with
+    /// [`crate::torrent::check_resume_data`]: the torrent comes back with its metadata, its
+    /// pieces, its file choice and its seeding totals, without checking its files again. The
+    /// spec's folder, trackers, pause and policy apply; `files` changes the choice.
+    Resume {},
 }
 
 /// One torrent to add.
@@ -139,25 +150,25 @@ impl TorrentSettings {
     }
 }
 
-/// Part of a torrent's metadata: `d4:info<info dictionary>e`, `total` bytes in all, of which this
-/// chunk holds the bytes from `offset` as lowercase hex. The app joins the chunks and checks them
-/// with [`crate::torrent::parse_metadata`] before keeping them.
+/// Part of a byte string too large for one message: a torrent's metadata (`d4:info…e`, which the
+/// app checks with [`crate::torrent::parse_metadata`] before keeping it) or its resume data.
+/// `total` bytes in all, of which this chunk holds the bytes from `offset` as lowercase hex.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct MetadataChunk {
+pub struct Chunk {
     pub total: u64,
     pub offset: u64,
     pub hex: String,
 }
 
-impl MetadataChunk {
+impl Chunk {
     /// At most `max` bytes of `metadata` from `offset`; empty past the end.
     pub fn of(metadata: &[u8], offset: u64, max: usize) -> Self {
         let start = usize::try_from(offset)
             .unwrap_or(usize::MAX)
             .min(metadata.len());
         let end = start.saturating_add(max).min(metadata.len());
-        MetadataChunk {
+        Chunk {
             total: metadata.len() as u64,
             offset,
             hex: metadata[start..end]
@@ -199,6 +210,14 @@ pub enum TorrentEvent {
     Removed {
         id: TorrentId,
     },
+    /// libtorrent's resume data for the torrent, in chunks of at most [`CHUNK_BYTES`] sent in
+    /// order: sent when it changed (at most every few seconds), when the torrent completes, and
+    /// for [`TorrentCommand::SaveResume`]. It may hold tracker addresses with passkeys: it is
+    /// never logged.
+    ResumeData {
+        id: TorrentId,
+        chunk: Chunk,
+    },
 }
 
 /// Commands fail with an [`ErrorCode`]: `NotFound` for an unknown id, `InvalidInput` for metadata,
@@ -222,11 +241,18 @@ pub trait TorrentEngine: Send {
     /// index the torrent hasn't; `InvalidState` before the metadata is known.
     fn set_files(&mut self, id: TorrentId, files: Vec<u32>) -> Result<(), ErrorCode>;
     /// Part of the torrent's metadata, from `offset`. `InvalidState` before it is known.
-    fn metadata(&self, id: TorrentId, offset: u64) -> Result<MetadataChunk, ErrorCode>;
+    fn metadata(&self, id: TorrentId, offset: u64) -> Result<Chunk, ErrorCode>;
     /// Sets when the torrent stops seeding. A completed torrent whose new policy isn't met yet
     /// seeds again, through the seeding queue; one seeding whose new policy is met stops, so
     /// [`SeedPolicy::Never`] stops seeding. `InvalidInput` for a policy outside its limits.
     fn set_seeding(&mut self, id: TorrentId, seeding: SeedPolicy) -> Result<(), ErrorCode>;
+    /// Part of the resume data the next [`TorrentSource::Resume`] adds from, in order from offset
+    /// 0, which starts it anew. `InvalidInput` for a chunk out of order, or more than
+    /// [`crate::torrent::MAX_RESUME_BYTES`] in all.
+    fn upload(&mut self, chunk: Chunk) -> Result<(), ErrorCode>;
+    /// Asks for every torrent's resume data now; it follows as [`TorrentEvent::ResumeData`].
+    /// Returns the torrents asked for.
+    fn save_resume(&mut self) -> Result<Vec<TorrentId>, ErrorCode>;
     /// The current state of every torrent the engine has.
     fn snapshot(&self) -> Result<Vec<TorrentSnapshot>, ErrorCode>;
     /// A new receiver for this engine's events, from the moment it subscribed.
@@ -247,6 +273,8 @@ pub enum TorrentCommand {
     SetFiles { id: TorrentId, files: Vec<u32> },
     Metadata { id: TorrentId, offset: u64 },
     SetSeeding { id: TorrentId, seeding: SeedPolicy },
+    Upload { chunk: Chunk },
+    SaveResume {},
     Snapshot {},
 }
 
@@ -257,7 +285,8 @@ pub enum TorrentReply {
     Version { libtorrent: String },
     Added { id: TorrentId },
     Done {},
-    Metadata { chunk: MetadataChunk },
+    Metadata { chunk: Chunk },
+    Saved { ids: Vec<TorrentId> },
     Snapshot { torrents: Vec<TorrentSnapshot> },
 }
 
@@ -301,6 +330,13 @@ pub fn dispatch(
             engine.set_seeding(id, seeding)?;
             TorrentReply::Done {}
         }
+        TorrentCommand::Upload { chunk } => {
+            engine.upload(chunk)?;
+            TorrentReply::Done {}
+        }
+        TorrentCommand::SaveResume {} => TorrentReply::Saved {
+            ids: engine.save_resume()?,
+        },
         TorrentCommand::Snapshot {} => TorrentReply::Snapshot {
             torrents: engine.snapshot()?,
         },
@@ -339,6 +375,36 @@ mod tests {
         assert_eq!(
             serde_json::to_string(&seeding).unwrap(),
             r#"{"command":"setSeeding","id":2,"seeding":{"mode":"never"}}"#
+        );
+        assert_eq!(
+            serde_json::to_string(&TorrentSource::Resume {}).unwrap(),
+            r#"{"kind":"resume"}"#
+        );
+        let upload = TorrentCommand::Upload {
+            chunk: Chunk::of(b"de", 0, CHUNK_BYTES),
+        };
+        assert_eq!(
+            serde_json::to_string(&upload).unwrap(),
+            r#"{"command":"upload","chunk":{"total":2,"offset":0,"hex":"6465"}}"#
+        );
+        assert_eq!(
+            serde_json::to_string(&TorrentCommand::SaveResume {}).unwrap(),
+            r#"{"command":"saveResume"}"#
+        );
+        assert_eq!(
+            serde_json::to_string(&TorrentReply::Saved {
+                ids: vec![TorrentId(1)]
+            })
+            .unwrap(),
+            r#"{"reply":"saved","ids":[1]}"#
+        );
+        assert_eq!(
+            serde_json::to_string(&TorrentEvent::ResumeData {
+                id: TorrentId(1),
+                chunk: Chunk::of(b"de", 0, CHUNK_BYTES),
+            })
+            .unwrap(),
+            r#"{"type":"resumeData","id":1,"chunk":{"total":2,"offset":0,"hex":"6465"}}"#
         );
         assert_eq!(
             serde_json::to_string(&TorrentSettings::default()).unwrap(),
@@ -380,6 +446,9 @@ mod tests {
             r#"{"command":"metadata","id":1,"offset":0,"extra":1}"#,
             r#"{"command":"setSeeding","id":1,"seeding":{"mode":"never"},"extra":1}"#,
             r#"{"command":"setSeeding","id":1,"seeding":{"mode":"never","extra":1}}"#,
+            r#"{"command":"saveResume","extra":1}"#,
+            r#"{"command":"upload","chunk":{"total":2,"offset":0,"hex":"6465","extra":1}}"#,
+            r#"{"command":"add","spec":{"source":{"kind":"resume","extra":1},"directory":"d","trackers":[],"paused":false,"chooseFiles":false,"files":null,"seeding":{"mode":"never"}}}"#,
         ] {
             assert!(
                 serde_json::from_str::<TorrentCommand>(json).is_err(),
@@ -417,10 +486,10 @@ mod tests {
 
     #[test]
     fn a_metadata_chunk_carries_its_bytes_as_hex() {
-        let chunk = MetadataChunk::of(b"d4:infoe", 2, 4);
+        let chunk = Chunk::of(b"d4:infoe", 2, 4);
         assert_eq!(
             chunk,
-            MetadataChunk {
+            Chunk {
                 total: 8,
                 offset: 2,
                 hex: "3a696e66".into()
@@ -428,10 +497,10 @@ mod tests {
         );
         assert_eq!(chunk.bytes(), Ok(b":inf".to_vec()));
         // Past the end: an empty chunk, never a panic.
-        assert_eq!(MetadataChunk::of(b"de", 5, 4).hex, "");
+        assert_eq!(Chunk::of(b"de", 5, 4).hex, "");
         // Hex from the other side is untrusted.
         for bad in ["3", "zz", "3A6"] {
-            let chunk = MetadataChunk {
+            let chunk = Chunk {
                 total: 1,
                 offset: 0,
                 hex: bad.into(),

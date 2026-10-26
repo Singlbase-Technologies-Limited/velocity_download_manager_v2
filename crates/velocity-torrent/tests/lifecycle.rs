@@ -210,3 +210,227 @@ fn policies_and_limits_outside_v1s_ranges_are_refused() {
         Err(ErrorCode::InvalidInput)
     );
 }
+
+/// Sends `data` to the helper in chunks and adds the torrent from it.
+fn restore(
+    engine: &mut SupervisedTorrentEngine,
+    data: &[u8],
+    spec: TorrentSpec,
+) -> Result<TorrentId, ErrorCode> {
+    let mut offset = 0;
+    while offset < data.len() {
+        let chunk = Chunk::of(data, offset as u64, CHUNK_BYTES);
+        offset += chunk.bytes().unwrap().len();
+        engine.upload(chunk)?;
+    }
+    engine.add(TorrentSpec {
+        source: TorrentSource::Resume {},
+        ..spec
+    })
+}
+
+/// The resume data of torrent `id`, asked for now.
+fn saved(engine: &SupervisedTorrentEngine, id: TorrentId) -> Vec<u8> {
+    let mut all = engine.collect_resume_data(Duration::from_secs(20)).unwrap();
+    all.remove(&id)
+        .unwrap_or_else(|| panic!("no resume data for {id:?}"))
+}
+
+fn resumed(dir: &Path) -> TorrentSpec {
+    spec(TorrentSource::Resume {}, dir, vec![])
+}
+
+/// V1's `restart_recovers_interrupted_torrent_without_duplicates`: a new helper continues a torrent
+/// from its resume data without downloading it again (there is no peer), with the file choice that
+/// only the resume data holds, and only once.
+#[test]
+fn a_new_helper_continues_from_resume_data_without_downloading_again() {
+    let name = "v1-multi";
+    let dir = Dir::new("restart");
+    place_files(name, &dir.0);
+    let meta =
+        parse_torrent(&std::fs::read(corpus().join(format!("{name}.torrent"))).unwrap()).unwrap();
+    let first = meta.user_files().next().unwrap().clone();
+    let data = {
+        let (mut engine, events) = helper_with(0);
+        let id = engine
+            .add(TorrentSpec {
+                files: Some(vec![first.index]),
+                ..spec(file(name), &dir.0, vec![])
+            })
+            .unwrap();
+        wait_snapshot(&events, id, "completed", 60, completed);
+        saved(&engine, id)
+    };
+
+    // No tracker, no peer: only the resume data can complete it.
+    let (mut engine, events) = helper_with(0);
+    let id = restore(&mut engine, &data, resumed(&dir.0)).unwrap();
+    let done = wait_snapshot(&events, id, "completed", 60, completed);
+    assert_eq!(
+        done.progress.total_bytes,
+        Some(first.length),
+        "its choice is kept"
+    );
+    assert_eq!(done.progress.completed_bytes, first.length);
+    assert_eq!(done.name.as_deref(), Some(name));
+    // Once only.
+    assert_eq!(
+        restore(&mut engine, &data, resumed(&dir.0)),
+        Err(ErrorCode::FileExists)
+    );
+    assert_eq!(engine.snapshot().unwrap().len(), 1);
+}
+
+/// V1's `a_paused_torrent_stays_paused_after_restart`.
+#[test]
+fn a_paused_torrent_stays_paused_after_restart() {
+    let dir = Dir::new("restart-paused");
+    let paused = |source| TorrentSpec {
+        paused: true,
+        ..spec(source, &dir.0, vec![])
+    };
+    let data = {
+        let (mut engine, events) = helper_with(0);
+        let id = engine.add(paused(file("v1-single"))).unwrap();
+        wait_snapshot(&events, id, "paused", 30, |s| {
+            s.status == DownloadStatus::Paused
+        });
+        saved(&engine, id)
+    };
+    let (mut engine, events) = helper_with(0);
+    let id = restore(&mut engine, &data, paused(TorrentSource::Resume {})).unwrap();
+    wait_snapshot(&events, id, "paused", 30, |s| {
+        s.status == DownloadStatus::Paused
+    });
+    thread::sleep(Duration::from_secs(1));
+    let now = engine.snapshot().unwrap();
+    assert_eq!(now[0].status, DownloadStatus::Paused, "{now:?}");
+}
+
+/// V1's `seeding_resumes_after_restart_without_redownloading`: the seeding totals come back with
+/// the resume data, so a policy already met doesn't seed again.
+#[test]
+fn seeding_totals_survive_a_restart() {
+    let name = "v1-multi";
+    let dir = Dir::new("restart-seed");
+    let leech_dir = Dir::new("restart-seed-leech");
+    let tracker = swarm_tracker();
+    let ratio = SeedPolicy::Ratio { ratio: 1.0 };
+    let total: u64 = files_of(name).iter().map(|(_, d)| d.len() as u64).sum();
+    let data = {
+        let (mut engine, events) = helper_with(0);
+        let id = add_complete(&mut engine, name, &dir.0, &tracker, ratio);
+        wait_snapshot(&events, id, "seeding", 60, seeding);
+        let _leecher = leech(name, &leech_dir.0, &tracker);
+        wait_snapshot(&events, id, "completed", 120, completed);
+        saved(&engine, id)
+    };
+    let (mut engine, events) = helper_with(0);
+    let id = restore(
+        &mut engine,
+        &data,
+        TorrentSpec {
+            seeding: ratio,
+            ..resumed(&dir.0)
+        },
+    )
+    .unwrap();
+    let done = wait_snapshot(&events, id, "completed", 60, completed);
+    assert!(
+        done.uploaded_bytes >= total,
+        "{} of {total}",
+        done.uploaded_bytes
+    );
+}
+
+/// V1's `magnet_recovers_after_restart_using_saved_metadata`: a magnet whose metadata came from a
+/// peer comes back with it, without the peer.
+#[test]
+fn a_magnet_comes_back_with_its_metadata_after_a_restart() {
+    let name = "v2-single";
+    let dir = Dir::new("restart-magnet");
+    let seed_dir = Dir::new("restart-magnet-seed");
+    let uri = manifest()["magnets"][name].as_str().unwrap().to_owned();
+    let (data, metadata) = {
+        let seeder = metadata_seeder(name, &seed_dir.0);
+        let (mut engine, events) = helper_with(0);
+        let id = engine
+            .add(TorrentSpec {
+                choose_files: true,
+                ..spec(
+                    TorrentSource::Magnet { uri },
+                    &dir.0,
+                    vec![tracker(seeder.port)],
+                )
+            })
+            .unwrap();
+        wait_snapshot(&events, id, "choosing files", 60, |s| {
+            s.status == DownloadStatus::ChoosingFiles
+        });
+        (saved(&engine, id), fetched_metadata(&engine, id))
+    };
+    let (mut engine, events) = helper_with(0);
+    let id = restore(&mut engine, &data, resumed(&dir.0)).unwrap();
+    let back = wait_snapshot(&events, id, "choosing files", 30, |s| {
+        s.status == DownloadStatus::ChoosingFiles
+    });
+    assert_eq!(back.name.as_deref(), Some(name));
+    assert_eq!(fetched_metadata(&engine, id), metadata);
+    let meta = parse_metadata(&metadata).unwrap();
+    let index = meta.user_files().next().unwrap().index;
+    engine.set_files(id, vec![index]).unwrap();
+    wait_snapshot(&events, id, "downloading", 30, |s| {
+        s.status == DownloadStatus::Downloading
+    });
+}
+
+#[test]
+fn resume_data_is_checked_before_libtorrent_reads_it() {
+    let dir = Dir::new("restart-refused");
+    let data = {
+        let (mut engine, events) = helper_with(0);
+        let id = engine
+            .add(TorrentSpec {
+                paused: true,
+                ..spec(file("v1-single"), &dir.0, vec![])
+            })
+            .unwrap();
+        wait_snapshot(&events, id, "paused", 30, |s| {
+            s.status == DownloadStatus::Paused
+        });
+        saved(&engine, id)
+    };
+    let (mut engine, _events) = helper_with(0);
+    // Nothing uploaded.
+    assert_eq!(engine.add(resumed(&dir.0)), Err(ErrorCode::InvalidInput));
+    // A chunk out of order.
+    assert_eq!(
+        engine.upload(Chunk::of(&data, 1, CHUNK_BYTES)),
+        Err(ErrorCode::InvalidInput)
+    );
+    // Only its first part.
+    engine.upload(Chunk::of(&data, 0, 10)).unwrap();
+    assert_eq!(engine.add(resumed(&dir.0)), Err(ErrorCode::InvalidInput));
+    // Changed on its way: an entry libtorrent never writes.
+    let tampered = String::from_utf8_lossy(&data).replacen("6:paused", "6:pausex", 1);
+    assert_ne!(tampered.as_bytes(), data.as_slice());
+    assert_eq!(
+        restore(&mut engine, tampered.as_bytes(), resumed(&dir.0)),
+        Err(ErrorCode::InvalidInput)
+    );
+    // No choice can be waited for: the resume data has it.
+    assert_eq!(
+        restore(
+            &mut engine,
+            &data,
+            TorrentSpec {
+                choose_files: true,
+                ..resumed(&dir.0)
+            }
+        ),
+        Err(ErrorCode::InvalidInput)
+    );
+    assert_eq!(engine.snapshot().unwrap(), [], "nothing was added");
+    restore(&mut engine, &data, resumed(&dir.0)).unwrap();
+}
