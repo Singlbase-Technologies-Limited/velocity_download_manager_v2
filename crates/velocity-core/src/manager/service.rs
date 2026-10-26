@@ -7,6 +7,8 @@
 //!   local time ([`Manager::tick`]), and starts what may run.
 //! - **Snapshots:** when the snapshot changed, it is sent, at most every [`SNAPSHOT_EVERY`]: the
 //!   UI gets each change, and a busy download doesn't flood it (V1 polled every 250 ms to 5 s).
+//! - **Closing:** dropping the service saves every torrent's resume data first, for up to
+//!   [`CLOSE_WAIT`] ([`Manager::prepare_to_close`]).
 
 use std::sync::mpsc::{sync_channel, Receiver, RecvTimeoutError, SyncSender};
 use std::thread::{self, JoinHandle};
@@ -24,6 +26,9 @@ pub const SNAPSHOT_EVERY: Duration = Duration::from_millis(250);
 const CALL_TIMEOUT: Duration = Duration::from_secs(30);
 /// Commands that may wait for the manager at once.
 const PENDING_CALLS: usize = 64;
+/// How long closing waits for the torrent helper's resume data, so torrents come back where they
+/// were (#58).
+const CLOSE_WAIT: Duration = Duration::from_secs(5);
 
 type Job = Box<dyn FnOnce(&mut Manager) + Send>;
 
@@ -74,7 +79,11 @@ impl ManagerService {
 }
 
 impl Drop for ManagerService {
+    /// Asks the torrent helper for every torrent's resume data, for up to [`CLOSE_WAIT`], then
+    /// stops the thread.
     fn drop(&mut self) {
+        // A manager that stopped already has nothing more to save.
+        let _ = self.call(|m| m.prepare_to_close(CLOSE_WAIT, now_ms()));
         self.jobs = None;
         if let Some(thread) = self.thread.take() {
             // A panic on the manager's thread has already been reported by the panic hook.
@@ -247,10 +256,36 @@ mod tests {
     }
 
     #[test]
+    fn closing_asks_the_torrent_helper_for_its_resume_data_first() {
+        use crate::torrent_engine::fake::FakeTorrentEngine;
+        let lt = FakeTorrentEngine::new();
+        let torrents = lt.control();
+        let manager = Manager::open(
+            Box::new(FakeTransfer::new()),
+            Arc::new(Database::open_in_memory().unwrap()),
+        )
+        .unwrap()
+        .with_torrents(Box::new(lt));
+        let service = ManagerService::start(manager, |_| {});
+        drop(service);
+        assert_eq!(torrents.log(), ["save_resume"]);
+    }
+
+    #[test]
     fn the_thread_ends_when_the_service_is_dropped() {
         let (service, _control, rx) = service();
         drop(service);
-        // The sender went with the thread.
-        assert!(rx.recv_timeout(Duration::from_secs(2)).is_err());
+        // The sender went with the thread; a last snapshot may come before it does.
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            let left = deadline.saturating_duration_since(Instant::now());
+            match rx.recv_timeout(left) {
+                Ok(_) => continue,
+                Err(e) => {
+                    assert_eq!(e, std::sync::mpsc::RecvTimeoutError::Disconnected);
+                    break;
+                }
+            }
+        }
     }
 }

@@ -23,7 +23,7 @@ use crate::torrent_files::{delete_owned, Kept, OwnedFile, OwnedPaths};
 
 /// How long a file that can't be deleted yet is tried again: on Windows, a file is deleted only
 /// once nothing has it open.
-const DELETE_WAIT: Duration = Duration::from_secs(2);
+pub(super) const DELETE_WAIT: Duration = Duration::from_secs(2);
 
 impl Manager {
     /// Retries a failed or removed download: the engine forgets the old transfer, and the download
@@ -45,7 +45,10 @@ impl Manager {
         let checkpoint = self.database.checkpoint(id).map_err(|e| e.code)?;
         let d = self.downloads.get_mut(id).expect("known");
         let removed = d.record.status == DownloadStatus::Removed;
-        d.resume = Some(resume_from(&d.record.source_url, checkpoint.as_ref()));
+        let resume = resume_from(&d.record.source_url, checkpoint.as_ref());
+        if let Some(job) = d.direct_mut() {
+            job.resume = Some(resume);
+        }
         d.paused = false;
         d.running = false;
         let record = &mut d.record;
@@ -86,7 +89,7 @@ impl Manager {
     ) -> Result<Vec<(PathBuf, Kept)>, ErrorCode> {
         let d = self.downloads.get(id).ok_or(ErrorCode::NotFound)?;
         let finished = d.record.status.is_terminal();
-        let engine_had_it = d.transfer.is_some();
+        let engine_had_it = d.transfer().is_some();
         self.forget_transfer(id, finished)?;
         let mut d = self.take(id);
         if !finished {
@@ -102,9 +105,17 @@ impl Manager {
         }
         // The engine discards the part file of a transfer it cancels; the manager deletes that of
         // an unfinished download the engine never had, as cancelling it would have.
-        let part = (delete_files && finished) || (!finished && !engine_had_it);
-        let file = delete_files && d.record.status == DownloadStatus::Completed;
-        let kept = delete_own_files(&d, part, file);
+        let kept = if matches!(d.job, super::Job::Torrent(_)) {
+            if delete_files {
+                self.delete_torrent_files(id, &d)
+            } else {
+                Vec::new()
+            }
+        } else {
+            let part = (delete_files && finished) || (!finished && !engine_had_it);
+            let file = delete_files && d.record.status == DownloadStatus::Completed;
+            delete_own_files(&d, part, file)
+        };
         self.fill();
         Ok(kept)
     }
@@ -137,7 +148,14 @@ impl Manager {
     /// Has the engine forget the download's transfer: `remove` for a finished one, `cancel` for
     /// one still running. One the engine no longer knows is forgotten already.
     fn forget_transfer(&mut self, id: &str, finished: bool) -> Result<(), ErrorCode> {
-        let Some(transfer) = self.downloads.get(id).and_then(|d| d.transfer) else {
+        if self
+            .downloads
+            .get(id)
+            .is_some_and(|d| d.torrent().is_some())
+        {
+            return self.forget_torrent(id);
+        }
+        let Some(transfer) = self.downloads.get(id).and_then(|d| d.transfer()) else {
             return Ok(());
         };
         let result = if finished {
@@ -150,7 +168,9 @@ impl Manager {
             Err(code) => return Err(code),
         }
         self.by_transfer.remove(&transfer);
-        self.downloads.get_mut(id).expect("known").transfer = None;
+        if let Some(job) = self.downloads.get_mut(id).expect("known").direct_mut() {
+            job.transfer = None;
+        }
         Ok(())
     }
 

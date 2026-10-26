@@ -25,6 +25,7 @@ use crate::domain::{
 use crate::metalink::{self, Metalink};
 use crate::performance::PerformanceSettings;
 use crate::queue::QueueSettings;
+use crate::torrent_engine::{MissingTorrentEngine, TorrentEngine, TorrentEvent, TorrentId};
 use crate::transfer::{
     lost_by_engine, DirectTransfer, Limits, Resume, TransferEvent, TransferId, TransferSpec,
 };
@@ -37,6 +38,31 @@ use std::sync::Arc;
 
 struct Download {
     record: DownloadRecord,
+    /// What its engine needs.
+    job: Job,
+    /// The engine runs it now, so it holds a slot.
+    running: bool,
+    /// The user paused it, or it was added paused: it waits for a resume.
+    paused: bool,
+    /// It runs only while the schedule's window is open.
+    scheduled: bool,
+    /// When the engine's events last saved it; progress alone is saved at most every
+    /// [`persist::PROGRESS_SAVE_MS`].
+    saved_at_ms: Option<u64>,
+    /// It came back after a restart without the login it had (#70); it waits, paused, for
+    /// [`Manager::set_login`].
+    needs_login: bool,
+}
+
+/// What a download's engine needs: the direct-download engine's or the torrent helper's.
+enum Job {
+    /// Both boxed, so a download stays small whichever engine it is for.
+    Direct(Box<DirectJob>),
+    Torrent(Box<torrents::TorrentJob>),
+}
+
+/// A direct download's part.
+struct DirectJob {
     /// What the engine is given to start it, without a resume. It keeps any login in memory only,
     /// for a retry in this session (#70).
     request: TransferSpec,
@@ -45,20 +71,19 @@ struct Download {
     resume: Option<Resume>,
     /// `None` until the engine is given the download, and once it has forgotten the transfer.
     transfer: Option<TransferId>,
-    /// The engine runs it now, so it holds a slot.
-    running: bool,
-    /// The user paused it, or it was added paused: it waits for a resume.
-    paused: bool,
-    /// It runs only while the schedule's window is open.
-    scheduled: bool,
     /// The file's media type, as the engine reported it (#54).
     content_type: Option<String>,
-    /// When the engine's events last saved it; progress alone is saved at most every
-    /// [`persist::PROGRESS_SAVE_MS`].
-    saved_at_ms: Option<u64>,
-    /// It came back after a restart without the login it had (#70); it waits, paused, for
-    /// [`Manager::resume_with`].
-    needs_login: bool,
+}
+
+impl DirectJob {
+    fn new(request: TransferSpec, resume: Option<Resume>) -> Self {
+        DirectJob {
+            request,
+            resume,
+            transfer: None,
+            content_type: None,
+        }
+    }
 }
 
 /// How a new download starts (V1's `startPaused` and `scheduled`).
@@ -105,8 +130,12 @@ pub struct Manager {
     /// Stored records this build can't read, or whose engine it doesn't run yet.
     unavailable: Vec<crate::database::StoredDownload>,
     events: Receiver<TransferEvent>,
+    /// The torrent engine: the torrent helper in the app ([`Manager::with_torrents`]).
+    torrents: Box<dyn TorrentEngine>,
+    torrent_events: Receiver<TorrentEvent>,
     downloads: BTreeMap<String, Download>,
     by_transfer: HashMap<TransferId, String>,
+    by_torrent: HashMap<TorrentId, String>,
     next_id: u64,
     /// The unfinished downloads in queue order; the first waiting ones start first.
     order: Vec<String>,
@@ -132,6 +161,46 @@ fn is_direct_status(status: DownloadStatus) -> bool {
 }
 
 impl Download {
+    fn direct(&self) -> Option<&DirectJob> {
+        match &self.job {
+            Job::Direct(job) => Some(job.as_ref()),
+            Job::Torrent(_) => None,
+        }
+    }
+
+    fn direct_mut(&mut self) -> Option<&mut DirectJob> {
+        match &mut self.job {
+            Job::Direct(job) => Some(job.as_mut()),
+            Job::Torrent(_) => None,
+        }
+    }
+
+    /// Its transfer, while the direct-download engine has it.
+    fn transfer(&self) -> Option<TransferId> {
+        self.direct().and_then(|job| job.transfer)
+    }
+
+    /// Its torrent, while the helper has it.
+    fn torrent(&self) -> Option<TorrentId> {
+        match &self.job {
+            Job::Torrent(job) => job.torrent,
+            Job::Direct(_) => None,
+        }
+    }
+
+    /// It holds a slot of the queue: running, and for a torrent, fetching its metadata or
+    /// downloading. One choosing files or seeding runs without a slot (PO decision on #58).
+    fn holds_slot(&self) -> bool {
+        self.running
+            && match self.job {
+                Job::Direct(_) => true,
+                Job::Torrent(_) => !matches!(
+                    self.record.status,
+                    DownloadStatus::ChoosingFiles | DownloadStatus::Seeding
+                ),
+            }
+    }
+
     /// It may take a slot: not paused, not finished, and not waiting for the schedule.
     fn may_run(&self, window_open: bool) -> bool {
         !self.paused && !self.record.status.is_terminal() && (!self.scheduled || window_open)
@@ -151,7 +220,13 @@ impl Manager {
     /// An empty manager; [`Manager::open`] loads what the database kept.
     fn new(mut engine: Box<dyn DirectTransfer>, database: Arc<Database>) -> Self {
         let events = engine.subscribe();
+        let mut torrents: Box<dyn TorrentEngine> =
+            Box::new(MissingTorrentEngine::new(ErrorCode::EngineMissing));
+        let torrent_events = torrents.subscribe();
         Self {
+            torrents,
+            torrent_events,
+            by_torrent: HashMap::new(),
             engine,
             database,
             unsaved: BTreeSet::new(),
@@ -246,18 +321,16 @@ impl Manager {
                 created_at_ms: now_ms,
                 completed_at_ms: None,
             },
-            request: spec,
-            resume: None,
-            transfer: None,
+            job: Job::Direct(Box::new(DirectJob::new(spec, None))),
             running: false,
             paused,
             scheduled: options.scheduled,
-            content_type: None,
             saved_at_ms: None,
             needs_login: false,
         };
         download.record.status = download.waiting_status();
-        let mut new = NewDownload::from_transfer(&id, kind, &download.request, now_ms);
+        let request = &download.direct().expect("a direct download").request;
+        let mut new = NewDownload::from_transfer(&id, kind, request, now_ms);
         new.status = download.record.status;
         self.database.insert_download(&new).map_err(|e| e.code)?;
         let starts_now = download.may_run(self.window_open) && self.free_slots() > 0;
@@ -381,9 +454,9 @@ impl Manager {
         if d.paused || d.record.status.is_terminal() {
             return Err(ErrorCode::InvalidState);
         }
-        if let (true, Some(transfer)) = (d.running, d.transfer) {
+        if d.running {
             // Its status comes from the engine's event.
-            self.engine.pause(transfer)?;
+            self.pause_in_engine(id)?;
         }
         let d = self.downloads.get_mut(id).expect("known");
         d.paused = true;
@@ -419,7 +492,13 @@ impl Manager {
         if d.record.status.is_terminal() {
             return Err(ErrorCode::InvalidState);
         }
-        match d.transfer {
+        if d.torrent().is_some() {
+            // The helper forgets it, and keeps its files, as V1 did; its status is the manager's.
+            self.forget_torrent(id)?;
+        }
+        let d = self.downloads.get_mut(id).expect("known");
+        d.running = false;
+        match d.transfer() {
             Some(transfer) => self.engine.cancel(transfer),
             None => {
                 d.record.status = DownloadStatus::Removed;
@@ -475,9 +554,14 @@ impl Manager {
             if d.paused {
                 continue;
             }
-            if let (true, Some(transfer)) = (d.running, d.transfer) {
+            if d.running {
                 // Its status comes from the engine's event.
-                if let Err(code) = self.engine.pause(transfer) {
+                let paused = match (d.transfer(), d.torrent()) {
+                    (Some(transfer), _) => self.engine.pause(transfer),
+                    (None, Some(torrent)) => self.torrents.pause(torrent),
+                    (None, None) => Ok(()),
+                };
+                if let Err(code) = paused {
                     first_error.get_or_insert(code);
                     continue;
                 }
@@ -578,7 +662,7 @@ impl Manager {
     /// Applies every pending engine event to the records, starts what the freed slots allow, and
     /// returns how many events were applied.
     pub fn pump(&mut self, now_ms: u64) -> usize {
-        let mut applied = 0;
+        let mut applied = self.apply_torrent_events(now_ms);
         while let Ok(event) = self.events.try_recv() {
             if self.apply(event, now_ms) {
                 applied += 1;
@@ -613,8 +697,8 @@ impl Manager {
         let by_name = crate::naming::extension_of(&name)
             .is_some_and(|e| matches!(e.to_ascii_lowercase().as_str(), "meta4" | "metalink"));
         let by_type = download
-            .content_type
-            .as_deref()
+            .direct()
+            .and_then(|job| job.content_type.as_deref())
             .is_some_and(|t| matches!(t, "application/metalink4+xml" | "application/metalink+xml"));
         if !by_name && !by_type {
             return;
@@ -699,6 +783,7 @@ impl Manager {
                 .map(|(id, _)| id.clone())
                 .collect(),
             engine: self.engine_health(),
+            torrent_engine: self.torrents.health(),
             storage_error: self.storage_error.as_ref().map(|e| e.code),
         }
     }
@@ -709,7 +794,7 @@ impl Manager {
 
     /// Slots the limit leaves free.
     fn free_slots(&self) -> usize {
-        let running = self.downloads.values().filter(|d| d.running).count();
+        let running = self.downloads.values().filter(|d| d.holds_slot()).count();
         (self.settings.max_concurrent_downloads as usize).saturating_sub(running)
     }
 
@@ -718,16 +803,17 @@ impl Manager {
     /// with the reason; one it refuses to pause keeps its slot until its next event.
     fn fill(&mut self) {
         let window_open = self.window_open;
-        let stopping: Vec<(String, TransferId)> = self
+        let stopping: Vec<String> = self
             .order
             .iter()
-            .filter_map(|id| {
-                let d = &self.downloads[id];
-                (d.running && !d.may_run(window_open)).then_some((id.clone(), d.transfer?))
+            .filter(|id| {
+                let d = &self.downloads[*id];
+                d.running && !d.may_run(window_open)
             })
+            .cloned()
             .collect();
-        for (id, transfer) in stopping {
-            if self.engine.pause(transfer).is_ok() {
+        for id in stopping {
+            if self.pause_in_engine(&id).is_ok() {
                 self.downloads.get_mut(&id).expect("known").running = false;
             }
         }
@@ -764,24 +850,40 @@ impl Manager {
         self.flush();
     }
 
+    /// Pauses the download in whichever engine has it.
+    fn pause_in_engine(&mut self, id: &str) -> Result<(), ErrorCode> {
+        let d = &self.downloads[id];
+        match (d.transfer(), d.torrent()) {
+            (Some(transfer), _) => self.engine.pause(transfer),
+            (None, Some(torrent)) => self.torrents.pause(torrent),
+            (None, None) => Ok(()),
+        }
+    }
+
     /// Gives the engine a waiting download: a new transfer while the engine doesn't know it, a
     /// resume after that. A new transfer for a download that ran before resumes from what it left
     /// on disk, under the name it was saved as.
     fn start(&mut self, id: &str) -> Result<(), ErrorCode> {
         let d = self.downloads.get_mut(id).expect("known");
-        match d.transfer {
+        let name = d.record.file_name.clone();
+        let Some(job) = d.direct_mut() else {
+            self.start_torrent(id)?;
+            self.downloads.get_mut(id).expect("known").running = true;
+            return Ok(());
+        };
+        match job.transfer {
             Some(transfer) => self.engine.resume(transfer)?,
             None => {
-                let mut spec = d.request.clone();
+                let mut spec = job.request.clone();
                 // A resume gives the name the file is saved as; a download the server never named
                 // has nothing on disk to resume, and starts afresh.
-                if let (Some(resume), Some(name)) = (d.resume.clone(), &d.record.file_name) {
-                    spec.file_name = Some(name.clone());
+                if let (Some(resume), Some(name)) = (job.resume.clone(), name) {
+                    spec.file_name = Some(name);
                     spec.resume = Some(resume);
                 }
                 let transfer = self.engine.add(spec)?;
-                d.transfer = Some(transfer);
-                d.resume = None;
+                job.transfer = Some(transfer);
+                job.resume = None;
                 self.by_transfer.insert(transfer, id.to_owned());
             }
         }
@@ -824,8 +926,10 @@ impl Manager {
                 if snapshot.file_name.is_some() {
                     record.file_name = snapshot.file_name;
                 }
-                if snapshot.content_type.is_some() {
-                    download.content_type = snapshot.content_type;
+                if let (Some(content_type), Some(job)) =
+                    (snapshot.content_type, download.direct_mut())
+                {
+                    job.content_type = Some(content_type);
                 }
                 let record = &mut download.record;
                 if record.status == DownloadStatus::Completed && record.completed_at_ms.is_none() {
@@ -856,7 +960,9 @@ impl Manager {
                     return false;
                 };
                 if let Some(download) = self.downloads.get_mut(&app_id) {
-                    download.transfer = None;
+                    if let Some(job) = download.direct_mut() {
+                        job.transfer = None;
+                    }
                     download.running = false;
                 }
                 true
@@ -882,10 +988,12 @@ mod options;
 mod persist;
 mod recovery;
 mod service;
+mod torrents;
 
 pub use batch::MAX_BATCH;
 pub use recovery::SensitiveOptions;
 pub use service::{ManagerService, SNAPSHOT_EVERY, TICK};
+pub use torrents::TorrentRequest;
 
 #[cfg(test)]
 mod tests;

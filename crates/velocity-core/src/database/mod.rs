@@ -14,11 +14,13 @@ mod checkpoints;
 mod downloads;
 mod queue;
 mod settings;
+mod torrents;
 
 pub use downloads::{
     resume_from, without_login, Engine, NewDownload, Stored, StoredDownload, StoredOptions,
 };
 pub use queue::QueueEntry;
+pub use torrents::{StoredTorrent, TorrentOptions, TorrentOrigin};
 
 use std::fmt;
 use std::path::{Path, PathBuf};
@@ -34,6 +36,7 @@ const MIGRATIONS: &[M<'static>] = &[
     M::up(include_str!("../../migrations/0002_checkpoints.sql")),
     M::up(include_str!("../../migrations/0003_queue.sql")),
     M::up(include_str!("../../migrations/0004_verification.sql")),
+    M::up(include_str!("../../migrations/0005_torrents.sql")),
 ];
 
 /// The migrations this build applies.
@@ -368,7 +371,7 @@ mod tests {
     #[test]
     fn the_migrations_are_valid() {
         assert_eq!(migrations().validate(), Ok(()));
-        assert_eq!(latest_schema_version(), 4);
+        assert_eq!(latest_schema_version(), 5);
     }
 
     #[test]
@@ -486,8 +489,8 @@ mod tests {
             db.insert_download(&sample("d-0001")).unwrap();
         }
         let db = Database::open(&dir.db()).expect("upgrades");
-        // To the latest schema, 4 since #58.
-        assert_eq!(db.schema_version(), Ok(4));
+        // To the latest schema, 5 since #58's torrents.
+        assert_eq!(db.schema_version(), Ok(5));
         assert_eq!(db.downloads().unwrap()[0].id, "d-0001");
         db.save_checkpoint("d-0001", &checkpoint(), 5).unwrap();
         assert!(dir.names().iter().any(|n| n.contains(".bak-v1-")));
@@ -503,8 +506,8 @@ mod tests {
             db.insert_download(&sample("d-0001")).unwrap();
         }
         let db = Database::open(&dir.db()).expect("upgrades");
-        // To the latest schema, 4 since #58.
-        assert_eq!(db.schema_version(), Ok(4));
+        // To the latest schema, 5 since #58's torrents.
+        assert_eq!(db.schema_version(), Ok(5));
         assert_eq!(db.downloads().unwrap()[0].id, "d-0001");
         let entry = QueueEntry {
             id: "d-0001".to_owned(),
@@ -525,7 +528,8 @@ mod tests {
             db.insert_download(&sample("d-0001")).unwrap();
         }
         let db = Database::open(&dir.db()).expect("upgrades");
-        assert_eq!(db.schema_version(), Ok(4));
+        // To the latest schema, 5 since #58's torrents.
+        assert_eq!(db.schema_version(), Ok(5));
         let before = db.downloads().unwrap().remove(0);
         assert_eq!(before.id, "d-0001");
         assert_eq!(before.verification, None);
@@ -863,5 +867,133 @@ mod tests {
             .err()
             .unwrap();
         assert_eq!(e.code, ErrorCode::InvalidInput);
+    }
+
+    /// Torrents in the database (#58): their options, metadata and resume data, in schema 5.
+    mod torrents {
+        use super::*;
+        use crate::database::{StoredTorrent, TorrentOptions, TorrentOrigin};
+        use crate::seeding::SeedPolicy;
+
+        fn torrent_row(id: &str) -> NewDownload {
+            NewDownload {
+                engine: Engine::Libtorrent,
+                kind: DownloadKind::Magnet,
+                source_url: "magnet:?xt=urn:btih:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                    .to_owned(),
+                file_name: None,
+                ..sample(id)
+            }
+        }
+
+        fn options() -> TorrentOptions {
+            TorrentOptions {
+                origin: TorrentOrigin::Magnet {
+                    uri: "magnet:?xt=urn:btih:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_owned(),
+                },
+                choose_files: true,
+                files: Some(vec![0, 2]),
+                seeding: SeedPolicy::Ratio { ratio: 1.5 },
+                upload_limit: 65_536,
+                download_limit: 0,
+            }
+        }
+
+        #[test]
+        fn a_torrent_is_stored_with_its_options_and_routed_to_libtorrent() {
+            let db = Database::open_in_memory().unwrap();
+            db.insert_torrent(&torrent_row("d-0001"), &options())
+                .unwrap();
+            let d = db.downloads().unwrap().remove(0);
+            assert_eq!(
+                d.route(),
+                Ok(Engine::Libtorrent),
+                "no direct options needed"
+            );
+            assert_eq!(
+                db.torrent("d-0001").unwrap(),
+                Some(StoredTorrent {
+                    options: Stored::Known(options()),
+                    metadata: None,
+                    resume_data: None,
+                })
+            );
+            assert_eq!(db.torrent("d-0002").unwrap(), None);
+        }
+
+        #[test]
+        fn metadata_resume_data_and_options_are_saved_and_replaced() {
+            let db = Database::open_in_memory().unwrap();
+            db.insert_torrent(&torrent_row("d-0001"), &options())
+                .unwrap();
+            db.save_torrent_metadata("d-0001", b"d4:infod4:name1:aee", 5)
+                .unwrap();
+            db.save_torrent_resume("d-0001", b"resume one", 6).unwrap();
+            db.save_torrent_resume("d-0001", b"resume two", 7).unwrap();
+            let mut changed = options();
+            changed.files = Some(vec![1]);
+            db.update_torrent_options("d-0001", &changed).unwrap();
+            let t = db.torrent("d-0001").unwrap().unwrap();
+            assert_eq!(t.metadata.as_deref(), Some(&b"d4:infod4:name1:aee"[..]));
+            assert_eq!(t.resume_data.as_deref(), Some(&b"resume two"[..]));
+            assert_eq!(t.options, Stored::Known(changed));
+            assert_eq!(
+                db.save_torrent_resume("d-0009", b"x", 8)
+                    .map_err(|e| e.code),
+                Err(ErrorCode::NotFound)
+            );
+        }
+
+        #[test]
+        fn the_hashes_and_upload_of_a_torrent_are_saved() {
+            let db = Database::open_in_memory().unwrap();
+            db.insert_torrent(&torrent_row("d-0001"), &options())
+                .unwrap();
+            db.update_torrent_identity("d-0001", Some("ab".repeat(20).as_str()), None, 4096)
+                .unwrap();
+            let d = db.downloads().unwrap().remove(0);
+            assert_eq!(d.info_hash.as_deref(), Some("ab".repeat(20).as_str()));
+            assert_eq!(d.info_hash_v2, None);
+            assert_eq!(d.uploaded_bytes, 4096);
+        }
+
+        #[test]
+        fn options_this_build_cant_read_are_unknown() {
+            let db = Database::open_in_memory().unwrap();
+            db.insert_torrent(&torrent_row("d-0001"), &options())
+                .unwrap();
+            db.conn()
+                .execute("UPDATE torrents SET options_json = '{\"later\":1}'", [])
+                .unwrap();
+            let t = db.torrent("d-0001").unwrap().unwrap();
+            assert_eq!(t.options, Stored::Unknown("{\"later\":1}".to_owned()));
+        }
+
+        #[test]
+        fn a_torrent_goes_with_its_download() {
+            let db = Database::open_in_memory().unwrap();
+            db.insert_torrent(&torrent_row("d-0001"), &options())
+                .unwrap();
+            db.delete_download("d-0001").unwrap();
+            assert_eq!(db.torrent("d-0001").unwrap(), None);
+        }
+
+        #[test]
+        fn schema_4_is_upgraded_with_its_downloads_and_gains_torrents() {
+            // Migration 0005 (#58), from the previous schema with a record in it.
+            let dir = Dir::new("v4-to-v5");
+            {
+                let db = open_with(&dir.db(), &Migrations::from_slice(&MIGRATIONS[..4])).unwrap();
+                assert_eq!(db.schema_version(), Ok(4));
+                db.insert_download(&sample("d-0001")).unwrap();
+            }
+            let db = Database::open(&dir.db()).expect("upgrades");
+            assert_eq!(db.schema_version(), Ok(5));
+            assert_eq!(db.downloads().unwrap()[0].id, "d-0001");
+            db.insert_torrent(&torrent_row("d-0002"), &options())
+                .unwrap();
+            assert!(db.torrent("d-0002").unwrap().is_some());
+            assert!(dir.names().iter().any(|n| n.contains(".bak-v4-")));
+        }
     }
 }

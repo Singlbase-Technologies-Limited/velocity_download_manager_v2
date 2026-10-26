@@ -850,22 +850,6 @@ pub fn check_resume_data(bytes: &[u8]) -> TorrentResult<CheckedResume> {
             }
         }
     }
-    let strings = |v: Option<&B<'_>>| -> TorrentResult<Vec<String>> {
-        let mut out = Vec::new();
-        let mut stack: Vec<&B<'_>> = v.into_iter().collect();
-        while let Some(v) = stack.pop() {
-            match v {
-                B::List(items) => stack.extend(items),
-                B::Bytes(b) => out.push(
-                    std::str::from_utf8(b)
-                        .map_err(|_| bad("The torrent's resume data has an invalid URL."))?
-                        .to_owned(),
-                ),
-                _ => return Err(bad("The torrent's resume data has an invalid URL.")),
-            }
-        }
-        Ok(out)
-    };
     for tracker in strings(get(top, "trackers"))? {
         check_tracker(&tracker)?;
     }
@@ -892,6 +876,49 @@ pub fn check_resume_data(bytes: &[u8]) -> TorrentResult<CheckedResume> {
         }
     }
     Ok(CheckedResume { metadata, meta })
+}
+
+/// The URLs in a resume data entry: a list of URLs, or of lists of them (tracker tiers).
+fn strings(v: Option<&B<'_>>) -> TorrentResult<Vec<String>> {
+    let mut out = Vec::new();
+    let mut stack: Vec<&B<'_>> = v.into_iter().collect();
+    while let Some(v) = stack.pop() {
+        match v {
+            B::List(items) => stack.extend(items.iter().rev()),
+            B::Bytes(b) => out.push(
+                std::str::from_utf8(b)
+                    .map_err(|_| bad("The torrent's resume data has an invalid URL."))?
+                    .to_owned(),
+            ),
+            _ => return Err(bad("The torrent's resume data has an invalid URL.")),
+        }
+    }
+    Ok(out)
+}
+
+/// Resume data checked with [`check_resume_data`], without its trackers, and the trackers it had,
+/// in tier order. Tracker addresses can carry a private tracker's passkey, so the app stores the
+/// resume data without them and keeps the trackers elsewhere (PO decision on #58: the OS
+/// keychain, #70).
+pub fn strip_trackers(bytes: &[u8]) -> TorrentResult<(Vec<u8>, Vec<String>)> {
+    check_resume_data(bytes)?;
+    let mut p = Parser {
+        b: bytes,
+        pos: 0,
+        nodes: 0,
+    };
+    let B::Dict(top) = p.value(0)? else {
+        return Err(bad("The torrent's resume data is not a dictionary."));
+    };
+    let Some((value, (start, end))) = get_span(&top, "trackers") else {
+        return Ok((bytes.to_vec(), Vec::new()));
+    };
+    let trackers = strings(Some(value))?;
+    // The key, `8:trackers`, is right before its value.
+    let key = b"8:trackers".len();
+    let mut without = bytes[..start - key].to_vec();
+    without.extend_from_slice(&bytes[end..]);
+    Ok((without, trackers))
 }
 
 /// The keys libtorrent 2.0.15 writes in resume data (`write_resume_data`): those seen in its
@@ -1249,7 +1276,7 @@ fn hex(bytes: &[u8]) -> String {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::bencode::{encode, Value};
     use super::*;
     use sha1::{Digest, Sha1};
@@ -1283,7 +1310,7 @@ mod tests {
         encode(&Value::dict(entries))
     }
 
-    fn sha1_hex(b: &[u8]) -> String {
+    pub(crate) fn sha1_hex(b: &[u8]) -> String {
         hex(&Sha1::digest(b))
     }
 
@@ -1686,7 +1713,8 @@ mod tests {
 
     /// A v1 multi-file info dictionary, and libtorrent resume data for it with the keys
     /// libtorrent 2.0.15 writes for a torrent being downloaded, plus `extra`.
-    fn resume_for(info: &Value, extra: Vec<(&str, Value)>) -> Vec<u8> {
+    /// libtorrent-shaped resume data for `info`; `extra` entries replace those of the same key.
+    pub(crate) fn resume_for(info: &Value, extra: Vec<(&str, Value)>) -> Vec<u8> {
         let info_hash = Sha1::digest(encode(info)).to_vec();
         let mut entries = vec![
             ("file-format", Value::str("libtorrent resume file")),
@@ -1734,7 +1762,8 @@ mod tests {
         encode(&Value::dict(entries))
     }
 
-    fn album() -> Value {
+    /// A two-file torrent's info dictionary: `album/a.bin` (20,000 bytes), `album/b.bin` (12,000).
+    pub(crate) fn album() -> Value {
         multi(
             "album",
             vec![file(&["a.bin"], 20_000), file(&["b.bin"], 12_000)],
@@ -1754,6 +1783,58 @@ mod tests {
         assert_eq!(checked.meta.name, "album");
         assert_eq!(checked.meta.info_hash, Some(sha1_hex(&encode(&info))));
         assert_eq!(checked.meta.files.len(), 2);
+    }
+
+    /// Tracker passkeys never reach the database (PO decision on #58): the resume data is stored
+    /// without its trackers.
+    #[test]
+    fn trackers_are_taken_out_of_resume_data_and_the_rest_is_kept() {
+        let info = album();
+        let with = resume_for(&info, vec![]);
+        let (without, trackers) = strip_trackers(&with).unwrap();
+        assert_eq!(
+            trackers,
+            vec!["udp://tracker.example:80/announce".to_owned()]
+        );
+        let text = String::from_utf8_lossy(&without);
+        assert!(!text.contains("tracker.example"), "{text}");
+        assert!(!text.contains("8:trackers"));
+        let checked = check_resume_data(&without).expect("still resume data libtorrent reads");
+        assert_eq!(checked.meta.name, "album");
+        assert_eq!(
+            without.len(),
+            with.len() - "8:trackersll33:udp://tracker.example:80/announceee".len()
+        );
+        // Without trackers already, nothing changes.
+        assert_eq!(
+            strip_trackers(&without).unwrap(),
+            (without.clone(), Vec::new())
+        );
+    }
+
+    #[test]
+    fn every_tier_of_trackers_is_taken_out() {
+        let info = album();
+        let tiers = Value::List(vec![
+            Value::List(vec![
+                Value::str("https://a.example/announce?passkey=secret1"),
+                Value::str("https://b.example/announce"),
+            ]),
+            Value::List(vec![Value::str("udp://c.example:6969/secret2/announce")]),
+        ]);
+        let with = resume_for(&info, vec![("trackers", tiers)]);
+        let (without, trackers) = strip_trackers(&with).unwrap();
+        assert_eq!(trackers.len(), 3);
+        let text = String::from_utf8_lossy(&without);
+        assert!(
+            !text.contains("secret1") && !text.contains("secret2"),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn resume_data_that_isnt_libtorrents_isnt_stripped_but_refused() {
+        assert!(strip_trackers(b"not bencode").is_err());
     }
 
     #[test]

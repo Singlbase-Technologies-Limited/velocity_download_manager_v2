@@ -11,7 +11,19 @@ rust-version.workspace = true
 [dependencies]
 velocity-core = { path = "../velocity-core" }
 velocity-child = { path = "../velocity-child" }
-velocity-lt = { path = "../velocity-lt" }
+velocity-lt = { path = "../velocity-lt", optional = true }
+
+# `engine` is libtorrent itself, for the helper program. The app depends on this crate without
+# it, for the helper's client and supervisor only, and never links libtorrent (PO decision on
+# #58).
+[features]
+default = ["engine"]
+engine = ["dep:velocity-lt"]
+
+[[bin]]
+name = "velocity-torrent"
+path = "src/main.rs"
+required-features = ["engine"]
 
 [dev-dependencies]
 velocity-test-http = { path = "../velocity-test-http" }

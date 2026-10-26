@@ -12,8 +12,9 @@ V2 downloads BitTorrent v1, v2 and hybrid torrents with libtorrent 2.0.15 ([ADR-
 | Seeding rules | [`crates/velocity-core/src/seeding.rs`](../crates/velocity-core/src/seeding.rs) | Seeding policies, when seeding ends, and the seeding queue |
 | Deleting files | [`crates/velocity-core/src/torrent_files.rs`](../crates/velocity-core/src/torrent_files.rs) | Which files a torrent owns, and deleting only those |
 | The contract | [`crates/velocity-core/src/torrent_engine.rs`](../crates/velocity-core/src/torrent_engine.rs) | `TorrentEngine`, the commands, replies and events |
+| Torrents in the manager | [`crates/velocity-core/src/manager/torrents.rs`](../crates/velocity-core/src/manager/torrents.rs) | Adding, queueing, storing and restoring torrents, and deleting their files ([In the app](#in-the-app-58)) |
 
-libtorrent runs in the **torrent helper**, a child process the app starts and supervises. A crash in libtorrent therefore ends only the helper ([ADR-0014](decisions/0014-torrent-helper-child-process.md)). The helper speaks the same protocol as the direct-download engine, and the same supervisor restarts it ([ENGINE_PROTOCOL.md](ENGINE_PROTOCOL.md)). The app doesn't start the helper yet; #58 wires it in.
+libtorrent runs in the **torrent helper**, a child process the app starts and supervises. A crash in libtorrent therefore ends only the helper ([ADR-0014](decisions/0014-torrent-helper-child-process.md)). The helper speaks the same protocol as the direct-download engine, and the same supervisor restarts it ([ENGINE_PROTOCOL.md](ENGINE_PROTOCOL.md)). The app starts it from beside its own executable (#58). The app depends on `velocity-torrent` without its `engine` feature, so it gets the helper's client and supervisor and never links libtorrent; only the helper program turns the feature on (PO decision on #58).
 
 How libtorrent, Boost and OpenSSL are built is in [BUILDING_NATIVE.md](BUILDING_NATIVE.md#libtorrent).
 
@@ -51,7 +52,7 @@ Torrent metadata and magnet links are untrusted input. `velocity_core::torrent` 
 - **Peers:** a torrent that wanted nothing, or completed and stopped, has dropped its peers. Leaving Choosing files, or getting more files after completing, removes it from the session and adds it again with the new choice, so it finds peers as a new torrent does, and libtorrent checks the files already on disk. In the tests, without this a torrent waited longer than 120 s for peers.
 - **Libtorrent's part file:** in a v1 or hybrid torrent a piece can span two files. When only one of them is chosen, libtorrent keeps the other file's part of that piece in a file of its own, `.<info hash>.parts`, in the torrent's folder, never in the unchosen file.
 - **Progress:** with only some files chosen, progress is the chosen files' bytes, from libtorrent's per-file progress. libtorrent's own count is in whole pieces.
-- **The metadata:** `metadata` returns a torrent's metadata (`d4:info…e`) in chunks of at most 1 MiB, as hex, because metadata may be up to 16 MiB and a message at most 4 MiB. The app joins the chunks, checks them with `parse_metadata`, and keeps them (#58). The resume data holds the metadata too ([Resume data](#resume-data-and-recovery)).
+- **The metadata:** `metadata` returns a torrent's metadata (`d4:info…e`) in chunks of at most 1 MiB, as hex, because metadata may be up to 16 MiB and a message at most 4 MiB. The manager joins the chunks once the metadata is known, checks them with `parse_metadata` and against the info hash the helper reports, and keeps them ([In the app](#in-the-app-58)). The resume data holds the metadata too ([Resume data](#resume-data-and-recovery)).
 
 ## The torrent contract
 
@@ -148,8 +149,8 @@ Resume data is libtorrent's own record of a torrent: its metadata, which pieces 
   - **What libtorrent gets:** the metadata V2 checked, not the copy inside the resume data.
   - **What libtorrent trusts:** the resume data's record of which pieces are done. libtorrent doesn't check the files again, as with V1.
   - **What the spec sets:** its folder, trackers, pause and policy apply. Its `files` changes the choice; without it, the resume data's choice stands. A torrent whose resume data chose nothing waits in Choosing files.
-- **Where it is kept:** the supervisor keeps each torrent's latest resume data in memory. Storing it, so torrents come back after the app restarts, is #58's (PO decision on #62), and so is how tracker passkeys inside it are stored.
-  - **Before the app closes:** it calls `collect_resume_data`, which asks the helper and waits for every torrent's fresh copy.
+- **Where it is kept:** the supervisor keeps each torrent's latest resume data in memory, and the manager stores it in the database without its trackers ([In the app](#in-the-app-58)).
+  - **Before the app closes:** the manager asks the helper for every torrent's resume data (`save_resume`) and waits up to 5 s for each fresh copy (`Manager::prepare_to_close`). The supervisor's `collect_resume_data` does the same for a caller without a manager.
 - **A crashed helper:**
   - **First:** its torrents fail with a retryable error.
   - **Then:** the new helper gets each one back under its own id (`restore`): from its latest resume data, otherwise from its link or file. The choice, pause and policy set since apply. Commands for it work again.
@@ -158,7 +159,7 @@ Resume data is libtorrent's own record of a torrent: its metadata, which pieces 
 
 ## Deleting a torrent's files
 
-The helper never deletes files. Deleting is the manager's decision (#58), through `velocity_core::torrent_files` (PO decision on #62).
+The helper never deletes files. Deleting is the manager's decision, through `velocity_core::torrent_files` (PO decision on #62): `Manager::remove` with its files deletes, with the torrent's stored metadata, the files ever chosen, libtorrent's part file and the folders left empty.
 
 - **What is deleted:**
   - the files ever chosen;
@@ -208,13 +209,28 @@ The settings screen is #30. A new helper starts with every kind of peer discover
 - **Not kept from V1:** `request_peer_speed_limit_kib` (aria2's "look for more peers while slower than this") is dropped, as ADR-0005 planned for a setting libtorrent can't do. libtorrent 2.0.15 has no such setting; it finds peers on its own within its connection limits.
 - **Identity:** peers see the peer-id prefix `-VD0100-` (`-VD` and the version digits), and trackers see `Velocity V2/0.1.0 libtorrent/2.0.15.0` (PO decision on #62). V1's `-VL` prefix isn't reused.
 
+## In the app (#58)
+
+The manager runs torrents beside direct downloads, through the `TorrentEngine` contract (`manager/torrents.rs`).
+
+- **Adding:** `Manager::add_torrent` takes a `.torrent` file's absolute path or a magnet link, the folder, extra trackers, the file choice, the seeding policy and the limits. It checks them first: the magnet with `parse_magnet`, each tracker with `check_tracker`, and the policy and limits against their bounds. Nothing is stored when one is refused. Adding the form is #60's.
+- **The queue** (PO decision on #58): a torrent takes a slot of the queue while it fetches its metadata or downloads, as in V1, where aria2 counted torrents. Choosing files, seeding and paused don't take one; seeding has its own limit, `maxActiveSeeds`.
+- **What is stored** (the `torrents` table, [DATA_AND_MIGRATIONS.md](DATA_AND_MIGRATIONS.md)):
+  - where it came from: the `.torrent` file's path, or the magnet link without its trackers;
+  - the file choice, the seeding policy and the limits;
+  - its metadata, once known and checked;
+  - its resume data, without its trackers (`torrent::strip_trackers`), saved whenever the helper sends it;
+  - its info hashes and upload, on its `downloads` row.
+- **Tracker passkeys** (PO decision on #58): tracker addresses can carry a private tracker's passkey, so none is stored. Trackers given this session stay in memory. Keeping them in the OS keychain is #70; until then a private torrent comes back without its trackers after the app restarts, and finds peers only through DHT or the settings' extra trackers.
+- **Starting again:** a torrent comes back from its stored resume data (uploaded in chunks, then added with `{"kind":"resume"}`), and otherwise from where it came from. A completed torrent isn't added again; a seeding one is.
+- **A helper that stops:** its supervisor adds the torrents back under the same ids. A torrent it reports lost (`torrent_engine::lost_by_helper`) shows as waiting, with the reason, and keeps its slot; the manager doesn't add it again too.
+- **Commands:** pause, resume, cancel (the helper forgets it and its files are kept, as in V1), retry, remove with or without its files, the download limit, `choose_files` and `set_seeding`. A torrent's connections are libtorrent's, so `set_download_connections` is `UNSUPPORTED` for one.
+- **Without a helper:** when the program can't start, the app runs with `MissingTorrentEngine`: torrents wait, and the snapshot's `torrentEngine` says why.
+
 ## Not yet
 
-- **The app's side** (#58, #60, #63):
-  - storing a torrent's resume data and a magnet's metadata, and adding torrents back after the app restarts;
-  - how tracker passkeys in stored resume data are kept;
-  - deleting a torrent's files when the user asks;
-  - the file chooser, the details panel's trackers and peers, and the seeding, limit and network settings and controls.
+- **The add form, the file chooser, the details panel's trackers and peers, and the seeding, limit and network settings and controls** (#60, #63, #30).
+- **Keeping trackers across a restart** (#70).
 
 ## Tests
 
@@ -237,6 +253,9 @@ The settings screen is #30. A new helper starts with every kind of peer discover
 | The session's settings; trackers and peers shown, redacted and cleaned; one free port for a random one | `velocity-torrent` `engine.rs` unit tests |
 | The port-mapping state | `velocity-torrent` `portmap.rs` unit tests (V1's) |
 | Tracker URLs redacted | `velocity-core` `torrent.rs` unit tests |
+| Trackers taken out of resume data before it is stored | `velocity-core` `torrent.rs` unit tests |
+| The manager's torrents against a fake helper: adding, the queue's slots, events, metadata and resume data stored, file choice, policy and limits, pause, resume and cancel, a lost torrent waiting, restoring from resume data or the origin, deleting files, closing, no helper | `velocity-core` `manager/tests.rs` (`torrents`) |
+| The manager with a real helper: a torrent downloaded with its metadata and resume data kept without trackers; seeding again from resume data after the app starts again; back on its own after the helper is killed; removed with only its own files | `velocity-torrent` `tests/manager.rs` |
 
 - **Isolation:** the tests never leave the machine. DHT, peer exchange, local peer discovery and port mapping are off, and peers are found through a tracker on 127.0.0.1, or connect to the helper's port. Port mapping is tested by its unit tests and the session's settings only: turned on, it would send UPnP and NAT-PMP requests to the network. For seeding, the test tracker answers each peer with every other peer that announced to it; never with the peer itself, since libtorrent keeps one entry per address by default and every peer is on 127.0.0.1.
 - **The corpus:** [`tests/fixtures/torrents`](../tests/fixtures/torrents) comes from V1. [`scripts/make-torrent-corpus.py`](../scripts/make-torrent-corpus.py) generated it with libtorrent's own torrent creator (2.0.10, through its Python bindings). Running the script again needs those bindings; the committed files don't.

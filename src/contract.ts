@@ -5,7 +5,7 @@
 import { z } from 'zod';
 
 /** Must equal `velocity_core::COMMAND_API_VERSION`; the app refuses to start on a mismatch. */
-export const COMMAND_API_VERSION = 7;
+export const COMMAND_API_VERSION = 8;
 
 const bytes = z.number().int().nonnegative();
 
@@ -170,6 +170,8 @@ export const DownloadsSnapshotSchema = z.strictObject({
   /** Downloads that came back after a restart without their login: resuming one asks for it. */
   needsLogin: z.array(z.string().min(1)),
   engine: EngineHealthSchema,
+  /** The torrent helper's health (#58). */
+  torrentEngine: EngineHealthSchema,
   storageError: ErrorCodeSchema.nullable(),
 });
 export type DownloadsSnapshot = z.infer<typeof DownloadsSnapshotSchema>;

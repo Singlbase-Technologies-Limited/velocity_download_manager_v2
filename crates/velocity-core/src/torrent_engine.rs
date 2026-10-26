@@ -4,12 +4,15 @@
 //! never pass through this contract, and torrents never pass through `DirectTransfer`.
 //!
 
+#[cfg(test)]
+pub(crate) mod fake;
+
 use std::path::PathBuf;
 use std::sync::mpsc::Receiver;
 
 use serde::{Deserialize, Serialize};
 
-use crate::domain::{DownloadStatus, ErrorCode, Progress, TransferError};
+use crate::domain::{DownloadStatus, EngineHealth, ErrorCode, Progress, TransferError};
 use crate::seeding::{SeedPolicy, MAX_ACTIVE_SEEDS};
 
 /// Raised whenever a command, reply, event or shared type here changes incompatibly.
@@ -78,6 +81,19 @@ pub enum TorrentSource {
     /// pieces, its file choice and its seeding totals, without checking its files again. The
     /// spec's folder, trackers, pause and policy apply; `files` changes the choice.
     Resume {},
+}
+
+/// What the torrent helper's supervisor fails a torrent with when its helper stopped unexpectedly,
+/// stopped responding, or was restarted by hand (#62). It then adds the torrent back under the same
+/// id itself, so the manager keeps it waiting rather than failed ([`lost_by_helper`], #58).
+pub const HELPER_STOPPED: &str = "the torrent helper stopped unexpectedly";
+pub const HELPER_HUNG: &str = "the torrent helper stopped responding and was restarted";
+pub const HELPER_RESTARTED: &str = "the torrent helper was restarted";
+
+/// Whether `error` is the supervisor's report of a torrent its helper lost, which comes back on
+/// its own, rather than a failure of the torrent itself.
+pub fn lost_by_helper(error: &TransferError) -> bool {
+    [HELPER_STOPPED, HELPER_HUNG, HELPER_RESTARTED].contains(&error.message.as_str())
 }
 
 /// One torrent to add.
@@ -442,6 +458,108 @@ pub trait TorrentEngine: Send {
     fn snapshot(&self) -> Result<Vec<TorrentSnapshot>, ErrorCode>;
     /// A new receiver for this engine's events, from the moment it subscribed.
     fn subscribe(&mut self) -> Receiver<TorrentEvent>;
+    /// Whether the engine can take commands now: a supervised helper reports its child (#58).
+    fn health(&self) -> EngineHealth {
+        EngineHealth::Running
+    }
+    /// Starts a new helper in place of the running one; its supervisor adds the torrents back.
+    /// `Unsupported` for an engine in the app's process.
+    fn restart(&mut self) -> Result<(), ErrorCode> {
+        Err(ErrorCode::Unsupported)
+    }
+}
+
+/// The torrent engine the manager has when no torrent helper runs: the helper program couldn't
+/// start, or none was given ([`crate::manager::Manager::with_torrents`]). Every command is refused
+/// as `EngineUnavailable`, and its health says why, so torrents wait and the app shows it (#58).
+pub struct MissingTorrentEngine {
+    code: ErrorCode,
+    /// Kept so the manager's receiver stays open and quiet, rather than disconnected.
+    subscribers: Vec<std::sync::mpsc::Sender<TorrentEvent>>,
+}
+
+impl MissingTorrentEngine {
+    /// No helper, because starting it failed with `code`.
+    pub fn new(code: ErrorCode) -> Self {
+        MissingTorrentEngine {
+            code,
+            subscribers: Vec::new(),
+        }
+    }
+}
+
+impl TorrentEngine for MissingTorrentEngine {
+    fn version(&self) -> Result<String, ErrorCode> {
+        Err(ErrorCode::EngineUnavailable)
+    }
+    fn set_settings(&mut self, _settings: TorrentSettings) -> Result<(), ErrorCode> {
+        Err(ErrorCode::EngineUnavailable)
+    }
+    fn add(&mut self, _spec: TorrentSpec) -> Result<TorrentId, ErrorCode> {
+        Err(ErrorCode::EngineUnavailable)
+    }
+    fn restore(&mut self, _id: TorrentId, _spec: TorrentSpec) -> Result<(), ErrorCode> {
+        Err(ErrorCode::EngineUnavailable)
+    }
+    fn pause(&mut self, _id: TorrentId) -> Result<(), ErrorCode> {
+        Err(ErrorCode::EngineUnavailable)
+    }
+    fn resume(&mut self, _id: TorrentId) -> Result<(), ErrorCode> {
+        Err(ErrorCode::EngineUnavailable)
+    }
+    fn remove(&mut self, _id: TorrentId) -> Result<(), ErrorCode> {
+        Err(ErrorCode::EngineUnavailable)
+    }
+    fn set_files(&mut self, _id: TorrentId, _files: Vec<u32>) -> Result<(), ErrorCode> {
+        Err(ErrorCode::EngineUnavailable)
+    }
+    fn metadata(&self, _id: TorrentId, _offset: u64) -> Result<Chunk, ErrorCode> {
+        Err(ErrorCode::EngineUnavailable)
+    }
+    fn set_seeding(&mut self, _id: TorrentId, _seeding: SeedPolicy) -> Result<(), ErrorCode> {
+        Err(ErrorCode::EngineUnavailable)
+    }
+    fn upload(&mut self, _chunk: Chunk) -> Result<(), ErrorCode> {
+        Err(ErrorCode::EngineUnavailable)
+    }
+    fn save_resume(&mut self) -> Result<Vec<TorrentId>, ErrorCode> {
+        Err(ErrorCode::EngineUnavailable)
+    }
+    fn set_limits(
+        &mut self,
+        _id: TorrentId,
+        _upload: u64,
+        _download: u64,
+    ) -> Result<(), ErrorCode> {
+        Err(ErrorCode::EngineUnavailable)
+    }
+    fn trackers(&self, _id: TorrentId) -> Result<Vec<TrackerStatus>, ErrorCode> {
+        Err(ErrorCode::EngineUnavailable)
+    }
+    fn reannounce(&mut self, _id: TorrentId) -> Result<(), ErrorCode> {
+        Err(ErrorCode::EngineUnavailable)
+    }
+    fn peers(&self, _id: TorrentId) -> Result<Vec<PeerStatus>, ErrorCode> {
+        Err(ErrorCode::EngineUnavailable)
+    }
+    fn network(&self) -> Result<NetworkStatus, ErrorCode> {
+        Err(ErrorCode::EngineUnavailable)
+    }
+    fn snapshot(&self) -> Result<Vec<TorrentSnapshot>, ErrorCode> {
+        Err(ErrorCode::EngineUnavailable)
+    }
+    fn subscribe(&mut self) -> Receiver<TorrentEvent> {
+        let (tx, rx) = std::sync::mpsc::channel();
+        self.subscribers.push(tx);
+        rx
+    }
+    fn health(&self) -> EngineHealth {
+        EngineHealth::Unavailable { code: self.code }
+    }
+    /// Starting it again can't help: the program is still missing or mismatched.
+    fn restart(&mut self) -> Result<(), ErrorCode> {
+        Err(self.code)
+    }
 }
 
 /// One command, in the form that crosses a process boundary. As for the transfer contract,

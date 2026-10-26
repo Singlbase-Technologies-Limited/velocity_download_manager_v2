@@ -13,11 +13,14 @@ impl Manager {
     /// finished download.
     pub fn set_download_limits(&mut self, id: &str, limits: Limits) -> Result<(), ErrorCode> {
         limits.check()?;
+        if self.torrent_job(id).is_ok() {
+            return self.set_torrent_download_limit(id, limits.max_download_bps.unwrap_or(0));
+        }
         if let Some(transfer) = self.unfinished_transfer(id)? {
             self.engine.set_limits(transfer, limits)?;
         }
         let d = self.downloads.get_mut(id).expect("known");
-        d.request.limits = limits;
+        d.direct_mut().expect("a direct download").request.limits = limits;
         self.store_options(id);
         Ok(())
     }
@@ -33,12 +36,19 @@ impl Manager {
         if connections == 0 {
             return Err(ErrorCode::InvalidInput);
         }
+        // libtorrent chooses a torrent's peers itself.
+        if self.torrent_job(id).is_ok() {
+            return Err(ErrorCode::Unsupported);
+        }
         let applied = match self.unfinished_transfer(id)? {
             Some(transfer) => self.engine.set_connections(transfer, connections)?,
             None => connections.min(self.connections_for_new_downloads()),
         };
         let d = self.downloads.get_mut(id).expect("known");
-        d.request.max_connections = applied;
+        d.direct_mut()
+            .expect("a direct download")
+            .request
+            .max_connections = applied;
         self.store_options(id);
         Ok(applied)
     }
@@ -49,11 +59,14 @@ impl Manager {
         if d.record.status.is_terminal() {
             return Err(ErrorCode::InvalidState);
         }
-        Ok(d.transfer)
+        Ok(d.transfer())
     }
 
     fn store_options(&mut self, id: &str) {
-        let options = StoredOptions::of(&self.downloads[id].request);
+        let Some(job) = self.downloads[id].direct() else {
+            return;
+        };
+        let options = StoredOptions::of(&job.request);
         if let Err(e) = self.database.update_options(id, &options) {
             self.storage_error = Some(e);
         }

@@ -11,7 +11,8 @@
 //!   ([`Manager::set_login`], PO decision on #58). A finished one that had them is retried only
 //!   once they are given again too.
 //! - **A record this build can't read** is listed by [`Manager::unavailable`], and never acted on
-//!   (report section 6). Torrent records are too, until the manager runs torrents (#58, part 2).
+//!   (report section 6).
+//! - **Torrents** come back as the torrent module says ([`super::torrents`]).
 //! - **Downloads removed from the list** stay in the history only (#32), and aren't loaded.
 //! - **Ids** continue after the highest one stored, hidden ones included, so none is given twice.
 
@@ -19,9 +20,11 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use super::{Download, Manager};
+use super::torrents::TorrentJob;
+use super::{DirectJob, Download, Job, Manager};
 use crate::database::{
-    resume_from, Database, DatabaseError, Engine, StoredDownload, StoredOptions,
+    resume_from, Database, DatabaseError, Engine, Stored, StoredDownload, StoredOptions,
+    StoredTorrent,
 };
 use crate::domain::{
     DownloadRecord, DownloadStatus, ErrorCode, FailureClass, Progress, TransferError,
@@ -99,21 +102,41 @@ impl Manager {
             if !stored.in_list {
                 continue;
             }
-            let (Ok(Engine::Velocity), Some(kind), Some(&status), Some(options)) = (
-                stored.route(),
-                stored.kind.known(),
-                stored.status.known(),
-                stored.options.known(),
-            ) else {
+            let (Ok(engine), Some(kind), Some(&status)) =
+                (stored.route(), stored.kind.known(), stored.status.known())
+            else {
                 m.unavailable.push(stored);
                 continue;
             };
             let finished = status.is_terminal();
-            let resume = if finished {
-                None
-            } else {
-                let checkpoint = m.database.checkpoint(&stored.id)?;
-                Some(resume_from(&stored.source_url, checkpoint.as_ref()))
+            let job = match engine {
+                Engine::Velocity => {
+                    let Some(options) = stored.options.known() else {
+                        m.unavailable.push(stored);
+                        continue;
+                    };
+                    let resume = if finished {
+                        None
+                    } else {
+                        let checkpoint = m.database.checkpoint(&stored.id)?;
+                        Some(resume_from(&stored.source_url, checkpoint.as_ref()))
+                    };
+                    Job::Direct(Box::new(DirectJob::new(
+                        request_of(&stored, options),
+                        resume,
+                    )))
+                }
+                // A torrent comes back from its resume data, or where it came from (#58).
+                Engine::Libtorrent => match m.database.torrent(&stored.id)? {
+                    Some(StoredTorrent {
+                        options: Stored::Known(options),
+                        ..
+                    }) => Job::Torrent(Box::new(TorrentJob::new(options, None))),
+                    _ => {
+                        m.unavailable.push(stored);
+                        continue;
+                    }
+                },
             };
             let needs_login = stored.has_sensitive_options;
             let paused = !finished && (status == DownloadStatus::Paused || needs_login);
@@ -150,13 +173,10 @@ impl Manager {
                     created_at_ms: stored.created_at_ms,
                     completed_at_ms: stored.completed_at_ms,
                 },
-                request: request_of(&stored, options),
-                resume,
-                transfer: None,
+                job,
                 running: false,
                 paused,
                 scheduled,
-                content_type: None,
                 saved_at_ms: None,
                 needs_login,
             };
@@ -200,9 +220,12 @@ impl Manager {
         let Some(d) = self.downloads.get_mut(id) else {
             return;
         };
-        d.transfer = None;
+        let resume = resume_from(&d.record.source_url, checkpoint.as_ref());
+        if let Some(job) = d.direct_mut() {
+            job.transfer = None;
+            job.resume = Some(resume);
+        }
         d.running = false;
-        d.resume = Some(resume_from(&d.record.source_url, checkpoint.as_ref()));
         d.record.progress.download_speed_bps = 0;
         d.record.progress.connections = 0;
         d.record.error = Some(error);
@@ -229,9 +252,10 @@ impl Manager {
         if !d.needs_login {
             return Err(ErrorCode::InvalidState);
         }
-        d.request.credentials = options.credentials;
-        d.request.ssh_key = options.ssh_key;
-        d.request.headers = options.headers;
+        let request = &mut d.direct_mut().ok_or(ErrorCode::InvalidState)?.request;
+        request.credentials = options.credentials;
+        request.ssh_key = options.ssh_key;
+        request.headers = options.headers;
         d.needs_login = false;
         if d.record
             .error

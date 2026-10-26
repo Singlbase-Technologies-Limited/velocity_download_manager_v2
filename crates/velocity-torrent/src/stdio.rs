@@ -7,20 +7,26 @@ use std::sync::mpsc::Receiver;
 use std::time::Duration;
 
 use velocity_child::client::{ChildProcess, SpawnOptions};
+#[cfg(feature = "engine")]
 use velocity_child::serve::Server;
 use velocity_core::domain::ErrorCode;
 use velocity_core::seeding::SeedPolicy;
+#[cfg(feature = "engine")]
+use velocity_core::torrent_engine::dispatch;
 use velocity_core::torrent_engine::{
-    dispatch, Chunk, NetworkStatus, PeerStatus, TorrentCommand, TorrentEngine, TorrentEvent,
-    TorrentId, TorrentReply, TorrentSettings, TorrentSnapshot, TorrentSpec, TrackerStatus,
+    Chunk, NetworkStatus, PeerStatus, TorrentCommand, TorrentEngine, TorrentEvent, TorrentId,
+    TorrentReply, TorrentSettings, TorrentSnapshot, TorrentSpec, TrackerStatus,
 };
 
+#[cfg(feature = "engine")]
 use crate::engine::LtEngine;
 use crate::TorrentContract;
 
 /// The engine behind the protocol, in the child.
+#[cfg(feature = "engine")]
 struct TorrentServer(LtEngine);
 
+#[cfg(feature = "engine")]
 impl Server<TorrentContract> for TorrentServer {
     fn handle(&mut self, command: TorrentCommand) -> Result<TorrentReply, ErrorCode> {
         dispatch(&mut self.0, command)
@@ -54,6 +60,7 @@ pub const STARTING_SETTINGS: TorrentSettings = TorrentSettings {
 };
 
 /// Runs the child's side: serves the torrent engine on stdin and stdout until stdin closes.
+#[cfg(feature = "engine")]
 pub fn serve() -> Result<(), String> {
     velocity_child::serve::serve::<TorrentContract, _>(
         std::io::stdin().lock(),

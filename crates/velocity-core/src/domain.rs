@@ -246,6 +246,8 @@ pub struct DownloadsSnapshot {
     /// one asks for it first (PO decision on #58).
     pub needs_login: Vec<String>,
     pub engine: EngineHealth,
+    /// The torrent helper's health (#58).
+    pub torrent_engine: EngineHealth,
     /// The last failure to save a download, if any.
     pub storage_error: Option<ErrorCode>,
 }
@@ -509,6 +511,7 @@ impl DownloadsSnapshot {
             }],
             needs_login: vec!["d-0001".to_owned()],
             engine: EngineHealth::Restarting { attempt: 1 },
+            torrent_engine: EngineHealth::Running,
             storage_error: Some(ErrorCode::Database),
         }
     }

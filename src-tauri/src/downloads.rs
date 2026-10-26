@@ -9,7 +9,10 @@ use velocity_core::database::Database;
 use velocity_core::domain::{BatchResult, DownloadsSnapshot, EngineHealth, ErrorCode};
 use velocity_core::manager::{Manager, ManagerService, MoveDirection};
 use velocity_core::paths::Paths;
+use velocity_core::seeding::SeedPolicy;
+use velocity_core::torrent_engine::{MissingTorrentEngine, TorrentEngine, TorrentSettings};
 use velocity_core::transfer::{DirectTransfer, Limits, MissingEngine};
+use velocity_torrent::supervisor::SupervisedTorrentEngine;
 use velocity_transfer::supervisor::{SupervisedEngine, SupervisorOptions};
 
 /// The event each new snapshot is sent as.
@@ -18,25 +21,37 @@ pub const SNAPSHOT_EVENT: &str = "downloads-snapshot";
 /// The manager, as the commands reach it.
 pub type Downloads = Arc<ManagerService>;
 
-/// Where the engine program is: beside the app's own executable (PO decision on #58, until #81
-/// packages it as a sidecar). In development that is `target/debug`.
-pub fn engine_program(app: &Path) -> PathBuf {
-    app.with_file_name(format!("velocity-transfer{}", std::env::consts::EXE_SUFFIX))
+/// Where the program `name` is: beside the app's own executable (PO decision on #58, until #81
+/// packages the engines as sidecars). In development that is `target/debug`.
+pub fn program_beside(app: &Path, name: &str) -> PathBuf {
+    app.with_file_name(format!("{name}{}", std::env::consts::EXE_SUFFIX))
 }
 
-/// Opens the database, starts the engine and the manager. An engine that can't start leaves the
-/// app running without one, saying why ([`MissingEngine`]); a database that can't open stops it.
+/// Opens the database, starts the transfer engine, the torrent helper and the manager. An engine
+/// that can't start leaves the app running without it, saying why ([`MissingEngine`],
+/// [`MissingTorrentEngine`]); a database that can't open stops it.
 pub fn start(app: &AppHandle, paths: &Paths) -> Result<Downloads, String> {
     let database = Database::open(&paths.database()).map_err(|e| e.to_string())?;
-    let program = std::env::current_exe()
-        .map(|exe| engine_program(&exe))
+    let exe = std::env::current_exe()
         .map_err(|e| format!("{} ({e})", ErrorCode::EngineMissing.user_message()))?;
+    let program = program_beside(&exe, "velocity-transfer");
     let engine: Box<dyn DirectTransfer> =
         match SupervisedEngine::start(program.clone(), SupervisorOptions::default()) {
             Ok(engine) => Box::new(engine),
             Err(code) => Box::new(MissingEngine::new(code, program)),
         };
-    let manager = Manager::open(engine, Arc::new(database)).map_err(|e| e.to_string())?;
+    // The torrent settings are #30's; until then the defaults, which are V1's.
+    let torrents: Box<dyn TorrentEngine> = match SupervisedTorrentEngine::start(
+        program_beside(&exe, "velocity-torrent"),
+        SupervisorOptions::default(),
+        TorrentSettings::default(),
+    ) {
+        Ok(torrents) => Box::new(torrents),
+        Err(code) => Box::new(MissingTorrentEngine::new(code)),
+    };
+    let manager = Manager::open(engine, Arc::new(database))
+        .map_err(|e| e.to_string())?
+        .with_torrents(torrents);
     let app = app.clone();
     Ok(Arc::new(ManagerService::start(manager, move |snapshot| {
         // Emitting fails only once the app is closing, when no window is left to show it.
@@ -174,6 +189,42 @@ pub async fn restart_engine(downloads: State<'_, Downloads>) -> Result<EngineHea
     .await?
 }
 
+/// Downloads exactly `files` of a torrent, by index (V1's `start_torrent_files` and
+/// `change_torrent_files`).
+#[tauri::command]
+pub async fn choose_torrent_files(
+    downloads: State<'_, Downloads>,
+    id: String,
+    files: Vec<u32>,
+) -> Result<(), ErrorCode> {
+    if files.len() > velocity_core::manager::MAX_BATCH {
+        return Err(ErrorCode::InvalidInput);
+    }
+    on_manager(&downloads, move |m| m.choose_files(&id, files)).await?
+}
+
+/// Sets when a torrent stops seeding; `{"mode":"never"}` stops it now (V1's `stop_seeding`).
+#[tauri::command]
+pub async fn set_torrent_seeding(
+    downloads: State<'_, Downloads>,
+    id: String,
+    seeding: SeedPolicy,
+) -> Result<(), ErrorCode> {
+    on_manager(&downloads, move |m| m.set_seeding(&id, seeding)).await?
+}
+
+/// Starts a new torrent helper in place of the running one; returns its health after asking.
+#[tauri::command]
+pub async fn restart_torrent_helper(
+    downloads: State<'_, Downloads>,
+) -> Result<EngineHealth, ErrorCode> {
+    on_manager(&downloads, |m| {
+        m.restart_torrent_helper()?;
+        Ok(m.torrent_helper_health())
+    })
+    .await?
+}
+
 /// Trusts the SFTP host key the user confirmed (#53); the UI then retries the download.
 #[tauri::command]
 pub async fn trust_host_key(
@@ -193,13 +244,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_engine_is_looked_for_beside_the_app() {
+    fn the_engines_are_looked_for_beside_the_app() {
         let app = Path::new("/apps/velocity/velocity-download-manager-v2");
-        let expected = format!(
-            "/apps/velocity/velocity-transfer{}",
-            std::env::consts::EXE_SUFFIX
-        );
-        assert_eq!(engine_program(app), PathBuf::from(expected));
+        for name in ["velocity-transfer", "velocity-torrent"] {
+            let expected = format!("/apps/velocity/{name}{}", std::env::consts::EXE_SUFFIX);
+            assert_eq!(program_beside(app, name), PathBuf::from(expected));
+        }
     }
 
     #[test]
