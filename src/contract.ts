@@ -5,7 +5,7 @@
 import { z } from 'zod';
 
 /** Must equal `velocity_core::COMMAND_API_VERSION`; the app refuses to start on a mismatch. */
-export const COMMAND_API_VERSION = 6;
+export const COMMAND_API_VERSION = 7;
 
 const bytes = z.number().int().nonnegative();
 
@@ -142,6 +142,49 @@ export const ErrorCodeSchema = z.enum([
   'INTERNAL',
 ]);
 export type ErrorCode = z.infer<typeof ErrorCodeSchema>;
+
+/** Whether the transfer engine can take commands (#39, #58). */
+export const EngineHealthSchema = z.discriminatedUnion('state', [
+  z.strictObject({ state: z.literal('running') }),
+  /** It stopped and is being started again; `attempt` counts the crashes in the restart window. */
+  z.strictObject({ state: z.literal('restarting'), attempt: z.number().int().nonnegative() }),
+  /** It won't start again on its own: "Restart transfer engine" tries again. */
+  z.strictObject({ state: z.literal('unavailable'), code: ErrorCodeSchema }),
+]);
+export type EngineHealth = z.infer<typeof EngineHealthSchema>;
+
+/** A stored download this build can't act on: shown, never acted on. */
+export const UnavailableDownloadSchema = z.strictObject({
+  id: z.string().min(1),
+  sourceUrl: z.string(),
+  fileName: z.string().nullable(),
+  directory: z.string(),
+  createdAtMs: bytes,
+});
+export type UnavailableDownload = z.infer<typeof UnavailableDownloadSchema>;
+
+/** What the UI is sent about the downloads (#58): the list, in order, and the state around it. */
+export const DownloadsSnapshotSchema = z.strictObject({
+  downloads: z.array(DownloadRecordSchema),
+  unavailable: z.array(UnavailableDownloadSchema),
+  /** Downloads that came back after a restart without their login: resuming one asks for it. */
+  needsLogin: z.array(z.string().min(1)),
+  engine: EngineHealthSchema,
+  storageError: ErrorCodeSchema.nullable(),
+});
+export type DownloadsSnapshot = z.infer<typeof DownloadsSnapshotSchema>;
+
+/** Why a removal with files left a file in place (#58). */
+export const KeptReasonSchema = z.enum(['notPlain', 'tooLarge', 'behindLink', 'notEmpty', 'failed']);
+export type KeptReason = z.infer<typeof KeptReasonSchema>;
+
+/** What a command over several downloads did (#58). */
+export const BatchResultSchema = z.strictObject({
+  done: z.array(z.string().min(1)),
+  failed: z.array(z.strictObject({ id: z.string().min(1), code: ErrorCodeSchema })),
+  kept: z.array(z.strictObject({ path: z.string(), reason: KeptReasonSchema, code: ErrorCodeSchema.nullable() })),
+});
+export type BatchResult = z.infer<typeof BatchResultSchema>;
 
 export const AppInfoSchema = z.strictObject({
   name: z.string().min(1),

@@ -3,9 +3,11 @@
 //! and with one wrong byte in one piece, only that piece is fetched again.
 
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use sha2::{Digest, Sha256};
+use velocity_core::database::Database;
 use velocity_core::domain::{DownloadKind, DownloadStatus, Verification};
 use velocity_core::manager::Manager;
 use velocity_core::transfer::{Limits, TransferSpec};
@@ -106,9 +108,11 @@ fn a_followed_metalink_downloads_its_file_and_fetches_only_a_bad_piece_again() {
         ServerOptions::default(),
     );
     let dir = Dir::new("follow");
-    let mut m = Manager::new(Box::new(
-        InProcessEngine::start().expect("the in-process engine starts"),
-    ));
+    let mut m = Manager::open(
+        Box::new(InProcessEngine::start().expect("the in-process engine starts")),
+        Arc::new(Database::open_in_memory().unwrap()),
+    )
+    .unwrap();
     m.set_metalink_enabled(true);
     let link = TransferSpec {
         urls: vec![documents.url("files.meta4")],

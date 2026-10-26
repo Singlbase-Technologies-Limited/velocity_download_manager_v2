@@ -232,6 +232,108 @@ pub struct DownloadRecord {
     pub completed_at_ms: Option<u64>,
 }
 
+/// What the UI is sent about the downloads (#58, V1's `get_snapshot`), whenever something in it
+/// changed, at most every 250 ms.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct DownloadsSnapshot {
+    /// The downloads in the list: the unfinished ones in queue order, then the finished ones,
+    /// newest first.
+    pub downloads: Vec<DownloadRecord>,
+    /// Stored downloads this build can't act on: shown, never acted on (report section 6).
+    pub unavailable: Vec<UnavailableDownload>,
+    /// Downloads that came back after a restart without the login they had: resuming or retrying
+    /// one asks for it first (PO decision on #58).
+    pub needs_login: Vec<String>,
+    pub engine: EngineHealth,
+    /// The last failure to save a download, if any.
+    pub storage_error: Option<ErrorCode>,
+}
+
+/// What a command over several downloads did (#58, V1's batch result): the ids it was done for,
+/// in order, those it failed for with why, and, when removing with files, the files kept.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct BatchResult {
+    pub done: Vec<String>,
+    pub failed: Vec<BatchFailure>,
+    pub kept: Vec<KeptFile>,
+}
+
+/// One id a command over several downloads failed for.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct BatchFailure {
+    pub id: String,
+    pub code: ErrorCode,
+}
+
+/// A file a removal with files left in place, and why (PO decision on #58).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct KeptFile {
+    pub path: String,
+    pub reason: KeptReason,
+    /// For [`KeptReason::Failed`]: what deleting it failed with.
+    pub code: Option<ErrorCode>,
+}
+
+/// Why a file wasn't deleted.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum KeptReason {
+    /// A link, a reparse point or not a plain file: never followed.
+    NotPlain,
+    /// Larger than the download: not its own.
+    TooLarge,
+    /// Reached through a folder that is a link: never followed.
+    BehindLink,
+    /// A folder with something else in it.
+    NotEmpty,
+    /// Deleting it failed.
+    Failed,
+}
+
+impl KeptReason {
+    /// Every value, in contract order (the fixture shared with `src/contract.ts`).
+    pub const ALL: [KeptReason; 5] = [
+        KeptReason::NotPlain,
+        KeptReason::TooLarge,
+        KeptReason::BehindLink,
+        KeptReason::NotEmpty,
+        KeptReason::Failed,
+    ];
+}
+
+/// A stored download this build can't act on (an engine, kind, status or options it doesn't know),
+/// with what can be shown of it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct UnavailableDownload {
+    pub id: String,
+    pub source_url: String,
+    pub file_name: Option<String>,
+    pub directory: String,
+    pub created_at_ms: u64,
+}
+
+/// Whether a supervised engine, or the torrent helper, can take commands (#39, #58), as the app
+/// shows it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "state", rename_all = "camelCase", deny_unknown_fields)]
+pub enum EngineHealth {
+    Running,
+    /// It stopped and is being started again. `attempt` counts the crashes within the restart
+    /// window; it is 0 after a restart by hand.
+    Restarting {
+        attempt: u32,
+    },
+    /// It isn't running and won't be restarted on its own; "Restart transfer engine" tries again.
+    Unavailable {
+        code: ErrorCode,
+    },
+}
+
 /// What an engine really supports, reported rather than assumed (research report section 4.2).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -389,6 +491,50 @@ impl DownloadRecord {
             verification: None,
             created_at_ms: 1_792_600_000_000,
             completed_at_ms: None,
+        }
+    }
+}
+
+impl DownloadsSnapshot {
+    /// A fixed example for the contract fixtures and UI tests.
+    pub fn sample() -> Self {
+        Self {
+            downloads: vec![DownloadRecord::sample()],
+            unavailable: vec![UnavailableDownload {
+                id: "d-0002".to_owned(),
+                source_url: "https://example.com/files/later.iso".to_owned(),
+                file_name: None,
+                directory: "/home/user/Downloads".to_owned(),
+                created_at_ms: 1_792_600_000_000,
+            }],
+            needs_login: vec!["d-0001".to_owned()],
+            engine: EngineHealth::Restarting { attempt: 1 },
+            storage_error: Some(ErrorCode::Database),
+        }
+    }
+}
+
+impl BatchResult {
+    /// A fixed example for the contract fixtures and UI tests.
+    pub fn sample() -> Self {
+        Self {
+            done: vec!["d-0001".to_owned()],
+            failed: vec![BatchFailure {
+                id: "d-0002".to_owned(),
+                code: ErrorCode::InvalidState,
+            }],
+            kept: vec![
+                KeptFile {
+                    path: "/home/user/Downloads/archive.zip".to_owned(),
+                    reason: KeptReason::TooLarge,
+                    code: None,
+                },
+                KeptFile {
+                    path: "/home/user/Downloads/archive.zip.vdmpart".to_owned(),
+                    reason: KeptReason::Failed,
+                    code: Some(ErrorCode::PermissionDenied),
+                },
+            ],
         }
     }
 }
@@ -649,6 +795,42 @@ mod tests {
             check(
                 "capabilities.json",
                 serde_json::to_value(Capabilities::sample()).unwrap(),
+            );
+        }
+
+        #[test]
+        fn contract_downloads_snapshot() {
+            check(
+                "downloads-snapshot.json",
+                serde_json::to_value(DownloadsSnapshot::sample()).unwrap(),
+            );
+        }
+
+        #[test]
+        fn contract_engine_health() {
+            let all = [
+                EngineHealth::Running,
+                EngineHealth::Restarting { attempt: 2 },
+                EngineHealth::Unavailable {
+                    code: ErrorCode::EngineMissing,
+                },
+            ];
+            check("engine-health.json", serde_json::to_value(all).unwrap());
+        }
+
+        #[test]
+        fn contract_batch_result() {
+            check(
+                "batch-result.json",
+                serde_json::to_value(BatchResult::sample()).unwrap(),
+            );
+        }
+
+        #[test]
+        fn contract_kept_reasons() {
+            check(
+                "kept-reasons.json",
+                serde_json::to_value(KeptReason::ALL).unwrap(),
             );
         }
 

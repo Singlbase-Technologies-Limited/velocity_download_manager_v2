@@ -31,7 +31,9 @@ use serde::Serialize;
 /// ([`domain::ProtocolCapabilities`]), in place of a list of kinds and one `validatorResume`.
 /// Version 5 (#51) added [`domain::ProtocolCapabilities::encryption`].
 /// Version 6 (#53) added [`domain::TransferError::host_key`].
-pub const COMMAND_API_VERSION: u32 = 6;
+/// Version 7 (#58) added the downloads commands and their types: [`domain::DownloadsSnapshot`],
+/// [`domain::EngineHealth`] and [`domain::BatchResult`].
+pub const COMMAND_API_VERSION: u32 = 7;
 
 /// Name, version and contract version of the running application.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]

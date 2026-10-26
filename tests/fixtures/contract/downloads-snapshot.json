@@ -1,0 +1,52 @@
+{
+  "downloads": [
+    {
+      "categoryId": "archives",
+      "completedAtMs": null,
+      "createdAtMs": 1792600000000,
+      "directory": "/home/user/Downloads",
+      "error": {
+        "class": "throttled",
+        "hostKey": null,
+        "httpStatus": 503,
+        "message": "Service unavailable",
+        "retryable": true
+      },
+      "fileName": "archive.zip",
+      "id": "d-0001",
+      "kind": "http",
+      "progress": {
+        "completedBytes": 1048576,
+        "connectionDetail": {
+          "allowed": 4,
+          "limitedBy": "serverThrottling",
+          "requested": 8
+        },
+        "connections": 0,
+        "downloadSpeedBps": 0,
+        "totalBytes": 4194304,
+        "uploadSpeedBps": 0
+      },
+      "sourceUrl": "https://example.com/files/archive.zip",
+      "status": "retrying",
+      "verification": null
+    }
+  ],
+  "engine": {
+    "attempt": 1,
+    "state": "restarting"
+  },
+  "needsLogin": [
+    "d-0001"
+  ],
+  "storageError": "DATABASE",
+  "unavailable": [
+    {
+      "createdAtMs": 1792600000000,
+      "directory": "/home/user/Downloads",
+      "fileName": null,
+      "id": "d-0002",
+      "sourceUrl": "https://example.com/files/later.iso"
+    }
+  ]
+}

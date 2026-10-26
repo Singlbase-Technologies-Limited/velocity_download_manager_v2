@@ -24,7 +24,7 @@ The code:
 | The engine's contract, client (`ChildProcessEngine`) and supervisor (`SupervisedEngine`) | [`crates/velocity-transfer/src/protocol.rs`](../crates/velocity-transfer/src/protocol.rs), [`stdio.rs`](../crates/velocity-transfer/src/stdio.rs), [`supervisor.rs`](../crates/velocity-transfer/src/supervisor.rs) |
 | The helper's contract, client (`ChildTorrentEngine`) and supervisor (`SupervisedTorrentEngine`) | [`crates/velocity-torrent/src/lib.rs`](../crates/velocity-torrent/src/lib.rs), [`stdio.rs`](../crates/velocity-torrent/src/stdio.rs), [`supervisor.rs`](../crates/velocity-torrent/src/supervisor.rs) |
 
-The app doesn't use the supervisors yet; the manager is wired to them in #58.
+The app runs the engine's supervisor, beside its own executable (#58); the torrent helper's comes with #58's second part.
 
 ## Transport
 

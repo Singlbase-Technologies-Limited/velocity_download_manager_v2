@@ -36,12 +36,12 @@ use velocity_core::transfer::{
 
 use crate::stdio::ChildProcessEngine;
 
-/// What a transfer that a crash lost fails with.
-const CRASH_MESSAGE: &str = "the transfer engine stopped unexpectedly";
-/// What a transfer fails with when its engine stopped responding and was killed.
-const HUNG_MESSAGE: &str = "the transfer engine stopped responding and was restarted";
-/// What a transfer fails with when the engine is restarted by hand.
-const RESTART_MESSAGE: &str = "the transfer engine was restarted";
+/// What a lost transfer fails with: after a crash, after a hang, and after a restart by hand. The
+/// core defines them, so the manager knows a lost transfer from a failed one (#58).
+use velocity_core::transfer::{
+    ENGINE_HUNG as HUNG_MESSAGE, ENGINE_RESTARTED as RESTART_MESSAGE,
+    ENGINE_STOPPED as CRASH_MESSAGE,
+};
 
 /// What the supervisor keeps for the engine, across engines.
 pub struct TransferBook {
@@ -257,6 +257,15 @@ impl DirectTransfer for SupervisedEngine {
 
     fn set_connections(&mut self, id: TransferId, connections: u32) -> Result<u32, ErrorCode> {
         self.running(id)?.set_connections(id, connections)
+    }
+
+    fn health(&self) -> EngineHealth {
+        self.supervisor.health()
+    }
+
+    fn restart(&mut self) -> Result<(), ErrorCode> {
+        self.supervisor.restart();
+        Ok(())
     }
 
     fn trust_host_key(

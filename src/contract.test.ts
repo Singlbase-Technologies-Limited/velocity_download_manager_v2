@@ -3,12 +3,16 @@ import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import {
   AppInfoSchema,
+  BatchResultSchema,
   CapabilitiesSchema,
   ConnectionLimitSchema,
   COMMAND_API_VERSION,
   DownloadRecordSchema,
+  DownloadsSnapshotSchema,
   DownloadStatusSchema,
+  EngineHealthSchema,
   ErrorCodeSchema,
+  KeptReasonSchema,
   parseAppInfo,
   VerificationSchema,
 } from './contract';
@@ -45,6 +49,23 @@ describe('contract fixtures generated from Rust', () => {
     expect(CapabilitiesSchema.parse(fixture('capabilities.json'))).toEqual(fixture('capabilities.json'));
   });
 
+  it('downloads snapshot (#58)', () => {
+    expect(DownloadsSnapshotSchema.parse(fixture('downloads-snapshot.json'))).toEqual(fixture('downloads-snapshot.json'));
+  });
+
+  it('engine health: running, restarting and unavailable (#58)', () => {
+    const all = fixture('engine-health.json') as unknown[];
+    expect(all.map((h) => EngineHealthSchema.parse(h))).toEqual(all);
+  });
+
+  it('batch result (#58)', () => {
+    expect(BatchResultSchema.parse(fixture('batch-result.json'))).toEqual(fixture('batch-result.json'));
+  });
+
+  it('kept reasons: exactly the values the schema knows, in order (#58)', () => {
+    expect(fixture('kept-reasons.json')).toEqual(KeptReasonSchema.options);
+  });
+
   it('app info carries the same contract version as this UI', () => {
     const info = AppInfoSchema.parse(fixture('app-info.json'));
     expect(info.commandApiVersion).toBe(COMMAND_API_VERSION);
@@ -71,6 +92,11 @@ describe('schemas reject drift', () => {
     ).toThrow();
   });
 
+  it('an engine state the UI doesn’t know', () => {
+    expect(() => EngineHealthSchema.parse({ state: 'sleeping' })).toThrow();
+    expect(() => EngineHealthSchema.parse({ state: 'restarting' })).toThrow();
+  });
+
   it('a nested field with the wrong type', () => {
     const r = record();
     (r.progress as Record<string, unknown>).completedBytes = '10';
@@ -87,7 +113,7 @@ describe('parseAppInfo', () => {
 
   it('refuses a native side with another contract version, saying so', () => {
     expect(() => parseAppInfo({ ...ok, commandApiVersion: COMMAND_API_VERSION + 1 })).toThrow(
-      /contract version 7.*expects 6/,
+      /contract version 8.*expects 7/,
     );
   });
 

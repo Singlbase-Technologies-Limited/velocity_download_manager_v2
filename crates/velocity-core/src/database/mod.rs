@@ -15,7 +15,9 @@ mod downloads;
 mod queue;
 mod settings;
 
-pub use downloads::{without_login, Engine, NewDownload, Stored, StoredDownload, StoredOptions};
+pub use downloads::{
+    resume_from, without_login, Engine, NewDownload, Stored, StoredDownload, StoredOptions,
+};
 pub use queue::QueueEntry;
 
 use std::fmt;
@@ -31,6 +33,7 @@ const MIGRATIONS: &[M<'static>] = &[
     M::up(include_str!("../../migrations/0001_initial.sql")),
     M::up(include_str!("../../migrations/0002_checkpoints.sql")),
     M::up(include_str!("../../migrations/0003_queue.sql")),
+    M::up(include_str!("../../migrations/0004_verification.sql")),
 ];
 
 /// The migrations this build applies.
@@ -296,7 +299,7 @@ fn backup(conn: &Connection, path: &Path, version: u32) -> Result<(), DatabaseEr
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::{DownloadKind, DownloadStatus};
+    use crate::domain::{DownloadKind, DownloadRecord, DownloadStatus, Verification};
     use crate::transfer::{
         Checkpoint, Credentials, Header, Limits, Resume, TransferSpec, CHECKPOINT_FORMAT,
     };
@@ -355,6 +358,7 @@ mod tests {
             options: StoredOptions {
                 max_connections: 4,
                 max_download_bps: None,
+                ..StoredOptions::default()
             },
             has_sensitive_options: false,
             created_at_ms: 1_792_600_000_000,
@@ -364,7 +368,7 @@ mod tests {
     #[test]
     fn the_migrations_are_valid() {
         assert_eq!(migrations().validate(), Ok(()));
-        assert_eq!(latest_schema_version(), 3);
+        assert_eq!(latest_schema_version(), 4);
     }
 
     #[test]
@@ -482,8 +486,8 @@ mod tests {
             db.insert_download(&sample("d-0001")).unwrap();
         }
         let db = Database::open(&dir.db()).expect("upgrades");
-        // To the latest schema, 3 since #50.
-        assert_eq!(db.schema_version(), Ok(3));
+        // To the latest schema, 4 since #58.
+        assert_eq!(db.schema_version(), Ok(4));
         assert_eq!(db.downloads().unwrap()[0].id, "d-0001");
         db.save_checkpoint("d-0001", &checkpoint(), 5).unwrap();
         assert!(dir.names().iter().any(|n| n.contains(".bak-v1-")));
@@ -499,7 +503,8 @@ mod tests {
             db.insert_download(&sample("d-0001")).unwrap();
         }
         let db = Database::open(&dir.db()).expect("upgrades");
-        assert_eq!(db.schema_version(), Ok(3));
+        // To the latest schema, 4 since #58.
+        assert_eq!(db.schema_version(), Ok(4));
         assert_eq!(db.downloads().unwrap()[0].id, "d-0001");
         let entry = QueueEntry {
             id: "d-0001".to_owned(),
@@ -508,6 +513,52 @@ mod tests {
         db.save_queue(std::slice::from_ref(&entry)).unwrap();
         assert_eq!(db.queue(), Ok(vec![entry]));
         assert!(dir.names().iter().any(|n| n.contains(".bak-v2-")));
+    }
+
+    #[test]
+    fn schema_3_is_upgraded_with_its_downloads_and_gains_verification() {
+        // Migration 0004 (#58), from the previous schema with a record in it.
+        let dir = Dir::new("v3-to-v4");
+        {
+            let db = open_with(&dir.db(), &Migrations::from_slice(&MIGRATIONS[..3])).unwrap();
+            assert_eq!(db.schema_version(), Ok(3));
+            db.insert_download(&sample("d-0001")).unwrap();
+        }
+        let db = Database::open(&dir.db()).expect("upgrades");
+        assert_eq!(db.schema_version(), Ok(4));
+        let before = db.downloads().unwrap().remove(0);
+        assert_eq!(before.id, "d-0001");
+        assert_eq!(before.verification, None);
+        let mut record = DownloadRecord::sample();
+        record.status = DownloadStatus::Completed;
+        record.verification = Some(Verification::Verified);
+        db.update_download(&record).unwrap();
+        assert_eq!(
+            db.downloads().unwrap()[0].verification,
+            Some(Stored::Known(Verification::Verified))
+        );
+        assert!(dir.names().iter().any(|n| n.contains(".bak-v3-")));
+    }
+
+    #[test]
+    fn a_stored_error_or_verification_this_build_cant_read_is_unknown() {
+        let db = Database::open_in_memory().unwrap();
+        db.insert_download(&sample("d-0001")).unwrap();
+        db.conn()
+            .execute(
+                "UPDATE downloads SET error_json = '{\"class\":\"later\"}',                  verification = 'quantumVerified' WHERE id = 'd-0001'",
+                [],
+            )
+            .unwrap();
+        let d = db.downloads().unwrap().remove(0);
+        assert_eq!(
+            d.error,
+            Some(Stored::Unknown("{\"class\":\"later\"}".to_owned()))
+        );
+        assert_eq!(
+            d.verification,
+            Some(Stored::Unknown("quantumVerified".to_owned()))
+        );
     }
 
     #[test]

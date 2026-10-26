@@ -90,7 +90,7 @@ Tests check that every command, reply and event round-trips through JSON, and th
 
 ## The manager's side
 
-[`crates/velocity-core/src/manager.rs`](../crates/velocity-core/src/manager.rs) is the manager. It:
+[`crates/velocity-core/src/manager/`](../crates/velocity-core/src/manager/mod.rs) is the manager. It:
 
 - gives each download its own app id (`d-0001`), never the engine's id;
 - refuses torrent kinds and protocols missing from `capabilities()` with `Unsupported`, before calling the engine;
@@ -99,7 +99,54 @@ Tests check that every command, reply and event round-trips through JSON, and th
 - owns the queue (#50): it gives the engine a download only when a slot is free, at most `QueueSettings::max_concurrent_downloads` at once, in queue order (`move_download`), and runs scheduled downloads only while the window is open (`tick` reads the local time). `pause_all`, `resume_all` and new settings apply at once;
 - treats engine events as untrusted: it ignores events for unknown or forgotten transfers, and shows a torrent-only status from a direct engine as `Unknown`.
 
-Loading the saved queue and records when the app starts is #58, and saving the queue settings is #30.
+### Saving and starting again (#58)
+
+The manager is opened over the database (`Manager::open`), and every change it makes is saved there ([DATA_AND_MIGRATIONS.md](DATA_AND_MIGRATIONS.md)). The code is in `manager/persist.rs` and `manager/recovery.rs`.
+
+- **What is saved:**
+  - a new download, with what it needs to start again: every source without its login, the user agent, the referrer without its query and fragment, the checksum and piece hashes, the speed limit and the connections. No secret is saved;
+  - its status, name, byte counts, error, verification and completion time after each event. Progress alone is saved at most every 5 s (`PROGRESS_SAVE_MS`); everything else at once;
+  - the queue, whenever it changed;
+  - each checkpoint event. The checkpoint is dropped once the download completes or is removed. A failed download keeps its checkpoint, for a retry.
+- **A failed save** doesn't undo what happened: the download did pause or complete. The failure is kept for the app to show (`storage_error`, in the snapshot).
+- **When the app starts:**
+  - finished downloads come back as they ended;
+  - unfinished ones wait in their saved order, a paused one still paused. Each resumes from its checkpoint when it fits, or starts over by discarding its part file (`resume_from`, PO decision on #43). Nothing starts in `open`: the app applies its queue settings first;
+  - **a download that had a login, custom headers or an SSH key comes back Paused** with a note. It resumes or is retried only after `set_login` gives them again (PO decision on #58);
+  - a record this build can't read, or a torrent record until the manager runs torrents, is listed by `unavailable()` and never acted on;
+  - downloads removed from the list stay in the history only (#32), and aren't loaded;
+  - ids continue after the highest one stored, so none is given twice.
+
+### Retrying, removing and clearing (#58)
+
+In `manager/finished.rs`:
+
+- **`retry`** takes a failed or removed download back to the end of the queue. A failed one resumes from its checkpoint; a removed one starts over, because cancelling discarded its part file. The engine already retries a retryable failure by itself (#48), so these are the user's retries only. `retry_failed` retries every failed download.
+- **`remove`** takes a download out of the list; it stays in the history. An unfinished one is cancelled first, which discards its part file.
+- **With its files** (PO decision on #58), only the download's own go: its part file, and a completed download's file if it is a plain file inside its folder, not reached through a link, and no larger than the download. Anything else is kept and returned with the reason. The rules are the ones torrents use (`torrent_files::delete_owned`).
+- **`clear_completed`** removes every completed download from the list and keeps its file.
+- **A download's own speed limit and connections** (`set_download_limits`, `set_download_connections`) apply at once to a download the engine has, and to the next start of one it doesn't. They are saved.
+
+### The engine stopping (#58)
+
+- **A lost download comes back on its own:**
+  - When the engine crashes, hangs or is restarted by hand, the supervisor reports what it was running as failed, with `ENGINE_STOPPED`, `ENGINE_HUNG` or `ENGINE_RESTARTED` (#39).
+  - The manager recognises these (`lost_by_engine`) and puts the download back to waiting, with the reason shown.
+  - It then resumes from its checkpoint once an engine runs (PO decision on #58).
+- **While the engine is unavailable,** a waiting download it refuses with `ENGINE_UNAVAILABLE` stays waiting instead of failing.
+- **Health and restarting:** `DirectTransfer::health` and `restart` report the engine's health and restart it ("Restart transfer engine"). An engine in the app's process is always running, and `restart` is `Unsupported` for it.
+- **A missing engine program:** when the program can't start, the app runs with `MissingEngine`. It refuses every command as `ENGINE_UNAVAILABLE` and reports why as its health, so the app opens and says what is wrong.
+
+### In the app (#58)
+
+`ManagerService` runs the manager on a thread of its own:
+
+- **Commands** reach it through a bounded channel. No lock is held while it talks to the engine or the database.
+- **Every 100 ms** it applies the engine's events and the schedule.
+- **Snapshots:** when the `DownloadsSnapshot` changed, it sends it, at most every 250 ms (V1 refreshed every 250 ms to 5 s).
+- **The desktop shell** (`src-tauri/src/downloads.rs`) starts it, sends each snapshot as the `downloads-snapshot` event, and exposes V1's direct-download commands. They are listed in [CONTRACTS.md](CONTRACTS.md#the-downloads-commands).
+
+Saving the queue settings is #30.
 
 ## The fake engine for tests
 

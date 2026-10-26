@@ -8,9 +8,12 @@
 
 #[cfg(test)]
 pub(crate) mod fake;
+mod missing;
+
+pub use missing::MissingEngine;
 
 use crate::domain::{
-    Capabilities, DownloadStatus, ErrorCode, Progress, TransferError, Verification,
+    Capabilities, DownloadStatus, EngineHealth, ErrorCode, Progress, TransferError, Verification,
 };
 use crate::naming::check_file_name;
 use crate::request::{
@@ -465,6 +468,20 @@ pub enum TransferEvent {
     },
 }
 
+/// What the engine's supervisor fails a transfer with when its engine stopped unexpectedly (#39).
+pub const ENGINE_STOPPED: &str = "the transfer engine stopped unexpectedly";
+/// ... when its engine stopped responding and was killed (#48).
+pub const ENGINE_HUNG: &str = "the transfer engine stopped responding and was restarted";
+/// ... when the engine was restarted by hand ("Restart transfer engine").
+pub const ENGINE_RESTARTED: &str = "the transfer engine was restarted";
+
+/// Whether `error` is the supervisor's report of a transfer its engine lost, rather than a
+/// failure of the transfer itself: the manager then starts it again on its own once an engine runs
+/// (PO decision on #58).
+pub fn lost_by_engine(error: &TransferError) -> bool {
+    [ENGINE_STOPPED, ENGINE_HUNG, ENGINE_RESTARTED].contains(&error.message.as_str())
+}
+
 /// A direct-download engine, in the app's process or behind a client for a child process.
 ///
 /// Commands fail with an [`ErrorCode`]: `NotFound` for an unknown id, `InvalidState` when the
@@ -509,6 +526,16 @@ pub trait DirectTransfer: Send {
     /// A new receiver for this engine's events. Each receiver gets every event from the moment
     /// it subscribed.
     fn subscribe(&mut self) -> Receiver<TransferEvent>;
+    /// Whether the engine can take commands now. An engine in the app's process always can; a
+    /// supervised one reports its child (#39).
+    fn health(&self) -> EngineHealth {
+        EngineHealth::Running
+    }
+    /// Starts a new engine in place of the running one ("Restart transfer engine"): transfers it
+    /// was running are reported lost (#39, #58). `Unsupported` for an engine in the app's process.
+    fn restart(&mut self) -> Result<(), ErrorCode> {
+        Err(ErrorCode::Unsupported)
+    }
 }
 
 /// One command, in the form that crosses a process boundary (#39).
