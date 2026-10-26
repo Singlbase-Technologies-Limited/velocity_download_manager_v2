@@ -84,6 +84,7 @@ For example:
   - **The helper** exits; libtorrent's files stay as they are, for the next session to check.
 - **Kill:** the app waits up to 5 seconds for the child's stdout to end, and kills it if it doesn't. The engine does the same when the app goes away.
 - **No polling:** the app waits on the end of the child's stdout, not on a polling loop.
+- **Dropping a supervisor** stops its child before it returns: the child has exited, or been killed, by then. No other thread keeps a retired child alive, so its files are closed (#62).
 
 ## Supervisor
 
