@@ -18,7 +18,7 @@ They're defined once in Rust, in `crates/velocity-core/src/domain.rs` (plus `App
 | `Capabilities` | What an engine really supports: the protocols, each as a `ProtocolCapabilities` (`kind`, `segmented`, `resume`, `validatorResume`, `http2`, and `encryption`: whether the connection can be encrypted with its certificate checked, `https://` or FTPS; a protocol not listed isn't supported), live connection changes, Metalink, and the most connections per host now (the performance profile's cap) | Reported, never assumed (research report section 4.2). Per protocol since contract version 4 (#57), with `encryption` since version 5 (#51). `cleartextWarning` in `src/capabilities.ts` holds the warning for a plain `ftp://` download (PO decision on #51); [SETTINGS.md](SETTINGS.md#what-a-build-can-do) says how the UI uses it |
 | `ErrorCode` | Stable codes for command failures, in `SCREAMING_SNAKE_CASE` (22 codes: V1's, without the four aria2 `RPC_*` codes). Each has a user-facing sentence (`user_message`) | The code is the contract; the message is for people |
 | `AppInfo` | `{ name, version, commandApiVersion }` | Returned by `app_info` |
-| `DownloadsSnapshot` | What the UI is sent about the downloads (#58): `downloads` (records, the unfinished ones in queue order, then the finished ones, newest first), `unavailable` (stored downloads this build can't act on: `id`, `sourceUrl`, `fileName`, `directory`, `createdAtMs`), `needsLogin` (ids of downloads that came back after a restart without their login), `engine` and `storageError` (the last failure to save, or `null`) | Sent as the `downloads-snapshot` event and returned by `get_snapshot` |
+| `DownloadsSnapshot` | What the UI is sent about the downloads (#58): `downloads` (records, the unfinished ones in queue order, then the finished ones, newest first), `unavailable` (stored downloads this build can't act on: `id`, `sourceUrl`, `fileName`, `directory`, `createdAtMs`), `needsLogin` (ids of downloads that came back after a restart without their login), `engine`, `torrentEngine` (the torrent helper's health, since version 8) and `storageError` (the last failure to save, or `null`) | Sent as the `downloads-snapshot` event and returned by `get_snapshot` |
 | `EngineHealth` | `{ state: "running" }`, `{ state: "restarting", attempt }` or `{ state: "unavailable", code }` | The fixture `engine-health.json` lists one of each |
 | `BatchResult` | What a command over several downloads did: `done` (ids), `failed` (`{ id, code }`), and `kept` (`{ path, reason, code }`, files a removal with files left in place). `reason` is `notPlain`, `tooLarge`, `behindLink`, `notEmpty` or `failed`; `code` is set only for `failed` | The fixture `kept-reasons.json` lists the reasons |
 
@@ -47,6 +47,9 @@ The commands of [`src-tauri/src/downloads.rs`](../src-tauri/src/downloads.rs) (#
 | `set_download_speed_limit` | `id`, `kib` (KiB/s; 0 for no limit, otherwise at least 1) | nothing |
 | `restart_engine` | — | `EngineHealth` |
 | `trust_host_key` | `host`, `port`, `fingerprint` | nothing; the UI then retries the download |
+| `choose_torrent_files` | `id`, `files` (indexes) | nothing |
+| `set_torrent_seeding` | `id`, `seeding` (a seeding policy; `{ "mode": "never" }` stops seeding) | nothing |
+| `restart_torrent_helper` | — | `EngineHealth` |
 
 Adding downloads is #60's, and giving a login back to a download that needs it comes with its dialog (#59, #60).
 
