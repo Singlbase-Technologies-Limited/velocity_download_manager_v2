@@ -27,6 +27,14 @@ pub const OFF: TorrentSettings = TorrentSettings {
     peer_exchange: false,
     local_peer_discovery: false,
     max_active_seeds: 0,
+    // A random port: tests run side by side, and 6890 may be taken.
+    listen_port: 0,
+    port_mapping: false,
+    upload_limit: 0,
+    download_limit: 0,
+    extra_trackers: Vec::new(),
+    max_peers_per_torrent: 55,
+    dht_bootstrap_nodes: Vec::new(),
 };
 
 pub fn program() -> PathBuf {
@@ -211,6 +219,51 @@ pub fn swarm_tracker() -> String {
     url
 }
 
+/// An HTTP tracker on 127.0.0.1 that names `peer_port` while `failing` is false, and otherwise
+/// answers with a failure reason. Returns its announce URL, with a passkey in its query, and how
+/// many announces it had. The path is `/announce`: libtorrent's SSRF mitigation refuses any
+/// other path on localhost.
+pub fn switchable_tracker(
+    peer_port: u16,
+    failing: std::sync::Arc<std::sync::atomic::AtomicBool>,
+) -> (String, std::sync::Arc<std::sync::atomic::AtomicUsize>) {
+    use std::sync::atomic::Ordering;
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let url = format!(
+        "http://{}/announce?passkey=s3cretpasskey",
+        listener.local_addr().unwrap()
+    );
+    let announces = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let counted = std::sync::Arc::clone(&announces);
+    thread::spawn(move || {
+        for stream in listener.incoming() {
+            let Ok(mut stream) = stream else { break };
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            let mut line = String::new();
+            while reader.read_line(&mut line).is_ok_and(|n| n > 2) {
+                line.clear();
+            }
+            counted.fetch_add(1, Ordering::SeqCst);
+            let body = if failing.load(Ordering::SeqCst) {
+                b"d14:failure reason22:tracker offline (test)e".to_vec()
+            } else {
+                let mut body = b"d8:intervali60e5:peers6:".to_vec();
+                body.extend_from_slice(&[127, 0, 0, 1]);
+                body.extend_from_slice(&peer_port.to_be_bytes());
+                body.push(b'e');
+                body
+            };
+            let head = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len()
+            );
+            let _ = stream.write_all(head.as_bytes());
+            let _ = stream.write_all(&body);
+        }
+    });
+    (url, announces)
+}
+
 /// A libtorrent session on loopback downloading the corpus torrent `name` into `dir`, finding
 /// peers through `tracker`.
 pub struct Leecher {
@@ -306,6 +359,8 @@ pub fn spec(source: TorrentSource, dir: &Path, trackers: Vec<String>) -> Torrent
         choose_files: false,
         files: None,
         seeding: SeedPolicy::Never {},
+        upload_limit: 0,
+        download_limit: 0,
     }
 }
 

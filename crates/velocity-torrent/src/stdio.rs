@@ -11,8 +11,8 @@ use velocity_child::serve::Server;
 use velocity_core::domain::ErrorCode;
 use velocity_core::seeding::SeedPolicy;
 use velocity_core::torrent_engine::{
-    dispatch, Chunk, TorrentCommand, TorrentEngine, TorrentEvent, TorrentId, TorrentReply,
-    TorrentSettings, TorrentSnapshot, TorrentSpec,
+    dispatch, Chunk, NetworkStatus, PeerStatus, TorrentCommand, TorrentEngine, TorrentEvent,
+    TorrentId, TorrentReply, TorrentSettings, TorrentSnapshot, TorrentSpec, TrackerStatus,
 };
 
 use crate::engine::LtEngine;
@@ -43,6 +43,14 @@ pub const STARTING_SETTINGS: TorrentSettings = TorrentSettings {
     peer_exchange: false,
     local_peer_discovery: false,
     max_active_seeds: 0,
+    // Not listening anywhere until the app's settings name the port.
+    listen_port: 0,
+    port_mapping: false,
+    upload_limit: 0,
+    download_limit: 0,
+    extra_trackers: Vec::new(),
+    max_peers_per_torrent: velocity_core::torrent_engine::DEFAULT_MAX_PEERS,
+    dht_bootstrap_nodes: Vec::new(),
 };
 
 /// Runs the child's side: serves the torrent engine on stdin and stdout until stdin closes.
@@ -150,6 +158,39 @@ impl ChildTorrentEngine {
         }
     }
 
+    pub fn set_limits(&self, id: TorrentId, upload: u64, download: u64) -> Result<(), ErrorCode> {
+        self.done(TorrentCommand::SetLimits {
+            id,
+            upload,
+            download,
+        })
+    }
+
+    pub fn trackers(&self, id: TorrentId) -> Result<Vec<TrackerStatus>, ErrorCode> {
+        match self.process.request(TorrentCommand::Trackers { id })? {
+            TorrentReply::Trackers { trackers } => Ok(trackers),
+            _ => Err(ErrorCode::EngineIncompatible),
+        }
+    }
+
+    pub fn reannounce(&self, id: TorrentId) -> Result<(), ErrorCode> {
+        self.done(TorrentCommand::Reannounce { id })
+    }
+
+    pub fn peers(&self, id: TorrentId) -> Result<Vec<PeerStatus>, ErrorCode> {
+        match self.process.request(TorrentCommand::Peers { id })? {
+            TorrentReply::Peers { peers } => Ok(peers),
+            _ => Err(ErrorCode::EngineIncompatible),
+        }
+    }
+
+    pub fn network(&self) -> Result<NetworkStatus, ErrorCode> {
+        match self.process.request(TorrentCommand::Network {})? {
+            TorrentReply::Network { network } => Ok(network),
+            _ => Err(ErrorCode::EngineIncompatible),
+        }
+    }
+
     pub fn snapshot(&self) -> Result<Vec<TorrentSnapshot>, ErrorCode> {
         match self.process.request(TorrentCommand::Snapshot {})? {
             TorrentReply::Snapshot { torrents } => Ok(torrents),
@@ -217,6 +258,26 @@ impl TorrentEngine for ChildTorrentEngine {
 
     fn save_resume(&mut self) -> Result<Vec<TorrentId>, ErrorCode> {
         ChildTorrentEngine::save_resume(self)
+    }
+
+    fn set_limits(&mut self, id: TorrentId, upload: u64, download: u64) -> Result<(), ErrorCode> {
+        ChildTorrentEngine::set_limits(self, id, upload, download)
+    }
+
+    fn trackers(&self, id: TorrentId) -> Result<Vec<TrackerStatus>, ErrorCode> {
+        ChildTorrentEngine::trackers(self, id)
+    }
+
+    fn reannounce(&mut self, id: TorrentId) -> Result<(), ErrorCode> {
+        ChildTorrentEngine::reannounce(self, id)
+    }
+
+    fn peers(&self, id: TorrentId) -> Result<Vec<PeerStatus>, ErrorCode> {
+        ChildTorrentEngine::peers(self, id)
+    }
+
+    fn network(&self) -> Result<NetworkStatus, ErrorCode> {
+        ChildTorrentEngine::network(self)
     }
 
     fn snapshot(&self) -> Result<Vec<TorrentSnapshot>, ErrorCode> {

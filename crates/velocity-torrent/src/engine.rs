@@ -24,6 +24,8 @@
 //!   changed (at most every [`RESUME_EVERY`]), when the torrent completes, and when asked. Added
 //!   back, it is checked with the core's `check_resume_data` first, and libtorrent gets the
 //!   metadata V2 checked, not the copy inside it.
+//! - **Trackers and peers:** tracker URLs leave the helper redacted, and what trackers and peers
+//!   say of themselves is cleaned before it is shown.
 //! - **Files are never deleted** here: removing a torrent keeps its data.
 //!
 //! libtorrent has no push status, so a poller reads every torrent's state each [`POLL_INTERVAL`]
@@ -38,17 +40,22 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
+use crate::portmap::PortMapTracker;
 use velocity_core::domain::{DownloadStatus, ErrorCode, FailureClass, Progress, TransferError};
 use velocity_core::seeding::{seed_queue_plan, SeedPolicy};
 use velocity_core::torrent::{
     check_resume_data, check_tracker, file_priorities, parse_magnet, parse_metadata, parse_torrent,
-    TorrentFile, MAX_RESUME_BYTES, MAX_TORRENT_BYTES,
+    redact_tracker, TorrentFile, MAX_RESUME_BYTES, MAX_TORRENT_BYTES,
 };
 use velocity_core::torrent_engine::{
-    Chunk, TorrentEngine, TorrentEvent, TorrentId, TorrentSettings, TorrentSnapshot, TorrentSource,
-    TorrentSpec, CHUNK_BYTES,
+    Chunk, NetworkStatus, PeerStatus, TorrentEngine, TorrentEvent, TorrentId, TorrentSettings,
+    TorrentSnapshot, TorrentSource, TorrentSpec, TrackerState, TrackerStatus, CHUNK_BYTES,
+    MAX_RATE_LIMIT,
 };
-use velocity_lt::{state, AddParams, FileEntry, Session, SessionConfig, TorrentStatus, UniquePtr};
+use velocity_lt::{
+    state, AddParams, FileEntry, PeerEntry, Session, SessionConfig, TorrentStatus, TrackerEntry,
+    UniquePtr,
+};
 
 /// How often the poller reads libtorrent's state. A starting value, not a measured one.
 pub const POLL_INTERVAL: Duration = Duration::from_millis(250);
@@ -79,21 +86,102 @@ pub fn user_agent() -> String {
     )
 }
 
-/// The session's settings. Listening on a random port on every interface until #62's
-/// port-mapping part adds a fixed port; router port mapping stays off (opt-in).
-fn session_config(settings: TorrentSettings) -> SessionConfig {
+/// The port to listen on for the settings' `listen_port`: that port, or for 0 a free one picked
+/// now. One port for every interface: libtorrent given port 0 would pick one per interface, and
+/// the port reported to the app and to peers would then be only one of them.
+fn listening_port(asked: u16) -> u16 {
+    if asked != 0 {
+        return asked;
+    }
+    // The system's free port, let go at once. Should another program take it meanwhile,
+    // libtorrent says so as a listen error.
+    std::net::TcpListener::bind(("0.0.0.0", 0))
+        .and_then(|l| l.local_addr())
+        .map_or(0, |a| a.port())
+}
+
+/// The session's settings: listening on `port` on every interface, router port mapping only when
+/// the user turned it on, and the global limits.
+fn session_config(settings: &TorrentSettings, port: u16) -> SessionConfig {
     SessionConfig {
-        listen_interfaces: "0.0.0.0:0,[::]:0".into(),
+        listen_interfaces: format!("0.0.0.0:{port},[::]:{port}"),
         enable_dht: settings.dht,
         enable_lsd: settings.local_peer_discovery,
-        enable_upnp: false,
-        enable_natpmp: false,
-        dht_bootstrap_nodes: String::new(),
+        enable_upnp: settings.port_mapping,
+        enable_natpmp: settings.port_mapping,
+        dht_bootstrap_nodes: settings.dht_bootstrap_nodes.join(","),
         user_agent: user_agent(),
         peer_fingerprint: peer_fingerprint(env!("CARGO_PKG_VERSION")),
-        upload_rate_limit: 0,
-        download_rate_limit: 0,
+        upload_rate_limit: rate(settings.upload_limit),
+        download_rate_limit: rate(settings.download_limit),
         connections_limit: 0,
+    }
+}
+
+/// A torrent's trackers, then the settings' extra ones it hasn't.
+fn with_extra(own: &[String], extra: &[String]) -> Vec<String> {
+    let mut all = own.to_vec();
+    for tracker in extra {
+        if !all.contains(tracker) {
+            all.push(tracker.clone());
+        }
+    }
+    all
+}
+
+/// A limit in bytes per second as libtorrent takes it; 0 for none.
+fn rate(limit: u64) -> i32 {
+    i32::try_from(limit).unwrap_or(i32::MAX)
+}
+
+/// Untrusted text from a tracker or a peer: without control characters, at most `max`
+/// characters.
+fn clean_text(text: &str, max: usize) -> String {
+    text.chars().filter(|c| !c.is_control()).take(max).collect()
+}
+
+/// One tracker as the user sees it: its URL redacted, and its message cleaned of control
+/// characters and of the URL itself.
+fn tracker_status(t: &TrackerEntry) -> TrackerStatus {
+    let url = redact_tracker(&t.url);
+    let state = if t.working {
+        TrackerState::Working
+    } else if t.updating {
+        TrackerState::Updating
+    } else if t.fails > 0 {
+        TrackerState::Error
+    } else {
+        TrackerState::NotContacted
+    };
+    let message = clean_text(&t.message.replace(t.url.as_str(), &url), 300);
+    let count = |n: i32| u32::try_from(n).ok();
+    TrackerStatus {
+        url,
+        tier: t.tier,
+        state,
+        message: (!message.is_empty()).then_some(message),
+        fails: u32::from(t.fails),
+        next_announce_secs: u64::try_from(t.next_announce_secs).ok(),
+        seeds: count(t.scrape_complete),
+        peers: count(t.scrape_incomplete),
+    }
+}
+
+/// One peer as the user sees it; what it says of itself is untrusted.
+fn peer_status(p: &PeerEntry) -> PeerStatus {
+    let progress = if p.progress.is_finite() {
+        p.progress.clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+    PeerStatus {
+        ip: p.ip.clone(),
+        port: p.port,
+        download_speed_bps: u64::try_from(p.download_rate).unwrap_or(0),
+        upload_speed_bps: u64::try_from(p.upload_rate).unwrap_or(0),
+        seed: p.seed,
+        progress_permille: (progress * 1000.0).round() as u16,
+        client: clean_text(&p.client, 64),
     }
 }
 
@@ -321,6 +409,12 @@ struct State {
     /// Resume data uploaded for the next [`TorrentSource::Resume`], and its announced size.
     upload: Vec<u8>,
     upload_total: u64,
+    /// The port asked of libtorrent: the settings' port, or the one picked for 0.
+    port: u16,
+    /// Why libtorrent couldn't listen, since the port last changed: a later success on another
+    /// interface doesn't hide it, since peers on the failed one can't connect.
+    listen_error: Option<String>,
+    portmap: PortMapTracker,
 }
 
 impl State {
@@ -386,6 +480,7 @@ impl Shared {
     /// each snapshot that changed. libtorrent is called with no lock held.
     fn poll(&self) {
         let alerts = self.session.pop_alerts();
+        self.note_network(&alerts);
         let torrents: Vec<Seen> = self
             .state()
             .torrents
@@ -414,6 +509,25 @@ impl Shared {
             self.poll_one(&seen, lt, &alerts);
         }
         self.run_seed_queue();
+    }
+
+    /// Notes what libtorrent says about listening and port mapping.
+    fn note_network(&self, alerts: &[velocity_lt::AlertEntry]) {
+        let mut state = self.state();
+        for alert in alerts {
+            let port = u16::try_from(alert.port).unwrap_or(0);
+            match alert.kind.as_str() {
+                "listen_failed" => {
+                    state.listen_error =
+                        Some(format!("port {port}: {}", clean_text(&alert.message, 300)));
+                }
+                "portmap" => state.portmap.on_mapped(&alert.transport, port),
+                "portmap_error" => state
+                    .portmap
+                    .on_error(&alert.transport, &clean_text(&alert.message, 300)),
+                _ => {}
+            }
+        }
     }
 
     /// Sends the resume data libtorrent saved, in chunks, for the torrents still here.
@@ -722,7 +836,10 @@ pub struct LtEngine {
 impl LtEngine {
     /// Starts a session with `settings`; its torrent ids start at `first_id`.
     pub fn start(first_id: u64, settings: TorrentSettings) -> Result<Self, String> {
-        let session = velocity_lt::new_session(&session_config(settings))
+        let mut portmap = PortMapTracker::default();
+        portmap.reset(settings.port_mapping, Instant::now());
+        let port = listening_port(settings.listen_port);
+        let session = velocity_lt::new_session(&session_config(&settings, port))
             .map_err(|e| format!("starting libtorrent: {}", e.what()))?;
         let shared = Arc::new(Shared {
             session,
@@ -733,6 +850,9 @@ impl LtEngine {
                 subscribers: Vec::new(),
                 upload: Vec::new(),
                 upload_total: 0,
+                port,
+                listen_error: None,
+                portmap,
             }),
             stop: AtomicBool::new(false),
             clock: AtomicU64::new(0),
@@ -778,12 +898,18 @@ impl LtEngine {
             return Err(ErrorCode::InvalidInput);
         }
         spec.seeding.check()?;
-        let settings = self.shared.state().settings;
+        if spec.upload_limit > MAX_RATE_LIMIT || spec.download_limit > MAX_RATE_LIMIT {
+            return Err(ErrorCode::InvalidInput);
+        }
+        let settings = self.shared.state().settings.clone();
         let mut base = AddParams {
             save_path,
             paused: spec.paused,
-            trackers: spec.trackers.clone(),
+            trackers: with_extra(&spec.trackers, &settings.extra_trackers),
             disable_pex: !settings.peer_exchange,
+            upload_limit: rate(spec.upload_limit),
+            download_limit: rate(spec.download_limit),
+            max_connections: i32::try_from(settings.max_peers_per_torrent).unwrap_or(i32::MAX),
             ..Default::default()
         };
         let (first, phase, files, partial, metadata) = match &spec.source {
@@ -928,11 +1054,32 @@ impl TorrentEngine for LtEngine {
 
     fn set_settings(&mut self, settings: TorrentSettings) -> Result<(), ErrorCode> {
         settings.check()?;
+        let (moved, port) = {
+            let state = self.shared.state();
+            let moved = state.settings.listen_port != settings.listen_port;
+            // Another setting changed: a random port picked before stays.
+            let port = if moved {
+                listening_port(settings.listen_port)
+            } else {
+                state.port
+            };
+            (moved, port)
+        };
         self.shared
             .session
-            .apply_config(&session_config(settings))
+            .apply_config(&session_config(&settings, port))
             .map_err(|_| ErrorCode::InvalidInput)?;
-        self.shared.state().settings = settings;
+        let mut state = self.shared.state();
+        state.port = port;
+        let old = &state.settings;
+        let mapping = moved || old.port_mapping != settings.port_mapping;
+        if moved {
+            state.listen_error = None;
+        }
+        if mapping {
+            state.portmap.reset(settings.port_mapping, Instant::now());
+        }
+        state.settings = settings;
         Ok(())
     }
 
@@ -1111,6 +1258,69 @@ impl TorrentEngine for LtEngine {
             .collect())
     }
 
+    fn set_limits(&mut self, id: TorrentId, upload: u64, download: u64) -> Result<(), ErrorCode> {
+        if upload > MAX_RATE_LIMIT || download > MAX_RATE_LIMIT {
+            return Err(ErrorCode::InvalidInput);
+        }
+        let (lt, _) = self.shared.lt_of(id)?;
+        self.shared
+            .session
+            .set_limits(lt, rate(upload), rate(download))
+            .map_err(|_| ErrorCode::NotFound)?;
+        // Kept for when the torrent is added again.
+        if let Some(t) = self.shared.state().torrents.get_mut(&id) {
+            t.base.upload_limit = rate(upload);
+            t.base.download_limit = rate(download);
+        }
+        Ok(())
+    }
+
+    fn trackers(&self, id: TorrentId) -> Result<Vec<TrackerStatus>, ErrorCode> {
+        let (lt, _) = self.shared.lt_of(id)?;
+        let entries = self
+            .shared
+            .session
+            .trackers(lt)
+            .map_err(|_| ErrorCode::NotFound)?;
+        Ok(entries.iter().map(tracker_status).collect())
+    }
+
+    fn reannounce(&mut self, id: TorrentId) -> Result<(), ErrorCode> {
+        let (lt, _) = self.shared.lt_of(id)?;
+        self.shared
+            .session
+            .force_reannounce(lt)
+            .map_err(|_| ErrorCode::NotFound)
+    }
+
+    fn peers(&self, id: TorrentId) -> Result<Vec<PeerStatus>, ErrorCode> {
+        let (lt, _) = self.shared.lt_of(id)?;
+        let entries = self
+            .shared
+            .session
+            .peers(lt)
+            .map_err(|_| ErrorCode::NotFound)?;
+        Ok(entries.iter().map(peer_status).collect())
+    }
+
+    fn network(&self) -> Result<NetworkStatus, ErrorCode> {
+        let listen_port = self.shared.session.listen_port();
+        let state = self.shared.state();
+        // libtorrent moves on to the next free port when the one asked is taken; that stays,
+        // and is said (PO decision on #62).
+        let moved = (listen_port != 0 && listen_port != state.port).then(|| {
+            format!(
+                "port {} couldn't be opened; listening on {listen_port}",
+                state.port
+            )
+        });
+        Ok(NetworkStatus {
+            listen_port,
+            listen_error: state.listen_error.clone().or(moved),
+            port_mapping: state.portmap.state(Instant::now()),
+        })
+    }
+
     fn snapshot(&self) -> Result<Vec<TorrentSnapshot>, ErrorCode> {
         let torrents: Vec<Listed> = self
             .shared
@@ -1165,6 +1375,132 @@ mod tests {
             info_hash_v1: "a".repeat(40),
             ..Default::default()
         }
+    }
+
+    /// V1's `session_settings_follow_the_user_settings`, with V2's port.
+    #[test]
+    fn the_session_follows_the_settings() {
+        let c = session_config(&TorrentSettings::default(), 6890);
+        assert_eq!(c.listen_interfaces, "0.0.0.0:6890,[::]:6890");
+        assert!(!c.enable_upnp && !c.enable_natpmp, "port mapping is opt-in");
+        assert_eq!((c.upload_rate_limit, c.download_rate_limit), (0, 0));
+        assert_eq!(c.dht_bootstrap_nodes, "", "libtorrent's own default nodes");
+        let c = session_config(
+            &TorrentSettings {
+                dht_bootstrap_nodes: vec!["a.test:1".into(), "[2001:db8::1]:2".into()],
+                ..TorrentSettings::default()
+            },
+            6890,
+        );
+        assert_eq!(c.dht_bootstrap_nodes, "a.test:1,[2001:db8::1]:2");
+        let c = session_config(
+            &TorrentSettings {
+                listen_port: 0,
+                port_mapping: true,
+                dht: false,
+                upload_limit: 262_144,
+                download_limit: 1024,
+                ..TorrentSettings::default()
+            },
+            41_000,
+        );
+        // A random port is picked first, and is the same on every interface.
+        assert_eq!(c.listen_interfaces, "0.0.0.0:41000,[::]:41000");
+        assert!(c.enable_upnp && c.enable_natpmp && !c.enable_dht);
+        assert_eq!(
+            (c.upload_rate_limit, c.download_rate_limit),
+            (262_144, 1024)
+        );
+    }
+
+    #[test]
+    fn a_random_port_is_one_free_port_picked_up_front() {
+        assert_eq!(listening_port(6890), 6890);
+        let picked = listening_port(0);
+        assert_ne!(picked, 0);
+        // Free when picked: something can listen on it on every interface.
+        assert!(std::net::TcpListener::bind(("0.0.0.0", picked)).is_ok());
+    }
+
+    /// V1's `tracker_errors_are_shown…` shows a tracker redacted, with its message; untrusted
+    /// text is cleaned.
+    #[test]
+    fn a_tracker_is_shown_redacted_with_its_state_and_a_clean_message() {
+        let url = "http://t.test:2710/a1b2c3secret/announce";
+        let entry = |working, updating, fails, message: &str| TrackerEntry {
+            url: url.into(),
+            tier: 1,
+            working,
+            updating,
+            fails,
+            message: message.into(),
+            next_announce_secs: 30,
+            scrape_complete: 4,
+            scrape_incomplete: -1,
+        };
+        let failing = tracker_status(&entry(false, false, 2, &format!("{url} offline\n\u{7}")));
+        assert_eq!(failing.url, "http://t.test:2710/…");
+        assert_eq!(failing.state, TrackerState::Error);
+        assert_eq!(failing.fails, 2);
+        let message = failing.message.unwrap();
+        assert!(!message.contains("secret"), "{message}");
+        assert!(!message.chars().any(char::is_control), "{message:?}");
+        assert!(message.contains("offline"), "{message}");
+        assert_eq!((failing.seeds, failing.peers), (Some(4), None));
+        assert_eq!(failing.next_announce_secs, Some(30));
+        assert_eq!(
+            tracker_status(&entry(true, false, 0, "")).state,
+            TrackerState::Working
+        );
+        assert_eq!(tracker_status(&entry(true, false, 0, "")).message, None);
+        assert_eq!(
+            tracker_status(&entry(false, true, 0, "")).state,
+            TrackerState::Updating
+        );
+        assert_eq!(
+            tracker_status(&entry(false, false, 0, "")).state,
+            TrackerState::NotContacted
+        );
+        let unscheduled = TrackerEntry {
+            next_announce_secs: -1,
+            ..entry(true, false, 0, "")
+        };
+        assert_eq!(tracker_status(&unscheduled).next_announce_secs, None);
+        // A long message is cut.
+        let long = tracker_status(&entry(false, false, 1, &"x".repeat(5000)));
+        assert!(long.message.unwrap().chars().count() <= 300);
+    }
+
+    #[test]
+    fn a_peer_is_shown_with_what_it_says_of_itself_cleaned() {
+        let p = peer_status(&PeerEntry {
+            ip: "127.0.0.1".into(),
+            port: 6890,
+            download_rate: 10,
+            upload_rate: -1,
+            seed: true,
+            am_choking: false,
+            peer_choking: false,
+            progress: 0.5004,
+            client: format!("evil\u{1b}[31m{}", "z".repeat(200)),
+        });
+        assert_eq!((p.ip.as_str(), p.port), ("127.0.0.1", 6890));
+        assert_eq!((p.download_speed_bps, p.upload_speed_bps), (10, 0));
+        assert!(p.seed);
+        assert_eq!(p.progress_permille, 500);
+        assert!(!p.client.chars().any(char::is_control), "{:?}", p.client);
+        assert!(p.client.chars().count() <= 64);
+        // Progress outside 0 to 1 is untrusted too.
+        let odd = peer_status(&PeerEntry {
+            progress: f32::NAN,
+            ..Default::default()
+        });
+        assert_eq!(odd.progress_permille, 0);
+        let over = peer_status(&PeerEntry {
+            progress: 7.0,
+            ..Default::default()
+        });
+        assert_eq!(over.progress_permille, 1000);
     }
 
     #[test]

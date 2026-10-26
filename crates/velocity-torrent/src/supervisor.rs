@@ -19,8 +19,8 @@ use velocity_core::domain::{DownloadStatus, ErrorCode, Progress};
 use velocity_core::seeding::SeedPolicy;
 use velocity_core::torrent::MAX_RESUME_BYTES;
 use velocity_core::torrent_engine::{
-    Chunk, TorrentEngine, TorrentEvent, TorrentId, TorrentSettings, TorrentSnapshot, TorrentSource,
-    TorrentSpec, CHUNK_BYTES,
+    Chunk, NetworkStatus, PeerStatus, TorrentEngine, TorrentEvent, TorrentId, TorrentSettings,
+    TorrentSnapshot, TorrentSource, TorrentSpec, TrackerStatus, CHUNK_BYTES,
 };
 
 use crate::stdio::ChildTorrentEngine;
@@ -115,7 +115,7 @@ impl Book<ChildTorrentEngine> for TorrentBook {
                 })
             })
             .collect();
-        (self.settings, lost)
+        (self.settings.clone(), lost)
     }
 
     /// Gives the helper the settings, then the lost torrents. One the helper refuses stays
@@ -320,7 +320,7 @@ impl TorrentEngine for SupervisedTorrentEngine {
     }
 
     fn set_settings(&mut self, settings: TorrentSettings) -> Result<(), ErrorCode> {
-        self.helper()?.set_settings(settings)?;
+        self.helper()?.set_settings(settings.clone())?;
         self.supervisor.update(|book, _| {
             book.settings = settings;
             ((), Vec::new())
@@ -431,6 +431,31 @@ impl TorrentEngine for SupervisedTorrentEngine {
 
     fn save_resume(&mut self) -> Result<Vec<TorrentId>, ErrorCode> {
         self.helper()?.save_resume()
+    }
+
+    fn set_limits(&mut self, id: TorrentId, upload: u64, download: u64) -> Result<(), ErrorCode> {
+        self.running(id)?.set_limits(id, upload, download)?;
+        self.keep(id, |spec| {
+            spec.upload_limit = upload;
+            spec.download_limit = download;
+        });
+        Ok(())
+    }
+
+    fn trackers(&self, id: TorrentId) -> Result<Vec<TrackerStatus>, ErrorCode> {
+        self.running(id)?.trackers(id)
+    }
+
+    fn reannounce(&mut self, id: TorrentId) -> Result<(), ErrorCode> {
+        self.running(id)?.reannounce(id)
+    }
+
+    fn peers(&self, id: TorrentId) -> Result<Vec<PeerStatus>, ErrorCode> {
+        self.running(id)?.peers(id)
+    }
+
+    fn network(&self) -> Result<NetworkStatus, ErrorCode> {
+        self.helper()?.network()
     }
 
     fn snapshot(&self) -> Result<Vec<TorrentSnapshot>, ErrorCode> {

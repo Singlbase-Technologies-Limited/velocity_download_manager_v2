@@ -1,6 +1,6 @@
 # Torrents
 
-V2 downloads BitTorrent v1, v2 and hybrid torrents with libtorrent 2.0.15 ([ADR-0001](decisions/0001-v2-direction.md), [ADR-0005](decisions/0005-v1-features-without-aria2.md)). This document describes how torrents work in V2 today. #62 delivers the port in four parts; the first three are in: the bridge and helper, magnets and file choice, and the lifecycle and seeding.
+V2 downloads BitTorrent v1, v2 and hybrid torrents with libtorrent 2.0.15 ([ADR-0001](decisions/0001-v2-direction.md), [ADR-0005](decisions/0005-v1-features-without-aria2.md)). This document describes how torrents work in V2 today. #62 delivered the port in four parts: the bridge and helper, magnets and file choice, the lifecycle and seeding, and trackers and port mapping.
 
 ## Where the code is
 
@@ -55,13 +55,13 @@ Torrent metadata and magnet links are untrusted input. `velocity_core::torrent` 
 
 ## The torrent contract
 
-`TORRENT_CONTRACT_VERSION` is 3: version 1 had no file choice, and version 2 no seeding or resume data. Every wire form refuses unknown fields.
+`TORRENT_CONTRACT_VERSION` is 4: version 1 had no file choice, version 2 no seeding or resume data, and version 3 no trackers, peers, limits or port settings. Every wire form refuses unknown fields.
 
 | Command | Reply | What it does |
 |---|---|---|
 | `version {}` | `version { libtorrent }` | The libtorrent version, for diagnostics; also the supervisor's hang check |
-| `setSettings { settings }` | `done {}` | DHT, peer exchange, local peer discovery, and `maxActiveSeeds` ([Seeding](#seeding)) |
-| `add { spec }` | `added { id }` | `spec`: `source` (`{"kind":"file","path":…}`, `{"kind":"magnet","uri":…}` or `{"kind":"resume"}`), `directory`, `trackers`, `paused`, `chooseFiles`, `files` (a `.torrent` file's first choice, or `null` for every file) and `seeding` (its [policy](#seeding)) |
+| `setSettings { settings }` | `done {}` | [The settings](#settings-and-identity) |
+| `add { spec }` | `added { id }` | `spec`: `source` (`{"kind":"file","path":…}`, `{"kind":"magnet","uri":…}` or `{"kind":"resume"}`), `directory`, `trackers`, `paused`, `chooseFiles`, `files` (a `.torrent` file's first choice, or `null` for every file), `seeding` (its [policy](#seeding)), and `uploadLimit` and `downloadLimit` (bytes per second, 0 for none) |
 | `restore { id, spec }` | `done {}` | Adds a torrent under an id an earlier helper gave it ([Recovery](#resume-data-and-recovery)). `INVALID_INPUT` for an id the helper has, or could still give |
 | `setFiles { id, files }` | `done {}` | Downloads exactly these files ([File choice](#file-choice)) |
 | `setSeeding { id, seeding }` | `done {}` | Sets when the torrent stops seeding; `{"mode":"never"}` stops it ([Seeding](#seeding)) |
@@ -70,6 +70,11 @@ Torrent metadata and magnet links are untrusted input. `velocity_core::torrent` 
 | `saveResume {}` | `saved { ids }` | Asks for every torrent's resume data now; it follows as `resumeData` events |
 | `pause { id }`, `resume { id }` | `done {}` | `INVALID_STATE` for a completed torrent that doesn't seed |
 | `remove { id }` | `done {}` | Forgets the torrent. Its files are always kept |
+| `setLimits { id, upload, download }` | `done {}` | The torrent's own limits, in bytes per second, 0 for none |
+| `trackers { id }` | `trackers { trackers }` | Each tracker: its URL redacted, tier, state (`working`, `updating`, `error` or `notContacted`), message, failures, seconds to the next announce, and the seeds and peers it counted ([Trackers and peers](#trackers-and-peers)) |
+| `reannounce { id }` | `done {}` | Announces to the torrent's trackers now |
+| `peers { id }` | `peers { peers }` | Each connected peer: address, port, speeds, whether it is a seed, its progress in thousandths, and its client |
+| `network {}` | `network { network }` | The listening port, a listen error, and the port-mapping state ([Settings](#settings-and-identity)) |
 | `snapshot {}` | `snapshot { torrents }` | The state of every torrent |
 
 - **Events:** `changed { snapshot }`, `removed { id }`, and `resumeData { id, chunk }`, the torrent's resume data in chunks sent in order.
@@ -168,12 +173,39 @@ The helper never deletes files. Deleting is the manager's decision (#58), throug
 - **Windows:** a file still open can't be deleted, so each file is tried again for up to 5 s, after the helper has removed the torrent. On the development machine, libtorrent 2.0.15 had let go of a seeding torrent's files at once: the integration test passed without the wait three times out of three. A core unit test covers the wait with a file held open without delete sharing.
 - **The report:** `delete_owned` says what it deleted and what it kept, and why: a link, too large, behind a link, a folder not empty, or the error.
 
+## Trackers and peers
+
+- **Tracker URLs are redacted** before they leave the helper: scheme, host and port only, as V1 showed them (`torrent::redact_tracker`). A private tracker's passkey, in the path or the query, and any login never reach the app's logs or UI.
+- **Untrusted text is cleaned:** a tracker's message loses control characters and the tracker's own URL, and is cut to 300 characters. A peer's client name loses control characters and is cut to 64.
+- **Trackers on localhost:** libtorrent refuses to announce to them unless the path starts with `/announce` (its SSRF mitigation). Trackers elsewhere aren't affected.
+
 ## Settings and identity
 
-- **Peer discovery:** the defaults are V1's (PO decision on #62): DHT on, peer exchange on, local peer discovery off. Private torrents never use DHT or peer exchange, which libtorrent enforces. A new helper starts with everything off, and the supervisor sends the settings right after the handshake. The settings screen is #30.
-- **Seeding:** `maxActiveSeeds`, 0 by default ([Seeding](#seeding)).
-- **Port mapping:** UPnP and NAT-PMP are off. They come as an opt-in with #62's port-mapping part.
-- **Listening:** on a random port on every interface, until that part adds a fixed port.
+The settings screen is #30. A new helper starts with every kind of peer discovery off and listens nowhere in particular, and the supervisor sends the settings right after the handshake. The defaults are V1's (PO decisions on #62), apart from the port:
+
+| Setting | Default | Limits | What it does |
+|---|---|---|---|
+| `dht`, `peerExchange`, `localPeerDiscovery` | on, on, off | | How peers are found besides trackers. Private torrents never use DHT or peer exchange, which libtorrent enforces |
+| `maxActiveSeeds` | 0 | 0 to 1,000 | [Seeding](#seeding) |
+| `listenPort` | 6890 | 0, or 1,024 to 65,535 | The TCP and UDP port on every interface. V1's 6881 and 6882 are never reused (PO decision on #62). 0 picks one free port when it is set, the same on every interface; libtorrent given 0 itself would pick one per interface |
+| `portMapping` | off | | Asks the router to forward the port, by UPnP and NAT-PMP |
+| `uploadLimit`, `downloadLimit` | 0 | 0 to 2,147,483,647 bytes per second | All torrents together; 0 for none. Separate from the direct downloads' limit (PO decision on #62) |
+| `extraTrackers` | none | at most 64, each a valid tracker | Added to every torrent added from then on |
+| `maxPeersPerTorrent` | 55 | 1 to 512 | Peers each torrent added from then on connects to at most |
+| `dhtBootstrapNodes` | none | at most 16, each `host:port` | Where DHT starts from (V1's `dht_entry_point`); none means libtorrent's own default nodes |
+
+- **Local peers:** libtorrent doesn't apply the global limits to peers on the local network, as with V1. A torrent's own limits apply to every peer.
+- **A port that is taken:** libtorrent moves on to the next free port, as with V1, and `network` says so: the port really used, and "port 6890 couldn't be opened; listening on 6891" (PO decision on #62). Port mapping maps the port really used.
+  - **Windows:** another program's socket that didn't ask for exclusive use can share the port with libtorrent's. The helper then listens on it, with nothing to report.
+- **Listen errors:** an interface libtorrent can't listen on is reported by `network` too. It stays reported until the port changes, even if another interface works, since peers on the failed one can't connect.
+- **Port mapping:**
+  - **The states** are V1's: `off`, `searching`, `mapped` (the external port, and `upnp` or `natpmp`), `failed` (both protocols, with their reasons), and `noRouter` when nothing answered within 30 s.
+  - **A later failure** never hides a working mapping.
+  - **What resets it:** turning it on, or changing the port, starts a new search.
+- **V1's aria2 network settings:**
+  - **`listen_port` and `dht_listen_port`:** these were aria2's two ports. libtorrent uses `listenPort` for TCP, uTP and DHT alike.
+  - **`enable_dht6`:** aria2's too. libtorrent runs DHT on every listening socket, IPv4 and IPv6 together, under `dht`, as V1's libtorrent engine did.
+- **Not kept from V1:** `request_peer_speed_limit_kib` (aria2's "look for more peers while slower than this") is dropped, as ADR-0005 planned for a setting libtorrent can't do. libtorrent 2.0.15 has no such setting; it finds peers on its own within its connection limits.
 - **Identity:** peers see the peer-id prefix `-VD0100-` (`-VD` and the version digits), and trackers see `Velocity V2/0.1.0 libtorrent/2.0.15.0` (PO decision on #62). V1's `-VL` prefix isn't reused.
 
 ## Not yet
@@ -182,11 +214,7 @@ The helper never deletes files. Deleting is the manager's decision (#58), throug
   - storing a torrent's resume data and a magnet's metadata, and adding torrents back after the app restarts;
   - how tracker passkeys in stored resume data are kept;
   - deleting a torrent's files when the user asks;
-  - the file chooser, and the seeding settings and controls.
-- **#62's last part, trackers and port mapping:**
-  - the tracker list and re-announce;
-  - upload limits and per-peer limits;
-  - opt-in port mapping and a fixed listening port.
+  - the file chooser, the details panel's trackers and peers, and the seeding, limit and network settings and controls.
 
 ## Tests
 
@@ -205,6 +233,10 @@ The helper never deletes files. Deleting is the manager's decision (#58), throug
 | Resume data checks, each refusal for its own reason | `velocity-core` `torrent.rs` unit tests |
 | Owned paths, and deleting only them: links, junctions, sizes, folders left with other files, and waiting for an open file on Windows | `velocity-core` `torrent_files.rs` unit tests (V1's owned-paths and deletion tests) |
 | Resume data put back together from its chunks | `velocity-torrent` `supervisor.rs` unit tests |
+| A torrent's download and upload limits holding back a peer, and the global limits not holding back a local one; a failing tracker shown redacted with its reason, and a re-announce recovering; the peers list; extra trackers; the listening port | `velocity-torrent` `tests/network.rs` (V1's limits and tracker tests). A taken port is checked on Linux |
+| The session's settings; trackers and peers shown, redacted and cleaned; one free port for a random one | `velocity-torrent` `engine.rs` unit tests |
+| The port-mapping state | `velocity-torrent` `portmap.rs` unit tests (V1's) |
+| Tracker URLs redacted | `velocity-core` `torrent.rs` unit tests |
 
-- **Isolation:** the tests never leave the machine. DHT, peer exchange and local peer discovery are off, and peers are found through a tracker on 127.0.0.1. For seeding, the test tracker answers each peer with every other peer that announced to it; never with the peer itself, since libtorrent keeps one entry per address by default and every peer is on 127.0.0.1.
+- **Isolation:** the tests never leave the machine. DHT, peer exchange, local peer discovery and port mapping are off, and peers are found through a tracker on 127.0.0.1, or connect to the helper's port. Port mapping is tested by its unit tests and the session's settings only: turned on, it would send UPnP and NAT-PMP requests to the network. For seeding, the test tracker answers each peer with every other peer that announced to it; never with the peer itself, since libtorrent keeps one entry per address by default and every peer is on 127.0.0.1.
 - **The corpus:** [`tests/fixtures/torrents`](../tests/fixtures/torrents) comes from V1. [`scripts/make-torrent-corpus.py`](../scripts/make-torrent-corpus.py) generated it with libtorrent's own torrent creator (2.0.10, through its Python bindings). Running the script again needs those bindings; the committed files don't.
