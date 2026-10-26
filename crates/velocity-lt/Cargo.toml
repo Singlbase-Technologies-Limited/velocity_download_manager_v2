@@ -1,0 +1,18 @@
+[package]
+name = "velocity-lt"
+description = "The torrent bridge of Velocity Download Manager V2: the only crate that calls libtorrent (ADR-0002)"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+cxx.workspace = true
+
+[build-dependencies]
+cxx-build.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true
+sha2.workspace = true
