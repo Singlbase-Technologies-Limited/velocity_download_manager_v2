@@ -23,7 +23,7 @@ use crate::seeding::{SeedPolicy, MAX_ACTIVE_SEEDS};
 /// [`TorrentSettings::max_active_seeds`], the seeding fields of [`TorrentSnapshot`] and
 /// [`TorrentCommand::SetSeeding`]); resume data ([`TorrentSource::Resume`],
 /// [`TorrentEvent::ResumeData`], [`TorrentCommand::Upload`] and [`TorrentCommand::SaveResume`]);
-/// `MetadataChunk` renamed [`Chunk`], with the same JSON.
+/// [`TorrentCommand::Restore`]; `MetadataChunk` renamed [`Chunk`], with the same JSON.
 pub const TORRENT_CONTRACT_VERSION: u32 = 3;
 
 /// The most bytes one [`Chunk`] carries. As hex, twice that fits in one message of the
@@ -231,6 +231,10 @@ pub trait TorrentEngine: Send {
     fn set_settings(&mut self, settings: TorrentSettings) -> Result<(), ErrorCode>;
     /// Starts a torrent: Fetching metadata for a magnet link, otherwise Queued (or Paused).
     fn add(&mut self, spec: TorrentSpec) -> Result<TorrentId, ErrorCode>;
+    /// Adds a torrent as [`TorrentEngine::add`] does, under `id`, which an earlier engine gave
+    /// it: the torrent helper's supervisor gives a new helper a crashed one's torrents this way.
+    /// `InvalidInput` for an id this engine has, or could still give.
+    fn restore(&mut self, id: TorrentId, spec: TorrentSpec) -> Result<(), ErrorCode>;
     fn pause(&mut self, id: TorrentId) -> Result<(), ErrorCode>;
     fn resume(&mut self, id: TorrentId) -> Result<(), ErrorCode>;
     /// Forgets a torrent. Its files are always kept: deleting them is the manager's decision.
@@ -267,6 +271,7 @@ pub enum TorrentCommand {
     Version {},
     SetSettings { settings: TorrentSettings },
     Add { spec: TorrentSpec },
+    Restore { id: TorrentId, spec: TorrentSpec },
     Pause { id: TorrentId },
     Resume { id: TorrentId },
     Remove { id: TorrentId },
@@ -307,6 +312,10 @@ pub fn dispatch(
         TorrentCommand::Add { spec } => TorrentReply::Added {
             id: engine.add(spec)?,
         },
+        TorrentCommand::Restore { id, spec } => {
+            engine.restore(id, spec)?;
+            TorrentReply::Done {}
+        }
         TorrentCommand::Pause { id } => {
             engine.pause(id)?;
             TorrentReply::Done {}
@@ -447,6 +456,7 @@ mod tests {
             r#"{"command":"setSeeding","id":1,"seeding":{"mode":"never"},"extra":1}"#,
             r#"{"command":"setSeeding","id":1,"seeding":{"mode":"never","extra":1}}"#,
             r#"{"command":"saveResume","extra":1}"#,
+            r#"{"command":"restore","id":1,"spec":{"source":{"kind":"resume"},"directory":"d","trackers":[],"paused":false,"chooseFiles":false,"files":null,"seeding":{"mode":"never"}},"extra":1}"#,
             r#"{"command":"upload","chunk":{"total":2,"offset":0,"hex":"6465","extra":1}}"#,
             r#"{"command":"add","spec":{"source":{"kind":"resume","extra":1},"directory":"d","trackers":[],"paused":false,"chooseFiles":false,"files":null,"seeding":{"mode":"never"}}}"#,
         ] {

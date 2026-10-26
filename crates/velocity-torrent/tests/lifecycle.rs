@@ -385,6 +385,71 @@ fn a_magnet_comes_back_with_its_metadata_after_a_restart() {
     });
 }
 
+/// An id is never given to two torrents: a helper takes back only ids it doesn't have and won't
+/// give itself.
+#[test]
+fn a_torrent_comes_back_only_under_an_id_no_other_has() {
+    let dir = Dir::new("restore-ids");
+    let (mut engine, _events) = helper_with(0);
+    let paused = |name| TorrentSpec {
+        paused: true,
+        ..spec(file(name), &dir.0, vec![])
+    };
+    let id = engine.add(paused("v1-single")).unwrap();
+    assert_eq!(
+        engine.restore(id, paused("v1-multi")),
+        Err(ErrorCode::InvalidInput),
+        "an id it has"
+    );
+    assert_eq!(
+        engine.restore(TorrentId(id.0 + 1), paused("v1-multi")),
+        Err(ErrorCode::InvalidInput),
+        "an id it would give next"
+    );
+    assert_eq!(
+        engine.restore(TorrentId(0), paused("v1-multi")),
+        Err(ErrorCode::InvalidInput)
+    );
+    assert_eq!(engine.snapshot().unwrap().len(), 1);
+}
+
+/// V1's `engine_crash_recovers_torrent`: a crashed helper's torrent comes back under its id from
+/// its latest resume data, seeding again, without a peer to download from.
+#[test]
+fn a_crashed_helpers_seeding_torrent_comes_back_from_its_resume_data() {
+    let name = "v1-multi";
+    let dir = Dir::new("crash-seed");
+    let tracker = swarm_tracker();
+    let (mut engine, events) = helper_with(0);
+    let id = add_complete(
+        &mut engine,
+        name,
+        &dir.0,
+        &tracker,
+        SeedPolicy::Unlimited {},
+    );
+    wait_snapshot(&events, id, "seeding", 60, seeding);
+    wait_for("its resume data", 30, || engine.resume_data(id).is_some());
+    let pid = engine.process_id().unwrap();
+    // Its files can't be checked again: what is on disk is no longer the torrent's. Only the
+    // resume data can bring it back as complete.
+    for (path, data) in files_of(name) {
+        std::fs::write(dir.0.join(path), vec![0u8; data.len()]).unwrap();
+    }
+    velocity_test_http::kill_process(pid).unwrap();
+
+    let lost = wait_snapshot(&events, id, "failed", 30, |s| {
+        s.status == DownloadStatus::Failed
+    });
+    assert!(lost.error.unwrap().retryable);
+    let back = wait_snapshot(&events, id, "seeding again", 60, seeding);
+    let total: u64 = files_of(name).iter().map(|(_, d)| d.len() as u64).sum();
+    assert_eq!(back.progress.completed_bytes, total);
+    assert_eq!(back.error, None);
+    engine.set_seeding(id, SeedPolicy::Never {}).unwrap();
+    wait_snapshot(&events, id, "completed", 30, completed);
+}
+
 #[test]
 fn resume_data_is_checked_before_libtorrent_reads_it() {
     let dir = Dir::new("restart-refused");

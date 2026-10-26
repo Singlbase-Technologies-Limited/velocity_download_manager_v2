@@ -309,6 +309,8 @@ struct Torrent {
     last: Option<TorrentSnapshot>,
     /// When its resume data was last asked for.
     resume_asked: Option<Instant>,
+    /// Paused by the user, or added paused: it doesn't start seeding by itself on completing.
+    user_paused: bool,
 }
 
 struct State {
@@ -347,11 +349,19 @@ struct Seen {
     seeding: SeedPolicy,
     base: AddParams,
     resume_asked: Option<Instant>,
+    user_paused: bool,
 }
 
 impl Shared {
     fn state(&self) -> MutexGuard<'_, State> {
         self.state.lock().unwrap_or_else(|p| p.into_inner())
+    }
+
+    /// Notes whether the user paused `id`.
+    fn set_user_paused(&self, id: TorrentId, paused: bool) {
+        if let Some(t) = self.state().torrents.get_mut(&id) {
+            t.user_paused = paused;
+        }
     }
 
     /// Sets `id`'s place after completion, if it is still `lt`.
@@ -391,6 +401,7 @@ impl Shared {
                 seeding: t.seeding,
                 base: t.base.clone(),
                 resume_asked: t.resume_asked,
+                user_paused: t.user_paused,
             })
             .collect();
         self.send_resume_data(&alerts);
@@ -591,12 +602,17 @@ impl Shared {
         } else {
             None
         };
-        // Just completed and stopped: it joins the seeding queue if its policy lets it seed.
+        // Just completed and stopped: it joins the seeding queue if its policy lets it seed, or
+        // stays paused if the user paused it.
         if finish == Finish::Done
             && seen.finish != Finish::Done
             && seen.seeding != (SeedPolicy::Never {})
         {
-            finish = Finish::SeedQueued { since: self.tick() };
+            finish = if seen.user_paused {
+                Finish::SeedPaused
+            } else {
+                Finish::SeedQueued { since: self.tick() }
+            };
         }
         if finish.may_seed() {
             let wanted = partial.map_or(
@@ -741,24 +757,19 @@ impl LtEngine {
     pub fn listen_port(&self) -> u16 {
         self.shared.session.listen_port()
     }
-}
 
-impl TorrentEngine for LtEngine {
-    fn version(&self) -> Result<String, ErrorCode> {
-        Ok(velocity_lt::version())
-    }
-
-    fn set_settings(&mut self, settings: TorrentSettings) -> Result<(), ErrorCode> {
-        settings.check()?;
-        self.shared
-            .session
-            .apply_config(&session_config(settings))
-            .map_err(|_| ErrorCode::InvalidInput)?;
-        self.shared.state().settings = settings;
-        Ok(())
-    }
-
-    fn add(&mut self, spec: TorrentSpec) -> Result<TorrentId, ErrorCode> {
+    /// Adds a torrent under the next id, or under `given` when an earlier engine gave it that id.
+    fn add_as(
+        &mut self,
+        spec: TorrentSpec,
+        given: Option<TorrentId>,
+    ) -> Result<TorrentId, ErrorCode> {
+        if let Some(id) = given {
+            let state = self.shared.state();
+            if id.0 == 0 || id.0 >= state.next_id || state.torrents.contains_key(&id) {
+                return Err(ErrorCode::InvalidInput);
+            }
+        }
         let save_path = check_directory(&spec.directory)?;
         for tracker in &spec.trackers {
             check_tracker(tracker).map_err(|e| e.code())?;
@@ -875,8 +886,19 @@ impl TorrentEngine for LtEngine {
             (phase, partial)
         };
         let mut state = self.shared.state();
-        let id = TorrentId(state.next_id);
-        state.next_id += 1;
+        let id = match given {
+            // Given meanwhile to another torrent: this one goes.
+            Some(id) if state.torrents.contains_key(&id) => {
+                drop(state);
+                self.shared.session.remove(lt);
+                return Err(ErrorCode::InvalidInput);
+            }
+            Some(id) => id,
+            None => {
+                state.next_id += 1;
+                TorrentId(state.next_id - 1)
+            }
+        };
         state.torrents.insert(
             id,
             Torrent {
@@ -892,9 +914,34 @@ impl TorrentEngine for LtEngine {
                 readd: None,
                 last: None,
                 resume_asked: None,
+                user_paused: spec.paused,
             },
         );
         Ok(id)
+    }
+}
+
+impl TorrentEngine for LtEngine {
+    fn version(&self) -> Result<String, ErrorCode> {
+        Ok(velocity_lt::version())
+    }
+
+    fn set_settings(&mut self, settings: TorrentSettings) -> Result<(), ErrorCode> {
+        settings.check()?;
+        self.shared
+            .session
+            .apply_config(&session_config(settings))
+            .map_err(|_| ErrorCode::InvalidInput)?;
+        self.shared.state().settings = settings;
+        Ok(())
+    }
+
+    fn add(&mut self, spec: TorrentSpec) -> Result<TorrentId, ErrorCode> {
+        self.add_as(spec, None)
+    }
+
+    fn restore(&mut self, id: TorrentId, spec: TorrentSpec) -> Result<(), ErrorCode> {
+        self.add_as(spec, Some(id)).map(|_| ())
     }
 
     fn pause(&mut self, id: TorrentId) -> Result<(), ErrorCode> {
@@ -905,6 +952,7 @@ impl TorrentEngine for LtEngine {
                     .session
                     .pause(lt)
                     .map_err(|_| ErrorCode::NotFound)?;
+                self.shared.set_user_paused(id, true);
                 if finish.may_seed() {
                     self.shared.set_finish(id, lt, Finish::SeedPaused);
                 }
@@ -914,7 +962,7 @@ impl TorrentEngine for LtEngine {
     }
 
     fn resume(&mut self, id: TorrentId) -> Result<(), ErrorCode> {
-        match self.shared.lt_of(id)? {
+        let resumed = match self.shared.lt_of(id)? {
             // A completed torrent seeds again through `set_seeding`.
             (_, Finish::Done) => Err(ErrorCode::InvalidState),
             // Back in the seeding queue, which starts it when a slot is free.
@@ -929,7 +977,11 @@ impl TorrentEngine for LtEngine {
                 .session
                 .resume(lt)
                 .map_err(|_| ErrorCode::NotFound),
+        };
+        if resumed.is_ok() {
+            self.shared.set_user_paused(id, false);
         }
+        resumed
     }
 
     fn remove(&mut self, id: TorrentId) -> Result<(), ErrorCode> {

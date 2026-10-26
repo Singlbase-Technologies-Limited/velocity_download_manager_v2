@@ -400,8 +400,10 @@ fn dropping_the_engine_stops_the_helper_before_it_returns() {
     std::fs::remove_dir_all(&dir.0).expect("nothing holds the torrent's files");
 }
 
+/// A crash fails the helper's torrents with a retryable error; the new helper then gets them back
+/// under their own ids (#62's lifecycle part, PO decision: added again instead of only failing).
 #[test]
-fn a_crashed_helper_is_restarted_and_its_torrents_fail_as_retryable() {
+fn a_crashed_helper_is_restarted_and_its_torrents_come_back_under_their_ids() {
     let dir = Dir::new("crash");
     let mut engine = helper();
     let events = engine.subscribe();
@@ -438,11 +440,22 @@ fn a_crashed_helper_is_restarted_and_its_torrents_fail_as_retryable() {
         })
         .unwrap();
     assert!(second > first, "{second:?} after {first:?}");
-    assert_eq!(engine.pause(first), Err(ErrorCode::InvalidState));
+    // The lost torrent is back, paused as it was, and the new helper answers for it.
+    let back = wait_status(&events, DownloadStatus::Paused, 30);
+    let back = if back.id == first {
+        back
+    } else {
+        wait_status(&events, DownloadStatus::Paused, 30)
+    };
+    assert_eq!(back.id, first);
+    assert_eq!(back.error, None);
+    engine.resume(first).unwrap();
+    engine.pause(first).unwrap();
     let all = engine.snapshot().unwrap();
     assert_eq!(
         all.iter().map(|s| s.id).collect::<Vec<_>>(),
         [first, second]
     );
     engine.remove(first).unwrap();
+    assert_eq!(engine.pause(first), Err(ErrorCode::NotFound));
 }

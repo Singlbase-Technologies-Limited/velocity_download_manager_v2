@@ -1,8 +1,9 @@
 //! The torrent helper's supervisor (ADR-0014): `velocity_child`'s supervisor, with what it keeps
 //! for torrents ([`TorrentBook`]). A crashed or hung helper is restarted with the engine's backoff
-//! and cap; the torrents it had fail with a retryable error, and their files stay for the manager
-//! to add them again. Every new helper gets the settings last set. The supervisor keeps each
-//! torrent's latest resume data, put together from the helper's chunks.
+//! and cap; the torrents it had fail with a retryable error, then the new helper gets them back
+//! under their own ids (PO decision on #62): from each one's latest resume data, which the
+//! supervisor puts together from the helper's chunks, or else from its link or file. One that
+//! can't be added back stays failed. Every new helper gets the settings last set.
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -18,7 +19,8 @@ use velocity_core::domain::{DownloadStatus, ErrorCode, Progress};
 use velocity_core::seeding::SeedPolicy;
 use velocity_core::torrent::MAX_RESUME_BYTES;
 use velocity_core::torrent_engine::{
-    Chunk, TorrentEngine, TorrentEvent, TorrentId, TorrentSettings, TorrentSnapshot, TorrentSpec,
+    Chunk, TorrentEngine, TorrentEvent, TorrentId, TorrentSettings, TorrentSnapshot, TorrentSource,
+    TorrentSpec, CHUNK_BYTES,
 };
 
 use crate::stdio::ChildTorrentEngine;
@@ -66,6 +68,14 @@ struct Saved {
     bytes: Vec<u8>,
 }
 
+/// A torrent a new helper gets back: its id, how it was added, as changed since, and its latest
+/// resume data.
+pub struct Lost {
+    id: TorrentId,
+    spec: TorrentSpec,
+    resume: Option<Vec<u8>>,
+}
+
 /// What the supervisor keeps for the torrent helper, across helpers.
 pub struct TorrentBook {
     torrents: Ledger<TorrentSnapshot>,
@@ -73,17 +83,55 @@ pub struct TorrentBook {
     settings: TorrentSettings,
     incoming: BTreeMap<TorrentId, Incoming>,
     resume: BTreeMap<TorrentId, Saved>,
+    /// How each torrent was added, with the choice, pause and policy set since: what a new
+    /// helper adds it back with when there is no resume data.
+    specs: BTreeMap<TorrentId, TorrentSpec>,
+}
+
+impl TorrentBook {
+    fn forget(&mut self, id: TorrentId) {
+        self.incoming.remove(&id);
+        self.resume.remove(&id);
+        self.specs.remove(&id);
+    }
 }
 
 impl Book<ChildTorrentEngine> for TorrentBook {
-    type Setup = TorrentSettings;
+    type Setup = (TorrentSettings, Vec<Lost>);
 
-    fn setup(&self) -> TorrentSettings {
-        self.settings
+    /// The settings, and the torrents earlier helpers lost.
+    fn setup(&self) -> (TorrentSettings, Vec<Lost>) {
+        let lost = self
+            .torrents
+            .orphans()
+            .into_iter()
+            .filter_map(|orphan| {
+                let spec = self.specs.get(&orphan.id)?.clone();
+                let resume = self.resume.get(&orphan.id).map(|s| s.bytes.clone());
+                Some(Lost {
+                    id: orphan.id,
+                    spec,
+                    resume,
+                })
+            })
+            .collect();
+        (self.settings, lost)
     }
 
-    fn prepare(helper: &ChildTorrentEngine, settings: TorrentSettings) -> Result<(), ErrorCode> {
-        helper.set_settings(settings)
+    /// Gives the helper the settings, then the lost torrents. One the helper refuses stays
+    /// failed; a helper that stops answering fails the start.
+    fn prepare(
+        helper: &ChildTorrentEngine,
+        (settings, lost): (TorrentSettings, Vec<Lost>),
+    ) -> Result<(), ErrorCode> {
+        helper.set_settings(settings)?;
+        for lost in lost {
+            // A torrent the helper refuses stays failed, as the ledger has it.
+            if let Err(ErrorCode::EngineUnavailable) = add_back(helper, lost) {
+                return Err(ErrorCode::EngineUnavailable);
+            }
+        }
+        Ok(())
     }
 
     fn highest_id(&self) -> u64 {
@@ -99,8 +147,7 @@ impl Book<ChildTorrentEngine> for TorrentBook {
             TorrentEvent::Changed { snapshot } => self.torrents.changed(snapshot),
             TorrentEvent::Removed { id } => {
                 self.torrents.removed(*id);
-                self.incoming.remove(id);
-                self.resume.remove(id);
+                self.forget(*id);
             }
             TorrentEvent::ResumeData { id, chunk } => {
                 if let Some(bytes) = self.incoming.entry(*id).or_default().add(chunk) {
@@ -121,6 +168,26 @@ impl Book<ChildTorrentEngine> for TorrentBook {
         };
         changed(self.torrents.retired(message))
     }
+}
+
+/// Adds a lost torrent back to `helper` under its id: from its resume data when there is some,
+/// with the choice it holds, otherwise as it was added.
+fn add_back(helper: &ChildTorrentEngine, lost: Lost) -> Result<(), ErrorCode> {
+    let Some(resume) = lost.resume else {
+        return helper.restore(lost.id, lost.spec);
+    };
+    let mut offset = 0;
+    while offset < resume.len() {
+        helper.upload(Chunk::of(&resume, offset as u64, CHUNK_BYTES))?;
+        offset += CHUNK_BYTES;
+    }
+    let spec = TorrentSpec {
+        source: TorrentSource::Resume {},
+        choose_files: false,
+        files: None,
+        ..lost.spec
+    };
+    helper.restore(lost.id, spec)
 }
 
 fn changed(snapshots: Vec<TorrentSnapshot>) -> Vec<TorrentEvent> {
@@ -150,6 +217,7 @@ impl SupervisedTorrentEngine {
             settings,
             incoming: BTreeMap::new(),
             resume: BTreeMap::new(),
+            specs: BTreeMap::new(),
         };
         Ok(SupervisedTorrentEngine {
             supervisor: Supervisor::start(program, options, book)?,
@@ -220,6 +288,16 @@ impl SupervisedTorrentEngine {
         self.supervisor.log()
     }
 
+    /// Changes how `id` is added back after a crash.
+    fn keep(&self, id: TorrentId, change: impl FnOnce(&mut TorrentSpec)) {
+        self.supervisor.update(|book, _| {
+            if let Some(spec) = book.specs.get_mut(&id) {
+                change(spec);
+            }
+            ((), Vec::new())
+        });
+    }
+
     fn helper(&self) -> Result<Arc<ChildTorrentEngine>, ErrorCode> {
         self.supervisor.child().map(|(helper, _)| helper)
     }
@@ -252,6 +330,7 @@ impl TorrentEngine for SupervisedTorrentEngine {
 
     fn add(&mut self, spec: TorrentSpec) -> Result<TorrentId, ErrorCode> {
         let (helper, generation) = self.supervisor.child()?;
+        let kept = spec.clone();
         let id = helper.add(spec)?;
         let queued = TorrentSnapshot {
             id,
@@ -275,6 +354,7 @@ impl TorrentEngine for SupervisedTorrentEngine {
             error: None,
         };
         self.supervisor.update(|book, current| {
+            book.specs.insert(id, kept);
             // When the helper stopped between assigning the id and this reply, the torrent is lost.
             let lost = book
                 .torrents
@@ -284,17 +364,34 @@ impl TorrentEngine for SupervisedTorrentEngine {
         Ok(id)
     }
 
+    /// Gives the running helper a torrent under `id`; the supervisor does this itself after a
+    /// crash, so the app has no need to.
+    fn restore(&mut self, id: TorrentId, spec: TorrentSpec) -> Result<(), ErrorCode> {
+        let kept = spec.clone();
+        self.helper()?.restore(id, spec)?;
+        self.supervisor.update(|book, _| {
+            book.specs.insert(id, kept);
+            ((), Vec::new())
+        });
+        Ok(())
+    }
+
     fn pause(&mut self, id: TorrentId) -> Result<(), ErrorCode> {
-        self.running(id)?.pause(id)
+        self.running(id)?.pause(id)?;
+        self.keep(id, |spec| spec.paused = true);
+        Ok(())
     }
 
     fn resume(&mut self, id: TorrentId) -> Result<(), ErrorCode> {
-        self.running(id)?.resume(id)
+        self.running(id)?.resume(id)?;
+        self.keep(id, |spec| spec.paused = false);
+        Ok(())
     }
 
     fn remove(&mut self, id: TorrentId) -> Result<(), ErrorCode> {
         let orphan = self.supervisor.update(|book, _| {
             if book.torrents.remove_orphan(id) {
+                book.forget(id);
                 (true, vec![TorrentEvent::Removed { id }])
             } else {
                 (false, Vec::new())
@@ -307,7 +404,15 @@ impl TorrentEngine for SupervisedTorrentEngine {
     }
 
     fn set_files(&mut self, id: TorrentId, files: Vec<u32>) -> Result<(), ErrorCode> {
-        self.running(id)?.set_files(id, files)
+        self.running(id)?.set_files(id, files.clone())?;
+        // A `.torrent` file is added back with its choice; a magnet's is in its resume data.
+        self.keep(id, |spec| {
+            if let TorrentSource::File { .. } = spec.source {
+                spec.files = Some(files);
+                spec.choose_files = false;
+            }
+        });
+        Ok(())
     }
 
     fn metadata(&self, id: TorrentId, offset: u64) -> Result<Chunk, ErrorCode> {
@@ -315,7 +420,9 @@ impl TorrentEngine for SupervisedTorrentEngine {
     }
 
     fn set_seeding(&mut self, id: TorrentId, seeding: SeedPolicy) -> Result<(), ErrorCode> {
-        self.running(id)?.set_seeding(id, seeding)
+        self.running(id)?.set_seeding(id, seeding)?;
+        self.keep(id, |spec| spec.seeding = seeding);
+        Ok(())
     }
 
     fn upload(&mut self, chunk: Chunk) -> Result<(), ErrorCode> {
@@ -344,7 +451,6 @@ impl TorrentEngine for SupervisedTorrentEngine {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use velocity_core::torrent_engine::CHUNK_BYTES;
 
     #[test]
     fn resume_data_is_put_together_from_its_chunks_in_order() {

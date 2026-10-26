@@ -105,6 +105,10 @@ impl ChildTorrentEngine {
         }
     }
 
+    pub fn restore(&self, id: TorrentId, spec: TorrentSpec) -> Result<(), ErrorCode> {
+        self.done(TorrentCommand::Restore { id, spec })
+    }
+
     pub fn pause(&self, id: TorrentId) -> Result<(), ErrorCode> {
         self.done(TorrentCommand::Pause { id })
     }
@@ -177,6 +181,10 @@ impl TorrentEngine for ChildTorrentEngine {
 
     fn add(&mut self, spec: TorrentSpec) -> Result<TorrentId, ErrorCode> {
         ChildTorrentEngine::add(self, spec)
+    }
+
+    fn restore(&mut self, id: TorrentId, spec: TorrentSpec) -> Result<(), ErrorCode> {
+        ChildTorrentEngine::restore(self, id, spec)
     }
 
     fn pause(&mut self, id: TorrentId) -> Result<(), ErrorCode> {
