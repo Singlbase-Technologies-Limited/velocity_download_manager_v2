@@ -134,7 +134,7 @@ Cancelling the fetch, or dropping it, ends the task at its next step.
 
 - **The store:** `<data folder>/known_hosts` (`Paths::known_hosts`), V2's own, never `~/.ssh/known_hosts`. It is unhashed, one OpenSSH line per host (`[host]:port key-type base64-key`), and compares the whole key. A host is shown by its key's SHA-256 fingerprint (`SHA256:…`, as OpenSSH prints it). Writes go to a temporary file, then a rename.
 - **Unknown key:** refused before the login. The download fails at once, permanently, and `TransferError.hostKey` carries the host, port and fingerprint for the user to check. The transport remembers that key.
-- **Trusting it:** `DirectTransfer::trust_host_key(host, port, fingerprint)` pins the key the transport saw with that fingerprint, and only that one: a fingerprint it didn't see is `NotFound`. The caller then retries the download. The app's command (#58) calls it through `Manager::trust_host_key`, and the dialog that shows the fingerprint is #60's.
+- **Trusting it:** `DirectTransfer::trust_host_key(host, port, fingerprint)` pins the key the transport saw with that fingerprint, and only that one: a fingerprint it didn't see is `NotFound`. The caller then retries the download. The app's `trust_host_key` command (#58) calls it through `Manager::trust_host_key`, and the dialog that shows the fingerprint is #60's.
 - **Changed key:** always refused, before the login. `hostKey.pinned` holds the pinned key's fingerprint. Such a key is never offered for trust, and `trust_host_key` never replaces a pinned key (`InvalidState`).
 - **Host certificates** are refused: V2 trusts no SSH certificate authority.
 
@@ -356,7 +356,7 @@ A download that still fails in a way worth retrying is started again by the engi
 - after 5 s and then 10 s, or 60 s and then 120 s when the server was throttling, never more than 15 minutes;
 - from its last checkpoint when it has one (its part file was kept), otherwise from the start.
 
-While it waits, the snapshot shows Retrying, with the failure's message and "Retrying automatically (1 of 2).". Once bytes come again, the error is cleared. A cancel during the wait removes the kept part file. A permanent failure is never started again. Retrying by hand is the manager's (#58).
+While it waits, the snapshot shows Retrying, with the failure's message and "Retrying automatically (1 of 2).". Once bytes come again, the error is cleared. A cancel during the wait removes the kept part file. A permanent failure is never started again. Retrying by hand is the manager's, and never a second automatic retry ([ENGINE_CONTRACT.md](ENGINE_CONTRACT.md#retrying-removing-and-clearing-58)).
 
 ### The values
 
@@ -505,7 +505,7 @@ A download survives a pause, an app restart, an engine crash and a power loss wi
   - D as half-open byte ranges.
 
   Leases are never saved.
-- **Where it goes:** the engine sends it as a `checkpoint` event over its pipe. The app saves it in its database (the `checkpoints` table, [DATA_AND_MIGRATIONS.md](DATA_AND_MIGRATIONS.md)); only the app touches the database (PO decision). Until the manager is wired to the database (#58), nothing saves it yet.
+- **Where it goes:** the engine sends it as a `checkpoint` event over its pipe. The app saves it in its database (the `checkpoints` table, [DATA_AND_MIGRATIONS.md](DATA_AND_MIGRATIONS.md)); only the app touches the database (PO decision). The manager saves it, drops it once the download completes or is removed, and resumes from it when the app starts again or the engine was lost ([ENGINE_CONTRACT.md](ENGINE_CONTRACT.md#saving-and-starting-again-58)).
 - **Only ranges resume.** A single stream (a server without ranges) and a download without a total (sequential ranges) take no checkpoint, because nothing could resume them. Pausing them keeps the part file, and resuming starts over.
 
 ### Resuming
@@ -603,7 +603,7 @@ A piece list that doesn't fit the file fails the same way, but as Permanent: the
 | `notVerified` | No hash, and the download resumed from bytes on disk without a strong validator, so a file that changed at the same length could have mixed two versions |
 | `sizeVerified` | Anything else complete: every byte arrived and the length matched |
 
-"Verified" is shown only when a hash was checked. The value isn't saved in the database yet (#58).
+"Verified" is shown only when a hash was checked. The manager saves the value (`downloads.verification`, #58).
 
 ### Read-back cost
 
@@ -729,12 +729,10 @@ Run it with `cargo run --release -p velocity-transfer --example high_offset_writ
 - **Learning per host:** what a host allowed isn't remembered between downloads (a non-goal of #47).
 - **Throttling across downloads:** a `429` or `503` halves the connections of the download that got it, not of the other downloads to that host.
 - **Retry settings:** the values are engine defaults until the settings model passes the user's (#30).
-- **Saving the verification state:** `verification` isn't saved in the database yet (#58).
 - **Integrity without the app:** a whole-file hash that a server gives (`Repr-Digest`) is deferred (report section 5.3).
-- **Metalink in the app:** the Metalink switch's storage and Settings page are #30's; the file chooser, the file selection and the Tauri commands are #58's and #60's. Until then `Manager::add_metalink` and following a link are reachable from code only.
+- **Metalink in the app:** the Metalink switch's storage and Settings page are #30's; the file chooser, the file selection and their Tauri commands are #60's. Until then `Manager::add_metalink` and following a link are reachable from code only.
 - **Mirror health isn't remembered** between downloads, or between the engine's restarts of one download, like the per-host learning #47 left out.
 - **Connections to mirrors** count against the first URL's host in the engine's budget (#47), so a download with mirrors never opens more connections than one without; they're only spread. Per-mirror budgets, and more connections across several hosts as aria2's `split` allowed, are #77's to measure.
 - **Mirror values:** the cooldown, the failure limit and the scoring are starting values; #77 measures them.
 - **Folders a Metalink download creates** stay when it's cancelled or fails, even when empty. Only part files are removed.
 - **A fuzz target for the Metalink parser** comes with #73, which brings the fuzzing tool.
-- **Saving checkpoints in the app:** the manager saves the engine's checkpoint events in the database and resumes unfinished downloads at startup with `StoredDownload::resume` (#58).

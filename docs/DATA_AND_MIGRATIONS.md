@@ -2,7 +2,7 @@
 
 V2 keeps its download records, settings and categories in one SQLite database (#26). This document describes the file, the schema and how it is upgraded. The rules behind it are in [`.claude/rules/persistence.md`](../.claude/rules/persistence.md).
 
-The code is in [`crates/velocity-core/src/database/`](../crates/velocity-core/src/database/mod.rs), and the migrations are in [`crates/velocity-core/migrations/`](../crates/velocity-core/migrations/). The app doesn't open the database yet; the manager is wired to it in #58.
+The code is in [`crates/velocity-core/src/database/`](../crates/velocity-core/src/database/mod.rs), and the migrations are in [`crates/velocity-core/migrations/`](../crates/velocity-core/migrations/). The app opens it when it starts, and the manager saves its downloads there (#58, [ENGINE_CONTRACT.md](ENGINE_CONTRACT.md#saving-and-starting-again-58)).
 
 ## The file
 
@@ -19,12 +19,13 @@ The code is in [`crates/velocity-core/src/database/`](../crates/velocity-core/sr
 
 ## Schema
 
-The schema version is `PRAGMA user_version`. Version 1 ([`0001_initial.sql`](../crates/velocity-core/migrations/0001_initial.sql)) is V2's clean baseline, version 2 adds checkpoints, and version 3 the download queue. V1's data isn't imported ([ADR-0007](decisions/0007-no-v1-import-at-first.md)).
+The schema version is `PRAGMA user_version`. Version 1 ([`0001_initial.sql`](../crates/velocity-core/migrations/0001_initial.sql)) is V2's clean baseline, version 2 adds checkpoints, version 3 the download queue, and version 4 the verification. V1's data isn't imported ([ADR-0007](decisions/0007-no-v1-import-at-first.md)).
 
 | Table | Holds |
 |---|---|
 | `downloads` | One download per row. It records the engine (`velocity` or `libtorrent`), kind, status, source URL (never with a login), folder, file name and category. It also has the byte counts, the last error, the options to retry it, and `has_sensitive_options`. The history flags (`in_list`, `in_history`) are here too, along with the torrent info hashes (v1 and v2) and when seeding started. For direct downloads, nullable `etag`, `last_modified`, `validator_kind` (#45) and `checkpoint_ref` (#43) columns are reserved. They stay unused: #45 keeps what the first answer said about the file in the checkpoint |
 | `downloads` (schema 3) | [`0003_queue.sql`](../crates/velocity-core/migrations/0003_queue.sql), #50: `queue_position`, an unfinished download's place in the queue (0 first; NULL outside it), and `scheduled`, whether it runs only while the schedule's window is open. `Database::save_queue` replaces the whole queue in one transaction and refuses an unknown download with nothing changed; `Database::queue` reads it back in order. A download added paused keeps `paused` as its status. The manager gives its queue in that shape (`Manager::queue`); loading it when the app starts is #58 |
+| `downloads` (schema 4) | [`0004_verification.sql`](../crates/velocity-core/migrations/0004_verification.sql), #58: `verification`, what was proven about a completed download's bytes (#46), by its wire name; NULL until it completes. Its last error is in `error_json` (since schema 1), read back as `Stored::Unknown` when this build can't read it. `Database::update_download` saves a record's status, name, byte counts, error, verification and completion time; `update_options` its options after a limit or connections change; `hide_download` takes it out of the list (`in_list = 0`), keeping it in the history. A record is written with only the columns every schema has, so the upgrade tests can insert into older schemas |
 | `categories` | Built-in and user categories, with their extensions as JSON. The built-in rows arrive with #31 |
 | `settings` | One row: the settings document as a JSON object, checked by SQLite (`json_type = 'object'`). Its fields are #30 |
 | `checkpoints` | Schema 2 ([`0002_checkpoints.sql`](../crates/velocity-core/migrations/0002_checkpoints.sql), #43): one row per direct download, its last `Checkpoint` as JSON. It holds the durable byte ranges, the total, the validators and the content encoding (#45), with no credential and no URL query. A checkpoint saved before the encoding existed reads as having none. It is removed with its download. A checkpoint in another format, or one this build can't read, is `Stored::Unknown` and never used. `downloads.checkpoint_ref`, reserved in schema 1, stays unused |
@@ -40,7 +41,8 @@ A value this build doesn't know, read back from the database, is kept as `Stored
 - **Never stored:** credentials, cookies, custom header values and SSH keys. They stay in memory (#70).
 - **By construction:** `StoredOptions` has no field for any of them.
 - **URL logins:** `without_login` removes a login from a URL (`https://user:pass@host/` becomes `https://host/`), and `insert_download` applies it again.
-- **What is kept:** `has_sensitive_options` records that a download had credentials, headers or a URL login, so a retry can ask for them again.
+- **What is kept:** `has_sensitive_options` records that a download had credentials, headers, an SSH key or a URL login. After a restart such a download comes back paused, and resumes or is retried only once they are given again (PO decision on #58).
+- **The options to start again** (`StoredOptions`, #58): every source without its login, the user agent, the referrer without its login, query and fragment (which can carry a session), the checksum, the piece hashes, the speed limit and the connections. Fields added since schema 1 default when absent, so older records still read.
 - **Tested:** a test adds a download with a password in its URL, a login (`credentials`, #40) and a cookie header. It then searches every file SQLite wrote, with the WAL and after closing, and finds none of them.
 
 ## Upgrades

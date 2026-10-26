@@ -18,6 +18,9 @@ They're defined once in Rust, in `crates/velocity-core/src/domain.rs` (plus `App
 | `Capabilities` | What an engine really supports: the protocols, each as a `ProtocolCapabilities` (`kind`, `segmented`, `resume`, `validatorResume`, `http2`, and `encryption`: whether the connection can be encrypted with its certificate checked, `https://` or FTPS; a protocol not listed isn't supported), live connection changes, Metalink, and the most connections per host now (the performance profile's cap) | Reported, never assumed (research report section 4.2). Per protocol since contract version 4 (#57), with `encryption` since version 5 (#51). `cleartextWarning` in `src/capabilities.ts` holds the warning for a plain `ftp://` download (PO decision on #51); [SETTINGS.md](SETTINGS.md#what-a-build-can-do) says how the UI uses it |
 | `ErrorCode` | Stable codes for command failures, in `SCREAMING_SNAKE_CASE` (22 codes: V1's, without the four aria2 `RPC_*` codes). Each has a user-facing sentence (`user_message`) | The code is the contract; the message is for people |
 | `AppInfo` | `{ name, version, commandApiVersion }` | Returned by `app_info` |
+| `DownloadsSnapshot` | What the UI is sent about the downloads (#58): `downloads` (records, the unfinished ones in queue order, then the finished ones, newest first), `unavailable` (stored downloads this build can't act on: `id`, `sourceUrl`, `fileName`, `directory`, `createdAtMs`), `needsLogin` (ids of downloads that came back after a restart without their login), `engine` and `storageError` (the last failure to save, or `null`) | Sent as the `downloads-snapshot` event and returned by `get_snapshot` |
+| `EngineHealth` | `{ state: "running" }`, `{ state: "restarting", attempt }` or `{ state: "unavailable", code }` | The fixture `engine-health.json` lists one of each |
+| `BatchResult` | What a command over several downloads did: `done` (ids), `failed` (`{ id, code }`), and `kept` (`{ path, reason, code }`, files a removal with files left in place). `reason` is `notPlain`, `tooLarge`, `behindLink`, `notEmpty` or `failed`; `code` is set only for `failed` | The fixture `kept-reasons.json` lists the reasons |
 
 **Conventions:**
 - **Field names** are camelCase on the wire (`#[serde(rename_all = "camelCase")]`).
@@ -28,9 +31,28 @@ They're defined once in Rust, in `crates/velocity-core/src/domain.rs` (plus `App
 
 `COMMAND_API_VERSION` exists in both `velocity_core` and `src/contract.ts`, and `app_info` reports the native side's version. At startup the UI validates the response. **If the versions differ, the window refuses to start** and explains that the two parts don't match, rather than misreading messages. Raise the version, on both sides in the same PR, whenever a command or shared type changes incompatibly.
 
+## The downloads commands
+
+The commands of [`src-tauri/src/downloads.rs`](../src-tauri/src/downloads.rs) (#58), V1's direct-download commands. A command that fails returns its `ErrorCode`. Commands that take `ids` accept at most 10,000 ids, each at most 64 characters, and return a `BatchResult`.
+
+| Command | Arguments | Returns |
+|---|---|---|
+| `get_snapshot` | — | `DownloadsSnapshot` |
+| `pause_downloads`, `resume_downloads`, `cancel_downloads`, `retry_downloads` | `ids` | `BatchResult` |
+| `remove_downloads` | `ids`, `deleteFiles` | `BatchResult`, with the files kept |
+| `retry_failed`, `pause_all`, `resume_all` | — | nothing |
+| `clear_completed` | — | how many were cleared |
+| `move_download` | `id`, `direction` (`top`, `up`, `down`, `bottom`) | nothing |
+| `set_download_connections` | `id`, `connections` | the connections that apply |
+| `set_download_speed_limit` | `id`, `kib` (KiB/s; 0 for no limit, otherwise at least 1) | nothing |
+| `restart_engine` | — | `EngineHealth` |
+| `trust_host_key` | `host`, `port`, `fingerprint` | nothing; the UI then retries the download |
+
+Adding downloads is #60's, and giving a login back to a download that needs it comes with its dialog (#59, #60).
+
 ## How the two sides stay in step
 
-1. **Rust generates contract fixtures** in `tests/fixtures/contract/` from the real types: `statuses.json`, `error-codes.json`, `download-record.json`, `capabilities.json` and `app-info.json`. A Rust test fails when a fixture no longer matches the types: "fixture … is out of date; regenerate it with `VELOCITY_UPDATE_FIXTURES=1`".
+1. **Rust generates contract fixtures** in `tests/fixtures/contract/` from the real types: `statuses.json`, `error-codes.json`, `download-record.json`, `capabilities.json`, `app-info.json`, `downloads-snapshot.json`, `engine-health.json`, `batch-result.json` and `kept-reasons.json`. A Rust test fails when a fixture no longer matches the types: "fixture … is out of date; regenerate it with `VELOCITY_UPDATE_FIXTURES=1`".
 2. **Vitest validates the same fixtures** with the UI's strict schemas (`src/contract.test.ts`). An unknown field, a missing field, an unknown enum value or a wrong type fails the test.
 3. **So a change on one side alone always fails a test:**
    - Change Rust without regenerating, and the Rust contract test fails.
