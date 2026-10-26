@@ -880,8 +880,10 @@ mod finished;
 mod options;
 mod persist;
 mod recovery;
+mod service;
 
 pub use recovery::SensitiveOptions;
+pub use service::{ManagerService, SNAPSHOT_EVERY, TICK};
 
 #[cfg(test)]
 mod tests;
