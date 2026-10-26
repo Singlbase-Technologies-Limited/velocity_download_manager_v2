@@ -10,7 +10,9 @@ use velocity_core::torrent_engine::{
     TorrentCommand, TorrentEvent, TorrentReply, TORRENT_CONTRACT_VERSION,
 };
 
+#[cfg(feature = "engine")]
 pub mod engine;
+#[cfg(feature = "engine")]
 pub mod portmap;
 pub mod stdio;
 pub mod supervisor;
