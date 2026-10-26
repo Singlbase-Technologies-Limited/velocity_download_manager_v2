@@ -1820,9 +1820,7 @@ mod tests {
             ]),
             Value::List(vec![Value::str("udp://c.example:6969/secret2/announce")]),
         ]);
-        let mut entries = Vec::new();
-        entries.push(("trackers", tiers));
-        let with = resume_for(&info, entries);
+        let with = resume_for(&info, vec![("trackers", tiers)]);
         let (without, trackers) = strip_trackers(&with).unwrap();
         assert_eq!(trackers.len(), 3);
         let text = String::from_utf8_lossy(&without);
