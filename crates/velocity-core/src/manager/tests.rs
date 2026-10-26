@@ -2535,3 +2535,552 @@ mod batch {
         );
     }
 }
+
+/// Torrents in the manager (#58, part 2): added and queued like direct downloads (PO decision on
+/// #58), driven through the torrent contract, and stored without trackers.
+mod torrents {
+    use super::*;
+    use crate::database::TorrentOrigin;
+    use crate::queue::QueueSettings;
+    use crate::seeding::SeedPolicy;
+    use crate::torrent::bencode::{encode, Value};
+    use crate::torrent::tests::{album, resume_for, sha1_hex};
+    use crate::torrent_engine::fake::{FakeTorrentControl, FakeTorrentEngine};
+    use crate::torrent_engine::{TorrentId, TorrentSource, HELPER_STOPPED};
+    use std::fs;
+
+    const MAGNET: &str = "magnet:?xt=urn:btih:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa&dn=album\
+                          &tr=https%3A%2F%2Ftracker.example%2Fannounce%3Fpasskey%3Dsecret-key";
+
+    fn folder(test: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("v2-torrents-{test}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn request(dir: &std::path::Path) -> TorrentRequest {
+        TorrentRequest {
+            origin: TorrentOrigin::Magnet {
+                uri: MAGNET.to_owned(),
+            },
+            directory: dir.to_path_buf(),
+            trackers: Vec::new(),
+            choose_files: false,
+            files: None,
+            seeding: SeedPolicy::Never {},
+            upload_limit: 0,
+            download_limit: 0,
+        }
+    }
+
+    /// The album's metadata (`d4:info…e`) and its v1 info hash.
+    fn metadata() -> (Vec<u8>, String) {
+        let info = encode(&album());
+        let mut m = b"d4:info".to_vec();
+        m.extend(&info);
+        m.push(b'e');
+        (m, sha1_hex(&info))
+    }
+
+    fn resume_data() -> Vec<u8> {
+        resume_for(
+            &album(),
+            vec![(
+                "trackers",
+                Value::List(vec![Value::List(vec![Value::str(
+                    "https://tracker.example/announce?passkey=secret-key",
+                )])]),
+            )],
+        )
+    }
+
+    struct Setup {
+        m: Manager,
+        torrents: FakeTorrentControl,
+        direct: FakeControl,
+        db: Arc<Database>,
+    }
+
+    fn with_db(db: &Arc<Database>, max: u32) -> Setup {
+        let fake = FakeTransfer::new();
+        let direct = fake.control();
+        let lt = FakeTorrentEngine::new();
+        let torrents = lt.control();
+        let mut m = Manager::open(Box::new(fake), Arc::clone(db))
+            .unwrap()
+            .with_torrents(Box::new(lt));
+        m.set_queue_settings(QueueSettings {
+            max_concurrent_downloads: max,
+            ..QueueSettings::default()
+        })
+        .unwrap();
+        Setup {
+            m,
+            torrents,
+            direct,
+            db: Arc::clone(db),
+        }
+    }
+
+    fn setup(max: u32) -> Setup {
+        with_db(&Arc::new(Database::open_in_memory().unwrap()), max)
+    }
+
+    #[test]
+    fn a_magnet_is_added_and_started_with_its_trackers_and_stored_without_them() {
+        let dir = folder("magnet");
+        let mut s = setup(3);
+        let id =
+            s.m.add_torrent(request(&dir), AddOptions::default(), T0)
+                .unwrap();
+        s.m.pump(T0 + 1);
+        let r = s.m.get(&id).unwrap();
+        assert_eq!(r.kind, DownloadKind::Magnet);
+        assert_eq!(r.status, DownloadStatus::FetchingMetadata);
+        assert_eq!(
+            r.file_name.as_deref(),
+            Some("album"),
+            "the magnet's name until the metadata's"
+        );
+        let spec = s.torrents.spec(TorrentId(1));
+        assert_eq!(
+            spec.source,
+            TorrentSource::Magnet {
+                uri: MAGNET.to_owned()
+            },
+            "this session keeps the trackers in memory"
+        );
+        assert_eq!(spec.directory, dir);
+
+        let stored = s.db.torrent(&id).unwrap().unwrap();
+        let options = stored.options.known().unwrap().clone();
+        let TorrentOrigin::Magnet { uri } = &options.origin else {
+            panic!("a magnet origin: {options:?}");
+        };
+        assert!(uri.starts_with("magnet:?xt=urn:btih:aaaa"), "{uri}");
+        let everything = format!("{:?} {:?}", s.db.downloads().unwrap(), stored);
+        assert!(
+            !everything.contains("secret-key"),
+            "no passkey stored: {everything}"
+        );
+        assert!(!everything.contains("tracker.example"), "no tracker stored");
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn what_the_helper_reports_reaches_the_record_and_the_database() {
+        let dir = folder("events");
+        let mut s = setup(3);
+        let id =
+            s.m.add_torrent(request(&dir), AddOptions::default(), T0)
+                .unwrap();
+        let (meta, hash) = metadata();
+        s.torrents
+            .metadata_known(TorrentId(1), "album", &hash, 32_000, meta.clone());
+        s.torrents.progress(TorrentId(1), 16_000);
+        s.m.pump(T0 + 1);
+        let r = s.m.get(&id).unwrap();
+        assert_eq!(r.status, DownloadStatus::Downloading);
+        assert_eq!(r.progress.completed_bytes, 16_000);
+        assert_eq!(r.progress.total_bytes, Some(32_000));
+        let d = s.db.downloads().unwrap().remove(0);
+        assert_eq!(d.info_hash.as_deref(), Some(hash.as_str()));
+        assert_eq!(
+            s.db.torrent(&id).unwrap().unwrap().metadata,
+            Some(meta),
+            "its metadata is kept once known (#62)"
+        );
+        s.torrents.complete(TorrentId(1));
+        s.m.pump(T0 + 2);
+        let r = s.m.get(&id).unwrap();
+        assert_eq!(r.status, DownloadStatus::Completed);
+        assert_eq!(r.completed_at_ms, Some(T0 + 2));
+        assert!(s.m.queue().is_empty());
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn metadata_that_isnt_the_torrents_is_never_kept() {
+        let dir = folder("bad-metadata");
+        let mut s = setup(3);
+        let id =
+            s.m.add_torrent(request(&dir), AddOptions::default(), T0)
+                .unwrap();
+        let (meta, _hash) = metadata();
+        s.torrents
+            .metadata_known(TorrentId(1), "album", &"b".repeat(40), 32_000, meta);
+        s.m.pump(T0 + 1);
+        assert_eq!(s.db.torrent(&id).unwrap().unwrap().metadata, None);
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn resume_data_is_put_together_stripped_of_its_trackers_and_saved() {
+        let dir = folder("resume");
+        let mut s = setup(3);
+        let id =
+            s.m.add_torrent(request(&dir), AddOptions::default(), T0)
+                .unwrap();
+        s.torrents.resume_data(TorrentId(1), &resume_data());
+        s.m.pump(T0 + 1);
+        let saved = s.db.torrent(&id).unwrap().unwrap().resume_data.unwrap();
+        assert!(!String::from_utf8_lossy(&saved).contains("secret-key"));
+        let (expected, _) = crate::torrent::strip_trackers(&resume_data()).unwrap();
+        assert_eq!(saved, expected);
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn torrents_wait_for_a_slot_and_free_it_to_seed_or_choose_files() {
+        let dir = folder("queue");
+        let mut s = setup(1);
+        let seeding = request(&dir);
+        let a =
+            s.m.add_torrent(
+                TorrentRequest {
+                    seeding: SeedPolicy::Unlimited {},
+                    ..seeding
+                },
+                AddOptions::default(),
+                T0,
+            )
+            .unwrap();
+        let b = s.m.add(DownloadKind::Http, spec(), T0).unwrap();
+        s.m.pump(T0 + 1);
+        assert!(s.direct.log().is_empty(), "the torrent holds the one slot");
+        assert_eq!(status(&s.m, &b), DownloadStatus::Queued);
+        let (meta, hash) = metadata();
+        s.torrents
+            .metadata_known(TorrentId(1), "album", &hash, 32_000, meta);
+        s.torrents.complete(TorrentId(1));
+        s.m.pump(T0 + 2);
+        assert_eq!(status(&s.m, &a), DownloadStatus::Seeding);
+        assert_eq!(s.direct.log(), ["add"], "seeding frees the slot");
+
+        let mut s = setup(1);
+        let c =
+            s.m.add_torrent(
+                TorrentRequest {
+                    choose_files: true,
+                    ..request(&dir)
+                },
+                AddOptions::default(),
+                T0,
+            )
+            .unwrap();
+        s.m.add(DownloadKind::Http, spec(), T0).unwrap();
+        let (meta, hash) = metadata();
+        s.torrents
+            .metadata_known(TorrentId(1), "album", &hash, 32_000, meta);
+        s.m.pump(T0 + 1);
+        assert_eq!(status(&s.m, &c), DownloadStatus::ChoosingFiles);
+        assert_eq!(s.direct.log(), ["add"], "choosing files frees the slot");
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn files_are_chosen_and_the_choice_is_stored() {
+        let dir = folder("choose");
+        let mut s = setup(3);
+        let id =
+            s.m.add_torrent(
+                TorrentRequest {
+                    choose_files: true,
+                    ..request(&dir)
+                },
+                AddOptions::default(),
+                T0,
+            )
+            .unwrap();
+        assert_eq!(s.m.choose_files(&id, vec![1]), Err(ErrorCode::InvalidState));
+        let (meta, hash) = metadata();
+        s.torrents
+            .metadata_known(TorrentId(1), "album", &hash, 32_000, meta);
+        s.m.pump(T0 + 1);
+        s.m.choose_files(&id, vec![1]).unwrap();
+        assert!(s.torrents.log().contains(&"set_files 1 [1]".to_owned()));
+        let options =
+            s.db.torrent(&id)
+                .unwrap()
+                .unwrap()
+                .options
+                .known()
+                .unwrap()
+                .clone();
+        assert_eq!(options.files, Some(vec![1]));
+        assert!(!options.choose_files, "chosen");
+        assert_eq!(
+            s.m.choose_files("d-9999", vec![1]),
+            Err(ErrorCode::NotFound)
+        );
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn the_seeding_policy_and_limits_change_live_and_are_stored() {
+        let dir = folder("policy");
+        let mut s = setup(3);
+        let id =
+            s.m.add_torrent(request(&dir), AddOptions::default(), T0)
+                .unwrap();
+        s.m.set_seeding(&id, SeedPolicy::Ratio { ratio: 2.0 })
+            .unwrap();
+        s.m.set_download_limits(
+            &id,
+            Limits {
+                max_download_bps: Some(64 * 1024),
+            },
+        )
+        .unwrap();
+        assert!(s.torrents.log().contains(&"set_seeding 1".to_owned()));
+        assert!(s
+            .torrents
+            .log()
+            .contains(&"set_limits 1 0 65536".to_owned()));
+        let options =
+            s.db.torrent(&id)
+                .unwrap()
+                .unwrap()
+                .options
+                .known()
+                .unwrap()
+                .clone();
+        assert_eq!(options.seeding, SeedPolicy::Ratio { ratio: 2.0 });
+        assert_eq!(options.download_limit, 64 * 1024);
+        assert_eq!(
+            s.m.set_seeding(&id, SeedPolicy::Ratio { ratio: 1000.0 }),
+            Err(ErrorCode::InvalidInput)
+        );
+        assert_eq!(
+            s.m.set_download_connections(&id, 4),
+            Err(ErrorCode::Unsupported),
+            "libtorrent chooses its peers"
+        );
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn pause_resume_and_cancel_go_to_the_helper() {
+        let dir = folder("lifecycle");
+        let mut s = setup(3);
+        let id =
+            s.m.add_torrent(request(&dir), AddOptions::default(), T0)
+                .unwrap();
+        s.m.pump(T0 + 1);
+        s.m.pause(&id).unwrap();
+        s.m.pump(T0 + 2);
+        assert_eq!(status(&s.m, &id), DownloadStatus::Paused);
+        s.m.resume(&id).unwrap();
+        s.m.pump(T0 + 3);
+        assert_eq!(s.torrents.log(), ["add", "pause 1", "resume 1"]);
+        s.m.cancel(&id).unwrap();
+        s.m.pump(T0 + 4);
+        assert_eq!(status(&s.m, &id), DownloadStatus::Removed);
+        assert!(s.torrents.log().contains(&"remove 1".to_owned()));
+        assert!(s.m.queue().is_empty());
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_torrent_the_helper_lost_waits_for_it_to_come_back() {
+        let dir = folder("lost");
+        let mut s = setup(1);
+        let id =
+            s.m.add_torrent(request(&dir), AddOptions::default(), T0)
+                .unwrap();
+        s.m.add(DownloadKind::Http, spec(), T0).unwrap();
+        s.torrents.progress(TorrentId(1), 100);
+        s.torrents.fail(
+            TorrentId(1),
+            TransferError::new(FailureClass::Transient, None, HELPER_STOPPED),
+        );
+        s.m.pump(T0 + 1);
+        let r = s.m.get(&id).unwrap();
+        assert_eq!(
+            r.status,
+            DownloadStatus::Queued,
+            "not failed: it comes back"
+        );
+        assert!(r.error.is_some());
+        assert!(s.direct.log().is_empty(), "it keeps its slot");
+        // The supervisor adds it back under the same id.
+        s.torrents.progress(TorrentId(1), 200);
+        s.m.pump(T0 + 2);
+        let r = s.m.get(&id).unwrap();
+        assert_eq!(r.status, DownloadStatus::Downloading);
+        assert_eq!(r.error, None);
+        assert_eq!(s.torrents.log(), ["add"], "the manager adds nothing itself");
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn after_a_restart_a_torrent_comes_back_from_its_resume_data_without_trackers() {
+        let dir = folder("restart");
+        let db = Arc::new(Database::open_in_memory().unwrap());
+        let id = {
+            let mut s = with_db(&db, 3);
+            let id =
+                s.m.add_torrent(
+                    TorrentRequest {
+                        origin: TorrentOrigin::File {
+                            path: dir.join("album.torrent"),
+                        },
+                        files: Some(vec![1]),
+                        upload_limit: 1024,
+                        ..request(&dir)
+                    },
+                    AddOptions::default(),
+                    T0,
+                )
+                .unwrap();
+            s.torrents.progress(TorrentId(1), 100);
+            s.torrents.resume_data(TorrentId(1), &resume_data());
+            s.m.pump(T0 + 1);
+            id
+        };
+        let mut s = with_db(&db, 3);
+        s.m.pump(T0 + 2);
+        assert_eq!(status(&s.m, &id), DownloadStatus::Queued);
+        let log = s.torrents.log();
+        assert_eq!(log.first().map(String::as_str), Some("upload 0"));
+        assert_eq!(log.last().map(String::as_str), Some("add"));
+        let (expected, _) = crate::torrent::strip_trackers(&resume_data()).unwrap();
+        assert_eq!(s.torrents.uploaded(), expected);
+        let spec = s.torrents.spec(TorrentId(1));
+        assert_eq!(spec.source, TorrentSource::Resume {});
+        assert!(
+            spec.trackers.is_empty(),
+            "trackers wait for the keychain (#70)"
+        );
+        assert_eq!(spec.upload_limit, 1024);
+        assert_eq!(spec.directory, dir);
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn after_a_restart_a_torrent_without_resume_data_comes_back_from_its_origin() {
+        let dir = folder("origin");
+        let db = Arc::new(Database::open_in_memory().unwrap());
+        {
+            let mut s = with_db(&db, 3);
+            s.m.add_torrent(request(&dir), AddOptions::default(), T0)
+                .unwrap();
+        }
+        let mut s = with_db(&db, 3);
+        s.m.pump(T0 + 1);
+        let spec = s.torrents.spec(TorrentId(1));
+        let TorrentSource::Magnet { uri } = spec.source else {
+            panic!("from the magnet");
+        };
+        assert!(!uri.contains("tr="), "without its trackers: {uri}");
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn removing_a_torrent_with_its_files_deletes_only_its_own() {
+        let dir = folder("delete");
+        let mut s = setup(3);
+        let id =
+            s.m.add_torrent(request(&dir), AddOptions::default(), T0)
+                .unwrap();
+        let (meta, hash) = metadata();
+        s.torrents
+            .metadata_known(TorrentId(1), "album", &hash, 32_000, meta);
+        s.torrents.complete(TorrentId(1));
+        s.m.pump(T0 + 1);
+        fs::create_dir_all(dir.join("album")).unwrap();
+        fs::write(dir.join("album").join("a.bin"), vec![1u8; 20_000]).unwrap();
+        fs::write(dir.join("album").join("b.bin"), vec![1u8; 12_000]).unwrap();
+        fs::write(dir.join("other.txt"), b"not the torrent's").unwrap();
+        assert_eq!(s.m.remove(&id, true), Ok(Vec::new()));
+        assert!(
+            !dir.join("album").exists(),
+            "its files and its emptied folder"
+        );
+        assert!(dir.join("other.txt").exists());
+        assert!(s.m.get(&id).is_none());
+        assert!(!s.db.downloads().unwrap()[0].in_list);
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn before_the_app_closes_every_torrents_resume_data_is_asked_for_and_saved() {
+        let dir = folder("close");
+        let mut s = setup(3);
+        let id =
+            s.m.add_torrent(request(&dir), AddOptions::default(), T0)
+                .unwrap();
+        s.m.pump(T0 + 1);
+        // The helper answers save_resume with the data, as the real one does.
+        let control = s.torrents.clone();
+        let answer = std::thread::spawn(move || {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            while !control.log().contains(&"save_resume".to_owned()) {
+                assert!(std::time::Instant::now() < deadline, "asked in time");
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+            control.resume_data(TorrentId(1), &resume_data());
+        });
+        s.m.prepare_to_close(std::time::Duration::from_secs(5), T0 + 2);
+        answer.join().unwrap();
+        assert!(s.db.torrent(&id).unwrap().unwrap().resume_data.is_some());
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_link_that_isnt_a_magnet_or_a_bad_policy_is_refused_with_nothing_stored() {
+        let dir = folder("refused");
+        let mut s = setup(3);
+        let bad = TorrentRequest {
+            origin: TorrentOrigin::Magnet {
+                uri: "https://example.com/a.torrent".to_owned(),
+            },
+            ..request(&dir)
+        };
+        assert_eq!(
+            s.m.add_torrent(bad, AddOptions::default(), T0).err(),
+            Some(ErrorCode::InvalidUrl)
+        );
+        let policy = TorrentRequest {
+            seeding: SeedPolicy::Time { minutes: 0 },
+            ..request(&dir)
+        };
+        assert_eq!(
+            s.m.add_torrent(policy, AddOptions::default(), T0).err(),
+            Some(ErrorCode::InvalidInput)
+        );
+        assert!(s.db.downloads().unwrap().is_empty());
+        assert!(s.torrents.log().is_empty());
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn the_snapshot_shows_the_helpers_health() {
+        let s = setup(3);
+        assert_eq!(s.m.snapshot().torrent_engine, EngineHealth::Running);
+        s.torrents
+            .set_health(EngineHealth::Restarting { attempt: 1 });
+        assert_eq!(
+            s.m.snapshot().torrent_engine,
+            EngineHealth::Restarting { attempt: 1 }
+        );
+    }
+
+    #[test]
+    fn without_a_torrent_engine_a_torrent_waits_and_says_why() {
+        let dir = folder("no-engine");
+        let fake = FakeTransfer::new();
+        let mut m = in_memory(fake);
+        let id = m
+            .add_torrent(request(&dir), AddOptions::default(), T0)
+            .unwrap();
+        m.pump(T0 + 1);
+        assert_eq!(status(&m, &id), DownloadStatus::Queued);
+        assert!(matches!(
+            m.snapshot().torrent_engine,
+            EngineHealth::Unavailable { .. }
+        ));
+        fs::remove_dir_all(&dir).unwrap();
+    }
+}

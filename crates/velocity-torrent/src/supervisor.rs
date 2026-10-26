@@ -25,12 +25,12 @@ use velocity_core::torrent_engine::{
 
 use crate::stdio::ChildTorrentEngine;
 
-/// What a torrent that a crash lost fails with.
-const CRASH_MESSAGE: &str = "the torrent helper stopped unexpectedly";
-/// What a torrent fails with when its helper stopped responding and was killed.
-const HUNG_MESSAGE: &str = "the torrent helper stopped responding and was restarted";
-/// What a torrent fails with when the helper is restarted by hand.
-const RESTART_MESSAGE: &str = "the torrent helper was restarted";
+/// What a lost torrent fails with: after a crash, after a hang, and after a restart by hand. The
+/// core defines them, so the manager knows a lost torrent from a failed one (#58).
+use velocity_core::torrent_engine::{
+    HELPER_HUNG as HUNG_MESSAGE, HELPER_RESTARTED as RESTART_MESSAGE,
+    HELPER_STOPPED as CRASH_MESSAGE,
+};
 
 /// One torrent's resume data as its chunks arrive.
 #[derive(Debug, Default)]
@@ -470,6 +470,15 @@ impl TorrentEngine for SupervisedTorrentEngine {
 
     fn subscribe(&mut self) -> Receiver<TorrentEvent> {
         self.supervisor.subscribe()
+    }
+
+    fn health(&self) -> EngineHealth {
+        self.supervisor.health()
+    }
+
+    fn restart(&mut self) -> Result<(), ErrorCode> {
+        self.supervisor.restart();
+        Ok(())
     }
 }
 

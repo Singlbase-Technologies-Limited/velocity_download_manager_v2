@@ -40,6 +40,9 @@
     "d-0001"
   ],
   "storageError": "DATABASE",
+  "torrentEngine": {
+    "state": "running"
+  },
   "unavailable": [
     {
       "createdAtMs": 1792600000000,

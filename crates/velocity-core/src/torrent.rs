@@ -1276,7 +1276,7 @@ fn hex(bytes: &[u8]) -> String {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::bencode::{encode, Value};
     use super::*;
     use sha1::{Digest, Sha1};
@@ -1310,7 +1310,7 @@ mod tests {
         encode(&Value::dict(entries))
     }
 
-    fn sha1_hex(b: &[u8]) -> String {
+    pub(crate) fn sha1_hex(b: &[u8]) -> String {
         hex(&Sha1::digest(b))
     }
 
@@ -1713,7 +1713,8 @@ mod tests {
 
     /// A v1 multi-file info dictionary, and libtorrent resume data for it with the keys
     /// libtorrent 2.0.15 writes for a torrent being downloaded, plus `extra`.
-    fn resume_for(info: &Value, extra: Vec<(&str, Value)>) -> Vec<u8> {
+    /// libtorrent-shaped resume data for `info`; `extra` entries replace those of the same key.
+    pub(crate) fn resume_for(info: &Value, extra: Vec<(&str, Value)>) -> Vec<u8> {
         let info_hash = Sha1::digest(encode(info)).to_vec();
         let mut entries = vec![
             ("file-format", Value::str("libtorrent resume file")),
@@ -1761,7 +1762,8 @@ mod tests {
         encode(&Value::dict(entries))
     }
 
-    fn album() -> Value {
+    /// A two-file torrent's info dictionary: `album/a.bin` (20,000 bytes), `album/b.bin` (12,000).
+    pub(crate) fn album() -> Value {
         multi(
             "album",
             vec![file(&["a.bin"], 20_000), file(&["b.bin"], 12_000)],

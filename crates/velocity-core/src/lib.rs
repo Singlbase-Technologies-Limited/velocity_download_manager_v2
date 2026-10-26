@@ -33,7 +33,8 @@ use serde::Serialize;
 /// Version 6 (#53) added [`domain::TransferError::host_key`].
 /// Version 7 (#58) added the downloads commands and their types: [`domain::DownloadsSnapshot`],
 /// [`domain::EngineHealth`] and [`domain::BatchResult`].
-pub const COMMAND_API_VERSION: u32 = 7;
+/// Version 8 (#58, torrents) added [`domain::DownloadsSnapshot::torrent_engine`].
+pub const COMMAND_API_VERSION: u32 = 8;
 
 /// Name, version and contract version of the running application.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
