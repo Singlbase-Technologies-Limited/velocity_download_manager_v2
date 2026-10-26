@@ -22,3 +22,5 @@ serde_json.workspace = true
 velocity-core = { path = "../crates/velocity-core" }
 # The engine's client and supervisor (ADR-0012): the engine itself runs as its own process.
 velocity-transfer = { path = "../crates/velocity-transfer" }
+# The torrent helper's client and supervisor only, without libtorrent (PO decision on #58).
+velocity-torrent = { path = "../crates/velocity-torrent", default-features = false }

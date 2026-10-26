@@ -276,6 +276,17 @@ impl Manager {
         Ok(())
     }
 
+    /// The torrent helper's health, for the app to show.
+    pub fn torrent_helper_health(&self) -> crate::domain::EngineHealth {
+        self.torrents.health()
+    }
+
+    /// Starts a new torrent helper in place of the running one; its supervisor adds the torrents
+    /// back under their ids.
+    pub fn restart_torrent_helper(&mut self) -> Result<(), ErrorCode> {
+        self.torrents.restart()
+    }
+
     /// Asks the helper for every torrent's resume data and applies its events for up to
     /// `timeout`, until each torrent it named has saved a fresh copy: what the app does before it
     /// closes, so torrents come back where they were.

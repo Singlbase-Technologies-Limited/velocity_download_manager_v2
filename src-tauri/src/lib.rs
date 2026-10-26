@@ -51,6 +51,9 @@ pub fn run() {
             downloads::set_download_speed_limit,
             downloads::restart_engine,
             downloads::trust_host_key,
+            downloads::choose_torrent_files,
+            downloads::set_torrent_seeding,
+            downloads::restart_torrent_helper,
         ])
         .run(tauri::generate_context!())
         .expect("error while running the Velocity Download Manager desktop shell");
