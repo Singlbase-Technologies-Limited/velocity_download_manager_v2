@@ -824,6 +824,7 @@ impl Manager {
 }
 
 mod finished;
+mod options;
 mod persist;
 mod recovery;
 

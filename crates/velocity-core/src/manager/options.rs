@@ -1,0 +1,61 @@
+//! A download's own speed limit and connections (V1's `set_download_speed_limit` and
+//! `set_download_connections`; #47, #49, #58). A change applies at once to a download the engine
+//! has, and to the next start of one it doesn't; either way it is stored, so a restart keeps it.
+
+use super::Manager;
+use crate::database::StoredOptions;
+use crate::domain::ErrorCode;
+use crate::transfer::{Limits, TransferId};
+
+impl Manager {
+    /// Sets the download's own speed limit, which holds alongside the global one: the lower
+    /// applies. `InvalidInput`, with nothing sent, for a limit below 1 KiB/s; `InvalidState` for a
+    /// finished download.
+    pub fn set_download_limits(&mut self, id: &str, limits: Limits) -> Result<(), ErrorCode> {
+        limits.check()?;
+        if let Some(transfer) = self.unfinished_transfer(id)? {
+            self.engine.set_limits(transfer, limits)?;
+        }
+        let d = self.downloads.get_mut(id).expect("known");
+        d.request.limits = limits;
+        self.store_options(id);
+        Ok(())
+    }
+
+    /// Asks for `connections` for the download and returns how many apply: what the engine allows
+    /// for one it has, and at most the profile's cap for one it doesn't have yet. `InvalidInput`
+    /// for none; `InvalidState` for a finished download.
+    pub fn set_download_connections(
+        &mut self,
+        id: &str,
+        connections: u32,
+    ) -> Result<u32, ErrorCode> {
+        if connections == 0 {
+            return Err(ErrorCode::InvalidInput);
+        }
+        let applied = match self.unfinished_transfer(id)? {
+            Some(transfer) => self.engine.set_connections(transfer, connections)?,
+            None => connections.min(self.connections_for_new_downloads()),
+        };
+        let d = self.downloads.get_mut(id).expect("known");
+        d.request.max_connections = applied;
+        self.store_options(id);
+        Ok(applied)
+    }
+
+    /// The transfer of an unfinished download, if the engine has it.
+    fn unfinished_transfer(&self, id: &str) -> Result<Option<TransferId>, ErrorCode> {
+        let d = self.downloads.get(id).ok_or(ErrorCode::NotFound)?;
+        if d.record.status.is_terminal() {
+            return Err(ErrorCode::InvalidState);
+        }
+        Ok(d.transfer)
+    }
+
+    fn store_options(&mut self, id: &str) {
+        let options = StoredOptions::of(&self.downloads[id].request);
+        if let Err(e) = self.database.update_options(id, &options) {
+            self.storage_error = Some(e);
+        }
+    }
+}

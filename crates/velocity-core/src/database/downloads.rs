@@ -95,6 +95,22 @@ pub struct StoredOptions {
     pub pieces: Option<PieceHashes>,
 }
 
+impl StoredOptions {
+    /// The options of a direct download's spec, without its secrets.
+    pub fn of(spec: &TransferSpec) -> Self {
+        StoredOptions {
+            max_connections: spec.max_connections,
+            max_download_bps: spec.limits.max_download_bps,
+            urls: spec.urls.iter().map(|url| without_login(url).0).collect(),
+            require_encryption: spec.require_encryption,
+            user_agent: spec.user_agent.clone(),
+            referrer: spec.referrer.as_deref().map(Checkpoint::source_of),
+            checksum: spec.checksum.clone(),
+            pieces: spec.pieces.clone(),
+        }
+    }
+}
+
 /// A download to add.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct NewDownload {
@@ -135,16 +151,7 @@ impl NewDownload {
             directory,
             file_name,
             category_id: None,
-            options: StoredOptions {
-                max_connections: spec.max_connections,
-                max_download_bps: spec.limits.max_download_bps,
-                urls: spec.urls.iter().map(|url| without_login(url).0).collect(),
-                require_encryption: spec.require_encryption,
-                user_agent: spec.user_agent.clone(),
-                referrer: spec.referrer.as_deref().map(Checkpoint::source_of),
-                checksum: spec.checksum.clone(),
-                pieces: spec.pieces.clone(),
-            },
+            options: StoredOptions::of(spec),
             has_sensitive_options: had_login
                 || spec.credentials.is_some()
                 || spec.ssh_key.is_some()
@@ -322,6 +329,30 @@ impl Database {
         self.conn()
             .execute("UPDATE downloads SET status = ?2 WHERE id = ?1", [id, raw])
             .unwrap();
+    }
+
+    /// Saves a download's options, after the user changed its limit or connections.
+    /// `InvalidInput` for no connections; `NotFound` for a download that isn't stored.
+    pub fn update_options(&self, id: &str, options: &StoredOptions) -> Result<(), DatabaseError> {
+        if options.max_connections == 0 {
+            return Err(DatabaseError::new(
+                ErrorCode::InvalidInput,
+                "a download needs at least one connection",
+            ));
+        }
+        let json = serde_json::to_string(options)
+            .map_err(|e| DatabaseError::new(ErrorCode::Internal, e.to_string()))?;
+        let changed = self.conn().execute(
+            "UPDATE downloads SET options_json = ?2 WHERE id = ?1",
+            rusqlite::params![id, json],
+        )?;
+        if changed != 1 {
+            return Err(DatabaseError::new(
+                ErrorCode::NotFound,
+                format!("no download {id} to update"),
+            ));
+        }
+        Ok(())
     }
 
     /// Takes a download out of the list; it stays in the history (V1's `in_list`), and out of the

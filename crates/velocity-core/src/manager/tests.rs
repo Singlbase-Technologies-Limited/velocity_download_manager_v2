@@ -2164,3 +2164,119 @@ mod engine_loss {
         assert!(m.get(&id).unwrap().error.is_none());
     }
 }
+
+/// A download's own speed limit and connections (V1's `set_download_speed_limit` and
+/// `set_download_connections`; #47, #49, #58): live while it runs, kept for when it starts, and
+/// stored.
+mod per_download {
+    use super::*;
+
+    fn paused_one(m: &mut Manager) -> String {
+        m.add_with(
+            DownloadKind::Http,
+            spec(),
+            AddOptions {
+                start_paused: true,
+                scheduled: false,
+            },
+            T0,
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn a_speed_limit_applies_to_a_running_download_at_once_and_is_stored() {
+        let fake = FakeTransfer::new();
+        let control = fake.control();
+        let db = Arc::new(Database::open_in_memory().unwrap());
+        let mut m = Manager::open(Box::new(fake), Arc::clone(&db)).unwrap();
+        let id = m.add(DownloadKind::Http, spec(), T0).unwrap();
+        let limit = Limits {
+            max_download_bps: Some(64 * 1024),
+        };
+        m.set_download_limits(&id, limit).unwrap();
+        assert_eq!(control.limits(TransferId(1)), limit);
+        let stored = db.downloads().unwrap().remove(0);
+        assert_eq!(
+            stored.options.known().unwrap().max_download_bps,
+            Some(64 * 1024)
+        );
+        m.set_download_limits(&id, Limits::default()).unwrap();
+        assert_eq!(control.limits(TransferId(1)), Limits::default());
+    }
+
+    #[test]
+    fn a_waiting_download_takes_its_limit_when_it_starts() {
+        let fake = FakeTransfer::new();
+        let control = fake.control();
+        let mut m = in_memory(fake);
+        let id = paused_one(&mut m);
+        let limit = Limits {
+            max_download_bps: Some(2048),
+        };
+        m.set_download_limits(&id, limit).unwrap();
+        assert!(control.log().is_empty());
+        m.resume(&id).unwrap();
+        assert_eq!(control.spec(TransferId(1)).limits, limit);
+    }
+
+    #[test]
+    fn a_limit_below_one_kib_per_second_is_refused_with_nothing_sent() {
+        let (mut m, control, id) = setup();
+        let too_low = Limits {
+            max_download_bps: Some(1000),
+        };
+        assert_eq!(
+            m.set_download_limits(&id, too_low),
+            Err(ErrorCode::InvalidInput)
+        );
+        assert_eq!(control.log(), ["add"]);
+    }
+
+    #[test]
+    fn connections_change_live_and_the_engine_decides_how_many_apply() {
+        let fake = FakeTransfer::new();
+        let control = fake.control();
+        let db = Arc::new(Database::open_in_memory().unwrap());
+        let mut m = Manager::open(Box::new(fake), Arc::clone(&db)).unwrap();
+        let id = m.add(DownloadKind::Http, spec(), T0).unwrap();
+        // The sample engine allows 8 per host.
+        assert_eq!(m.set_download_connections(&id, 2), Ok(2));
+        assert_eq!(control.spec(TransferId(1)).max_connections, 2);
+        assert_eq!(m.set_download_connections(&id, 50), Ok(8));
+        let stored = db.downloads().unwrap().remove(0);
+        assert_eq!(stored.options.known().unwrap().max_connections, 8);
+        assert_eq!(
+            m.set_download_connections(&id, 0),
+            Err(ErrorCode::InvalidInput)
+        );
+    }
+
+    #[test]
+    fn a_waiting_download_starts_with_its_connections_capped_by_the_profile() {
+        let fake = FakeTransfer::new();
+        let control = fake.control();
+        let mut m = in_memory(fake);
+        let id = paused_one(&mut m);
+        assert_eq!(m.set_download_connections(&id, 3), Ok(3));
+        let cap = m.connections_for_new_downloads();
+        assert_eq!(m.set_download_connections(&id, 99), Ok(cap));
+        m.resume(&id).unwrap();
+        assert_eq!(control.spec(TransferId(1)).max_connections, cap);
+    }
+
+    #[test]
+    fn a_finished_download_takes_neither() {
+        let (mut m, control, id) = setup();
+        control.complete(TransferId(1));
+        m.pump(T0 + 1);
+        assert_eq!(
+            m.set_download_limits(&id, Limits::default()),
+            Err(ErrorCode::InvalidState)
+        );
+        assert_eq!(
+            m.set_download_connections(&id, 2),
+            Err(ErrorCode::InvalidState)
+        );
+    }
+}
