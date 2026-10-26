@@ -30,6 +30,7 @@ The same build on Linux (Ubuntu 24.04 under WSL2/WSLg):
 | pnpm | exactly the version in `package.json` → `packageManager` (12.14.0) | Package manager |
 | Rust | installed with rustup; `rust-toolchain.toml` pins the toolchain (1.99.1) and rustup installs it automatically | Desktop shell and core |
 | Platform libraries | see below | Tauri's webview and native build |
+| vcpkg | a clone with the baseline commit in [`scripts/native/vcpkg/vcpkg.json`](../scripts/native/vcpkg/vcpkg.json), bootstrapped, in `VCPKG_ROOT`, `C:cpkg` or `~/vcpkg` | Builds libtorrent, Boost and OpenSSL for the torrent bridge ([BUILDING_NATIVE.md](BUILDING_NATIVE.md#libtorrent)) |
 
 `pnpm check:prereqs` checks all of these. It only reads your system; it never installs or changes anything.
 
@@ -85,7 +86,7 @@ Then install Node.js and pnpm.
 | `pnpm test`, `pnpm test:watch` | Frontend and script unit tests (Vitest), once or in watch mode |
 | `pnpm rust:test` | Rust unit tests |
 | `pnpm typecheck`, `pnpm lint` | TypeScript and ESLint on their own |
-| `pnpm native:build` | Build libcurl and the other native libraries from verified sources, and write `build-info.json`. The first run takes about 2.5 min on Windows and 5 min on Linux; later runs reuse it in about a second. Every Rust build links it, so `check:fast`, `check:pr` and `test:focused` run it first ([BUILDING_NATIVE.md](BUILDING_NATIVE.md)) |
+| `pnpm native:build` | Build libcurl and the other native libraries from verified sources and write `build-info.json`, then build libtorrent, Boost and OpenSSL with vcpkg and write `libtorrent-info.json`. The first run takes about 2.5 min on Windows and 5 min on Linux for libcurl, plus 15 to 35 min for libtorrent; later runs reuse both in seconds. Every Rust build links them, so `check:fast`, `check:pr` and `test:focused` run it first ([BUILDING_NATIVE.md](BUILDING_NATIVE.md)) |
 | `pnpm native:verify` | Check that `build-info.json` and every built library still match the lock file; `pnpm tauri build` runs it first |
 
 Run `pnpm check:fast` before every pull request. [TESTING.md](TESTING.md) describes each level, how `check:pr` picks checks, and the build settings that keep feedback fast.
@@ -160,5 +161,7 @@ Measured 2026-10-21 for #3 on the two machines above. Each figure is the median 
 | `src/` | React and TypeScript UI. It talks to Rust only through typed Tauri commands |
 | `src-tauri/` | Tauri 2 desktop shell. Commands stay thin and delegate to the core |
 | `crates/velocity-core/` | Core domain logic in Rust |
+| `crates/velocity-child/` | The child-process layer the engine and the torrent helper share |
+| `crates/velocity-lt/`, `crates/velocity-torrent/` | The torrent bridge over libtorrent, and the torrent engine with its helper program ([TORRENTS.md](TORRENTS.md)) |
 | `scripts/` | Developer scripts (`check:prereqs`, the `check:*` and `test:focused` commands) and their tests |
 | `docs/` | Project documentation; [README.md](README.md) maps every document |

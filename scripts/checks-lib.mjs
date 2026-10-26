@@ -26,10 +26,10 @@ export const SELECT_ALL_PREFIXES = ['scripts/', '.cargo/', '.github/'];
  */
 export const NATIVE_LOCK_FILE = /(^|\/)([^/]+\.lock|vcpkg\.json|vcpkg-configuration\.json)$/;
 /**
- * The native library builds (#35): their scripts, pins and keys, the crate that links them, and
- * the Cargo overrides that make it link them.
+ * The native library builds (#35, #62): their scripts, pins, keys and vcpkg ports, the crates that
+ * link them (libcurl and the torrent bridge), and the Cargo overrides that make them link them.
  */
-export const NATIVE_PREFIXES = ['scripts/native/', 'crates/velocity-curl/', '.cargo/'];
+export const NATIVE_PREFIXES = ['scripts/native/', 'crates/velocity-curl/', 'crates/velocity-lt/', '.cargo/'];
 /** Lockfiles that match NATIVE_LOCK_FILE but pin Rust or npm packages, not native libraries. */
 const PACKAGE_LOCK_FILES = ['Cargo.lock', 'pnpm-lock.yaml'];
 /** Frontend: TypeScript types, ESLint and Vitest. */

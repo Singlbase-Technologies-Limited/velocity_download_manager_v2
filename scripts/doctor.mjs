@@ -7,6 +7,7 @@ import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { evaluate, parsePackageManager, parseToolchainChannel } from './doctor-lib.mjs';
+import { findVcpkg } from './native/libtorrent.mjs';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -18,6 +19,15 @@ function probe(cmd, args, { shell = false } = {}) {
   const r = spawnSync(cmd, args, { encoding: 'utf8', windowsHide: true, shell });
   if (r.error || r.status !== 0) return null;
   return `${r.stdout}${r.stderr}`.trim().split(/\r?\n/)[0] || null;
+}
+
+/** The version line of the vcpkg scripts/native/libtorrent.mjs would use, or null. */
+function vcpkg() {
+  try {
+    return probe(findVcpkg().exe, ['version']);
+  } catch {
+    return null;
+  }
 }
 
 /** rustup/cargo may be installed but not yet on PATH in this shell (common right after install). */
@@ -81,6 +91,7 @@ const findings = evaluate(
     make: platform === 'linux' ? probe('make', ['--version']) : null,
     // `perl --version` starts with a blank line, which `probe` would read as no output.
     perl: platform === 'linux' ? probe('perl', ['-e', 'print $^V']) : null,
+    vcpkg: platform === 'win32' || platform === 'linux' ? vcpkg() : null,
   },
   { node: pkg.engines.node, pnpm: pinned.version },
 );

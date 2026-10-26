@@ -1,150 +1,41 @@
-//! The versioned protocol between the app and the engine's child process (#39, ADR-0012). The
-//! canonical description is docs/ENGINE_PROTOCOL.md.
-//!
-//! Each message is one frame: a 4-byte little-endian length, then that many bytes of JSON. A frame
-//! longer than [`MAX_MESSAGE_BYTES`] is refused before its body is read, and a message with a
-//! field this side doesn't know is refused, so neither side guesses at what the other meant. Both
-//! sides treat what they read as untrusted input.
+//! The direct-download engine's contract inside the child-process protocol (#39, ADR-0012). The
+//! envelope, framing and versions are `velocity_child`'s, shared with the torrent helper since
+//! #62; the canonical description is docs/ENGINE_PROTOCOL.md.
 
-use std::io::{ErrorKind, Read, Write};
-
-use serde::de::DeserializeOwned;
-use serde::{Deserialize, Serialize};
-use velocity_core::domain::ErrorCode;
 use velocity_core::transfer::{
-    TransferCommand, TransferEvent, TransferId, TransferReply, TRANSFER_CONTRACT_VERSION,
+    TransferCommand, TransferEvent, TransferReply, TRANSFER_CONTRACT_VERSION,
 };
 
-/// The framing's version. Version 1 was the #37 prototype's JSON lines.
-pub const PROTOCOL_VERSION: u32 = 2;
-/// The largest message either side sends or accepts. A starting value, not a measured one: a
-/// snapshot of 10,000 transfers is about 3 MiB.
-pub const MAX_MESSAGE_BYTES: usize = 4 * 1024 * 1024;
+pub use velocity_child::frame::MAX_MESSAGE_BYTES;
+pub use velocity_child::PROTOCOL_VERSION;
 
-/// A message from the app to the engine.
-#[derive(Debug, PartialEq, Serialize, Deserialize)]
-#[serde(
-    tag = "type",
-    rename_all = "camelCase",
-    rename_all_fields = "camelCase",
-    deny_unknown_fields
-)]
-pub(crate) enum ToChild {
-    /// The app's answer to [`FromChild::Hello`]: its versions, and the first transfer id the
-    /// engine may assign, so a restarted engine never reuses an earlier engine's ids.
-    Start {
-        protocol: u32,
-        contract: u32,
-        first_transfer_id: TransferId,
-    },
-    Request {
-        seq: u64,
-        command: TransferCommand,
-    },
-}
+/// The `DirectTransfer` contract, as the engine's child process speaks it.
+#[derive(Debug, PartialEq)]
+pub struct TransferContract;
 
-/// A message from the engine to the app.
-#[derive(Debug, PartialEq, Serialize, Deserialize)]
-#[serde(
-    tag = "type",
-    rename_all = "camelCase",
-    rename_all_fields = "camelCase",
-    deny_unknown_fields
-)]
-pub(crate) enum FromChild {
-    /// The engine's first message: the versions it speaks.
-    Hello {
-        protocol: u32,
-        contract: u32,
-    },
-    Reply {
-        seq: u64,
-        result: Result<TransferReply, ErrorCode>,
-    },
-    Event {
-        event: TransferEvent,
-    },
-}
-
-/// Why a frame couldn't be read or written.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum FrameError {
-    /// The length is over [`MAX_MESSAGE_BYTES`].
-    TooLarge {
-        len: u64,
-    },
-    /// The stream ended inside a frame.
-    Truncated,
-    /// The body isn't a message this side knows, including one with an unknown field.
-    Malformed(String),
-    Io(String),
-}
-
-/// Whether the other side speaks this side's protocol and contract versions.
-pub(crate) fn check_versions(protocol: u32, contract: u32) -> Result<(), ErrorCode> {
-    if protocol == PROTOCOL_VERSION && contract == TRANSFER_CONTRACT_VERSION {
-        Ok(())
-    } else {
-        Err(ErrorCode::EngineIncompatible)
+impl velocity_child::Contract for TransferContract {
+    type Command = TransferCommand;
+    type Reply = TransferReply;
+    type Event = TransferEvent;
+    const VERSION: u32 = TRANSFER_CONTRACT_VERSION;
+    const NAME: &'static str = "engine";
+    fn health_check() -> TransferCommand {
+        TransferCommand::Snapshot {}
     }
-}
-
-fn io(e: std::io::Error) -> FrameError {
-    FrameError::Io(e.to_string())
-}
-
-/// Writes one message as one frame and flushes it. A message over the limit writes nothing.
-pub(crate) fn write_message(
-    out: &mut impl Write,
-    message: &impl Serialize,
-) -> Result<(), FrameError> {
-    let body = serde_json::to_vec(message).map_err(|e| FrameError::Malformed(e.to_string()))?;
-    if body.len() > MAX_MESSAGE_BYTES {
-        return Err(FrameError::TooLarge {
-            len: body.len() as u64,
-        });
-    }
-    // One write per frame, so a frame is never interleaved with another writer's.
-    let mut frame = Vec::with_capacity(4 + body.len());
-    frame.extend_from_slice(&(body.len() as u32).to_le_bytes());
-    frame.extend_from_slice(&body);
-    out.write_all(&frame).map_err(io)?;
-    out.flush().map_err(io)
-}
-
-/// Reads one message. `Ok(None)` means the stream ended cleanly, between frames.
-pub(crate) fn read_message<T: DeserializeOwned>(
-    input: &mut impl Read,
-) -> Result<Option<T>, FrameError> {
-    let mut header = [0u8; 4];
-    let mut filled = 0;
-    while filled < header.len() {
-        match input.read(&mut header[filled..]) {
-            Ok(0) if filled == 0 => return Ok(None),
-            Ok(0) => return Err(FrameError::Truncated),
-            Ok(n) => filled += n,
-            Err(e) if e.kind() == ErrorKind::Interrupted => {}
-            Err(e) => return Err(io(e)),
-        }
-    }
-    let len = u32::from_le_bytes(header);
-    if len as usize > MAX_MESSAGE_BYTES {
-        return Err(FrameError::TooLarge { len: len.into() });
-    }
-    let mut body = vec![0u8; len as usize];
-    input.read_exact(&mut body).map_err(|e| match e.kind() {
-        ErrorKind::UnexpectedEof => FrameError::Truncated,
-        _ => io(e),
-    })?;
-    serde_json::from_slice(&body)
-        .map(Some)
-        .map_err(|e| FrameError::Malformed(e.to_string()))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use velocity_core::transfer::TransferCommand;
+    use velocity_child::frame::{read_message, write_message, FrameError};
+    use velocity_child::message::check_versions;
+    use velocity_core::domain::ErrorCode;
+    use velocity_core::transfer::TransferId;
+
+    /// A message from the app to the engine.
+    type ToChild = velocity_child::message::ToChild<TransferContract>;
+    /// A message from the engine to the app.
+    type FromChild = velocity_child::message::FromChild<TransferContract>;
 
     fn frame(body: &[u8]) -> Vec<u8> {
         let mut bytes = (body.len() as u32).to_le_bytes().to_vec();
@@ -246,11 +137,12 @@ mod tests {
         let start = ToChild::Start {
             protocol: PROTOCOL_VERSION,
             contract: TRANSFER_CONTRACT_VERSION,
-            first_transfer_id: TransferId(12),
+            first_id: 12,
         };
+        // Protocol 3 (#62) names the first id `firstId` for every contract; 2 said `firstTransferId`.
         assert_eq!(
             serde_json::to_string(&start).unwrap(),
-            r#"{"type":"start","protocol":2,"contract":11,"firstTransferId":12}"#
+            r#"{"type":"start","protocol":3,"contract":11,"firstId":12}"#
         );
         let refused = FromChild::Reply {
             seq: 7,
@@ -260,50 +152,6 @@ mod tests {
             serde_json::to_string(&refused).unwrap(),
             r#"{"type":"reply","seq":7,"result":{"Err":"NOT_FOUND"}}"#
         );
-    }
-
-    #[test]
-    fn a_clean_end_between_frames_is_not_an_error() {
-        assert_eq!(read_one(&[]), Ok(None));
-        let hello = frame(br#"{"type":"hello","protocol":2,"contract":1}"#);
-        let mut input = &hello[..];
-        assert!(read_message::<FromChild>(&mut input).unwrap().is_some());
-        assert_eq!(read_message::<FromChild>(&mut input), Ok(None));
-    }
-
-    #[test]
-    fn an_oversized_frame_is_refused_before_its_body_is_read() {
-        let len = MAX_MESSAGE_BYTES as u32 + 1;
-        // No body follows: the length alone decides.
-        assert_eq!(
-            read_one(&len.to_le_bytes()),
-            Err(FrameError::TooLarge { len: len.into() })
-        );
-        assert_eq!(
-            read_one(&u32::MAX.to_le_bytes()),
-            Err(FrameError::TooLarge {
-                len: u32::MAX.into()
-            })
-        );
-    }
-
-    #[test]
-    fn an_oversized_message_is_never_written() {
-        let text = serde_json::Value::String("x".repeat(MAX_MESSAGE_BYTES));
-        let mut out = Vec::new();
-        assert!(matches!(
-            write_message(&mut out, &text),
-            Err(FrameError::TooLarge { .. })
-        ));
-        assert!(out.is_empty(), "nothing of it reaches the stream");
-    }
-
-    #[test]
-    fn a_stream_that_ends_inside_a_frame_is_truncated() {
-        assert_eq!(read_one(&[5, 0]), Err(FrameError::Truncated));
-        let mut cut = frame(br#"{"type":"hello","protocol":2,"contract":1}"#);
-        cut.truncate(cut.len() - 3);
-        assert_eq!(read_one(&cut), Err(FrameError::Truncated));
     }
 
     #[test]
@@ -342,19 +190,19 @@ mod tests {
     #[test]
     fn only_matching_versions_are_accepted() {
         assert_eq!(
-            check_versions(PROTOCOL_VERSION, TRANSFER_CONTRACT_VERSION),
+            check_versions::<TransferContract>(PROTOCOL_VERSION, TRANSFER_CONTRACT_VERSION),
             Ok(())
         );
         assert_eq!(
-            check_versions(PROTOCOL_VERSION + 1, TRANSFER_CONTRACT_VERSION),
+            check_versions::<TransferContract>(PROTOCOL_VERSION + 1, TRANSFER_CONTRACT_VERSION),
             Err(ErrorCode::EngineIncompatible)
         );
         assert_eq!(
-            check_versions(PROTOCOL_VERSION, TRANSFER_CONTRACT_VERSION + 1),
+            check_versions::<TransferContract>(PROTOCOL_VERSION, TRANSFER_CONTRACT_VERSION + 1),
             Err(ErrorCode::EngineIncompatible)
         );
         assert_eq!(
-            check_versions(1, TRANSFER_CONTRACT_VERSION),
+            check_versions::<TransferContract>(1, TRANSFER_CONTRACT_VERSION),
             Err(ErrorCode::EngineIncompatible)
         );
     }

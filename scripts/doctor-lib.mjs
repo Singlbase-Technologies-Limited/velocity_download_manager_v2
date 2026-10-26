@@ -128,6 +128,17 @@ export function evaluate(probe, requirements) {
       fix: 'Debian/Ubuntu: `sudo apt install build-essential perl xz-utils`.',
     });
   }
+  if (probe.platform === 'win32' || probe.platform === 'linux') {
+    findings.push({
+      name: 'vcpkg (native libtorrent build)',
+      ok: Boolean(probe.vcpkg),
+      detail: probe.vcpkg ?? 'vcpkg not found in VCPKG_ROOT or the usual clone location',
+      fix:
+        probe.platform === 'win32'
+          ? 'Clone https://github.com/microsoft/vcpkg to C:\\vcpkg (or set VCPKG_ROOT to your clone) and run bootstrap-vcpkg.bat (docs/BUILDING_NATIVE.md, "libtorrent").'
+          : 'Debian/Ubuntu: `sudo apt install curl zip unzip tar`, then clone https://github.com/microsoft/vcpkg to ~/vcpkg (or set VCPKG_ROOT) and run ./bootstrap-vcpkg.sh -disableMetrics (docs/BUILDING_NATIVE.md, "libtorrent").',
+    });
+  }
   if (probe.platform === 'darwin') {
     findings.push({
       name: 'Xcode Command Line Tools',

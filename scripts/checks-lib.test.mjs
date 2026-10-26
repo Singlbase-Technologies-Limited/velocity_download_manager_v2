@@ -208,7 +208,14 @@ describe('selectJobs (CI, #13)', () => {
   });
 
   // With the libcurl layer as a workspace crate, as in this repository since #35.
-  const withCurl = { crates: [...workspace.crates, { name: 'velocity-curl', dir: 'crates/velocity-curl', deps: [] }] };
+  const withCurl = {
+    crates: [
+      ...workspace.crates,
+      { name: 'velocity-curl', dir: 'crates/velocity-curl', deps: [] },
+      // The torrent bridge (#62) links the vcpkg-built libtorrent the same way.
+      { name: 'velocity-lt', dir: 'crates/velocity-lt', deps: [] },
+    ],
+  };
 
   // The native builds (#35) take minutes, and on Windows bill at twice the Linux rate, so they run
   // for their own inputs, CI changes and unknown paths, not for every shared file.
@@ -217,6 +224,8 @@ describe('selectJobs (CI, #13)', () => {
     ['the native lock file', ['scripts/native/deps.lock'], true],
     ['a native lock file inside a crate', ['crates/velocity-core/deps.lock'], true],
     ['the libcurl layer, which links the native build', ['crates/velocity-curl/build.rs'], true],
+    ['the torrent bridge, which links the vcpkg libtorrent', ['crates/velocity-lt/build.rs'], true],
+    ['a vcpkg overlay port', ['scripts/native/vcpkg/ports/libtorrent/portfile.cmake'], true],
     ['the Cargo link overrides', ['.cargo/config.toml'], true],
     ['a workflow file', ['.github/workflows/pr.yml'], true],
     ['an unknown path', ['tools/new-thing.sh'], true],

@@ -1,0 +1,12 @@
+{
+  "$comment": "libtorrent and its libraries for crates/velocity-lt (#62). Rules: docs/BUILDING_NATIVE.md, 'libtorrent'.",
+  "name": "velocity-v2-libtorrent",
+  "version-string": "0",
+  "builtin-baseline": "9e593bb18ea69cc5095e012465dcd675a822ed0d",
+  "dependencies": [
+    {
+      "name": "libtorrent",
+      "default-features": false
+    }
+  ]
+}

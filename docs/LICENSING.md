@@ -36,10 +36,18 @@ From the research report, section 8.2. Versions are proposals until #35 records 
 | nghttp2 | MIT | Notice |
 | zlib | Zlib | Notice (good practice) |
 | TLS: Schannel (Windows) | Operating-system component, not redistributed | None |
-| TLS: OpenSSL 3.x (Linux, macOS; optional on Windows) | Apache-2.0 | Licence text and the NOTICE file |
+| TLS: OpenSSL 3.x (Linux, macOS; on Windows, in the torrent helper only, #62) | Apache-2.0 | Licence text and the NOTICE file |
 | SFTP: libssh2 (chosen, [ADR-0011](decisions/0011-sftp-libssh2.md); added with #53) | BSD-3-Clause | Notice |
-| libtorrent-rasterbar 2.0.x (#62) | BSD-3-Clause | Notice |
-| Boost (libtorrent's dependency) | BSL-1.0 | Notice |
+| libtorrent-rasterbar 2.0.15 (#62) | BSD-3-Clause, with parts under other licences (below) | Notice |
+| Boost 1.91 (libtorrent's dependency) | BSL-1.0 | Notice |
+| `cxx` crate (the torrent bridge) | MIT OR Apache-2.0 | Notice |
+
+**libtorrent's other licences** (its `LICENSE` file at v2.0.15, checked 2026-10-26; vcpkg's recipe lists them too):
+
+- **Zlib, and a Zlib-style licence:** `src/puff.cpp`, which libtorrent uses to read gzip-compressed tracker replies, and its ed25519 code (Orson Peters). Both are built on every platform. Notice.
+- **Public domain:** `src/sha1.cpp` and `src/sha256.cpp`. Built; no obligation.
+- **BSL-1.0:** the Python bindings (`bindings/python/src/`), which V2 doesn't build.
+- **APSL-2.0 and BSD-4-Clause:** one header, `include/libtorrent/aux_/route.h`, a copy of the BSD routing-table header. `src/enum_net.cpp` includes it only for iPhone builds (`TORRENT_USE_SYSCTL` with `TARGET_OS_IPHONE`); macOS and the BSDs use the system's `net/route.h`, and Windows and Linux use neither. So it isn't in V2's Windows or Linux builds. BSD-4-Clause has an advertising clause, so building V2 for iOS would need a licensing review first.
 
 **Conclusion (research report section 8.2):** a static libcurl with Schannel (Windows) or a static OpenSSL (Linux and macOS), plus nghttp2 and zlib, contains **no copyleft component**, with either SFTP option. That **doesn't hold for a distribution's dynamic libcurl**. On Ubuntu 24.04 it brings libssh (LGPL-2.1), librtmp (LGPL-2.1) and libidn2 (LGPLv3+ or GPLv2+), whose relinking and source obligations would apply if a package bundled them, for example in an AppImage. So distribution libraries are never bundled without review ([DEPENDENCIES.md](DEPENDENCIES.md#distribution-packages)).
 

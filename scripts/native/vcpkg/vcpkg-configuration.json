@@ -1,0 +1,4 @@
+{
+  "$comment": "The overlay ports pin libtorrent 2.0.15 and OpenSSL 3.5.9, which the vcpkg registry doesn't offer (PO, #62).",
+  "overlay-ports": ["ports"]
+}

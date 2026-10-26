@@ -1,0 +1,19 @@
+[package]
+name = "velocity-torrent"
+description = "The torrent engine of Velocity Download Manager V2: libtorrent in a supervised helper process (ADR-0014)"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+rust-version.workspace = true
+
+# velocity-lt is the only crate that calls libtorrent (ADR-0002); velocity-child is the
+# child-process layer shared with the direct-download engine.
+[dependencies]
+velocity-core = { path = "../velocity-core" }
+velocity-child = { path = "../velocity-child" }
+velocity-lt = { path = "../velocity-lt" }
+
+[dev-dependencies]
+velocity-test-http = { path = "../velocity-test-http" }
+serde_json.workspace = true
+sha2.workspace = true

@@ -8,6 +8,7 @@ rust-version.workspace = true
 
 [dependencies]
 velocity-core = { path = "../velocity-core" }
+velocity-child = { path = "../velocity-child" }
 velocity-curl = { path = "../velocity-curl" }
 velocity-sftp = { path = "../velocity-sftp" }
 httpdate.workspace = true

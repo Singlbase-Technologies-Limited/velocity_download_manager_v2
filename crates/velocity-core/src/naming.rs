@@ -63,6 +63,17 @@ pub fn check_file_name(name: &str) -> Result<(), ErrorCode> {
     }
 }
 
+/// As [`check_file_name`], except the name may start with dots (`.gitignore`): for names inside a
+/// folder a download owns, such as a torrent's files and its hidden padding entries (#62, PO
+/// decision). `.` and `..` stay refused, and so does a part file's name.
+pub fn check_file_name_in_folder(name: &str) -> Result<(), ErrorCode> {
+    let rest = name.trim_start_matches('.');
+    if name.len() > MAX_FILE_NAME_BYTES || name.to_ascii_lowercase().ends_with(PART_FILE_SUFFIX) {
+        return Err(ErrorCode::InvalidFilename);
+    }
+    check_file_name(rest)
+}
+
 /// The decoded, sanitised last path segment of `url`, or `None` when it has none.
 pub fn file_name_from_url(url: &str) -> Option<String> {
     let (_, rest) = url.split_once("://")?;
@@ -318,6 +329,47 @@ mod tests {
         ] {
             assert_eq!(
                 check_file_name(bad),
+                Err(ErrorCode::InvalidFilename),
+                "{bad:?}"
+            );
+        }
+    }
+
+    /// A torrent's files (#62, PO decision): the same rule, except a leading dot is kept.
+    #[test]
+    fn a_name_inside_a_downloads_folder_may_start_with_a_dot() {
+        for good in [
+            ".gitignore",
+            ".nfo",
+            ".pad",
+            "..x",
+            "report.pdf",
+            "résumé.txt",
+        ] {
+            assert_eq!(check_file_name_in_folder(good), Ok(()), "{good}");
+        }
+        let long = format!(".{}", "x".repeat(MAX_FILE_NAME_BYTES));
+        for bad in [
+            "",
+            ".",
+            "..",
+            "...",
+            ". x",
+            ".a/b",
+            "a\\b",
+            ".CON",
+            "CON",
+            "x.",
+            ".x.",
+            "what?",
+            "a:b",
+            ".vdmpart",
+            "a.vdmpart",
+            "nul\0",
+            &long,
+        ] {
+            assert_eq!(
+                check_file_name_in_folder(bad),
                 Err(ErrorCode::InvalidFilename),
                 "{bad:?}"
             );

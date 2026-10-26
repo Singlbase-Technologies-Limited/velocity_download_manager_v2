@@ -19,6 +19,7 @@ An architecture decision record (ADR) states one decision, why it was taken and 
 | [0011](0011-sftp-libssh2.md) | SFTP uses libssh2 through libcurl | Superseded by ADR-0013 | 2026-10-22 |
 | [0012](0012-engine-child-process.md) | The direct-download engine runs as a supervised child process | Accepted | 2026-10-22 |
 | [0013](0013-sftp-russh.md) | SFTP uses russh, in its own crate behind a shared transport interface | Accepted | 2026-10-24 |
+| [0014](0014-torrent-helper-child-process.md) | libtorrent runs in a supervised helper process, on a child-process layer shared with the engine | Accepted | 2026-10-26 |
 
 Decisions still open are tracked as GitHub issues titled `decision: …`, for example #38 (in-process or child process). [ARCHITECTURE.md](../ARCHITECTURE.md#open-decisions) lists the ones that shape the architecture.
 

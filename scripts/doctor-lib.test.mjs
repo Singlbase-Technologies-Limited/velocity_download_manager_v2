@@ -61,6 +61,7 @@ const healthy = {
   cmake: 'cmake version 3.31.6-msvc6',
   make: 'GNU Make 4.3',
   perl: 'This is perl 5, version 38',
+  vcpkg: 'vcpkg package management program version 2026-07-27-98d7cb0cf1f4686a3e43aa5672b6230c1d56bce8',
 };
 const requirements = { node: '^22.13.0 || ^24.0.0 || >=26.0.0', pnpm: '12.14.0' };
 const failed = (findings) => findings.filter((f) => !f.ok).map((f) => f.name);
@@ -130,6 +131,15 @@ describe('evaluate', () => {
     expect(failed(findings)).toEqual(['make and perl (native build)']);
     expect(findings.find((f) => !f.ok).detail).toContain('perl not found');
     expect(findings.find((f) => !f.ok).fix).toContain('build-essential perl');
+  });
+
+  it('reports a missing vcpkg, which builds libtorrent, on Windows and Linux', () => {
+    const windows = evaluate({ ...healthy, vcpkg: null }, requirements);
+    expect(failed(windows)).toEqual(['vcpkg (native libtorrent build)']);
+    expect(windows.find((f) => !f.ok).fix).toContain('VCPKG_ROOT');
+    const linux = evaluate({ ...healthy, platform: 'linux', webkitgtk: '2.48.0', vcpkg: null }, requirements);
+    expect(failed(linux)).toEqual(['vcpkg (native libtorrent build)']);
+    expect(linux.find((f) => !f.ok).fix).toContain('zip unzip');
   });
 
   it('has no native build checks on macOS, where no native build is established', () => {

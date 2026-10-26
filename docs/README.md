@@ -14,7 +14,8 @@ Every document in `docs/` is listed here. A new document is added to this map in
 | [COEXISTENCE.md](COEXISTENCE.md) | See how V2 stays separate from V1: identity, data folder, single instance, IPC names |
 | [ENGINE_CONTRACT.md](ENGINE_CONTRACT.md) | Change how the manager talks to a direct-download engine: the `DirectTransfer` commands, events, secrets and wire forms |
 | [ENGINE_INTERNALS.md](ENGINE_INTERNALS.md) | Change how the engine fetches a file: the probe, the range scheduler and its invariants, anomalies, wasted bytes and disk writes |
-| [ENGINE_PROTOCOL.md](ENGINE_PROTOCOL.md) | Change how the app and the engine's child process talk: framing, versions, limits, the supervisor and its restarts |
+| [ENGINE_PROTOCOL.md](ENGINE_PROTOCOL.md) | Change how the app and its child processes (the engine and the torrent helper) talk: framing, versions, limits, the supervisor and its restarts |
+| [TORRENTS.md](TORRENTS.md) | Work on torrents: the bridge, the torrent helper, the checks before libtorrent, the torrent contract and statuses, settings and what is still to come |
 | [DATA_AND_MIGRATIONS.md](DATA_AND_MIGRATIONS.md) | Change the app database: the file, the schema, unknown values, secrets, and how to add a migration |
 | [SECURITY.md](SECURITY.md) | See how V2 verifies TLS certificates on each platform, what was measured (purpose, host, expiry, revocation, TLS 1.3), and how the tests trust a test CA |
 | [SETTINGS.md](SETTINGS.md) | See each setting V2 has so far, what it does and its bounds: performance profiles, the queue, and what a build can do |
@@ -30,7 +31,7 @@ Every document in `docs/` is listed here. A new document is added to this map in
 | [TESTING.md](TESTING.md) | The test strategy: levels L1–L5 with durations, the test pyramid, fixture policy and servers, and how `check:pr` selects checks |
 | [DEPENDENCIES.md](DEPENDENCIES.md) | Propose, approve, pin and verify a dependency; the allowed licences and the provenance release blockers |
 | [LICENSING.md](LICENSING.md) | Read the licensing assessment: today's third-party licences, planned native libraries, notices |
-| [BUILDING_NATIVE.md](BUILDING_NATIVE.md) | Build the native libraries (libcurl, nghttp2, zlib, OpenSSL) from verified sources, read `build-info.json`, and update a pin |
+| [BUILDING_NATIVE.md](BUILDING_NATIVE.md) | Build the native libraries (libcurl, nghttp2, zlib, OpenSSL) from verified sources, read `build-info.json`, update a pin, and build libtorrent with vcpkg |
 | [CI.md](CI.md) | See what CI runs on each event, how jobs are selected, cached and secured, and the monthly cost model |
 | [CI_DIAGNOSTICS.md](CI_DIAGNOSTICS.md) | Read a failed CI run: the statuses, the `ci-diagnostics` report, INFRA versus FAIL, and the re-run policy |
 | [AGENT_GUIDANCE.md](AGENT_GUIDANCE.md) | See how AGENTS.md, CLAUDE.md, rules and skills are organised, what `pnpm check:guidance` checks, and the monthly prompt audit |
@@ -55,6 +56,7 @@ Every document in `docs/` is listed here. A new document is added to this map in
 | [decisions/0011-sftp-libssh2.md](decisions/0011-sftp-libssh2.md) | Read ADR-0011: SFTP uses libssh2 through libcurl (superseded by ADR-0013) |
 | [decisions/0013-sftp-russh.md](decisions/0013-sftp-russh.md) | Read ADR-0013: SFTP uses russh, in its own crate behind a shared transport interface |
 | [decisions/0012-engine-child-process.md](decisions/0012-engine-child-process.md) | Read ADR-0012: the direct-download engine runs as a supervised child process |
+| [decisions/0014-torrent-helper-child-process.md](decisions/0014-torrent-helper-child-process.md) | Read ADR-0014: libtorrent runs in a supervised helper process, on a child-process layer shared with the engine |
 | [research/README.md](research/README.md) | See the research index; research is input, not decisions |
 | [research/2026-10-21-libcurl-engine-research-r2.md](research/2026-10-21-libcurl-engine-research-r2.md) | Read the libcurl download-engine research report, revision 2 |
 | [research/engine-prototype-results.md](research/engine-prototype-results.md) | Read what the engine prototype (#37) showed, in both modes, as evidence for #38 |
