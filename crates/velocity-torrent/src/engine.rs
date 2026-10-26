@@ -86,6 +86,28 @@ enum Finish {
     Done,
 }
 
+/// What the poller does next for one torrent on its way to Completed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Step {
+    Wait,
+    /// Write out what libtorrent still has queued for the torrent's files.
+    Flush,
+    /// Stop the torrent: seeding is off by default (ADR-0005).
+    Stop,
+}
+
+/// The next step towards Completed, and where the torrent is once it is done. `finished`: every
+/// wanted piece passed its hash check, without an error. `flushed`: libtorrent said, in this poll,
+/// that the torrent's files are flushed. A torrent is completed only after a flush that started
+/// once it had finished.
+fn next_step(finish: Finish, finished: bool, flushed: bool) -> (Finish, Step) {
+    match finish {
+        Finish::No if finished => (Finish::Flushing, Step::Flush),
+        Finish::Flushing if flushed => (Finish::Done, Step::Stop),
+        other => (other, Step::Wait),
+    }
+}
+
 /// The V2 state of one torrent from libtorrent's.
 fn snapshot_of(id: TorrentId, s: &TorrentStatus, finish: Finish) -> TorrentSnapshot {
     let status = if !s.error.is_empty() {
@@ -221,20 +243,19 @@ impl Shared {
             let flushed = alerts
                 .iter()
                 .any(|a| a.kind == "cache_flushed" && a.id == lt);
-            if finish == Finish::Flushing && flushed {
-                // Seeding is off by default (ADR-0005): a completed torrent stops uploading.
-                if self.session.pause(lt).is_ok() {
-                    finish = Finish::Done;
-                }
-            }
             let Ok(status) = self.session.status(lt) else {
                 continue;
             };
-            if finish == Finish::No && status.is_finished && status.error.is_empty() {
-                // Every wanted piece passed its check; its writes may still be queued.
-                if self.session.flush(lt).is_ok() {
-                    finish = Finish::Flushing;
-                }
+            let finished = status.is_finished && status.error.is_empty();
+            let (next, step) = next_step(finish, finished, flushed);
+            let done = match step {
+                Step::Wait => true,
+                Step::Flush => self.session.flush(lt).is_ok(),
+                Step::Stop => self.session.pause(lt).is_ok(),
+            };
+            // A step libtorrent refused is tried again at the next poll.
+            if done {
+                finish = next;
             }
             let snapshot = snapshot_of(id, &status, finish);
             let mut state = self.state();
@@ -491,6 +512,38 @@ mod tests {
         assert_eq!(
             snapshot_of(id, &paused, Finish::Done).status,
             DownloadStatus::Completed
+        );
+    }
+
+    /// Flush before complete: a finished torrent is flushed first, stopped only once libtorrent
+    /// says the flush is done, and never completed straight away.
+    #[test]
+    fn a_finished_torrent_is_flushed_before_it_completes() {
+        assert_eq!(
+            next_step(Finish::No, false, false),
+            (Finish::No, Step::Wait)
+        );
+        assert_eq!(
+            next_step(Finish::No, true, false),
+            (Finish::Flushing, Step::Flush)
+        );
+        // The flush alert can come in the same poll that sees the torrent finished: it is for an
+        // earlier flush, if any, so the torrent still flushes first.
+        assert_eq!(
+            next_step(Finish::No, true, true),
+            (Finish::Flushing, Step::Flush)
+        );
+        assert_eq!(
+            next_step(Finish::Flushing, true, false),
+            (Finish::Flushing, Step::Wait)
+        );
+        assert_eq!(
+            next_step(Finish::Flushing, true, true),
+            (Finish::Done, Step::Stop)
+        );
+        assert_eq!(
+            next_step(Finish::Done, true, true),
+            (Finish::Done, Step::Wait)
         );
     }
 
