@@ -34,6 +34,7 @@ pub const OFF: TorrentSettings = TorrentSettings {
     download_limit: 0,
     extra_trackers: Vec::new(),
     max_peers_per_torrent: 55,
+    dht_bootstrap_nodes: Vec::new(),
 };
 
 pub fn program() -> PathBuf {

@@ -50,6 +50,7 @@ pub const STARTING_SETTINGS: TorrentSettings = TorrentSettings {
     download_limit: 0,
     extra_trackers: Vec::new(),
     max_peers_per_torrent: velocity_core::torrent_engine::DEFAULT_MAX_PEERS,
+    dht_bootstrap_nodes: Vec::new(),
 };
 
 /// Runs the child's side: serves the torrent engine on stdin and stdout until stdin closes.

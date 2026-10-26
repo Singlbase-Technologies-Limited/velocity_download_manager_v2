@@ -39,6 +39,8 @@ pub const DEFAULT_MAX_PEERS: u32 = 55;
 pub const MAX_PEERS: u32 = 512;
 /// The highest speed limit, in bytes per second: libtorrent takes an `int`.
 pub const MAX_RATE_LIMIT: u64 = i32::MAX as u64;
+/// The most DHT bootstrap nodes the settings may name.
+pub const MAX_DHT_NODES: usize = 16;
 /// How long the helper looks for a router before it shows "no router found" (V1's).
 pub const PORT_MAP_SEARCH_SECS: u64 = 30;
 
@@ -162,6 +164,9 @@ pub struct TorrentSettings {
     /// Peers each torrent connects to at most, 1 to [`MAX_PEERS`]; applies to torrents added
     /// from now on.
     pub max_peers_per_torrent: u32,
+    /// Where DHT starts from, as `host:port` (V1's `dht_entry_point`); empty for libtorrent's own
+    /// default nodes. At most [`MAX_DHT_NODES`].
+    pub dht_bootstrap_nodes: Vec<String>,
 }
 
 impl Default for TorrentSettings {
@@ -177,6 +182,7 @@ impl Default for TorrentSettings {
             download_limit: 0,
             extra_trackers: Vec::new(),
             max_peers_per_torrent: DEFAULT_MAX_PEERS,
+            dht_bootstrap_nodes: Vec::new(),
         }
     }
 }
@@ -190,7 +196,9 @@ impl TorrentSettings {
             && (1..=MAX_PEERS).contains(&self.max_peers_per_torrent)
             && self.upload_limit <= MAX_RATE_LIMIT
             && self.download_limit <= MAX_RATE_LIMIT
-            && self.extra_trackers.len() <= crate::torrent::MAX_TRACKERS;
+            && self.extra_trackers.len() <= crate::torrent::MAX_TRACKERS
+            && self.dht_bootstrap_nodes.len() <= MAX_DHT_NODES
+            && self.dht_bootstrap_nodes.iter().all(|n| is_host_port(n));
         if !in_range {
             return Err(ErrorCode::InvalidInput);
         }
@@ -199,6 +207,32 @@ impl TorrentSettings {
         }
         Ok(())
     }
+}
+
+/// `host:port`: a host name or IPv4 address of letters, digits, dots and hyphens, or an IPv6
+/// address in brackets, and a port from 1.
+fn is_host_port(node: &str) -> bool {
+    let Some((host, port)) = node.rsplit_once(':') else {
+        return false;
+    };
+    let port_ok = !port.is_empty()
+        && port.bytes().all(|b| b.is_ascii_digit())
+        && port.parse::<u16>().is_ok_and(|p| p > 0);
+    let host_ok = match host.strip_prefix('[') {
+        Some(v6) => v6.strip_suffix(']').is_some_and(|a| {
+            !a.is_empty()
+                && a.bytes()
+                    .all(|b| b.is_ascii_hexdigit() || b == b':' || b == b'.')
+        }),
+        None => {
+            !host.is_empty()
+                && host.len() <= 253
+                && host
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b == b'.' || b == b'-')
+        }
+    };
+    port_ok && host_ok
 }
 
 /// Where a tracker is.
@@ -629,7 +663,7 @@ mod tests {
         );
         assert_eq!(
             serde_json::to_string(&TorrentSettings::default()).unwrap(),
-            r#"{"dht":true,"peerExchange":true,"localPeerDiscovery":false,"maxActiveSeeds":0,"listenPort":6890,"portMapping":false,"uploadLimit":0,"downloadLimit":0,"extraTrackers":[],"maxPeersPerTorrent":55}"#
+            r#"{"dht":true,"peerExchange":true,"localPeerDiscovery":false,"maxActiveSeeds":0,"listenPort":6890,"portMapping":false,"uploadLimit":0,"downloadLimit":0,"extraTrackers":[],"maxPeersPerTorrent":55,"dhtBootstrapNodes":[]}"#
         );
         assert_eq!(
             serde_json::to_string(&TorrentCommand::SetLimits {
@@ -696,7 +730,7 @@ mod tests {
             r#"{"command":"saveResume","extra":1}"#,
             r#"{"command":"network","extra":1}"#,
             r#"{"command":"setLimits","id":1,"upload":0,"download":0,"extra":1}"#,
-            r#"{"command":"setSettings","settings":{"dht":true,"peerExchange":true,"localPeerDiscovery":false,"maxActiveSeeds":0,"listenPort":6890,"portMapping":false,"uploadLimit":0,"downloadLimit":0,"extraTrackers":[],"maxPeersPerTorrent":55,"extra":1}}"#,
+            r#"{"command":"setSettings","settings":{"dht":true,"peerExchange":true,"localPeerDiscovery":false,"maxActiveSeeds":0,"listenPort":6890,"portMapping":false,"uploadLimit":0,"downloadLimit":0,"extraTrackers":[],"maxPeersPerTorrent":55,"dhtBootstrapNodes":[],"extra":1}}"#,
             r#"{"command":"restore","id":1,"spec":{"source":{"kind":"resume"},"directory":"d","trackers":[],"paused":false,"chooseFiles":false,"files":null,"seeding":{"mode":"never"},"uploadLimit":0,"downloadLimit":0},"extra":1}"#,
             r#"{"command":"upload","chunk":{"total":2,"offset":0,"hex":"6465","extra":1}}"#,
             r#"{"command":"add","spec":{"source":{"kind":"resume","extra":1},"directory":"d","trackers":[],"paused":false,"chooseFiles":false,"files":null,"seeding":{"mode":"never"},"uploadLimit":0,"downloadLimit":0}}"#,
@@ -817,6 +851,38 @@ mod tests {
         );
         assert_eq!(
             with(&|s| s.extra_trackers = vec!["udp://t.test:1".into(); 65]),
+            Err(ErrorCode::InvalidInput)
+        );
+        // V1's default entry point, and the other forms.
+        for good in [
+            "router.bittorrent.com:6881",
+            "10.0.0.1:1",
+            "[2001:db8::1]:6881",
+        ] {
+            assert_eq!(
+                with(&|s| s.dht_bootstrap_nodes = vec![good.into()]),
+                Ok(()),
+                "{good}"
+            );
+        }
+        for bad in [
+            "router.bittorrent.com",
+            "host:0",
+            "host:65536",
+            ":6881",
+            "a b:1",
+            "a,b:1",
+            "[::1:1",
+            "host:1x",
+        ] {
+            assert_eq!(
+                with(&|s| s.dht_bootstrap_nodes = vec![bad.into()]),
+                Err(ErrorCode::InvalidInput),
+                "{bad}"
+            );
+        }
+        assert_eq!(
+            with(&|s| s.dht_bootstrap_nodes = vec!["h:1".into(); 17]),
             Err(ErrorCode::InvalidInput)
         );
     }

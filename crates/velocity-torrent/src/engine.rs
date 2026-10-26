@@ -109,7 +109,7 @@ fn session_config(settings: &TorrentSettings, port: u16) -> SessionConfig {
         enable_lsd: settings.local_peer_discovery,
         enable_upnp: settings.port_mapping,
         enable_natpmp: settings.port_mapping,
-        dht_bootstrap_nodes: String::new(),
+        dht_bootstrap_nodes: settings.dht_bootstrap_nodes.join(","),
         user_agent: user_agent(),
         peer_fingerprint: peer_fingerprint(env!("CARGO_PKG_VERSION")),
         upload_rate_limit: rate(settings.upload_limit),
@@ -1376,6 +1376,15 @@ mod tests {
         assert_eq!(c.listen_interfaces, "0.0.0.0:6890,[::]:6890");
         assert!(!c.enable_upnp && !c.enable_natpmp, "port mapping is opt-in");
         assert_eq!((c.upload_rate_limit, c.download_rate_limit), (0, 0));
+        assert_eq!(c.dht_bootstrap_nodes, "", "libtorrent's own default nodes");
+        let c = session_config(
+            &TorrentSettings {
+                dht_bootstrap_nodes: vec!["a.test:1".into(), "[2001:db8::1]:2".into()],
+                ..TorrentSettings::default()
+            },
+            6890,
+        );
+        assert_eq!(c.dht_bootstrap_nodes, "a.test:1,[2001:db8::1]:2");
         let c = session_config(
             &TorrentSettings {
                 listen_port: 0,

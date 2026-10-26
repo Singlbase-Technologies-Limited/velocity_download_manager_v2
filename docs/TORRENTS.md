@@ -192,6 +192,7 @@ The settings screen is #30. A new helper starts with every kind of peer discover
 | `uploadLimit`, `downloadLimit` | 0 | 0 to 2,147,483,647 bytes per second | All torrents together; 0 for none. Separate from the direct downloads' limit (PO decision on #62) |
 | `extraTrackers` | none | at most 64, each a valid tracker | Added to every torrent added from then on |
 | `maxPeersPerTorrent` | 55 | 1 to 512 | Peers each torrent added from then on connects to at most |
+| `dhtBootstrapNodes` | none | at most 16, each `host:port` | Where DHT starts from (V1's `dht_entry_point`); none means libtorrent's own default nodes |
 
 - **Local peers:** libtorrent doesn't apply the global limits to peers on the local network, as with V1. A torrent's own limits apply to every peer.
 - **Listen errors:** a port libtorrent can't open is reported by `network`, as V1 did. One that failed on any interface stays reported until the port changes, even if another interface works: peers on the failed one can't connect.
@@ -200,6 +201,9 @@ The settings screen is #30. A new helper starts with every kind of peer discover
   - **The states** are V1's: `off`, `searching`, `mapped` (the external port, and `upnp` or `natpmp`), `failed` (both protocols, with their reasons), and `noRouter` when nothing answered within 30 s.
   - **A later failure** never hides a working mapping.
   - **What resets it:** turning it on, or changing the port, starts a new search.
+- **V1's aria2 network settings:**
+  - **`listen_port` and `dht_listen_port`:** these were aria2's two ports. libtorrent uses `listenPort` for TCP, uTP and DHT alike.
+  - **`enable_dht6`:** aria2's too. libtorrent runs DHT on every listening socket, IPv4 and IPv6 together, under `dht`, as V1's libtorrent engine did.
 - **Not kept from V1:** `request_peer_speed_limit_kib` (aria2's "look for more peers while slower than this") is dropped, as ADR-0005 planned for a setting libtorrent can't do. libtorrent 2.0.15 has no such setting; it finds peers on its own within its connection limits.
 - **Identity:** peers see the peer-id prefix `-VD0100-` (`-VD` and the version digits), and trackers see `Velocity V2/0.1.0 libtorrent/2.0.15.0` (PO decision on #62). V1's `-VL` prefix isn't reused.
 
