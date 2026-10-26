@@ -3,8 +3,10 @@
 //! the fake engine; this checks that the limit holds against a real one.
 
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use velocity_core::database::Database;
 use velocity_core::domain::{DownloadKind, DownloadStatus};
 use velocity_core::manager::Manager;
 use velocity_core::queue::QueueSettings;
@@ -98,7 +100,7 @@ fn no_more_than_the_limit_run_at_once_against_the_real_engine() {
     );
     for (mode, engine) in engines() {
         let dir = Dir::new(&mode.replace(' ', "-"));
-        let mut m = Manager::new(engine);
+        let mut m = Manager::new(engine, Arc::new(Database::open_in_memory().unwrap()));
         m.set_queue_settings(QueueSettings {
             max_concurrent_downloads: 2,
             ..QueueSettings::default()

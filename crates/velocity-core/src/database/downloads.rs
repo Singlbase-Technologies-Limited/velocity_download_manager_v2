@@ -4,8 +4,10 @@ use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
 use super::{from_sql_int, to_sql_int, Database, DatabaseError};
-use crate::domain::{DownloadKind, DownloadStatus, ErrorCode};
-use crate::transfer::{Checkpoint, Resume, TransferSpec, CHECKPOINT_FORMAT};
+use crate::domain::{
+    DownloadKind, DownloadRecord, DownloadStatus, ErrorCode, TransferError, Verification,
+};
+use crate::transfer::{Checkpoint, Checksum, PieceHashes, Resume, TransferSpec, CHECKPOINT_FORMAT};
 
 /// The engine a record is routed to. A record never changes engine.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -68,13 +70,29 @@ fn from_wire_name<T: DeserializeOwned>(raw: String) -> Stored<T> {
     }
 }
 
-/// The options a download needs to be retried. Nothing secret has a field here: credentials and
-/// header values stay in memory (#70).
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// The options a download needs to be retried, or restarted after the app restarts (#58).
+/// Nothing secret has a field here: credentials, header values and SSH keys stay in memory (#70).
+/// The fields added with #58 default when absent, so records saved before them still read.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct StoredOptions {
     pub max_connections: u32,
     pub max_download_bps: Option<u64>,
+    /// Every source, primary first, without logins; empty in records saved before #58, whose one
+    /// source is the record's.
+    #[serde(default)]
+    pub urls: Vec<String>,
+    #[serde(default)]
+    pub require_encryption: bool,
+    #[serde(default)]
+    pub user_agent: Option<String>,
+    /// The referrer without its login, query and fragment, which can carry a session.
+    #[serde(default)]
+    pub referrer: Option<String>,
+    #[serde(default)]
+    pub checksum: Option<Checksum>,
+    #[serde(default)]
+    pub pieces: Option<PieceHashes>,
 }
 
 /// A download to add.
@@ -120,9 +138,16 @@ impl NewDownload {
             options: StoredOptions {
                 max_connections: spec.max_connections,
                 max_download_bps: spec.limits.max_download_bps,
+                urls: spec.urls.iter().map(|url| without_login(url).0).collect(),
+                require_encryption: spec.require_encryption,
+                user_agent: spec.user_agent.clone(),
+                referrer: spec.referrer.as_deref().map(Checkpoint::source_of),
+                checksum: spec.checksum.clone(),
+                pieces: spec.pieces.clone(),
             },
             has_sensitive_options: had_login
                 || spec.credentials.is_some()
+                || spec.ssh_key.is_some()
                 || !spec.headers.is_empty(),
             created_at_ms,
         }
@@ -148,6 +173,10 @@ pub struct StoredDownload {
     pub completed_at_ms: Option<u64>,
     pub in_list: bool,
     pub in_history: bool,
+    /// The last failure; shown, and never acted on when this build can't read it.
+    pub error: Option<Stored<TransferError>>,
+    /// What was proven about its bytes once it completed (#46); schema 4.
+    pub verification: Option<Stored<Verification>>,
 }
 
 impl StoredDownload {
@@ -203,9 +232,12 @@ pub fn without_login(url: &str) -> (String, bool) {
     (url, login.is_some())
 }
 
-const COLUMNS: &str = "id, engine, kind, status, source_url, directory, file_name, category_id, \
-    total_bytes, completed_bytes, options_json, has_sensitive_options, created_at_ms, \
-    completed_at_ms, in_list, in_history";
+/// The columns a new record is written with: every schema's, so a database still at an older
+/// schema takes it too (as its upgrade tests do).
+const INSERT_COLUMNS: &str = "id, engine, kind, status, source_url, directory, file_name,     category_id, total_bytes, completed_bytes, options_json, has_sensitive_options, created_at_ms,     completed_at_ms, in_list, in_history";
+
+/// The columns a record is read back with.
+const COLUMNS: &str = "id, engine, kind, status, source_url, directory, file_name, category_id,     total_bytes, completed_bytes, options_json, has_sensitive_options, created_at_ms,     completed_at_ms, in_list, in_history, error_json, verification";
 
 impl Database {
     /// Adds a download. Its options are checked, and its URL loses any login.
@@ -225,7 +257,7 @@ impl Database {
             .map_err(|e| DatabaseError::new(ErrorCode::Internal, e.to_string()))?;
         self.conn().execute(
             &format!(
-                "INSERT INTO downloads ({COLUMNS}) VALUES \
+                "INSERT INTO downloads ({INSERT_COLUMNS}) VALUES \
                  (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, NULL, 0, ?9, ?10, ?11, NULL, 1, 1)"
             ),
             rusqlite::params![
@@ -242,6 +274,45 @@ impl Database {
                 to_sql_int(new.created_at_ms)?,
             ],
         )?;
+        Ok(())
+    }
+
+    /// Saves what changed in a download as the engine reported it: its status, name, byte counts,
+    /// error, verification and completion time. `NotFound` for a download that isn't stored.
+    pub fn update_download(&self, record: &DownloadRecord) -> Result<(), DatabaseError> {
+        let error = record
+            .error
+            .as_ref()
+            .map(serde_json::to_string)
+            .transpose()
+            .map_err(|e| DatabaseError::new(ErrorCode::Internal, e.to_string()))?;
+        let verification = record.verification.as_ref().map(wire_name).transpose()?;
+        let changed = self.conn().execute(
+            "UPDATE downloads SET status = ?2, file_name = ?3, total_bytes = ?4,              completed_bytes = ?5, error_json = ?6, verification = ?7, completed_at_ms = ?8              WHERE id = ?1",
+            rusqlite::params![
+                record.id,
+                wire_name(&record.status)?,
+                record.file_name,
+                record.progress.total_bytes.map(to_sql_int).transpose()?,
+                to_sql_int(record.progress.completed_bytes)?,
+                error,
+                verification,
+                record.completed_at_ms.map(to_sql_int).transpose()?,
+            ],
+        )?;
+        if changed != 1 {
+            return Err(DatabaseError::new(
+                ErrorCode::NotFound,
+                format!("no download {} to update", record.id),
+            ));
+        }
+        Ok(())
+    }
+
+    /// Forgets a download, with its checkpoint. Nothing happens for an unknown id.
+    pub fn delete_download(&self, id: &str) -> Result<(), DatabaseError> {
+        self.conn()
+            .execute("DELETE FROM downloads WHERE id = ?1", [id])?;
         Ok(())
     }
 
@@ -269,6 +340,8 @@ impl Database {
                 completed_at_ms: r.get(13)?,
                 in_list: r.get(14)?,
                 in_history: r.get(15)?,
+                error: r.get(16)?,
+                verification: r.get(17)?,
             })
         })?;
         let mut out = Vec::new();
@@ -297,6 +370,8 @@ struct Row {
     completed_at_ms: Option<i64>,
     in_list: bool,
     in_history: bool,
+    error: Option<String>,
+    verification: Option<String>,
 }
 
 impl Row {
@@ -321,6 +396,11 @@ impl Row {
             completed_at_ms: self.completed_at_ms.map(from_sql_int).transpose()?,
             in_list: self.in_list,
             in_history: self.in_history,
+            error: self.error.map(|raw| match serde_json::from_str(&raw) {
+                Ok(e) => Stored::Known(e),
+                Err(_) => Stored::Unknown(raw),
+            }),
+            verification: self.verification.map(from_wire_name),
         })
     }
 }
