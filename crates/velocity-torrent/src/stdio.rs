@@ -10,7 +10,7 @@ use velocity_child::client::{ChildProcess, SpawnOptions};
 use velocity_child::serve::Server;
 use velocity_core::domain::ErrorCode;
 use velocity_core::torrent_engine::{
-    dispatch, TorrentCommand, TorrentEngine, TorrentEvent, TorrentId, TorrentReply,
+    dispatch, MetadataChunk, TorrentCommand, TorrentEngine, TorrentEvent, TorrentId, TorrentReply,
     TorrentSettings, TorrentSnapshot, TorrentSpec,
 };
 
@@ -115,6 +115,20 @@ impl ChildTorrentEngine {
         self.done(TorrentCommand::Remove { id })
     }
 
+    pub fn set_files(&self, id: TorrentId, files: Vec<u32>) -> Result<(), ErrorCode> {
+        self.done(TorrentCommand::SetFiles { id, files })
+    }
+
+    pub fn metadata(&self, id: TorrentId, offset: u64) -> Result<MetadataChunk, ErrorCode> {
+        match self
+            .process
+            .request(TorrentCommand::Metadata { id, offset })?
+        {
+            TorrentReply::Metadata { chunk } => Ok(chunk),
+            _ => Err(ErrorCode::EngineIncompatible),
+        }
+    }
+
     pub fn snapshot(&self) -> Result<Vec<TorrentSnapshot>, ErrorCode> {
         match self.process.request(TorrentCommand::Snapshot {})? {
             TorrentReply::Snapshot { torrents } => Ok(torrents),
@@ -158,6 +172,14 @@ impl TorrentEngine for ChildTorrentEngine {
 
     fn remove(&mut self, id: TorrentId) -> Result<(), ErrorCode> {
         ChildTorrentEngine::remove(self, id)
+    }
+
+    fn set_files(&mut self, id: TorrentId, files: Vec<u32>) -> Result<(), ErrorCode> {
+        ChildTorrentEngine::set_files(self, id, files)
+    }
+
+    fn metadata(&self, id: TorrentId, offset: u64) -> Result<MetadataChunk, ErrorCode> {
+        ChildTorrentEngine::metadata(self, id, offset)
     }
 
     fn snapshot(&self) -> Result<Vec<TorrentSnapshot>, ErrorCode> {

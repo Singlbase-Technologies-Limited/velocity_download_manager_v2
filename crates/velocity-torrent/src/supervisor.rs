@@ -13,7 +13,8 @@ use velocity_child::supervisor::{Book, Retired, Supervisor};
 pub use velocity_child::supervisor::{EngineHealth, SupervisorOptions};
 use velocity_core::domain::{DownloadStatus, ErrorCode, Progress};
 use velocity_core::torrent_engine::{
-    TorrentEngine, TorrentEvent, TorrentId, TorrentSettings, TorrentSnapshot, TorrentSpec,
+    MetadataChunk, TorrentEngine, TorrentEvent, TorrentId, TorrentSettings, TorrentSnapshot,
+    TorrentSpec,
 };
 
 use crate::stdio::ChildTorrentEngine;
@@ -204,6 +205,14 @@ impl TorrentEngine for SupervisedTorrentEngine {
             return Ok(());
         }
         self.helper()?.remove(id)
+    }
+
+    fn set_files(&mut self, id: TorrentId, files: Vec<u32>) -> Result<(), ErrorCode> {
+        self.running(id)?.set_files(id, files)
+    }
+
+    fn metadata(&self, id: TorrentId, offset: u64) -> Result<MetadataChunk, ErrorCode> {
+        self.running(id)?.metadata(id, offset)
     }
 
     fn snapshot(&self) -> Result<Vec<TorrentSnapshot>, ErrorCode> {

@@ -7,6 +7,13 @@
 //!   the core's parser, and a magnet link is parsed and passed on in its canonical form, before
 //!   libtorrent sees either. Extra trackers are checked too.
 //! - **Folders:** a torrent's folder must be an existing absolute folder, not a link.
+//! - **Magnets:** a magnet's metadata comes from peers, so every magnet is added with nothing
+//!   wanted. Its metadata is checked with the core's parser when it arrives; only then are its
+//!   files wanted, or it waits for the user to choose them. Metadata that fails the check fails the
+//!   torrent before any byte of it is written (libtorrent itself would rename unsafe names and go
+//!   on).
+//! - **File choice:** a torrent downloads exactly the files chosen, by their index in the torrent;
+//!   padding files never. Choosing again adds or drops files; nothing on disk is deleted.
 //! - **Completion:** a torrent whose wanted pieces have all passed their hash check has its files
 //!   flushed first, then stops uploading (seeding is off by default, ADR-0005), and only then
 //!   reports Completed.
@@ -25,12 +32,15 @@ use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
 use velocity_core::domain::{DownloadStatus, ErrorCode, FailureClass, Progress, TransferError};
-use velocity_core::torrent::{check_tracker, parse_magnet, parse_torrent, MAX_TORRENT_BYTES};
-use velocity_core::torrent_engine::{
-    TorrentEngine, TorrentEvent, TorrentId, TorrentSettings, TorrentSnapshot, TorrentSource,
-    TorrentSpec,
+use velocity_core::torrent::{
+    check_tracker, file_priorities, parse_magnet, parse_metadata, parse_torrent, TorrentFile,
+    MAX_TORRENT_BYTES,
 };
-use velocity_lt::{state, AddParams, Session, SessionConfig, TorrentStatus, UniquePtr};
+use velocity_core::torrent_engine::{
+    MetadataChunk, TorrentEngine, TorrentEvent, TorrentId, TorrentSettings, TorrentSnapshot,
+    TorrentSource, TorrentSpec, METADATA_CHUNK_BYTES,
+};
+use velocity_lt::{state, AddParams, FileEntry, Session, SessionConfig, TorrentStatus, UniquePtr};
 
 /// How often the poller reads libtorrent's state. A starting value, not a measured one.
 pub const POLL_INTERVAL: Duration = Duration::from_millis(250);
@@ -86,6 +96,24 @@ enum Finish {
     Done,
 }
 
+/// What V2 knows of a torrent's files, which decides what it may download.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Phase {
+    /// A magnet whose metadata hasn't arrived, or hasn't been checked yet: nothing is wanted.
+    Unchecked,
+    /// The files are known; nothing is wanted until [`TorrentEngine::set_files`] chooses.
+    Choosing,
+    /// The files are known and chosen.
+    Wanted,
+    /// The metadata failed V2's check, with why: nothing was downloaded.
+    Refused(String),
+}
+
+/// The priorities that want every file but the padding.
+fn every_file(files: &[TorrentFile]) -> Vec<u32> {
+    files.iter().filter(|f| !f.pad).map(|f| f.index).collect()
+}
+
 /// What the poller does next for one torrent on its way to Completed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Step {
@@ -109,8 +137,13 @@ fn next_step(finish: Finish, finished: bool, flushed: bool) -> (Finish, Step) {
 }
 
 /// The V2 state of one torrent from libtorrent's.
-fn snapshot_of(id: TorrentId, s: &TorrentStatus, finish: Finish) -> TorrentSnapshot {
-    let status = if !s.error.is_empty() {
+fn snapshot_of(id: TorrentId, s: &TorrentStatus, finish: Finish, phase: &Phase) -> TorrentSnapshot {
+    let refused = match phase {
+        Phase::Refused(why) => Some(why.as_str()),
+        _ => None,
+    };
+    let failure = refused.or((!s.error.is_empty()).then_some(s.error.as_str()));
+    let status = if failure.is_some() {
         DownloadStatus::Failed
     } else if finish == Finish::Done {
         DownloadStatus::Completed
@@ -118,6 +151,10 @@ fn snapshot_of(id: TorrentId, s: &TorrentStatus, finish: Finish) -> TorrentSnaps
         DownloadStatus::Verifying
     } else if s.paused {
         DownloadStatus::Paused
+    } else if *phase == Phase::Unchecked {
+        DownloadStatus::FetchingMetadata
+    } else if *phase == Phase::Choosing {
+        DownloadStatus::ChoosingFiles
     } else {
         match s.state {
             state::CHECKING_FILES | state::CHECKING_RESUME_DATA => DownloadStatus::Verifying,
@@ -139,7 +176,9 @@ fn snapshot_of(id: TorrentId, s: &TorrentStatus, finish: Finish) -> TorrentSnaps
         info_hash_v2: text(&s.info_hash_v2),
         progress: Progress {
             completed_bytes: bytes(s.total_wanted_done),
-            total_bytes: s.has_metadata.then(|| bytes(s.total_wanted)),
+            // Unknown until the files are known and chosen.
+            total_bytes: (*phase == Phase::Wanted || finish == Finish::Done)
+                .then(|| bytes(s.total_wanted)),
             download_speed_bps: bytes(s.download_rate),
             upload_speed_bps: bytes(s.upload_rate),
             connections: count(s.num_peers),
@@ -147,8 +186,7 @@ fn snapshot_of(id: TorrentId, s: &TorrentStatus, finish: Finish) -> TorrentSnaps
         },
         peers: count(s.num_peers),
         seeds: count(s.num_seeds),
-        error: (!s.error.is_empty())
-            .then(|| TransferError::new(FailureClass::Permanent, None, &s.error)),
+        error: failure.map(|why| TransferError::new(FailureClass::Permanent, None, why)),
     }
 }
 
@@ -188,10 +226,38 @@ fn check_directory(directory: &Path) -> Result<String, ErrorCode> {
         .ok_or(ErrorCode::InvalidPath)
 }
 
+/// The bytes of the wanted files (priority above 0, padding never), and of those received: a
+/// partial choice's progress. libtorrent's own counts are whole pieces, and a v1 piece spans files.
+fn wanted_bytes(entries: &[FileEntry]) -> (u64, u64) {
+    entries
+        .iter()
+        .filter(|f| f.priority > 0 && !f.pad)
+        .fold((0, 0), |(done, total), f| {
+            let size = u64::try_from(f.size).unwrap_or(0);
+            let got = u64::try_from(f.done).unwrap_or(0).min(size);
+            (done + got, total + size)
+        })
+}
+
 struct Torrent {
-    /// libtorrent's id for it, through the bridge.
-    lt: u64,
+    /// libtorrent's id for it, through the bridge; `None` while it is added again (`readd`).
+    lt: Option<u64>,
     finish: Finish,
+    phase: Phase,
+    /// The torrent's files, once checked; for a magnet, from its metadata.
+    files: Option<Vec<TorrentFile>>,
+    /// Some files are wanted and others not: progress is counted per file.
+    partial: bool,
+    /// For a magnet: wait for the user's choice once the metadata is checked.
+    choose_after_metadata: bool,
+    /// How it is added: its folder, trackers, pause and peer exchange, without metadata.
+    base: AddParams,
+    /// The metadata V2 checked (a `.torrent` file, or a magnet's `d4:info…e`), to add the torrent
+    /// again with new files: after Choosing files, and when a completed torrent gets more files.
+    metadata: Option<Vec<u8>>,
+    /// The parameters to add it again with, while libtorrent still removes it. A torrent that
+    /// wanted nothing has dropped its peers; added again, it finds them as any new one does.
+    readd: Option<AddParams>,
     /// The last snapshot sent.
     last: Option<TorrentSnapshot>,
 }
@@ -215,64 +281,208 @@ struct Shared {
     stop: AtomicBool,
 }
 
+/// What one poll reads of a torrent before talking to libtorrent.
+struct Seen {
+    id: TorrentId,
+    lt: Option<u64>,
+    finish: Finish,
+    phase: Phase,
+    partial: bool,
+    readd: Option<AddParams>,
+    choose_after_metadata: bool,
+    base: AddParams,
+}
+
 impl Shared {
     fn state(&self) -> MutexGuard<'_, State> {
         self.state.lock().unwrap_or_else(|p| p.into_inner())
     }
 
+    /// libtorrent's id for `id`. `InvalidState` for the moment it is added again.
     fn lt_of(&self, id: TorrentId) -> Result<(u64, Finish), ErrorCode> {
-        self.state()
-            .torrents
-            .get(&id)
-            .map(|t| (t.lt, t.finish))
-            .ok_or(ErrorCode::NotFound)
+        let state = self.state();
+        let torrent = state.torrents.get(&id).ok_or(ErrorCode::NotFound)?;
+        Ok((torrent.lt.ok_or(ErrorCode::InvalidState)?, torrent.finish))
     }
 
-    /// One poll: reads the alerts and every torrent's state, moves finished torrents towards
-    /// Completed, and sends a `changed` event for each snapshot that changed. libtorrent is
-    /// called with no lock held.
+    /// One poll: adds again the torrents that wait for it, checks magnets' metadata, reads every
+    /// torrent's state, moves finished torrents towards Completed, and sends a `changed` event for
+    /// each snapshot that changed. libtorrent is called with no lock held.
     fn poll(&self) {
         let alerts = self.session.pop_alerts();
-        let torrents: Vec<(TorrentId, u64, Finish)> = self
+        let torrents: Vec<Seen> = self
             .state()
             .torrents
             .iter()
-            .map(|(id, t)| (*id, t.lt, t.finish))
+            .map(|(id, t)| Seen {
+                id: *id,
+                lt: t.lt,
+                finish: t.finish,
+                phase: t.phase.clone(),
+                partial: t.partial,
+                readd: t.readd.clone(),
+                choose_after_metadata: t.choose_after_metadata,
+                base: t.base.clone(),
+            })
             .collect();
-        for (id, lt, mut finish) in torrents {
-            let flushed = alerts
-                .iter()
-                .any(|a| a.kind == "cache_flushed" && a.id == lt);
-            let Ok(status) = self.session.status(lt) else {
+        for seen in torrents {
+            if let Some(params) = &seen.readd {
+                self.add_again(seen.id, params);
                 continue;
-            };
-            let finished = status.is_finished && status.error.is_empty();
-            let (next, step) = next_step(finish, finished, flushed);
-            let done = match step {
-                Step::Wait => true,
-                Step::Flush => self.session.flush(lt).is_ok(),
-                Step::Stop => self.session.pause(lt).is_ok(),
-            };
-            // A step libtorrent refused is tried again at the next poll.
-            if done {
-                finish = next;
             }
-            let snapshot = snapshot_of(id, &status, finish);
-            let mut state = self.state();
-            let Some(torrent) = state.torrents.get_mut(&id) else {
-                // Removed meanwhile.
-                continue;
-            };
-            torrent.finish = finish;
-            if torrent.last.as_ref() != Some(&snapshot) {
-                torrent.last = Some(snapshot.clone());
-                state.emit(TorrentEvent::Changed {
-                    snapshot: Box::new(snapshot),
-                });
+            let Some(lt) = seen.lt else { continue };
+            self.poll_one(&seen, lt, &alerts);
+        }
+    }
+
+    /// Adds a torrent again once libtorrent has let go of it.
+    fn add_again(&self, id: TorrentId, params: &AddParams) {
+        let added = self.session.add(params);
+        let mut state = self.state();
+        let Some(torrent) = state.torrents.get_mut(&id) else {
+            // Removed meanwhile: so is the new one.
+            drop(state);
+            if let Ok(lt) = added {
+                self.session.remove(lt);
+            }
+            return;
+        };
+        match added {
+            Ok(lt) => {
+                torrent.lt = Some(lt);
+                torrent.readd = None;
+            }
+            // The old one is still going away: the next poll tries again.
+            Err(e) if e.what() == velocity_lt::DUPLICATE_TORRENT => {}
+            Err(e) => {
+                torrent.readd = None;
+                torrent.phase =
+                    Phase::Refused(format!("the torrent couldn't be added again: {}", e.what()));
             }
         }
     }
+
+    fn poll_one(&self, seen: &Seen, lt: u64, alerts: &[velocity_lt::AlertEntry]) {
+        let mut finish = seen.finish;
+        let mut phase = seen.phase.clone();
+        let flushed = alerts
+            .iter()
+            .any(|a| a.kind == "cache_flushed" && a.id == lt);
+        let Ok(status) = self.session.status(lt) else {
+            return;
+        };
+        let mut checked = None;
+        let mut readd = None;
+        if phase == Phase::Unchecked && status.has_metadata {
+            match self.check_metadata(lt) {
+                Ok((files, bytes)) => {
+                    if seen.choose_after_metadata {
+                        phase = Phase::Choosing;
+                    } else {
+                        let priorities =
+                            file_priorities(&files, &every_file(&files)).unwrap_or_default();
+                        readd = Some(AddParams {
+                            torrent: bytes.clone(),
+                            file_priorities: priorities,
+                            ..seen.base.clone()
+                        });
+                        phase = Phase::Wanted;
+                    }
+                    checked = Some((files, bytes));
+                }
+                Err(why) => {
+                    // Nothing was wanted, so nothing was written; stop it talking to peers.
+                    let _ = self.session.pause(lt);
+                    phase = Phase::Refused(why);
+                }
+            }
+        }
+        // With nothing wanted, libtorrent calls a torrent finished: only a chosen one is, and only
+        // by a status read after it was chosen, so not in the poll that chose its files.
+        let finished = seen.phase == Phase::Wanted
+            && phase == Phase::Wanted
+            && status.is_finished
+            && status.error.is_empty();
+        let (next, step) = next_step(finish, finished, flushed);
+        let done = match step {
+            Step::Wait => true,
+            Step::Flush => self.session.flush(lt).is_ok(),
+            Step::Stop => self.session.pause(lt).is_ok(),
+        };
+        // A step libtorrent refused is tried again at the next poll.
+        if done {
+            finish = next;
+        }
+        let mut snapshot = snapshot_of(seen.id, &status, finish, &phase);
+        if seen.partial && phase == Phase::Wanted {
+            if let Ok(entries) = self.session.files(lt) {
+                let (done, total) = wanted_bytes(&entries);
+                snapshot.progress.completed_bytes = done;
+                snapshot.progress.total_bytes = Some(total);
+            }
+        }
+        let mut state = self.state();
+        let Some(torrent) = state.torrents.get_mut(&seen.id) else {
+            // Removed meanwhile.
+            return;
+        };
+        // A choice made meanwhile changed the torrent: the next poll starts from it.
+        if torrent.phase != seen.phase || torrent.lt != Some(lt) {
+            return;
+        }
+        torrent.phase = phase;
+        torrent.finish = finish;
+        if let Some((files, bytes)) = checked {
+            torrent.files = Some(files);
+            torrent.metadata = Some(bytes);
+        }
+        if readd.is_some() {
+            // Out of the session now; the next poll adds it again with its files wanted.
+            torrent.lt = None;
+            torrent.readd = readd;
+        }
+        let removed = torrent.lt.is_none();
+        if torrent.last.as_ref() != Some(&snapshot) {
+            torrent.last = Some(snapshot.clone());
+            state.emit(TorrentEvent::Changed {
+                snapshot: Box::new(snapshot),
+            });
+        }
+        drop(state);
+        if removed {
+            self.session.remove(lt);
+        }
+    }
+
+    /// Checks a magnet's metadata, now that libtorrent has it. Returns its files and its bytes,
+    /// or why the metadata is refused.
+    fn check_metadata(&self, lt: u64) -> Result<(Vec<TorrentFile>, Vec<u8>), String> {
+        let bytes = self
+            .session
+            .metadata(lt)
+            .map_err(|e| format!("the torrent's metadata couldn't be read: {}", e.what()))?;
+        let meta = parse_metadata(&bytes).map_err(|e| e.to_string())?;
+        let listed = self
+            .session
+            .files(lt)
+            .map_err(|e| format!("the torrent's files couldn't be read: {}", e.what()))?;
+        if listed.len() != meta.files.len() {
+            return Err(
+                "libtorrent lists the torrent's files differently from its metadata.".into(),
+            );
+        }
+        Ok((meta.files, bytes))
+    }
 }
+
+/// A torrent as `snapshot` reads it: its id, libtorrent's id, where it is, and its last snapshot.
+type Listed = (
+    TorrentId,
+    Option<u64>,
+    Finish,
+    Phase,
+    Option<TorrentSnapshot>,
+);
 
 /// The torrent engine, with its poller running.
 pub struct LtEngine {
@@ -336,28 +546,58 @@ impl TorrentEngine for LtEngine {
         for tracker in &spec.trackers {
             check_tracker(tracker).map_err(|e| e.code())?;
         }
-        let (torrent, magnet) = match &spec.source {
-            TorrentSource::File { path } => {
-                let bytes = read_torrent_file(path)?;
-                parse_torrent(&bytes).map_err(|e| e.code())?;
-                (bytes, String::new())
-            }
-            TorrentSource::Magnet { uri } => {
-                let magnet = parse_magnet(uri).map_err(|e| e.code())?;
-                (Vec::new(), magnet.canonical_uri())
-            }
-        };
+        if spec.choose_files && spec.files.is_some() {
+            return Err(ErrorCode::InvalidInput);
+        }
         let settings = self.shared.state().settings;
-        let params = AddParams {
-            torrent,
-            magnet,
+        let mut base = AddParams {
             save_path,
             paused: spec.paused,
             trackers: spec.trackers.clone(),
             disable_pex: !settings.peer_exchange,
             ..Default::default()
         };
-        let lt = self.shared.session.add(&params).map_err(|e| {
+        let (first, phase, files, partial, metadata) = match &spec.source {
+            TorrentSource::File { path } => {
+                let bytes = read_torrent_file(path)?;
+                let meta = parse_torrent(&bytes).map_err(|e| e.code())?;
+                let all = every_file(&meta.files);
+                let (priorities, phase, partial) = if spec.choose_files {
+                    (vec![0; meta.files.len()], Phase::Choosing, false)
+                } else {
+                    let wanted = spec.files.clone().unwrap_or_else(|| all.clone());
+                    let priorities = file_priorities(&meta.files, &wanted).map_err(|e| e.code())?;
+                    (priorities, Phase::Wanted, wanted.len() < all.len())
+                };
+                let first = AddParams {
+                    torrent: bytes.clone(),
+                    file_priorities: priorities,
+                    ..base.clone()
+                };
+                (first, phase, Some(meta.files), partial, Some(bytes))
+            }
+            TorrentSource::Magnet { uri } => {
+                // Its files are chosen once its metadata is known and checked.
+                if spec.files.is_some() {
+                    return Err(ErrorCode::InvalidInput);
+                }
+                let magnet = parse_magnet(uri).map_err(|e| e.code())?;
+                // Added again from its metadata later: keep the link's trackers for then.
+                for tracker in &magnet.trackers {
+                    if !base.trackers.contains(tracker) {
+                        base.trackers.push(tracker.clone());
+                    }
+                }
+                let first = AddParams {
+                    magnet: magnet.canonical_uri(),
+                    // It wants nothing until its metadata is checked.
+                    dont_download: true,
+                    ..base.clone()
+                };
+                (first, Phase::Unchecked, None, false, None)
+            }
+        };
+        let lt = self.shared.session.add(&first).map_err(|e| {
             if e.what() == velocity_lt::DUPLICATE_TORRENT {
                 ErrorCode::FileExists
             } else {
@@ -370,8 +610,15 @@ impl TorrentEngine for LtEngine {
         state.torrents.insert(
             id,
             Torrent {
-                lt,
+                lt: Some(lt),
                 finish: Finish::No,
+                phase,
+                files,
+                partial,
+                choose_after_metadata: spec.choose_files,
+                base,
+                metadata,
+                readd: None,
                 last: None,
             },
         );
@@ -409,23 +656,87 @@ impl TorrentEngine for LtEngine {
             torrent.lt
         };
         // The bridge never deletes files.
-        self.shared.session.remove(lt);
+        if let Some(lt) = lt {
+            self.shared.session.remove(lt);
+        }
         Ok(())
     }
 
+    fn set_files(&mut self, id: TorrentId, wanted: Vec<u32>) -> Result<(), ErrorCode> {
+        let (lt, files, phase, finish) = {
+            let state = self.shared.state();
+            let torrent = state.torrents.get(&id).ok_or(ErrorCode::NotFound)?;
+            match (&torrent.phase, &torrent.files, torrent.lt) {
+                (Phase::Choosing | Phase::Wanted, Some(files), Some(lt)) => {
+                    (lt, files.clone(), torrent.phase.clone(), torrent.finish)
+                }
+                _ => return Err(ErrorCode::InvalidState),
+            }
+        };
+        let priorities = file_priorities(&files, &wanted).map_err(|e| e.code())?;
+        let partial = wanted.len() < every_file(&files).len();
+        // A torrent that wanted nothing, or that completed and stopped, has dropped its peers: it
+        // goes out of the session and comes back with its files, and finds peers as a new one
+        // does. libtorrent checks the files already on disk then.
+        if phase == Phase::Choosing || finish == Finish::Done {
+            {
+                let mut state = self.shared.state();
+                let torrent = state.torrents.get_mut(&id).ok_or(ErrorCode::NotFound)?;
+                if torrent.phase != phase || torrent.lt != Some(lt) {
+                    return Err(ErrorCode::InvalidState);
+                }
+                let metadata = torrent.metadata.clone().ok_or(ErrorCode::InvalidState)?;
+                torrent.readd = Some(AddParams {
+                    torrent: metadata,
+                    file_priorities: priorities,
+                    ..torrent.base.clone()
+                });
+                torrent.lt = None;
+                torrent.phase = Phase::Wanted;
+                torrent.finish = Finish::No;
+                torrent.partial = partial;
+            }
+            self.shared.session.remove(lt);
+            return Ok(());
+        }
+        self.shared
+            .session
+            .set_file_priorities(lt, &priorities)
+            .map_err(|_| ErrorCode::NotFound)?;
+        let mut state = self.shared.state();
+        if let Some(torrent) = state.torrents.get_mut(&id) {
+            torrent.partial = partial;
+        }
+        Ok(())
+    }
+
+    fn metadata(&self, id: TorrentId, offset: u64) -> Result<MetadataChunk, ErrorCode> {
+        let (lt, _) = self.shared.lt_of(id)?;
+        let bytes = self
+            .shared
+            .session
+            .metadata(lt)
+            .map_err(|_| ErrorCode::InvalidState)?;
+        Ok(MetadataChunk::of(&bytes, offset, METADATA_CHUNK_BYTES))
+    }
+
     fn snapshot(&self) -> Result<Vec<TorrentSnapshot>, ErrorCode> {
-        let torrents: Vec<(TorrentId, u64, Finish)> = self
+        let torrents: Vec<Listed> = self
             .shared
             .state()
             .torrents
             .iter()
-            .map(|(id, t)| (*id, t.lt, t.finish))
+            .map(|(id, t)| (*id, t.lt, t.finish, t.phase.clone(), t.last.clone()))
             .collect();
         Ok(torrents
             .into_iter()
-            .filter_map(|(id, lt, finish)| {
-                let status = self.shared.session.status(lt).ok()?;
-                Some(snapshot_of(id, &status, finish))
+            .filter_map(|(id, lt, finish, phase, last)| match lt {
+                Some(lt) => {
+                    let status = self.shared.session.status(lt).ok()?;
+                    Some(snapshot_of(id, &status, finish, &phase))
+                }
+                // Being added again: its last state stands.
+                None => last,
             })
             .collect())
     }
@@ -491,7 +802,7 @@ mod tests {
         ];
         for (state, want) in cases {
             assert_eq!(
-                snapshot_of(id, &status(state), Finish::No).status,
+                snapshot_of(id, &status(state), Finish::No, &Phase::Wanted).status,
                 want,
                 "{state}"
             );
@@ -501,16 +812,22 @@ mod tests {
             ..status(state::DOWNLOADING)
         };
         assert_eq!(
-            snapshot_of(id, &paused, Finish::No).status,
+            snapshot_of(id, &paused, Finish::No, &Phase::Wanted).status,
             DownloadStatus::Paused
         );
         // Completed only once flushed and stopped, whatever libtorrent says about pausing.
         assert_eq!(
-            snapshot_of(id, &status(state::SEEDING), Finish::Flushing).status,
+            snapshot_of(
+                id,
+                &status(state::SEEDING),
+                Finish::Flushing,
+                &Phase::Wanted
+            )
+            .status,
             DownloadStatus::Verifying
         );
         assert_eq!(
-            snapshot_of(id, &paused, Finish::Done).status,
+            snapshot_of(id, &paused, Finish::Done, &Phase::Wanted).status,
             DownloadStatus::Completed
         );
     }
@@ -547,13 +864,78 @@ mod tests {
         );
     }
 
+    /// File choice and magnets (#62): what V2 knows of the files decides the status.
+    #[test]
+    fn the_files_phase_decides_metadata_choosing_and_refused_statuses() {
+        let id = TorrentId(1);
+        let downloading = status(state::DOWNLOADING);
+        let s = snapshot_of(id, &downloading, Finish::No, &Phase::Unchecked);
+        assert_eq!(
+            s.status,
+            DownloadStatus::FetchingMetadata,
+            "until it is checked"
+        );
+        let s = snapshot_of(id, &downloading, Finish::No, &Phase::Choosing);
+        assert_eq!(s.status, DownloadStatus::ChoosingFiles);
+        assert_eq!(s.progress.total_bytes, None, "nothing chosen yet");
+        let s = snapshot_of(
+            id,
+            &downloading,
+            Finish::No,
+            &Phase::Refused("unsafe".into()),
+        );
+        assert_eq!(s.status, DownloadStatus::Failed);
+        assert_eq!(s.error.unwrap().message, "unsafe");
+        // A pause shows as such in every phase but a refusal.
+        let paused = TorrentStatus {
+            paused: true,
+            ..status(state::DOWNLOADING)
+        };
+        for phase in [Phase::Unchecked, Phase::Choosing, Phase::Wanted] {
+            let s = snapshot_of(id, &paused, Finish::No, &phase);
+            assert_eq!(s.status, DownloadStatus::Paused, "{phase:?}");
+        }
+    }
+
+    /// A partial choice counts only the wanted files' bytes, never a whole v1 piece's.
+    #[test]
+    fn a_partial_choice_counts_only_the_wanted_files() {
+        let f = |size: i64, done: i64, priority: u8, pad: bool| FileEntry {
+            path: String::new(),
+            size,
+            done,
+            priority,
+            pad,
+        };
+        let entries = [
+            f(100, 100, 4, false),
+            f(50, 50, 0, false),
+            f(10, 0, 4, true),
+            f(70, 30, 4, false),
+        ];
+        assert_eq!(wanted_bytes(&entries), (130, 170));
+        // libtorrent's counts are untrusted: more done than the file holds counts as the file.
+        assert_eq!(wanted_bytes(&[f(10, 99, 4, false)]), (10, 10));
+    }
+
+    #[test]
+    fn every_file_but_the_padding_is_wanted_by_default() {
+        let f = |index: u32, pad: bool| TorrentFile {
+            index,
+            path: vec![format!("f{index}")],
+            length: 1,
+            pad,
+        };
+        assert_eq!(every_file(&[f(1, false), f(2, true), f(3, false)]), [1, 3]);
+    }
+
     #[test]
     fn an_error_fails_the_torrent_with_its_message() {
         let failed = TorrentStatus {
             error: "No space left on device".into(),
             ..status(state::DOWNLOADING)
         };
-        let s = snapshot_of(TorrentId(1), &failed, Finish::Done);
+        let s = snapshot_of(TorrentId(1), &failed, Finish::Done, &Phase::Wanted);
         assert_eq!(s.status, DownloadStatus::Failed);
         let error = s.error.unwrap();
         assert_eq!(error.message, "No space left on device");
@@ -562,7 +944,12 @@ mod tests {
 
     #[test]
     fn a_snapshot_carries_progress_names_and_hashes() {
-        let s = snapshot_of(TorrentId(4), &status(state::DOWNLOADING), Finish::No);
+        let s = snapshot_of(
+            TorrentId(4),
+            &status(state::DOWNLOADING),
+            Finish::No,
+            &Phase::Wanted,
+        );
         assert_eq!(s.name.as_deref(), Some("album"));
         assert_eq!(s.info_hash_v1.as_deref(), Some("a".repeat(40).as_str()));
         assert_eq!(s.info_hash_v2, None, "no v2 hash is made up");
@@ -574,7 +961,7 @@ mod tests {
             name: String::new(),
             ..status(state::DOWNLOADING_METADATA)
         };
-        let s = snapshot_of(TorrentId(4), &magnet, Finish::No);
+        let s = snapshot_of(TorrentId(4), &magnet, Finish::No, &Phase::Unchecked);
         assert_eq!((s.name, s.progress.total_bytes), (None, None));
     }
 
