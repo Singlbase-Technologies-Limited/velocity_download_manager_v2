@@ -2,6 +2,8 @@
 
 V2's direct-download engine uses libcurl ([ADR-0001](decisions/0001-v2-direction.md)). Release builds link a libcurl that V2 builds itself, from verified sources ([ADR-0004](decisions/0004-libcurl-build-path.md)), so the shipped version can be proven. This page covers how that build works, how to run it, and how to update a pin. The approval and pinning rules are in [DEPENDENCIES.md](DEPENDENCIES.md#native-libraries).
 
+The torrent bridge uses libtorrent, with Boost and OpenSSL, built with vcpkg for now: see [libtorrent](#libtorrent).
+
 ## What gets built
 
 | Target | Libraries, in build order | TLS | Build system |
@@ -135,9 +137,40 @@ Each change to `deps.lock` is its own reviewed PR. A libcurl floor bump also nee
 5. **Run `pnpm native:build`** on Windows and Linux. CI runs both native jobs for the PR, because the lock file changed ([CI.md](CI.md#selecting-jobs)).
 6. **Record it:** the approval in [DEPENDENCIES.md](DEPENDENCIES.md#approved-direct-dependencies), and the measured times above if they changed.
 
+## libtorrent
+
+The torrent bridge (`crates/velocity-lt`) links libtorrent-rasterbar 2.0.15, Boost 1.91 and OpenSSL 3.5.9, built with [vcpkg](https://github.com/microsoft/vcpkg) (PO decisions on #62). `pnpm native:build` builds them after libcurl, with [`scripts/native/libtorrent.mjs`](../scripts/native/libtorrent.mjs).
+
+- **The pins:**
+  - **The registry:** [`scripts/native/vcpkg/vcpkg.json`](../scripts/native/vcpkg/vcpkg.json) pins the vcpkg registry by its `builtin-baseline` commit, `9e593bb` (2026-07-29). Boost and vcpkg's own helpers come from that commit.
+  - **Overlay ports:** the registry offers libtorrent 2.0.11 and then 2.1.x, and OpenSSL 3.5 only up to 3.5.4. So libtorrent 2.0.15 and OpenSSL 3.5.9 come from overlay ports in [`scripts/native/vcpkg/ports`](../scripts/native/vcpkg/ports). Each is vcpkg's own recipe (libtorrent 2.0.11's, OpenSSL 3.5.4's) with only the version and the SHA-512 changed, and libtorrent's licence field corrected to its `LICENSE` file. The repository stores two of the OpenSSL port's files with LF where vcpkg has CRLF; its patches are byte for byte vcpkg's.
+  - **Checksums:** vcpkg checks each source's SHA-512 on every download. Those archives are GitHub's archives of the release tags. V2 hasn't checked them against release signatures, as it does for libcurl's sources.
+- **Release only:** the triplets are `x64-windows-static-md-release` and `x64-linux-release`, so only release libraries are built; cargo links those in every profile. libtorrent is built without iconv (`"default-features": false`).
+- **The record:** the build writes `target/native/<target>/libtorrent-info.json`:
+  - libtorrent's version and the vcpkg baseline;
+  - the install prefix (`target/native/vcpkg-installed/<triplet>`);
+  - the compile definitions and link libraries, read from libtorrent's CMake package. The shim must be compiled with the same definitions as libtorrent, such as `TORRENT_USE_OPENSSL` and `TORRENT_SSL_PEERS`;
+  - the SHA-256 of each library.
+
+  `crates/velocity-lt/build.rs` refuses to build without it, or when it records another libtorrent version. A generator expression the build doesn't know is refused rather than guessed at.
+- **Reuse:** the build is reused while the manifest, the ports, `libtorrent.mjs` and `libtorrent-lib.mjs` are unchanged and every library still has its recorded SHA-256. vcpkg also keeps built packages in its own binary cache.
+- **vcpkg itself:** `libtorrent.mjs` uses `VCPKG_ROOT` when it is set, else `C:\vcpkg` on Windows and `~/vcpkg` on Linux. The clone must contain the baseline commit. `pnpm check:prereqs` reports a missing vcpkg.
+  - **Windows:** `git clone https://github.com/microsoft/vcpkg C:\vcpkg`, then `C:\vcpkg\bootstrap-vcpkg.bat -disableMetrics`.
+  - **Linux:** `sudo apt install curl zip unzip tar`, then `git clone https://github.com/microsoft/vcpkg ~/vcpkg` and `~/vcpkg/bootstrap-vcpkg.sh -disableMetrics`. vcpkg downloads its own CMake and Ninja.
+- **Memory:** compiling libtorrent takes up to about 1.3 GB per compiler process. On a 2 GB WSL the compiler was killed for lack of memory. Raise WSL's memory in `.wslconfig`, or set `VCPKG_MAX_CONCURRENCY` lower (this machine uses 4 with 6 GB).
+- **Measured times** (cold, 2026-10-26; Boost and OpenSSL make up most of it):
+
+  | Platform | Machine | Time |
+  |---|---|---|
+  | Windows 11 | 16 logical CPUs, VS Build Tools 2022; debug and release | 860 s |
+  | Linux, Ubuntu 24.04 in WSL2 | 8 vCPUs, 6 GB, `VCPKG_MAX_CONCURRENCY=4`; release only | 1939 s |
+
+  A clean Windows time for the release-only triplet wasn't measured: that run shared the CPU with other builds.
+- **Not yet V2's own build:** releases are meant to link libraries V2 builds from verified sources, as for libcurl. Building libtorrent and Boost that way is a release blocker ([DEPENDENCIES.md](DEPENDENCIES.md#release-blockers-related-to-provenance)).
+
 ## Known limitations
 
 - **Linux trust store:** the Linux build looks for CA certificates at `/etc/ssl/certs/ca-certificates.crt` and `/etc/ssl/certs`, where Debian, Ubuntu and Arch keep them. Fedora and openSUSE keep them elsewhere. How each TLS backend finds and checks certificates is tested in #69.
 - **No IDN in libcurl:** libcurl doesn't convert international domain names (libidn2 is LGPL, and WinIDN would exist on Windows only). How V2 handles them is part of URL validation in #67.
 - **Not in the app yet:** only `velocity-curl` links this build. The desktop app starts using it with the engine prototype (#37).
-- **macOS:** not established (#83). Recorded as NOT RUN.
+- **macOS:** not established (#83), for libcurl and libtorrent alike. Recorded as NOT RUN.

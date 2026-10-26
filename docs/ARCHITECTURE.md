@@ -15,13 +15,13 @@ V2 is a Tauri 2 desktop app with a React UI and a Rust core. It downloads files 
                                      velocity-core: manager, queue, policy, validation,
                                      persistence (SQLite), settings, categories, history
                                           │                               │
-                            DirectTransfer contract                 torrent bridge
+                            DirectTransfer contract              TorrentEngine contract
                                           │                               │
                                           ▼                               ▼
-                  Transfer engine: probe, leases, checkpoints,       libtorrent
-                  integrity, retries, limits (child, ADR-0012)     (BitTorrent v1, v2,
-                                          │                         hybrid, magnets)
-                                          ▼                               │
+                  Transfer engine: probe, leases, checkpoints,     Torrent helper (child,
+                  integrity, retries, limits (child, ADR-0012)     ADR-0014) → torrent bridge
+                                          │                         → libtorrent (v1, v2,
+                                          ▼                         hybrid, magnets)
                   libcurl layer: the only code that calls libcurl         │
                                           │                               │
                                           ▼                               ▼
@@ -38,7 +38,10 @@ V2 is a Tauri 2 desktop app with a React UI and a Rust core. It downloads files 
 | libcurl layer | `crates/velocity-curl/` (ADR-0002) | The only crate that touches libcurl: FFI and the `Multi` loop on its own thread. libcurl 8.23.0 or later, with a build identity record; obtained as [ADR-0004](decisions/0004-libcurl-build-path.md) decides | Links the Velocity-built libcurl ([BUILDING_NATIVE.md](BUILDING_NATIVE.md)); `Libcurl::start()` refuses a libcurl that fails the capability check. `CurlLoop` runs every transfer on one `Multi` thread: a gate sees the final response head before any body byte, a slow reader pauses its transfer instead of growing a buffer, and the protocol and redirect allowlists, an explicitly empty proxy and no `Accept-Encoding` are set on every fetch | #35, #37 |
 | SFTP layer | `crates/velocity-sftp/` ([ADR-0013](decisions/0013-sftp-russh.md)) | The only crate that touches russh. SFTP fetches on their own tokio runtime, answering with the same events as libcurl's through the shared `Transport` interface and a `FetchPipe`. V2's own known_hosts file: unknown host keys wait for the user, changed keys are always refused | No native library: russh with ring. The host key is checked before the login; password and key logins; reads from an offset, so the engine's probe, checkpoints and retries apply as for FTP | #53 |
 | Engine process | `velocity-transfer serve`, a child process ([ADR-0012](decisions/0012-engine-child-process.md)) | The engine runs as a child process the app starts and supervises, speaking a versioned protocol over stdio | `velocity-transfer serve` speaks the framed, versioned protocol of [ENGINE_PROTOCOL.md](ENGINE_PROTOCOL.md). `ChildProcessEngine` is its client: one argument, a cleared environment, and stderr kept in memory. `SupervisedEngine` restarts a crashed engine with backoff and a cap, and reports the transfers a crash lost as retryable failures. The same contract tests pass in process and as a child process. The app doesn't use it yet (#58) | #38, #39 |
-| Torrent bridge | to be created | A narrow Rust bridge to libtorrent | — | #62 |
+| Child-process layer | `crates/velocity-child/` ([ADR-0014](decisions/0014-torrent-helper-child-process.md)) | What the engine and the torrent helper share: the framing, the handshake and envelope, the serve loop, the app's client, and the supervisor with its restarts and hang checks | Both children run on it; each supplies a contract and a book for its supervisor ([ENGINE_PROTOCOL.md](ENGINE_PROTOCOL.md)) | #39, #62 |
+| `TorrentEngine` contract | `crates/velocity-core/` (`torrent_engine.rs`) | The boundary for torrents: commands, events and snapshots in V2's types. Torrents never pass through `DirectTransfer` | Version 1: settings, add a `.torrent` file or a magnet, pause, resume, remove, snapshot ([TORRENTS.md](TORRENTS.md#the-torrent-contract)). Torrent and magnet parsing in `torrent.rs` | #62 |
+| Torrent engine and helper | `crates/velocity-torrent/` ([ADR-0014](decisions/0014-torrent-helper-child-process.md)) | What reaches libtorrent and what its state means; the helper `velocity-torrent serve`, its client and its supervisor | Downloads v1, v2-only and hybrid torrents and magnets, checks every input first, and completes a torrent only after its files are flushed. A crashed helper is restarted. The app doesn't use it yet (#58); file choice, seeding, trackers and port mapping are #62's later parts ([TORRENTS.md](TORRENTS.md)) | #62 |
+| Torrent bridge | `crates/velocity-lt/` ([ADR-0002](decisions/0002-engine-crate-layout.md)) | The only crate that calls libtorrent: a small C++ shim over one session. It never deletes files | libtorrent 2.0.15, built with vcpkg ([BUILDING_NATIVE.md](BUILDING_NATIVE.md#libtorrent)) | #62 |
 | Native host | to be created | A short-lived process started by the browser. It validates messages and forwards them to the app over local IPC | — | #65 |
 | Browser extension | to be created | Offers browser downloads to V2 and falls back to the browser on any failure | — | #64 |
 
@@ -57,7 +60,7 @@ Each piece of state has one owner. Other components ask the owner instead of kee
 |---|---|
 | **Core** (the manager) | **Download records:** a stable app id per download, its source, destination, category and status, and its history. **Policy:** the queue order and concurrency limit, the schedule window, naming and conflict decisions, and settings. **Validation:** validation of all input. Records are stored in SQLite with versioned migrations (#26) |
 | **Transfer engine** | Active transfers: connections, leases, received bytes and rate. It also owns the durable progress of each transfer, written to its checkpoint before the record advances. Checkpoints live in the SQLite database (PO decision, 2026-10-22, on #26); their format, and how the engine's child process gets them there, are #43 |
-| **libtorrent** | The torrent session: peers, pieces and resume data. The manager owns torrent records and seeding policies (#62) |
+| **libtorrent** (in the torrent helper) | The torrent session: peers, pieces and resume data. The manager owns torrent records and seeding policies (#62) |
 | **The user's file system** | Finished files, written atomically: download to a part file, verify, then rename without replacing anything (#43, #72) |
 | **Memory only** | Credentials, cookies and custom headers. Never written to the database, logs, checkpoints or process arguments (#70, #71) |
 
@@ -84,6 +87,7 @@ Status reaches the UI as events. The status vocabulary for direct downloads is Q
 |---|---|---|
 | Desktop app | The user | The UI through typed commands and events, and the native host through local IPC (#65) |
 | Transfer engine | The app, which starts it as a child process ([ADR-0012](decisions/0012-engine-child-process.md)) | The app over inherited stdin and stdout pipes: no listening socket, no port, no shared secret (#39) |
+| Torrent helper | The app, which starts it as a child process ([ADR-0014](decisions/0014-torrent-helper-child-process.md)) | The app over the same kind of pipes and protocol. It also listens for BitTorrent peers and reaches trackers and peers on the network, as torrents need (#62) |
 | Native host | The browser, through native messaging | The app over local IPC that accepts only local clients |
 
 Everything that crosses a boundary is untrusted and validated on arrival: URLs, file names, server responses, browser messages and engine messages.
@@ -96,6 +100,6 @@ These decision issues shape the architecture. Until each is decided and recorded
 
 None is open now.
 
-Decided since: the engine runs as a supervised child process ([ADR-0012](decisions/0012-engine-child-process.md)); SFTP uses russh in its own crate behind a shared transport interface ([ADR-0013](decisions/0013-sftp-russh.md), superseding [ADR-0011](decisions/0011-sftp-libssh2.md)); without a validator, a download resumes after a length check and shows "not verified" ([ADR-0010](decisions/0010-resume-without-validator.md)).
+Decided since: libtorrent runs in a supervised helper process, on a child-process layer shared with the engine ([ADR-0014](decisions/0014-torrent-helper-child-process.md)); the engine runs as a supervised child process ([ADR-0012](decisions/0012-engine-child-process.md)); SFTP uses russh in its own crate behind a shared transport interface ([ADR-0013](decisions/0013-sftp-russh.md), superseding [ADR-0011](decisions/0011-sftp-libssh2.md)); without a validator, a download resumes after a length check and shows "not verified" ([ADR-0010](decisions/0010-resume-without-validator.md)).
 
 The research these questions draw on is in [docs/research/](research/README.md). The terms used here are defined in the [glossary](GLOSSARY.md).

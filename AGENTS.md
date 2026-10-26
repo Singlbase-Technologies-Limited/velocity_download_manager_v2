@@ -23,7 +23,7 @@ The components and who owns what state are in [docs/ARCHITECTURE.md](docs/ARCHIT
 - **`src/`:** UI and presentation state. It reaches native code only through the typed commands and events, never directly.
 - **`src-tauri/`:** the desktop shell. Its commands validate input and delegate to the core, without duplicating core logic.
 - **`crates/velocity-core/`:** reusable domain logic: the manager, policy, validation and persistence.
-- **Engine code:** the transfer engine lives in `crates/velocity-transfer` and the libcurl layer in `crates/velocity-curl` ([ADR-0002](docs/decisions/0002-engine-crate-layout.md)), and the SFTP layer in `crates/velocity-sftp` ([ADR-0013](docs/decisions/0013-sftp-russh.md)). Only the libcurl layer calls libcurl, only the SFTP layer calls russh, and only the torrent bridge calls libtorrent.
+- **Engine code:** the transfer engine lives in `crates/velocity-transfer` and the libcurl layer in `crates/velocity-curl` ([ADR-0002](docs/decisions/0002-engine-crate-layout.md)), and the SFTP layer in `crates/velocity-sftp` ([ADR-0013](docs/decisions/0013-sftp-russh.md)). The torrent engine and its helper live in `crates/velocity-torrent`, the torrent bridge in `crates/velocity-lt`, and the child-process layer both engines share in `crates/velocity-child` ([ADR-0014](docs/decisions/0014-torrent-helper-child-process.md)). Only the libcurl layer calls libcurl, only the SFTP layer calls russh, and only the torrent bridge calls libtorrent.
 - **Abstractions:** create them for real boundaries, not for hypothetical reuse. Prefer small, cohesive modules and composition over large conditional ones.
 
 ## Reuse before you add
