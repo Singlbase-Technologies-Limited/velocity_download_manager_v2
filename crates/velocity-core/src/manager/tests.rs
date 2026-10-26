@@ -2280,3 +2280,50 @@ mod per_download {
         );
     }
 }
+
+/// The engine's health as the app shows it, and "Restart transfer engine" (#39, #58).
+mod engine_health {
+    use super::*;
+    use crate::domain::EngineHealth;
+
+    #[test]
+    fn the_engines_health_is_reported_as_the_engine_gives_it() {
+        let (m, control, _id) = setup();
+        assert_eq!(m.engine_health(), EngineHealth::Running);
+        control.set_health(EngineHealth::Unavailable {
+            code: ErrorCode::EngineMissing,
+        });
+        assert_eq!(
+            m.engine_health(),
+            EngineHealth::Unavailable {
+                code: ErrorCode::EngineMissing
+            }
+        );
+    }
+
+    #[test]
+    fn restart_engine_asks_the_engine_to_restart() {
+        let (mut m, control, _id) = setup();
+        m.restart_engine().unwrap();
+        assert_eq!(control.log(), ["add", "restart"]);
+    }
+
+    #[test]
+    fn the_health_serialises_for_the_ui() {
+        let json = |h: EngineHealth| serde_json::to_value(h).unwrap();
+        assert_eq!(
+            json(EngineHealth::Running),
+            serde_json::json!({"state": "running"})
+        );
+        assert_eq!(
+            json(EngineHealth::Restarting { attempt: 2 }),
+            serde_json::json!({"state": "restarting", "attempt": 2})
+        );
+        assert_eq!(
+            json(EngineHealth::Unavailable {
+                code: ErrorCode::EngineUnavailable
+            }),
+            serde_json::json!({"state": "unavailable", "code": "ENGINE_UNAVAILABLE"})
+        );
+    }
+}

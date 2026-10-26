@@ -6,7 +6,7 @@ use super::{
     DirectTransfer, EngineLimits, Limits, TransferEvent, TransferId, TransferSnapshot, TransferSpec,
 };
 use crate::domain::{
-    Capabilities, DownloadStatus, ErrorCode, Progress, TransferError, Verification,
+    Capabilities, DownloadStatus, EngineHealth, ErrorCode, Progress, TransferError, Verification,
 };
 use std::collections::BTreeMap;
 use std::sync::mpsc::{channel, Receiver, Sender};
@@ -28,6 +28,8 @@ struct State {
     unavailable: Option<ErrorCode>,
     /// Makes `add` refuse a transfer with this file name, as an engine refuses a name taken.
     refused_name: Option<(String, ErrorCode)>,
+    /// What `health` reports; running when `None`.
+    health: Option<EngineHealth>,
 }
 
 struct Transfer {
@@ -236,6 +238,11 @@ impl FakeControl {
     }
 
     /// From now on every command fails with `code`; `None` makes the engine respond again.
+    /// From now on `health` reports `health`, as a supervisor would.
+    pub fn set_health(&self, health: EngineHealth) {
+        lock(&self.state).health = Some(health);
+    }
+
     pub fn set_unavailable(&self, code: Option<ErrorCode>) {
         lock(&self.state).unavailable = code;
     }
@@ -334,6 +341,14 @@ impl DirectTransfer for FakeTransfer {
         limits.check()?;
         s.engine_limits = limits;
         Ok(())
+    }
+
+    fn health(&self) -> EngineHealth {
+        lock(&self.state).health.unwrap_or(EngineHealth::Running)
+    }
+
+    fn restart(&mut self) -> Result<(), ErrorCode> {
+        lock(&self.state).command("restart".to_owned())
     }
 
     fn set_connections(&mut self, id: TransferId, connections: u32) -> Result<u32, ErrorCode> {

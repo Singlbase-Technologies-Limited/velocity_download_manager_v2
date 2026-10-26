@@ -10,7 +10,7 @@
 pub(crate) mod fake;
 
 use crate::domain::{
-    Capabilities, DownloadStatus, ErrorCode, Progress, TransferError, Verification,
+    Capabilities, DownloadStatus, EngineHealth, ErrorCode, Progress, TransferError, Verification,
 };
 use crate::naming::check_file_name;
 use crate::request::{
@@ -523,6 +523,16 @@ pub trait DirectTransfer: Send {
     /// A new receiver for this engine's events. Each receiver gets every event from the moment
     /// it subscribed.
     fn subscribe(&mut self) -> Receiver<TransferEvent>;
+    /// Whether the engine can take commands now. An engine in the app's process always can; a
+    /// supervised one reports its child (#39).
+    fn health(&self) -> EngineHealth {
+        EngineHealth::Running
+    }
+    /// Starts a new engine in place of the running one ("Restart transfer engine"): transfers it
+    /// was running are reported lost (#39, #58). `Unsupported` for an engine in the app's process.
+    fn restart(&mut self) -> Result<(), ErrorCode> {
+        Err(ErrorCode::Unsupported)
+    }
 }
 
 /// One command, in the form that crosses a process boundary (#39).

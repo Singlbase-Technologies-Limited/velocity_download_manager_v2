@@ -73,21 +73,8 @@ impl SupervisorOptions {
     }
 }
 
-/// Whether the child can take commands.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum EngineHealth {
-    Running,
-    /// The child stopped and is being started again. `attempt` counts the crashes within the
-    /// restart window; it is 0 after a restart by hand.
-    Restarting {
-        attempt: u32,
-    },
-    /// The child isn't running and won't be restarted on its own; [`Supervisor::restart`] tries
-    /// again.
-    Unavailable {
-        code: ErrorCode,
-    },
-}
+/// Whether the child can take commands; a core type since #58, because the app shows it.
+pub use velocity_core::domain::EngineHealth;
 
 /// A child process the supervisor can run.
 pub trait Child: Send + Sync + Sized + 'static {

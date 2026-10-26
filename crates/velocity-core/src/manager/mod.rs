@@ -19,7 +19,8 @@
 
 use crate::database::{Database, DatabaseError, NewDownload, QueueEntry};
 use crate::domain::{
-    DownloadKind, DownloadRecord, DownloadStatus, ErrorCode, FailureClass, Progress, TransferError,
+    DownloadKind, DownloadRecord, DownloadStatus, EngineHealth, ErrorCode, FailureClass, Progress,
+    TransferError,
 };
 use crate::metalink::{self, Metalink};
 use crate::performance::PerformanceSettings;
@@ -547,6 +548,17 @@ impl Manager {
             return Err(ErrorCode::InvalidInput);
         }
         self.engine.trust_host_key(host, port, fingerprint)
+    }
+
+    /// Whether the engine can take commands now (#39), for the app to show.
+    pub fn engine_health(&self) -> EngineHealth {
+        self.engine.health()
+    }
+
+    /// "Restart transfer engine" (ADR-0005): a new engine in place of the running one. What the
+    /// old one was running resumes on the new one (PO decision on #58).
+    pub fn restart_engine(&mut self) -> Result<(), ErrorCode> {
+        self.engine.restart()
     }
 
     /// The connections a new download asks for under the current profile: its per-server cap.

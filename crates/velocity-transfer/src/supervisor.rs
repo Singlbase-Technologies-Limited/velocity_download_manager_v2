@@ -259,6 +259,15 @@ impl DirectTransfer for SupervisedEngine {
         self.running(id)?.set_connections(id, connections)
     }
 
+    fn health(&self) -> EngineHealth {
+        self.supervisor.health()
+    }
+
+    fn restart(&mut self) -> Result<(), ErrorCode> {
+        self.supervisor.restart();
+        Ok(())
+    }
+
     fn trust_host_key(
         &mut self,
         host: &str,

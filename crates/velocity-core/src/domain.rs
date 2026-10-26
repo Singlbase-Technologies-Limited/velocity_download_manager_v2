@@ -232,6 +232,23 @@ pub struct DownloadRecord {
     pub completed_at_ms: Option<u64>,
 }
 
+/// Whether a supervised engine, or the torrent helper, can take commands (#39, #58), as the app
+/// shows it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "state", rename_all = "camelCase", deny_unknown_fields)]
+pub enum EngineHealth {
+    Running,
+    /// It stopped and is being started again. `attempt` counts the crashes within the restart
+    /// window; it is 0 after a restart by hand.
+    Restarting {
+        attempt: u32,
+    },
+    /// It isn't running and won't be restarted on its own; "Restart transfer engine" tries again.
+    Unavailable {
+        code: ErrorCode,
+    },
+}
+
 /// What an engine really supports, reported rather than assumed (research report section 4.2).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
