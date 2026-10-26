@@ -385,6 +385,37 @@ fn a_magnet_comes_back_with_its_metadata_after_a_restart() {
     });
 }
 
+/// V1's `deleting_an_active_torrent_removes_partial_data_and_control_file`, on V2's terms: the
+/// helper never deletes; once it has let go of a torrent, the core deletes the torrent's own files,
+/// waiting for libtorrent to close them (Windows doesn't delete an open file), and nothing else.
+#[test]
+fn an_active_torrents_files_are_deleted_once_the_helper_lets_go() {
+    use velocity_core::torrent_files::{delete_owned, owned_paths};
+    let name = "v1-multi";
+    let dir = Dir::new("delete-active");
+    let tracker = swarm_tracker();
+    let (mut engine, events) = helper_with(0);
+    let id = add_complete(
+        &mut engine,
+        name,
+        &dir.0,
+        &tracker,
+        SeedPolicy::Unlimited {},
+    );
+    wait_snapshot(&events, id, "seeding", 60, seeding);
+    let mine = dir.0.join("mine.txt");
+    std::fs::write(&mine, b"not the torrent's").unwrap();
+    let meta =
+        parse_torrent(&std::fs::read(corpus().join(format!("{name}.torrent"))).unwrap()).unwrap();
+    let chosen: Vec<u32> = meta.user_files().map(|f| f.index).collect();
+
+    engine.remove(id).unwrap();
+    let done = delete_owned(&owned_paths(&dir.0, &meta, &chosen), Duration::from_secs(5));
+
+    assert!(done.kept.is_empty(), "{done:?}");
+    assert_eq!(files_under(&dir.0), ["mine.txt"]);
+}
+
 /// An id is never given to two torrents: a helper takes back only ids it doesn't have and won't
 /// give itself.
 #[test]
