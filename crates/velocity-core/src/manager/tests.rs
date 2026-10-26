@@ -1042,8 +1042,9 @@ mod metalink {
 
 /// The records the manager keeps in the database (#58): what a restart brings back.
 mod persistence {
+    use super::super::persist::PROGRESS_SAVE_MS;
     use super::*;
-    use crate::transfer::{Checksum, Credentials, HashAlgorithm, Header};
+    use crate::transfer::{Checkpoint, Checksum, Credentials, HashAlgorithm, Header};
 
     fn stored(db: &Database, id: &str) -> StoredDownload {
         db.downloads()
@@ -1159,6 +1160,204 @@ mod persistence {
         let d = stored(&db, &id);
         assert_eq!(d.status, Stored::Known(DownloadStatus::Failed));
         assert_eq!(d.error, Some(Stored::Known(error)));
+    }
+
+    #[test]
+    fn progress_alone_is_saved_at_most_every_few_seconds_and_a_status_change_at_once() {
+        let (mut m, control, db) = with_database();
+        let id = m.add(DownloadKind::Http, spec(), T0).unwrap();
+        control.progress(TransferId(1), 1000, Some(100_000));
+        m.pump(T0 + 1);
+        assert_eq!(stored(&db, &id).completed_bytes, 1000, "the status changed");
+        control.progress(TransferId(1), 2000, Some(100_000));
+        m.pump(T0 + 1 + PROGRESS_SAVE_MS - 1);
+        assert_eq!(
+            stored(&db, &id).completed_bytes,
+            1000,
+            "too soon to save again"
+        );
+        control.progress(TransferId(1), 3000, Some(100_000));
+        m.pump(T0 + 1 + PROGRESS_SAVE_MS);
+        assert_eq!(stored(&db, &id).completed_bytes, 3000);
+        control.progress(TransferId(1), 4000, Some(100_000));
+        m.pump(T0 + 2 + PROGRESS_SAVE_MS);
+        control.status(TransferId(1), DownloadStatus::Stalled);
+        m.pump(T0 + 3 + PROGRESS_SAVE_MS);
+        let d = stored(&db, &id);
+        assert_eq!(d.status, Stored::Known(DownloadStatus::Stalled));
+        assert_eq!(d.completed_bytes, 4000, "saved with the status change");
+    }
+
+    #[test]
+    fn what_the_manager_decides_itself_is_stored() {
+        let (mut m, _control, db) = with_database();
+        m.set_queue_settings(crate::queue::QueueSettings {
+            max_concurrent_downloads: 1,
+            ..crate::queue::QueueSettings::default()
+        })
+        .unwrap();
+        let _running = m.add(DownloadKind::Http, spec(), T0).unwrap();
+        let waiting = m
+            .add(
+                DownloadKind::Http,
+                TransferSpec {
+                    file_name: Some("b.zip".to_owned()),
+                    ..spec()
+                },
+                T0,
+            )
+            .unwrap();
+        let other = m
+            .add(
+                DownloadKind::Http,
+                TransferSpec {
+                    file_name: Some("c.zip".to_owned()),
+                    ..spec()
+                },
+                T0,
+            )
+            .unwrap();
+        m.pause(&waiting).unwrap();
+        assert_eq!(
+            stored(&db, &waiting).status,
+            Stored::Known(DownloadStatus::Paused)
+        );
+        m.resume(&waiting).unwrap();
+        assert_eq!(
+            stored(&db, &waiting).status,
+            Stored::Known(DownloadStatus::Queued)
+        );
+        m.cancel(&other).unwrap();
+        assert_eq!(
+            stored(&db, &other).status,
+            Stored::Known(DownloadStatus::Removed)
+        );
+        m.pause_all().unwrap();
+        assert_eq!(
+            stored(&db, &waiting).status,
+            Stored::Known(DownloadStatus::Paused)
+        );
+    }
+
+    #[test]
+    fn the_queue_is_stored_whenever_it_changes() {
+        let (mut m, control, db) = with_database();
+        m.set_queue_settings(crate::queue::QueueSettings {
+            max_concurrent_downloads: 1,
+            ..crate::queue::QueueSettings::default()
+        })
+        .unwrap();
+        let a = m.add(DownloadKind::Http, spec(), T0).unwrap();
+        let b = m
+            .add(
+                DownloadKind::Http,
+                TransferSpec {
+                    file_name: Some("b.zip".to_owned()),
+                    ..spec()
+                },
+                T0,
+            )
+            .unwrap();
+        let c = m
+            .add_with(
+                DownloadKind::Http,
+                TransferSpec {
+                    file_name: Some("c.zip".to_owned()),
+                    ..spec()
+                },
+                AddOptions {
+                    start_paused: false,
+                    scheduled: true,
+                },
+                T0,
+            )
+            .unwrap();
+        assert_eq!(db.queue().unwrap(), m.queue());
+        m.move_download(&c, MoveDirection::Top).unwrap();
+        assert_eq!(db.queue().unwrap(), m.queue());
+        assert_eq!(db.queue().unwrap()[1].id, c);
+        assert!(db.queue().unwrap()[1].scheduled);
+        control.complete(TransferId(1));
+        m.pump(T0 + 1);
+        let ids: Vec<String> = db.queue().unwrap().into_iter().map(|e| e.id).collect();
+        assert_eq!(ids, vec![c, b], "a finished download leaves the queue");
+        assert!(!ids.contains(&a));
+    }
+
+    #[test]
+    fn checkpoints_are_stored_and_dropped_once_the_download_completes() {
+        let (mut m, control, db) = with_database();
+        let id = m.add(DownloadKind::Http, spec(), T0).unwrap();
+        let checkpoint = Checkpoint {
+            format: crate::transfer::CHECKPOINT_FORMAT,
+            source: "https://example.com/files/a.zip".to_owned(),
+            total: 4096,
+            etag: Some("\"v1\"".to_owned()),
+            last_modified: None,
+            content_encoding: None,
+            durable: vec![(0, 1024)],
+        };
+        control.emit(TransferEvent::Checkpoint {
+            id: TransferId(1),
+            checkpoint: checkpoint.clone(),
+        });
+        m.pump(T0 + 1);
+        assert_eq!(db.checkpoint(&id), Ok(Some(Stored::Known(checkpoint))));
+        control.progress(TransferId(1), 1024, Some(4096));
+        control.complete(TransferId(1));
+        m.pump(T0 + 2);
+        assert_eq!(db.checkpoint(&id), Ok(None));
+    }
+
+    #[test]
+    fn a_failed_download_keeps_its_checkpoint_for_a_retry_and_a_cancelled_one_loses_it() {
+        let (mut m, control, db) = with_database();
+        let failed = m.add(DownloadKind::Http, spec(), T0).unwrap();
+        let cancelled = m
+            .add(
+                DownloadKind::Http,
+                TransferSpec {
+                    file_name: Some("b.zip".to_owned()),
+                    ..spec()
+                },
+                T0,
+            )
+            .unwrap();
+        for n in [1, 2] {
+            control.emit(TransferEvent::Checkpoint {
+                id: TransferId(n),
+                checkpoint: Checkpoint {
+                    format: crate::transfer::CHECKPOINT_FORMAT,
+                    source: "https://example.com/files/a.zip".to_owned(),
+                    total: 4096,
+                    etag: None,
+                    last_modified: None,
+                    content_encoding: None,
+                    durable: vec![(0, 1024)],
+                },
+            });
+        }
+        m.pump(T0 + 1);
+        control.fail(
+            TransferId(1),
+            TransferError::new(FailureClass::Transient, Some(503), "Unavailable"),
+        );
+        m.cancel(&cancelled).unwrap();
+        m.pump(T0 + 2);
+        assert!(db.checkpoint(&failed).unwrap().is_some());
+        assert_eq!(db.checkpoint(&cancelled), Ok(None));
+    }
+
+    #[test]
+    fn a_failed_save_is_reported_and_the_download_goes_on() {
+        let (mut m, control, db) = with_database();
+        let id = m.add(DownloadKind::Http, spec(), T0).unwrap();
+        // The record is gone from under the manager: its saves now fail.
+        db.delete_download(&id).unwrap();
+        control.progress(TransferId(1), 1024, Some(4096));
+        m.pump(T0 + 1);
+        assert_eq!(status(&m, &id), DownloadStatus::Downloading);
+        assert_eq!(m.storage_error().map(|e| e.code), Some(ErrorCode::NotFound));
     }
 
     #[test]

@@ -46,6 +46,9 @@ struct Download {
     scheduled: bool,
     /// The file's media type, as the engine reported it (#54).
     content_type: Option<String>,
+    /// When the engine's events last saved it; progress alone is saved at most every
+    /// [`persist::PROGRESS_SAVE_MS`].
+    saved_at_ms: Option<u64>,
 }
 
 /// How a new download starts (V1's `startPaused` and `scheduled`).
@@ -87,6 +90,8 @@ pub struct Manager {
     unsaved: BTreeSet<String>,
     /// The last failure to save a record.
     storage_error: Option<DatabaseError>,
+    /// The queue as it was last saved.
+    saved_queue: Vec<QueueEntry>,
     events: Receiver<TransferEvent>,
     downloads: BTreeMap<String, Download>,
     by_transfer: HashMap<TransferId, String>,
@@ -138,6 +143,7 @@ impl Manager {
             database,
             unsaved: BTreeSet::new(),
             storage_error: None,
+            saved_queue: Vec::new(),
             events,
             downloads: BTreeMap::new(),
             by_transfer: HashMap::new(),
@@ -232,6 +238,7 @@ impl Manager {
             paused,
             scheduled: options.scheduled,
             content_type: None,
+            saved_at_ms: None,
         };
         download.record.status = download.waiting_status();
         let mut new = NewDownload::from_transfer(
@@ -254,6 +261,7 @@ impl Manager {
                 return Err(code);
             }
         }
+        self.flush();
         Ok(id)
     }
 
@@ -370,6 +378,7 @@ impl Manager {
         d.paused = true;
         if !d.running {
             d.record.status = d.waiting_status();
+            self.unsaved.insert(id.to_owned());
         }
         d.running = false;
         self.fill();
@@ -384,6 +393,7 @@ impl Manager {
         }
         d.paused = false;
         d.record.status = d.waiting_status();
+        self.unsaved.insert(id.to_owned());
         self.fill();
         Ok(())
     }
@@ -401,6 +411,8 @@ impl Manager {
                 d.spec = None;
                 d.record.status = DownloadStatus::Removed;
                 self.order.retain(|o| o != id);
+                self.mark(id);
+                self.flush();
                 Ok(())
             }
         }
@@ -433,6 +445,7 @@ impl Manager {
         for (slot, w) in slots.into_iter().zip(waiting) {
             self.order[slot] = w;
         }
+        self.flush();
         Ok(())
     }
 
@@ -458,6 +471,7 @@ impl Manager {
                 d.running = false;
             } else {
                 d.record.status = DownloadStatus::Paused;
+                self.unsaved.insert(id.clone());
             }
             d.paused = true;
         }
@@ -475,6 +489,7 @@ impl Manager {
             if d.paused {
                 d.paused = false;
                 d.record.status = d.waiting_status();
+                self.unsaved.insert(id.clone());
             }
         }
         self.fill();
@@ -549,7 +564,6 @@ impl Manager {
             self.follow_metalink(&id, now_ms);
         }
         self.fill();
-        self.flush();
         applied
     }
 
@@ -601,6 +615,7 @@ impl Manager {
             let record = &mut download.record;
             record.status = DownloadStatus::Failed;
             record.completed_at_ms = None;
+            self.unsaved.insert(id.to_owned());
             record.error = Some(TransferError::new(
                 FailureClass::Permanent,
                 None,
@@ -674,8 +689,10 @@ impl Manager {
                 ));
                 d.spec = None;
                 self.order.retain(|o| *o != id);
+                self.mark(&id);
             }
         }
+        self.flush();
     }
 
     /// Gives the engine a waiting download: a new transfer the first time, a resume after that.
@@ -715,6 +732,7 @@ impl Manager {
                 } else {
                     status
                 };
+                let before = download.record.clone();
                 let record = &mut download.record;
                 record.status = shown;
                 record.progress = snapshot.progress;
@@ -735,7 +753,19 @@ impl Manager {
                     download.running = false;
                     self.order.retain(|o| *o != app_id);
                 }
-                self.mark(&app_id);
+                let record = &download.record;
+                let changed = record.status != before.status
+                    || record.error != before.error
+                    || record.verification != before.verification
+                    || record.file_name != before.file_name
+                    || record.completed_at_ms != before.completed_at_ms;
+                let due = download
+                    .saved_at_ms
+                    .is_none_or(|at| now_ms.saturating_sub(at) >= persist::PROGRESS_SAVE_MS);
+                if changed || (record.progress != before.progress && due) {
+                    download.saved_at_ms = Some(now_ms);
+                    self.mark(&app_id);
+                }
                 true
             }
             TransferEvent::Removed { id } => {
@@ -748,9 +778,17 @@ impl Manager {
                 }
                 true
             }
-            // A checkpoint changes nothing the UI shows. Saving it in the database, to resume
-            // after a crash, comes with the manager's persistence (#58).
-            TransferEvent::Checkpoint { .. } => false,
+            // A checkpoint changes nothing the UI shows: it is saved, to resume from after a
+            // restart or a crash (#43).
+            TransferEvent::Checkpoint { id, checkpoint } => {
+                let Some(app_id) = self.by_transfer.get(&id).cloned() else {
+                    return false;
+                };
+                if let Err(e) = self.database.save_checkpoint(&app_id, &checkpoint, now_ms) {
+                    self.storage_error = Some(e);
+                }
+                true
+            }
         }
     }
 }

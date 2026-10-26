@@ -7,6 +7,11 @@
 
 use super::Manager;
 use crate::database::DatabaseError;
+use crate::domain::DownloadStatus;
+
+/// How often a download's progress alone is saved. A status, error or name change is saved at
+/// once; what a restart resumes from is the checkpoint, which the engine sends on its own (#43).
+pub(super) const PROGRESS_SAVE_MS: u64 = 5_000;
 
 impl Manager {
     /// Marks a record as changed since it was last saved.
@@ -14,15 +19,31 @@ impl Manager {
         self.unsaved.insert(id.to_owned());
     }
 
-    /// Writes every changed record. A record that is no longer known (it was refused before it
-    /// began) is skipped.
+    /// Writes every changed record, and the queue when it changed. A download that completed or
+    /// was removed loses its checkpoint, which nothing resumes from any more; a failed one keeps it
+    /// for a retry. A record that is no longer known (it was refused before it began) is skipped.
     pub(super) fn flush(&mut self) {
         for id in std::mem::take(&mut self.unsaved) {
             let Some(download) = self.downloads.get(&id) else {
                 continue;
             };
-            if let Err(e) = self.database.update_download(&download.record) {
+            let record = &download.record;
+            let mut result = self.database.update_download(record);
+            if matches!(
+                record.status,
+                DownloadStatus::Completed | DownloadStatus::Removed
+            ) {
+                result = result.and_then(|()| self.database.remove_checkpoint(&id));
+            }
+            if let Err(e) = result {
                 self.storage_error = Some(e);
+            }
+        }
+        let queue = self.queue();
+        if queue != self.saved_queue {
+            match self.database.save_queue(&queue) {
+                Ok(()) => self.saved_queue = queue,
+                Err(e) => self.storage_error = Some(e),
             }
         }
     }
