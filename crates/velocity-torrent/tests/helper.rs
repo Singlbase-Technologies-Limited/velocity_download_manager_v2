@@ -379,6 +379,26 @@ fn a_torrent_can_be_paused_resumed_and_removed_without_losing_its_files() {
     assert!(engine.version().unwrap().starts_with("2.0.15"));
 }
 
+/// Dropping the supervisor stops the helper before it returns, so the helper's files can be
+/// removed straight after; on Windows an open file can't be.
+#[test]
+fn dropping_the_engine_stops_the_helper_before_it_returns() {
+    let dir = Dir::new("drop");
+    let mut engine = helper();
+    let events = engine.subscribe();
+    engine
+        .add(TorrentSpec {
+            paused: true,
+            ..spec(file("v1-multi"), &dir.0, vec![])
+        })
+        .unwrap();
+    wait_status(&events, DownloadStatus::Paused, 30);
+    let pid = engine.process_id().unwrap();
+    drop(engine);
+    assert_eq!(velocity_test_http::process_exists(pid), Ok(false));
+    std::fs::remove_dir_all(&dir.0).expect("nothing holds the torrent's files");
+}
+
 #[test]
 fn a_crashed_helper_is_restarted_and_its_torrents_fail_as_retryable() {
     let dir = Dir::new("crash");

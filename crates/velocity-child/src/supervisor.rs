@@ -18,7 +18,7 @@
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{channel, Receiver, RecvTimeoutError, Sender};
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::{Arc, Mutex, MutexGuard, Weak};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
@@ -228,14 +228,18 @@ impl<Ch: Child, B: Book<Ch>> Shared<Ch, B> {
             self.retire(Some(generation), Retired::Crashed);
             return Err(ErrorCode::EngineStartFailed);
         }
-        self.watch(generation, child);
+        self.watch(generation, &child);
         self.state().set_health(EngineHealth::Running);
         Ok(())
     }
 
     /// Checks the child of `generation` every `check_every` until it is replaced, and reports it
     /// as hung after `missed_checks` checks in a row go unanswered.
-    fn watch(self: &Arc<Self>, generation: u64, child: Arc<Ch>) {
+    ///
+    /// The watchdog holds the child weakly, so the supervisor's own reference stays the last one:
+    /// dropping it waits for the child to exit, and no thread keeps a retired child running.
+    fn watch(self: &Arc<Self>, generation: u64, child: &Arc<Ch>) {
+        let child = Arc::downgrade(child);
         let shared = Arc::clone(self);
         let watchdog = thread::Builder::new()
             .name(format!("velocity-{}-watchdog", Ch::NAME))
@@ -250,7 +254,12 @@ impl<Ch: Child, B: Book<Ch>> Shared<Ch, B> {
                         }
                         thread::sleep(WATCH_STEP.min(options.check_every));
                     }
-                    if child.answers_within(options.check_timeout) {
+                    let Some(running) = Weak::upgrade(&child) else {
+                        return;
+                    };
+                    let answered = running.answers_within(options.check_timeout);
+                    drop(running);
+                    if answered {
                         missed = 0;
                         continue;
                     }
