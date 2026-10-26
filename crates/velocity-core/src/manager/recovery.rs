@@ -8,7 +8,8 @@
 //!   applies its queue settings first, and the next [`Manager::pump`] starts what may run.
 //! - **Logins aren't kept** (#70): an unfinished download that had a login, custom headers or an
 //!   SSH key comes back paused with a note, and resumes only once they are given again
-//!   ([`Manager::resume_with`], PO decision on #58).
+//!   ([`Manager::set_login`], PO decision on #58). A finished one that had them is retried only
+//!   once they are given again too.
 //! - **A record this build can't read** is listed by [`Manager::unavailable`], and never acted on
 //!   (report section 6). Torrent records are too, until the manager runs torrents (#58, part 2).
 //! - **Ids** continue after the highest one stored, so none is given twice.
@@ -18,7 +19,9 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use super::{Download, Manager};
-use crate::database::{Database, DatabaseError, Engine, StoredDownload, StoredOptions};
+use crate::database::{
+    resume_from, Database, DatabaseError, Engine, StoredDownload, StoredOptions,
+};
 use crate::domain::{
     DownloadRecord, DownloadStatus, ErrorCode, FailureClass, Progress, TransferError,
 };
@@ -99,21 +102,13 @@ impl Manager {
                 continue;
             };
             let finished = status.is_terminal();
-            let checkpoint = m.database.checkpoint(&stored.id)?;
-            // A resume gives the name the file is saved as; one the server never named has
-            // nothing on disk to resume.
-            let resume = match (&stored.file_name, finished) {
-                (Some(_), false) => {
-                    stored
-                        .resume(checkpoint.as_ref())
-                        .map_err(|code| DatabaseError {
-                            code,
-                            detail: format!("download {} can't be resumed", stored.id),
-                        })?
-                }
-                _ => None,
+            let resume = if finished {
+                None
+            } else {
+                let checkpoint = m.database.checkpoint(&stored.id)?;
+                Some(resume_from(&stored.source_url, checkpoint.as_ref()))
             };
-            let needs_login = stored.has_sensitive_options && !finished;
+            let needs_login = stored.has_sensitive_options;
             let paused = !finished && (status == DownloadStatus::Paused || needs_login);
             let scheduled = queue
                 .iter()
@@ -190,14 +185,14 @@ impl Manager {
     }
 
     /// Whether the download came back after a restart without the login, headers or SSH key it
-    /// had; it resumes only through [`Manager::resume_with`].
+    /// had; it resumes or is retried only after [`Manager::set_login`].
     pub fn needs_login(&self, id: &str) -> bool {
         self.downloads.get(id).is_some_and(|d| d.needs_login)
     }
 
-    /// Resumes a download that came back without its login, with `options` given again.
-    /// `InvalidState` for one that doesn't need them.
-    pub fn resume_with(&mut self, id: &str, options: SensitiveOptions) -> Result<(), ErrorCode> {
+    /// Gives a download that came back without its login, headers or SSH key those again; the
+    /// caller then resumes or retries it. `InvalidState` for one that doesn't need them.
+    pub fn set_login(&mut self, id: &str, options: SensitiveOptions) -> Result<(), ErrorCode> {
         let d = self.downloads.get_mut(id).ok_or(ErrorCode::NotFound)?;
         if !d.needs_login {
             return Err(ErrorCode::InvalidState);
@@ -206,7 +201,14 @@ impl Manager {
         d.request.ssh_key = options.ssh_key;
         d.request.headers = options.headers;
         d.needs_login = false;
-        d.record.error = None;
-        self.resume(id)
+        if d.record
+            .error
+            .as_ref()
+            .is_some_and(|e| e.message == LOGIN_NOTE)
+        {
+            d.record.error = None;
+            self.unsaved.insert(id.to_owned());
+        }
+        Ok(())
     }
 }

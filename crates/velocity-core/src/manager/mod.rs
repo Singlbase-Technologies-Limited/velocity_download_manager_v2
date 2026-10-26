@@ -713,8 +713,10 @@ impl Manager {
             Some(transfer) => self.engine.resume(transfer)?,
             None => {
                 let mut spec = d.request.clone();
-                if let Some(resume) = d.resume.clone() {
-                    spec.file_name = d.record.file_name.clone();
+                // A resume gives the name the file is saved as; a download the server never named
+                // has nothing on disk to resume, and starts afresh.
+                if let (Some(resume), Some(name)) = (d.resume.clone(), &d.record.file_name) {
+                    spec.file_name = Some(name.clone());
                     spec.resume = Some(resume);
                 }
                 let transfer = self.engine.add(spec)?;
@@ -808,6 +810,7 @@ impl Manager {
     }
 }
 
+mod finished;
 mod persist;
 mod recovery;
 

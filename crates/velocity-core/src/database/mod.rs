@@ -15,7 +15,9 @@ mod downloads;
 mod queue;
 mod settings;
 
-pub use downloads::{without_login, Engine, NewDownload, Stored, StoredDownload, StoredOptions};
+pub use downloads::{
+    resume_from, without_login, Engine, NewDownload, Stored, StoredDownload, StoredOptions,
+};
 pub use queue::QueueEntry;
 
 use std::fmt;

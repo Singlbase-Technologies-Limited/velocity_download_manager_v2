@@ -211,17 +211,23 @@ impl StoredDownload {
         if finished || engine != Engine::Velocity {
             return Ok(None);
         }
-        Ok(Some(match checkpoint {
-            Some(Stored::Known(c))
-                if c.format == CHECKPOINT_FORMAT
-                    && c.source == Checkpoint::source_of(&self.source_url) =>
-            {
-                Resume::Checkpoint {
-                    checkpoint: c.clone(),
-                }
+        Ok(Some(resume_from(&self.source_url, checkpoint)))
+    }
+}
+
+/// How a direct download from `source_url` restarts: from `checkpoint` if it is usable (known, in
+/// this build's format, and of this source); otherwise by discarding the part file, which the
+/// download created, and starting over (PO decision on #43).
+pub fn resume_from(source_url: &str, checkpoint: Option<&Stored<Checkpoint>>) -> Resume {
+    match checkpoint {
+        Some(Stored::Known(c))
+            if c.format == CHECKPOINT_FORMAT && c.source == Checkpoint::source_of(source_url) =>
+        {
+            Resume::Checkpoint {
+                checkpoint: c.clone(),
             }
-            _ => Resume::DiscardPartFile {},
-        }))
+        }
+        _ => Resume::DiscardPartFile {},
     }
 }
 

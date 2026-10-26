@@ -1601,7 +1601,8 @@ mod recovery {
             credentials: Some(login.clone()),
             ..SensitiveOptions::default()
         };
-        m.resume_with(&id, login_again).unwrap();
+        m.set_login(&id, login_again).unwrap();
+        m.resume(&id).unwrap();
         assert_eq!(control.spec(TransferId(1)).credentials, Some(login));
         assert_eq!(m.get(&id).unwrap().error, None, "the note is gone");
         assert!(!m.needs_login(&id));
@@ -1631,5 +1632,217 @@ mod recovery {
         assert_eq!(m.pause("d-0007"), Err(ErrorCode::NotFound));
         let next = m.add(DownloadKind::Http, spec(), T0).unwrap();
         assert_eq!(next, "d-0008", "its id isn't given again either");
+    }
+}
+
+/// Retrying by hand (V1's `retry_downloads` and `retry_failed`, #58). The engine retries a
+/// retryable failure by itself first (#48); these are the user's retries, on top of none.
+mod retry {
+    use super::*;
+    use crate::queue::QueueSettings;
+    use crate::transfer::{Checkpoint, Credentials, Resume, CHECKPOINT_FORMAT};
+
+    fn named(name: &str) -> TransferSpec {
+        TransferSpec {
+            file_name: Some(name.to_owned()),
+            ..spec()
+        }
+    }
+
+    fn checkpoint() -> Checkpoint {
+        Checkpoint {
+            format: CHECKPOINT_FORMAT,
+            source: "https://example.com/files/a.zip".to_owned(),
+            total: 4096,
+            etag: None,
+            last_modified: None,
+            content_encoding: None,
+            durable: vec![(0, 2048)],
+        }
+    }
+
+    fn not_found() -> TransferError {
+        TransferError::new(FailureClass::Permanent, Some(404), "Not found")
+    }
+
+    #[test]
+    fn a_failed_download_is_queued_again_and_resumes_from_its_checkpoint() {
+        let (mut m, control, id) = setup();
+        control.emit(TransferEvent::Checkpoint {
+            id: TransferId(1),
+            checkpoint: checkpoint(),
+        });
+        control.progress(TransferId(1), 2048, Some(4096));
+        control.fail(TransferId(1), not_found());
+        m.pump(T0 + 1);
+
+        m.retry(&id).unwrap();
+        assert_eq!(control.log(), ["add", "remove 1", "add"]);
+        let again = control.spec(TransferId(2));
+        assert_eq!(
+            again.resume,
+            Some(Resume::Checkpoint {
+                checkpoint: checkpoint()
+            })
+        );
+        assert_eq!(again.file_name.as_deref(), Some("a.zip"));
+        m.pump(T0 + 2);
+        let r = m.get(&id).unwrap();
+        assert_eq!(r.status, DownloadStatus::Queued);
+        assert_eq!(r.error, None);
+
+        control.progress(TransferId(2), 3000, Some(4096));
+        m.pump(T0 + 3);
+        assert_eq!(m.get(&id).unwrap().progress.completed_bytes, 3000);
+    }
+
+    #[test]
+    fn a_cancelled_download_starts_over() {
+        let (mut m, control, id) = setup();
+        control.progress(TransferId(1), 2048, Some(4096));
+        m.cancel(&id).unwrap();
+        m.pump(T0 + 1);
+        assert_eq!(status(&m, &id), DownloadStatus::Removed);
+
+        m.retry(&id).unwrap();
+        assert_eq!(
+            control.spec(TransferId(2)).resume,
+            Some(Resume::DiscardPartFile {})
+        );
+        m.pump(T0 + 2);
+        let r = m.get(&id).unwrap();
+        assert_eq!(r.status, DownloadStatus::Queued);
+        assert_eq!(r.progress.completed_bytes, 0);
+    }
+
+    #[test]
+    fn a_retried_download_waits_for_a_slot_at_the_end_of_the_queue() {
+        let fake = FakeTransfer::new();
+        let control = fake.control();
+        let mut m = in_memory(fake);
+        m.set_queue_settings(QueueSettings {
+            max_concurrent_downloads: 1,
+            ..QueueSettings::default()
+        })
+        .unwrap();
+        let failed = m.add(DownloadKind::Http, named("a.zip"), T0).unwrap();
+        control.fail(TransferId(1), not_found());
+        m.pump(T0 + 1);
+        let b = m.add(DownloadKind::Http, named("b.zip"), T0).unwrap();
+        let c = m.add(DownloadKind::Http, named("c.zip"), T0).unwrap();
+        m.retry(&failed).unwrap();
+        let ids: Vec<String> = m.queue().into_iter().map(|e| e.id).collect();
+        assert_eq!(ids, vec![b, c, failed.clone()]);
+        assert_eq!(status(&m, &failed), DownloadStatus::Queued);
+        assert_eq!(
+            control.log().iter().filter(|c| *c == "add").count(),
+            2,
+            "only b runs"
+        );
+    }
+
+    #[test]
+    fn only_a_failed_or_removed_download_can_be_retried() {
+        let (mut m, control, id) = setup();
+        assert_eq!(m.retry(&id), Err(ErrorCode::InvalidState), "it's queued");
+        control.progress(TransferId(1), 4096, Some(4096));
+        control.complete(TransferId(1));
+        m.pump(T0 + 1);
+        assert_eq!(m.retry(&id), Err(ErrorCode::InvalidState), "it's complete");
+        assert_eq!(m.retry("d-9999"), Err(ErrorCode::NotFound));
+        assert_eq!(control.log(), ["add"]);
+    }
+
+    #[test]
+    fn a_retry_works_when_the_engine_no_longer_knows_the_transfer() {
+        let (mut m, control, id) = setup();
+        control.fail(TransferId(1), not_found());
+        m.pump(T0 + 1);
+        // The engine forgot it, as a restarted engine does.
+        control.emit(TransferEvent::Removed { id: TransferId(1) });
+        m.pump(T0 + 2);
+        m.retry(&id).unwrap();
+        assert_eq!(control.log(), ["add", "add"]);
+    }
+
+    #[test]
+    fn retry_failed_retries_every_failed_download_and_nothing_else() {
+        let fake = FakeTransfer::new();
+        let control = fake.control();
+        let mut m = in_memory(fake);
+        let a = m.add(DownloadKind::Http, named("a.zip"), T0).unwrap();
+        let b = m.add(DownloadKind::Http, named("b.zip"), T0).unwrap();
+        let done = m.add(DownloadKind::Http, named("done.zip"), T0).unwrap();
+        let removed = m.add(DownloadKind::Http, named("removed.zip"), T0).unwrap();
+        control.fail(TransferId(1), not_found());
+        control.fail(
+            TransferId(2),
+            TransferError::new(FailureClass::Transient, None, "Connection reset"),
+        );
+        control.complete(TransferId(3));
+        m.cancel(&removed).unwrap();
+        m.pump(T0 + 1);
+
+        m.retry_failed().unwrap();
+        assert_eq!(status(&m, &a), DownloadStatus::Queued);
+        assert_eq!(status(&m, &b), DownloadStatus::Queued);
+        assert_eq!(status(&m, &done), DownloadStatus::Completed);
+        assert_eq!(status(&m, &removed), DownloadStatus::Removed);
+    }
+
+    #[test]
+    fn after_a_restart_a_download_that_had_a_login_is_retried_only_with_it() {
+        let db = Arc::new(Database::open_in_memory().unwrap());
+        let login = Credentials {
+            user_name: "user".to_owned(),
+            password: "secret".to_owned(),
+        };
+        let id = {
+            let fake = FakeTransfer::new();
+            let control = fake.control();
+            let mut m = Manager::open(Box::new(fake), Arc::clone(&db)).unwrap();
+            let s = TransferSpec {
+                credentials: Some(login.clone()),
+                ..spec()
+            };
+            let id = m.add(DownloadKind::Http, s, T0).unwrap();
+            control.fail(TransferId(1), not_found());
+            m.pump(T0 + 1);
+            id
+        };
+        let fake = FakeTransfer::new();
+        let control = fake.control();
+        let mut m = Manager::open(Box::new(fake), Arc::clone(&db)).unwrap();
+        assert_eq!(status(&m, &id), DownloadStatus::Failed);
+        assert!(m.needs_login(&id));
+        assert_eq!(m.retry(&id), Err(ErrorCode::ConfirmationRequired));
+        assert_eq!(m.retry_failed(), Err(ErrorCode::ConfirmationRequired));
+        assert!(control.log().is_empty());
+        m.set_login(
+            &id,
+            SensitiveOptions {
+                credentials: Some(login.clone()),
+                ..SensitiveOptions::default()
+            },
+        )
+        .unwrap();
+        m.retry(&id).unwrap();
+        assert_eq!(control.spec(TransferId(1)).credentials, Some(login));
+    }
+
+    #[test]
+    fn a_retry_is_stored() {
+        let fake = FakeTransfer::new();
+        let control = fake.control();
+        let db = Arc::new(Database::open_in_memory().unwrap());
+        let mut m = Manager::open(Box::new(fake), Arc::clone(&db)).unwrap();
+        let id = m.add(DownloadKind::Http, spec(), T0).unwrap();
+        control.fail(TransferId(1), not_found());
+        m.pump(T0 + 1);
+        m.retry(&id).unwrap();
+        let d = db.downloads().unwrap().remove(0);
+        assert_eq!(d.status, Stored::Known(DownloadStatus::Queued));
+        assert_eq!(d.error, None);
+        assert_eq!(db.queue().unwrap()[0].id, id);
     }
 }
