@@ -752,6 +752,23 @@ pub fn check_tracker(t: &str) -> TorrentResult<()> {
     }
 }
 
+/// A tracker URL as it may be shown or logged: scheme, host and port only. The path and query
+/// often hold a private tracker's passkey, and a login is never shown (V1's `redact_tracker`).
+pub fn redact_tracker(url: &str) -> String {
+    let Some(checked) = tracker(url.as_bytes()) else {
+        return "[tracker]".into();
+    };
+    let Some((scheme, rest)) = checked.split_once("://") else {
+        return "[tracker]".into();
+    };
+    let end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
+    let authority = &rest[..end];
+    let host_port = authority.rsplit('@').next().unwrap_or_default();
+    let more = rest[end..].trim_start_matches('/');
+    let tail = if more.is_empty() { "" } else { "/…" };
+    format!("{scheme}://{host_port}{tail}")
+}
+
 /// The most bytes of resume data accepted: twice a torrent's, since besides the metadata it holds
 /// v2 hash trees and a bitfield.
 pub const MAX_RESUME_BYTES: usize = 2 * MAX_TORRENT_BYTES;
@@ -1641,6 +1658,29 @@ mod tests {
         let long = format!("http://t.example/{}", "a".repeat(5000));
         let e = check_tracker(&long).unwrap_err();
         assert!(e.to_string().len() < 200, "a long URL is shortened: {e}");
+    }
+
+    /// V1's tracker cases in `redacts_tracker_passkeys_and_scrape_queries`, and a login.
+    #[test]
+    fn a_tracker_is_shown_without_its_passkey_or_login() {
+        assert_eq!(
+            redact_tracker("http://tracker.test:2710/a1b2c3/announce"),
+            "http://tracker.test:2710/…"
+        );
+        assert_eq!(
+            redact_tracker("udp://open.test:1337"),
+            "udp://open.test:1337"
+        );
+        assert_eq!(redact_tracker("not a url"), "[tracker]");
+        assert_eq!(
+            redact_tracker("https://user:secret@t.test/announce?passkey=abc"),
+            "https://t.test/…"
+        );
+        assert_eq!(
+            redact_tracker("http://[2001:db8::1]:6969/announce"),
+            "http://[2001:db8::1]:6969/…"
+        );
+        assert_eq!(redact_tracker("udp://t.test/"), "udp://t.test");
     }
 
     /// A v1 multi-file info dictionary, and libtorrent resume data for it with the keys
