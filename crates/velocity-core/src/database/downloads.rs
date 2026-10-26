@@ -184,19 +184,22 @@ pub struct StoredDownload {
     pub error: Option<Stored<TransferError>>,
     /// What was proven about its bytes once it completed (#46); schema 4.
     pub verification: Option<Stored<Verification>>,
+    /// A torrent's v1 and v2 info hashes, once known, and the bytes it uploaded.
+    pub info_hash: Option<String>,
+    pub info_hash_v2: Option<String>,
+    pub uploaded_bytes: u64,
 }
 
 impl StoredDownload {
     /// The engine to hand this record to. A record with any value this build doesn't know is
-    /// never routed: it is `EngineUnavailable`, shown and kept, never acted on.
+    /// never routed: it is `EngineUnavailable`, shown and kept, never acted on. A direct download
+    /// needs options this build reads; a torrent's are in its own table (#58).
     pub fn route(&self) -> Result<Engine, ErrorCode> {
-        match (
-            self.engine.known(),
-            self.kind.known(),
-            self.status.known(),
-            self.options.known(),
-        ) {
-            (Some(engine), Some(_), Some(_), Some(_)) => Ok(*engine),
+        match (self.engine.known(), self.kind.known(), self.status.known()) {
+            (Some(Engine::Velocity), Some(_), Some(_)) if self.options.known().is_some() => {
+                Ok(Engine::Velocity)
+            }
+            (Some(Engine::Libtorrent), Some(_), Some(_)) => Ok(Engine::Libtorrent),
             _ => Err(ErrorCode::EngineUnavailable),
         }
     }
@@ -250,44 +253,12 @@ pub fn without_login(url: &str) -> (String, bool) {
 const INSERT_COLUMNS: &str = "id, engine, kind, status, source_url, directory, file_name,     category_id, total_bytes, completed_bytes, options_json, has_sensitive_options, created_at_ms,     completed_at_ms, in_list, in_history";
 
 /// The columns a record is read back with.
-const COLUMNS: &str = "id, engine, kind, status, source_url, directory, file_name, category_id,     total_bytes, completed_bytes, options_json, has_sensitive_options, created_at_ms,     completed_at_ms, in_list, in_history, error_json, verification";
+const COLUMNS: &str = "id, engine, kind, status, source_url, directory, file_name, category_id,     total_bytes, completed_bytes, options_json, has_sensitive_options, created_at_ms,     completed_at_ms, in_list, in_history, error_json, verification, info_hash, info_hash_v2,     uploaded_bytes";
 
 impl Database {
     /// Adds a download. Its options are checked, and its URL loses any login.
     pub fn insert_download(&self, new: &NewDownload) -> Result<(), DatabaseError> {
-        let invalid = |what: &str| DatabaseError::new(ErrorCode::InvalidInput, what.to_owned());
-        if new.id.is_empty() {
-            return Err(invalid("a download needs an id"));
-        }
-        let (source_url, had_login) = without_login(&new.source_url);
-        if source_url.is_empty() {
-            return Err(invalid("a download needs a source"));
-        }
-        if new.options.max_connections == 0 {
-            return Err(invalid("a download needs at least one connection"));
-        }
-        let options = serde_json::to_string(&new.options)
-            .map_err(|e| DatabaseError::new(ErrorCode::Internal, e.to_string()))?;
-        self.conn().execute(
-            &format!(
-                "INSERT INTO downloads ({INSERT_COLUMNS}) VALUES \
-                 (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, NULL, 0, ?9, ?10, ?11, NULL, 1, 1)"
-            ),
-            rusqlite::params![
-                new.id,
-                new.engine.as_stored(),
-                wire_name(&new.kind)?,
-                wire_name(&new.status)?,
-                source_url,
-                new.directory,
-                new.file_name,
-                new.category_id,
-                options,
-                new.has_sensitive_options || had_login,
-                to_sql_int(new.created_at_ms)?,
-            ],
-        )?;
-        Ok(())
+        insert_row(&self.conn(), new)
     }
 
     /// Saves what changed in a download as the engine reported it: its status, name, byte counts,
@@ -404,6 +375,9 @@ impl Database {
                 in_history: r.get(15)?,
                 error: r.get(16)?,
                 verification: r.get(17)?,
+                info_hash: r.get(18)?,
+                info_hash_v2: r.get(19)?,
+                uploaded_bytes: r.get(20)?,
             })
         })?;
         let mut out = Vec::new();
@@ -412,6 +386,52 @@ impl Database {
         }
         Ok(out)
     }
+}
+
+/// Writes a new `downloads` row. A direct download's options are checked and stored; a torrent's
+/// are its own ([`super::TorrentOptions`]), so its row has none.
+pub(super) fn insert_row(
+    conn: &rusqlite::Connection,
+    new: &NewDownload,
+) -> Result<(), DatabaseError> {
+    let invalid = |what: &str| DatabaseError::new(ErrorCode::InvalidInput, what.to_owned());
+    if new.id.is_empty() {
+        return Err(invalid("a download needs an id"));
+    }
+    let (source_url, had_login) = without_login(&new.source_url);
+    if source_url.is_empty() {
+        return Err(invalid("a download needs a source"));
+    }
+    let options = match new.engine {
+        Engine::Velocity => {
+            if new.options.max_connections == 0 {
+                return Err(invalid("a download needs at least one connection"));
+            }
+            serde_json::to_string(&new.options)
+                .map_err(|e| DatabaseError::new(ErrorCode::Internal, e.to_string()))?
+        }
+        Engine::Libtorrent => "{}".to_owned(),
+    };
+    conn.execute(
+        &format!(
+            "INSERT INTO downloads ({INSERT_COLUMNS}) VALUES \
+             (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, NULL, 0, ?9, ?10, ?11, NULL, 1, 1)"
+        ),
+        rusqlite::params![
+            new.id,
+            new.engine.as_stored(),
+            wire_name(&new.kind)?,
+            wire_name(&new.status)?,
+            source_url,
+            new.directory,
+            new.file_name,
+            new.category_id,
+            options,
+            new.has_sensitive_options || had_login,
+            to_sql_int(new.created_at_ms)?,
+        ],
+    )?;
+    Ok(())
 }
 
 /// One `downloads` row as SQLite gives it, before its values are checked.
@@ -434,6 +454,9 @@ struct Row {
     in_history: bool,
     error: Option<String>,
     verification: Option<String>,
+    info_hash: Option<String>,
+    info_hash_v2: Option<String>,
+    uploaded_bytes: i64,
 }
 
 impl Row {
@@ -463,6 +486,9 @@ impl Row {
                 Err(_) => Stored::Unknown(raw),
             }),
             verification: self.verification.map(from_wire_name),
+            info_hash: self.info_hash,
+            info_hash_v2: self.info_hash_v2,
+            uploaded_bytes: from_sql_int(self.uploaded_bytes)?,
         })
     }
 }
