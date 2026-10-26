@@ -752,6 +752,191 @@ pub fn check_tracker(t: &str) -> TorrentResult<()> {
     }
 }
 
+/// The most bytes of resume data accepted: twice a torrent's, since besides the metadata it holds
+/// v2 hash trees and a bitfield.
+pub const MAX_RESUME_BYTES: usize = 2 * MAX_TORRENT_BYTES;
+
+/// libtorrent resume data that passed [`check_resume_data`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CheckedResume {
+    /// The torrent's metadata, `d4:info…e`, as checked by [`parse_metadata`].
+    pub metadata: Vec<u8>,
+    pub meta: TorrentMeta,
+}
+
+/// Checks libtorrent resume data before libtorrent reads it again (#62): it comes back from the
+/// app's storage. Only the keys libtorrent 2.0.15 writes are accepted; `mapped_files`, which would
+/// rename the torrent's files, never is.
+pub fn check_resume_data(bytes: &[u8]) -> TorrentResult<CheckedResume> {
+    if bytes.len() > MAX_RESUME_BYTES {
+        return Err(bad("The torrent's resume data is larger than 32 MiB."));
+    }
+    let mut p = Parser {
+        b: bytes,
+        pos: 0,
+        nodes: 0,
+    };
+    let root = p.value(0)?;
+    if p.pos != bytes.len() {
+        return Err(bad(
+            "The torrent's resume data has unexpected data after its end.",
+        ));
+    }
+    let B::Dict(top) = &root else {
+        return Err(bad("The torrent's resume data is not a dictionary."));
+    };
+    if top.iter().any(|(key, _, _)| !RESUME_KEYS.contains(key)) {
+        return Err(bad(
+            "The torrent's resume data has an entry libtorrent doesn't write.",
+        ));
+    }
+    if !matches!(
+        get(top, "file-format"),
+        Some(B::Bytes(b"libtorrent resume file"))
+    ) {
+        return Err(bad("The torrent's resume data isn't libtorrent's."));
+    }
+    // Modes V2 never sets: trusting files unchecked, sharing only, super-seeding, and I2P.
+    for mode in ["seed_mode", "share_mode", "super_seeding", "i2p"] {
+        if !matches!(get(top, mode), None | Some(B::Int(0))) {
+            return Err(bad("The torrent's resume data sets a mode V2 never uses."));
+        }
+    }
+    let (_, (start, end)) =
+        get_span(top, "info").ok_or_else(|| bad("The torrent's resume data has no metadata."))?;
+    let mut metadata = b"d4:info".to_vec();
+    metadata.extend_from_slice(&bytes[start..end]);
+    metadata.push(b'e');
+    let meta = parse_metadata(&metadata)?;
+    let raw = |hash: &Option<String>, len: usize| -> Vec<u8> {
+        hash.as_deref()
+            .map(|h| {
+                (0..h.len())
+                    .step_by(2)
+                    .filter_map(|i| u8::from_str_radix(&h[i..i + 2], 16).ok())
+                    .collect()
+            })
+            .unwrap_or_else(|| vec![0; len])
+    };
+    for (key, hash, len) in [
+        ("info-hash", &meta.info_hash, 20),
+        ("info-hash2", &meta.info_hash_v2, 32),
+    ] {
+        match get(top, key) {
+            None => {}
+            Some(B::Bytes(b)) if *b == raw(hash, len).as_slice() => {}
+            Some(_) => {
+                return Err(bad(
+                    "The torrent's resume data names another torrent than its metadata.",
+                ))
+            }
+        }
+    }
+    let strings = |v: Option<&B<'_>>| -> TorrentResult<Vec<String>> {
+        let mut out = Vec::new();
+        let mut stack: Vec<&B<'_>> = v.into_iter().collect();
+        while let Some(v) = stack.pop() {
+            match v {
+                B::List(items) => stack.extend(items),
+                B::Bytes(b) => out.push(
+                    std::str::from_utf8(b)
+                        .map_err(|_| bad("The torrent's resume data has an invalid URL."))?
+                        .to_owned(),
+                ),
+                _ => return Err(bad("The torrent's resume data has an invalid URL.")),
+            }
+        }
+        Ok(out)
+    };
+    for tracker in strings(get(top, "trackers"))? {
+        check_tracker(&tracker)?;
+    }
+    for seed in strings(get(top, "url-list"))?
+        .into_iter()
+        .chain(strings(get(top, "httpseeds"))?)
+    {
+        check_tracker(&seed)?;
+        if !(seed.starts_with("http://") || seed.starts_with("https://")) {
+            return Err(TorrentError::BadTracker(seed.chars().take(80).collect()));
+        }
+    }
+    if let Some(priorities) = get(top, "file_priority") {
+        let ok = match priorities {
+            B::List(items) => {
+                items.len() == meta.files.len() && items.iter().all(|p| matches!(p, B::Int(0..=7)))
+            }
+            _ => false,
+        };
+        if !ok {
+            return Err(bad(
+                "The torrent's resume data has file priorities that don't match its files.",
+            ));
+        }
+    }
+    Ok(CheckedResume { metadata, meta })
+}
+
+/// The keys libtorrent 2.0.15 writes in resume data (`write_resume_data`): those seen in its
+/// output, and those it writes only in some states, such as `file_priority` for a partial choice,
+/// `unfinished` for partly downloaded pieces, and the peers it knew. `mapped_files` is left out
+/// on purpose: it renames the torrent's files, and V2 never does.
+const RESUME_KEYS: &[&[u8]] = &[
+    b"active_time",
+    b"added_time",
+    b"allocation",
+    b"apply_ip_filter",
+    b"auto_managed",
+    b"banned_peers",
+    b"banned_peers6",
+    b"comment",
+    b"completed_time",
+    b"created by",
+    b"creation date",
+    b"disable_dht",
+    b"disable_lsd",
+    b"disable_pex",
+    b"download_rate_limit",
+    b"file-format",
+    b"file-version",
+    b"file_priority",
+    b"finished_time",
+    b"httpseeds",
+    b"i2p",
+    b"info",
+    b"info-hash",
+    b"info-hash2",
+    b"last_download",
+    b"last_seen_complete",
+    b"last_upload",
+    b"libtorrent-version",
+    b"max_connections",
+    b"max_uploads",
+    b"name",
+    b"num_complete",
+    b"num_downloaded",
+    b"num_incomplete",
+    b"paused",
+    b"peers",
+    b"peers6",
+    b"piece_priority",
+    b"pieces",
+    b"save_path",
+    b"seed_mode",
+    b"seeding_time",
+    b"sequential_download",
+    b"share_mode",
+    b"stop_when_ready",
+    b"super_seeding",
+    b"total_downloaded",
+    b"total_uploaded",
+    b"trackers",
+    b"trees",
+    b"unfinished",
+    b"upload_mode",
+    b"upload_rate_limit",
+    b"url-list",
+];
+
 fn bad(why: &'static str) -> TorrentError {
     TorrentError::Invalid(why)
 }
@@ -1456,6 +1641,199 @@ mod tests {
         let long = format!("http://t.example/{}", "a".repeat(5000));
         let e = check_tracker(&long).unwrap_err();
         assert!(e.to_string().len() < 200, "a long URL is shortened: {e}");
+    }
+
+    /// A v1 multi-file info dictionary, and libtorrent resume data for it with the keys
+    /// libtorrent 2.0.15 writes for a torrent being downloaded, plus `extra`.
+    fn resume_for(info: &Value, extra: Vec<(&str, Value)>) -> Vec<u8> {
+        let info_hash = Sha1::digest(encode(info)).to_vec();
+        let mut entries = vec![
+            ("file-format", Value::str("libtorrent resume file")),
+            ("file-version", Value::Int(1)),
+            ("libtorrent-version", Value::str("2.0.15.0")),
+            ("info-hash", Value::Bytes(info_hash)),
+            ("info-hash2", Value::Bytes(vec![0; 32])),
+            ("info", info.clone()),
+            ("name", Value::str("album")),
+            ("save_path", Value::str("/somewhere")),
+            ("allocation", Value::str("sparse")),
+            ("pieces", Value::Bytes(vec![1, 0])),
+            ("paused", Value::Int(1)),
+            ("auto_managed", Value::Int(0)),
+            ("seed_mode", Value::Int(0)),
+            ("upload_mode", Value::Int(0)),
+            ("share_mode", Value::Int(0)),
+            ("super_seeding", Value::Int(0)),
+            ("i2p", Value::Int(0)),
+            ("total_uploaded", Value::Int(123)),
+            ("seeding_time", Value::Int(45)),
+            (
+                "trackers",
+                Value::List(vec![Value::List(vec![Value::str(
+                    "udp://tracker.example:80/announce",
+                )])]),
+            ),
+            ("url-list", Value::List(vec![])),
+            ("httpseeds", Value::List(vec![])),
+            (
+                "file_priority",
+                Value::List(vec![Value::Int(4), Value::Int(0)]),
+            ),
+            ("peers", Value::Bytes(vec![127, 0, 0, 1, 0x1a, 0xe1])),
+            ("unfinished", Value::List(vec![])),
+        ];
+        entries.extend(extra);
+        let mut seen = std::collections::BTreeSet::new();
+        // A later entry replaces an earlier one with the same key.
+        let entries: Vec<_> = entries
+            .into_iter()
+            .rev()
+            .filter(|(k, _)| seen.insert(*k))
+            .collect();
+        encode(&Value::dict(entries))
+    }
+
+    fn album() -> Value {
+        multi(
+            "album",
+            vec![file(&["a.bin"], 20_000), file(&["b.bin"], 12_000)],
+            16_384,
+            2,
+        )
+    }
+
+    #[test]
+    fn resume_data_is_checked_and_gives_its_metadata() {
+        let info = album();
+        let checked = check_resume_data(&resume_for(&info, vec![])).unwrap();
+        let mut metadata = b"d4:info".to_vec();
+        metadata.extend(encode(&info));
+        metadata.push(b'e');
+        assert_eq!(checked.metadata, metadata);
+        assert_eq!(checked.meta.name, "album");
+        assert_eq!(checked.meta.info_hash, Some(sha1_hex(&encode(&info))));
+        assert_eq!(checked.meta.files.len(), 2);
+    }
+
+    #[test]
+    fn resume_data_that_could_mislead_libtorrent_is_refused() {
+        let info = album();
+        let unsafe_info = multi("album", vec![file(&[".."], 5)], 16_384, 1);
+        let with = |extra: Vec<(&str, Value)>| resume_for(&info, extra);
+        let mut trailing = with(vec![]);
+        trailing.push(b'x');
+        let mut cases = vec![
+            // Renamed files could put the torrent's files anywhere.
+            (
+                "mapped files",
+                with(vec![(
+                    "mapped_files",
+                    Value::List(vec![Value::str("../x")]),
+                )]),
+                "an entry libtorrent doesn't write",
+            ),
+            (
+                "a key libtorrent doesn't write",
+                with(vec![("x-other", Value::Int(1))]),
+                "an entry libtorrent doesn't write",
+            ),
+            (
+                "another format",
+                with(vec![("file-format", Value::str("other"))]),
+                "isn't libtorrent's",
+            ),
+            (
+                "no metadata",
+                with(vec![]).replace_info_with_nothing(),
+                "has no metadata",
+            ),
+            (
+                "metadata that fails V2's checks",
+                resume_for(&unsafe_info, vec![]),
+                "unsafe file name",
+            ),
+            (
+                "a v1 hash that isn't the metadata's",
+                with(vec![("info-hash", Value::Bytes(vec![9; 20]))]),
+                "names another torrent",
+            ),
+            (
+                "a v2 hash for a v1-only torrent",
+                with(vec![("info-hash2", Value::Bytes(vec![9; 32]))]),
+                "names another torrent",
+            ),
+            (
+                "a tracker that isn't http, https or udp",
+                with(vec![(
+                    "trackers",
+                    Value::List(vec![Value::List(vec![Value::str("file:///etc/passwd")])]),
+                )]),
+                "not a valid tracker URL",
+            ),
+            (
+                "a web seed that isn't http or https",
+                with(vec![(
+                    "url-list",
+                    Value::List(vec![Value::str("udp://t.example:1")]),
+                )]),
+                "not a valid tracker URL",
+            ),
+            (
+                "a priority per file that doesn't match the files",
+                with(vec![("file_priority", Value::List(vec![Value::Int(4)]))]),
+                "file priorities",
+            ),
+            (
+                "a priority libtorrent doesn't have",
+                with(vec![(
+                    "file_priority",
+                    Value::List(vec![Value::Int(4), Value::Int(9)]),
+                )]),
+                "file priorities",
+            ),
+            ("not a dictionary", b"le".to_vec(), "not a dictionary"),
+            ("data after its end", trailing, "after its end"),
+            (
+                "more than the limit",
+                with(vec![("pieces", Value::Bytes(vec![0; MAX_RESUME_BYTES]))]),
+                "larger than 32 MiB",
+            ),
+        ];
+        for mode in ["seed_mode", "share_mode", "super_seeding", "i2p"] {
+            cases.push((
+                mode,
+                with(vec![(mode, Value::Int(1))]),
+                "a mode V2 never uses",
+            ));
+        }
+        // Each is refused for its own reason, not another rule's.
+        for (what, bytes, why) in cases {
+            match check_resume_data(&bytes) {
+                Err(e) => assert!(e.to_string().contains(why), "{what}: {e}"),
+                Ok(_) => panic!("{what} was accepted"),
+            }
+        }
+    }
+
+    trait WithoutInfo {
+        fn replace_info_with_nothing(self) -> Vec<u8>;
+    }
+
+    impl WithoutInfo for Vec<u8> {
+        /// The same resume data without its `info` entry.
+        fn replace_info_with_nothing(self) -> Vec<u8> {
+            let at = self.windows(6).position(|w| w == b"4:info").expect("info");
+            let info_start = at + 6;
+            let mut p = Parser {
+                b: &self,
+                pos: info_start,
+                nodes: 0,
+            };
+            p.value(0).unwrap();
+            let mut out = self[..at].to_vec();
+            out.extend_from_slice(&self[p.pos..]);
+            out
+        }
     }
 }
 
