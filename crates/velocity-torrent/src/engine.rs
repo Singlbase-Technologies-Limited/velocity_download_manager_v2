@@ -1306,9 +1306,17 @@ impl TorrentEngine for LtEngine {
     fn network(&self) -> Result<NetworkStatus, ErrorCode> {
         let listen_port = self.shared.session.listen_port();
         let state = self.shared.state();
+        // libtorrent moves on to the next free port when the one asked is taken; that stays,
+        // and is said (PO decision on #62).
+        let moved = (listen_port != 0 && listen_port != state.port).then(|| {
+            format!(
+                "port {} couldn't be opened; listening on {listen_port}",
+                state.port
+            )
+        });
         Ok(NetworkStatus {
             listen_port,
-            listen_error: state.listen_error.clone(),
+            listen_error: state.listen_error.clone().or(moved),
             port_mapping: state.portmap.state(Instant::now()),
         })
     }

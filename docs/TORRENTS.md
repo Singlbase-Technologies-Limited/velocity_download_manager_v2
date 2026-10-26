@@ -195,8 +195,9 @@ The settings screen is #30. A new helper starts with every kind of peer discover
 | `dhtBootstrapNodes` | none | at most 16, each `host:port` | Where DHT starts from (V1's `dht_entry_point`); none means libtorrent's own default nodes |
 
 - **Local peers:** libtorrent doesn't apply the global limits to peers on the local network, as with V1. A torrent's own limits apply to every peer.
-- **Listen errors:** a port libtorrent can't open is reported by `network`, as V1 did. One that failed on any interface stays reported until the port changes, even if another interface works: peers on the failed one can't connect.
-  - **Windows:** another program's socket that didn't ask for exclusive use can share the port with libtorrent's. The helper then listens, and reports no error.
+- **A port that is taken:** libtorrent moves on to the next free port, as with V1, and `network` says so: the port really used, and "port 6890 couldn't be opened; listening on 6891" (PO decision on #62). Port mapping maps the port really used.
+  - **Windows:** another program's socket that didn't ask for exclusive use can share the port with libtorrent's. The helper then listens on it, with nothing to report.
+- **Listen errors:** an interface libtorrent can't listen on is reported by `network` too. It stays reported until the port changes, even if another interface works, since peers on the failed one can't connect.
 - **Port mapping:**
   - **The states** are V1's: `off`, `searching`, `mapped` (the external port, and `upnp` or `natpmp`), `failed` (both protocols, with their reasons), and `noRouter` when nothing answered within 30 s.
   - **A later failure** never hides a working mapping.
@@ -232,7 +233,7 @@ The settings screen is #30. A new helper starts with every kind of peer discover
 | Resume data checks, each refusal for its own reason | `velocity-core` `torrent.rs` unit tests |
 | Owned paths, and deleting only them: links, junctions, sizes, folders left with other files, and waiting for an open file on Windows | `velocity-core` `torrent_files.rs` unit tests (V1's owned-paths and deletion tests) |
 | Resume data put back together from its chunks | `velocity-torrent` `supervisor.rs` unit tests |
-| A torrent's download and upload limits holding back a peer, and the global limits not holding back a local one; a failing tracker shown redacted with its reason, and a re-announce recovering; the peers list; extra trackers; the listening port | `velocity-torrent` `tests/network.rs` (V1's limits and tracker tests). The port that can't be opened is checked on Linux |
+| A torrent's download and upload limits holding back a peer, and the global limits not holding back a local one; a failing tracker shown redacted with its reason, and a re-announce recovering; the peers list; extra trackers; the listening port | `velocity-torrent` `tests/network.rs` (V1's limits and tracker tests). A taken port is checked on Linux |
 | The session's settings; trackers and peers shown, redacted and cleaned; one free port for a random one | `velocity-torrent` `engine.rs` unit tests |
 | The port-mapping state | `velocity-torrent` `portmap.rs` unit tests (V1's) |
 | Tracker URLs redacted | `velocity-core` `torrent.rs` unit tests |
