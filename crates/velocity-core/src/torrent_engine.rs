@@ -11,6 +11,7 @@ use std::sync::mpsc::Receiver;
 use serde::{Deserialize, Serialize};
 
 use crate::domain::{DownloadStatus, ErrorCode, Progress, TransferError};
+use crate::seeding::{SeedPolicy, MAX_ACTIVE_SEEDS};
 
 /// Raised whenever a command, reply, event or shared type here changes incompatibly.
 /// Version 1 (#62): settings for finding peers; add a `.torrent` file or a magnet link, pause,
@@ -51,7 +52,7 @@ pub enum TorrentSource {
 }
 
 /// One torrent to add.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct TorrentSpec {
     pub source: TorrentSource,
@@ -68,6 +69,8 @@ pub struct TorrentSpec {
     /// For a `.torrent` file, the files to download, by [`crate::torrent::TorrentFile::index`];
     /// `None` downloads every file. Not with a magnet link, nor with `choose_files`.
     pub files: Option<Vec<u32>>,
+    /// When it stops seeding once complete; checked with [`SeedPolicy::check`].
+    pub seeding: SeedPolicy,
 }
 
 /// The state of one torrent.
@@ -88,6 +91,13 @@ pub struct TorrentSnapshot {
     /// Peers connected now, and how many of them have the whole torrent.
     pub peers: u32,
     pub seeds: u32,
+    /// Bytes uploaded and seconds spent seeding over the torrent's life, a restart included: what
+    /// its [`SeedPolicy`] is measured by.
+    pub uploaded_bytes: u64,
+    pub seeding_secs: u64,
+    /// Completed and allowed to seed, but waiting for a seeding slot
+    /// ([`TorrentSettings::max_active_seeds`]).
+    pub seed_queued: bool,
     /// Why the torrent stopped, when it failed.
     pub error: Option<TransferError>,
 }
@@ -103,6 +113,9 @@ pub struct TorrentSettings {
     /// Applies to torrents added after it is set.
     pub peer_exchange: bool,
     pub local_peer_discovery: bool,
+    /// At most this many torrents seed at once, the rest wait in the seeding queue; 0 means no
+    /// limit (V1's default), and more than [`MAX_ACTIVE_SEEDS`] is refused.
+    pub max_active_seeds: u32,
 }
 
 impl Default for TorrentSettings {
@@ -111,7 +124,18 @@ impl Default for TorrentSettings {
             dht: true,
             peer_exchange: true,
             local_peer_discovery: false,
+            max_active_seeds: 0,
         }
+    }
+}
+
+impl TorrentSettings {
+    /// `InvalidInput` for more than [`MAX_ACTIVE_SEEDS`] active seeds.
+    pub fn check(&self) -> Result<(), ErrorCode> {
+        if self.max_active_seeds > MAX_ACTIVE_SEEDS {
+            return Err(ErrorCode::InvalidInput);
+        }
+        Ok(())
     }
 }
 
@@ -199,6 +223,10 @@ pub trait TorrentEngine: Send {
     fn set_files(&mut self, id: TorrentId, files: Vec<u32>) -> Result<(), ErrorCode>;
     /// Part of the torrent's metadata, from `offset`. `InvalidState` before it is known.
     fn metadata(&self, id: TorrentId, offset: u64) -> Result<MetadataChunk, ErrorCode>;
+    /// Sets when the torrent stops seeding. A completed torrent whose new policy isn't met yet
+    /// seeds again, through the seeding queue; one seeding whose new policy is met stops, so
+    /// [`SeedPolicy::Never`] stops seeding. `InvalidInput` for a policy outside its limits.
+    fn set_seeding(&mut self, id: TorrentId, seeding: SeedPolicy) -> Result<(), ErrorCode>;
     /// The current state of every torrent the engine has.
     fn snapshot(&self) -> Result<Vec<TorrentSnapshot>, ErrorCode>;
     /// A new receiver for this engine's events, from the moment it subscribed.
@@ -207,7 +235,7 @@ pub trait TorrentEngine: Send {
 
 /// One command, in the form that crosses a process boundary. As for the transfer contract,
 /// variants without data are written `Snapshot {}` so their unknown fields are refused.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "command", rename_all = "camelCase", deny_unknown_fields)]
 pub enum TorrentCommand {
     Version {},
@@ -218,6 +246,7 @@ pub enum TorrentCommand {
     Remove { id: TorrentId },
     SetFiles { id: TorrentId, files: Vec<u32> },
     Metadata { id: TorrentId, offset: u64 },
+    SetSeeding { id: TorrentId, seeding: SeedPolicy },
     Snapshot {},
 }
 
@@ -268,6 +297,10 @@ pub fn dispatch(
         TorrentCommand::Metadata { id, offset } => TorrentReply::Metadata {
             chunk: engine.metadata(id, offset)?,
         },
+        TorrentCommand::SetSeeding { id, seeding } => {
+            engine.set_seeding(id, seeding)?;
+            TorrentReply::Done {}
+        }
         TorrentCommand::Snapshot {} => TorrentReply::Snapshot {
             torrents: engine.snapshot()?,
         },
@@ -290,12 +323,26 @@ mod tests {
                 paused: true,
                 choose_files: true,
                 files: None,
+                seeding: SeedPolicy::Ratio { ratio: 1.5 },
             },
         };
-        // Contract 2 (#62's file choice) added `chooseFiles` and `files`.
+        // Contract 2 (#62's file choice) added `chooseFiles` and `files`; contract 3 (#62's
+        // lifecycle part) `seeding`.
         assert_eq!(
             serde_json::to_string(&add).unwrap(),
-            r#"{"command":"add","spec":{"source":{"kind":"magnet","uri":"magnet:?xt=urn:btih:557f8c61bcecd14914e421389d4f46c5d7c336db"},"directory":"d","trackers":["udp://t.example:1"],"paused":true,"chooseFiles":true,"files":null}}"#
+            r#"{"command":"add","spec":{"source":{"kind":"magnet","uri":"magnet:?xt=urn:btih:557f8c61bcecd14914e421389d4f46c5d7c336db"},"directory":"d","trackers":["udp://t.example:1"],"paused":true,"chooseFiles":true,"files":null,"seeding":{"mode":"ratio","ratio":1.5}}}"#
+        );
+        let seeding = TorrentCommand::SetSeeding {
+            id: TorrentId(2),
+            seeding: SeedPolicy::Never {},
+        };
+        assert_eq!(
+            serde_json::to_string(&seeding).unwrap(),
+            r#"{"command":"setSeeding","id":2,"seeding":{"mode":"never"}}"#
+        );
+        assert_eq!(
+            serde_json::to_string(&TorrentSettings::default()).unwrap(),
+            r#"{"dht":true,"peerExchange":true,"localPeerDiscovery":false,"maxActiveSeeds":0}"#
         );
         let set = TorrentCommand::SetFiles {
             id: TorrentId(2),
@@ -327,10 +374,12 @@ mod tests {
         for json in [
             r#"{"command":"snapshot","extra":1}"#,
             r#"{"command":"pause","id":1,"extra":1}"#,
-            r#"{"command":"add","spec":{"source":{"kind":"file","path":"a","extra":1},"directory":"d","trackers":[],"paused":false,"chooseFiles":false,"files":null}}"#,
-            r#"{"command":"add","spec":{"source":{"kind":"file","path":"a"},"directory":"d","trackers":[],"paused":false,"chooseFiles":false,"files":null,"extra":1}}"#,
+            r#"{"command":"add","spec":{"source":{"kind":"file","path":"a","extra":1},"directory":"d","trackers":[],"paused":false,"chooseFiles":false,"files":null,"seeding":{"mode":"never"}}}"#,
+            r#"{"command":"add","spec":{"source":{"kind":"file","path":"a"},"directory":"d","trackers":[],"paused":false,"chooseFiles":false,"files":null,"seeding":{"mode":"never"},"extra":1}}"#,
             r#"{"command":"setFiles","id":1,"files":[1],"extra":1}"#,
             r#"{"command":"metadata","id":1,"offset":0,"extra":1}"#,
+            r#"{"command":"setSeeding","id":1,"seeding":{"mode":"never"},"extra":1}"#,
+            r#"{"command":"setSeeding","id":1,"seeding":{"mode":"never","extra":1}}"#,
         ] {
             assert!(
                 serde_json::from_str::<TorrentCommand>(json).is_err(),
@@ -345,6 +394,25 @@ mod tests {
             r#"{"reply":"metadata","chunk":{"total":2,"offset":0,"hex":"6465","extra":1}}"#
         )
         .is_err());
+        // Without the extra field, the same command is accepted: the refusal above is for it.
+        assert!(serde_json::from_str::<TorrentCommand>(
+            r#"{"command":"add","spec":{"source":{"kind":"file","path":"a"},"directory":"d","trackers":[],"paused":false,"chooseFiles":false,"files":null,"seeding":{"mode":"never"}}}"#
+        )
+        .is_ok());
+    }
+
+    #[test]
+    fn settings_allow_at_most_v1s_number_of_active_seeds() {
+        let with = |max_active_seeds| TorrentSettings {
+            max_active_seeds,
+            ..TorrentSettings::default()
+        };
+        assert_eq!(with(0).check(), Ok(()));
+        assert_eq!(with(MAX_ACTIVE_SEEDS).check(), Ok(()));
+        assert_eq!(
+            with(MAX_ACTIVE_SEEDS + 1).check(),
+            Err(ErrorCode::InvalidInput)
+        );
     }
 
     #[test]
@@ -390,6 +458,9 @@ mod tests {
             },
             peers: 1,
             seeds: 1,
+            uploaded_bytes: 30,
+            seeding_secs: 4,
+            seed_queued: false,
             error: None,
         };
         let event = TorrentEvent::Changed {
@@ -397,6 +468,7 @@ mod tests {
         };
         let json = serde_json::to_string(&event).unwrap();
         assert!(json.contains(r#""infoHashV1":"#), "{json}");
+        assert!(json.contains(r#""seedQueued":false"#), "{json}");
         assert_eq!(serde_json::from_str::<TorrentEvent>(&json).unwrap(), event);
     }
 }

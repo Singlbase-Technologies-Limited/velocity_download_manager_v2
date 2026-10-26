@@ -13,6 +13,8 @@ pub const MAX_SEED_MINUTES: u32 = 525_600;
 /// The share ratios a policy may set: uploaded bytes over the torrent's wanted bytes (V1's limits).
 pub const MIN_SEED_RATIO: f64 = 0.1;
 pub const MAX_SEED_RATIO: f64 = 100.0;
+/// The most torrents that may be allowed to seed at once (V1's limit); 0 means no limit.
+pub const MAX_ACTIVE_SEEDS: u32 = 1000;
 
 /// When a completed torrent stops seeding. Variants without data are written `Never {}` so their
 /// unknown fields are refused, as in the torrent contract.

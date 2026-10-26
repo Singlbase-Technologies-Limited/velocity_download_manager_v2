@@ -15,8 +15,11 @@
 //! - **File choice:** a torrent downloads exactly the files chosen, by their index in the torrent;
 //!   padding files never. Choosing again adds or drops files; nothing on disk is deleted.
 //! - **Completion:** a torrent whose wanted pieces have all passed their hash check has its files
-//!   flushed first, then stops uploading (seeding is off by default, ADR-0005), and only then
-//!   reports Completed.
+//!   flushed first, then stops, and only then reports Completed.
+//! - **Seeding:** a completed torrent seeds only under a [`SeedPolicy`] other than `Never` (the
+//!   default, ADR-0005), until its first limit is reached, and only while the seeding queue gives
+//!   it a slot ([`TorrentSettings::max_active_seeds`]). The limits count libtorrent's own seeding
+//!   time and upload totals, which its resume data keeps across restarts.
 //! - **Files are never deleted** here: removing a torrent keeps its data.
 //!
 //! libtorrent has no push status, so a poller reads every torrent's state each [`POLL_INTERVAL`]
@@ -25,13 +28,14 @@
 use std::collections::BTreeMap;
 use std::io::Read;
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
 use velocity_core::domain::{DownloadStatus, ErrorCode, FailureClass, Progress, TransferError};
+use velocity_core::seeding::{seed_queue_plan, SeedPolicy};
 use velocity_core::torrent::{
     check_tracker, file_priorities, parse_magnet, parse_metadata, parse_torrent, TorrentFile,
     MAX_TORRENT_BYTES,
@@ -85,7 +89,7 @@ fn session_config(settings: TorrentSettings) -> SessionConfig {
     }
 }
 
-/// Where a torrent is on its way to Completed.
+/// Where a torrent is on its way to Completed, and after.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Finish {
     /// Still downloading, or paused.
@@ -94,6 +98,28 @@ enum Finish {
     Flushing,
     /// Flushed and stopped: Completed.
     Done,
+    /// Complete and uploading under its policy, since `since` (the engine's clock).
+    Seeding { since: u64 },
+    /// Complete and allowed to seed, stopped until the seeding queue gives it a slot. In the queue
+    /// since `since`.
+    SeedQueued { since: u64 },
+    /// Complete and allowed to seed, paused by the user.
+    SeedPaused,
+}
+
+impl Finish {
+    /// Flushed: the download is complete, whether it seeds or not.
+    fn complete(self) -> bool {
+        !matches!(self, Finish::No | Finish::Flushing)
+    }
+
+    /// Complete, with seeding still allowed by its policy.
+    fn may_seed(self) -> bool {
+        matches!(
+            self,
+            Finish::Seeding { .. } | Finish::SeedQueued { .. } | Finish::SeedPaused
+        )
+    }
 }
 
 /// What V2 knows of a torrent's files, which decides what it may download.
@@ -120,7 +146,7 @@ enum Step {
     Wait,
     /// Write out what libtorrent still has queued for the torrent's files.
     Flush,
-    /// Stop the torrent: seeding is off by default (ADR-0005).
+    /// Stop the torrent; the seeding queue starts it again if its policy lets it seed.
     Stop,
 }
 
@@ -145,7 +171,11 @@ fn snapshot_of(id: TorrentId, s: &TorrentStatus, finish: Finish, phase: &Phase) 
     let failure = refused.or((!s.error.is_empty()).then_some(s.error.as_str()));
     let status = if failure.is_some() {
         DownloadStatus::Failed
-    } else if finish == Finish::Done {
+    } else if let Finish::Seeding { .. } = finish {
+        DownloadStatus::Seeding
+    } else if finish == Finish::SeedPaused {
+        DownloadStatus::Paused
+    } else if finish.complete() {
         DownloadStatus::Completed
     } else if finish == Finish::Flushing {
         DownloadStatus::Verifying
@@ -168,6 +198,10 @@ fn snapshot_of(id: TorrentId, s: &TorrentStatus, finish: Finish, phase: &Phase) 
     let bytes = |n: i64| u64::try_from(n).unwrap_or(0);
     let count = |n: i32| u32::try_from(n).unwrap_or(0);
     let text = |t: &str| (!t.is_empty()).then(|| t.to_owned());
+    // Stopped after completing, it moves nothing, though libtorrent's averaged rates take a while
+    // to fall.
+    let stopped = finish.complete() && !matches!(finish, Finish::Seeding { .. });
+    let speed = |rate: i64| if stopped { 0 } else { bytes(rate) };
     TorrentSnapshot {
         id,
         status,
@@ -177,15 +211,18 @@ fn snapshot_of(id: TorrentId, s: &TorrentStatus, finish: Finish, phase: &Phase) 
         progress: Progress {
             completed_bytes: bytes(s.total_wanted_done),
             // Unknown until the files are known and chosen.
-            total_bytes: (*phase == Phase::Wanted || finish == Finish::Done)
+            total_bytes: (*phase == Phase::Wanted || finish.complete())
                 .then(|| bytes(s.total_wanted)),
-            download_speed_bps: bytes(s.download_rate),
-            upload_speed_bps: bytes(s.upload_rate),
+            download_speed_bps: speed(s.download_rate),
+            upload_speed_bps: speed(s.upload_rate),
             connections: count(s.num_peers),
             connection_detail: None,
         },
         peers: count(s.num_peers),
         seeds: count(s.num_seeds),
+        uploaded_bytes: bytes(s.all_time_upload),
+        seeding_secs: bytes(s.seeding_secs),
+        seed_queued: failure.is_none() && matches!(finish, Finish::SeedQueued { .. }),
         error: failure.map(|why| TransferError::new(FailureClass::Permanent, None, why)),
     }
 }
@@ -250,6 +287,8 @@ struct Torrent {
     partial: bool,
     /// For a magnet: wait for the user's choice once the metadata is checked.
     choose_after_metadata: bool,
+    /// When it stops seeding once complete.
+    seeding: SeedPolicy,
     /// How it is added: its folder, trackers, pause and peer exchange, without metadata.
     base: AddParams,
     /// The metadata V2 checked (a `.torrent` file, or a magnet's `d4:info…e`), to add the torrent
@@ -279,6 +318,8 @@ struct Shared {
     session: UniquePtr<Session>,
     state: Mutex<State>,
     stop: AtomicBool,
+    /// Orders when torrents started seeding or joined the seeding queue.
+    clock: AtomicU64,
 }
 
 /// What one poll reads of a torrent before talking to libtorrent.
@@ -290,12 +331,23 @@ struct Seen {
     partial: bool,
     readd: Option<AddParams>,
     choose_after_metadata: bool,
+    seeding: SeedPolicy,
     base: AddParams,
 }
 
 impl Shared {
     fn state(&self) -> MutexGuard<'_, State> {
         self.state.lock().unwrap_or_else(|p| p.into_inner())
+    }
+
+    /// Sets `id`'s place after completion, if it is still `lt`.
+    fn set_finish(&self, id: TorrentId, lt: u64, finish: Finish) {
+        let mut state = self.state();
+        if let Some(t) = state.torrents.get_mut(&id) {
+            if t.lt == Some(lt) {
+                t.finish = finish;
+            }
+        }
     }
 
     /// libtorrent's id for `id`. `InvalidState` for the moment it is added again.
@@ -322,6 +374,7 @@ impl Shared {
                 partial: t.partial,
                 readd: t.readd.clone(),
                 choose_after_metadata: t.choose_after_metadata,
+                seeding: t.seeding,
                 base: t.base.clone(),
             })
             .collect();
@@ -332,6 +385,62 @@ impl Shared {
             }
             let Some(lt) = seen.lt else { continue };
             self.poll_one(&seen, lt, &alerts);
+        }
+        self.run_seed_queue();
+    }
+
+    fn tick(&self) -> u64 {
+        self.clock.fetch_add(1, Ordering::Relaxed)
+    }
+
+    /// Starts queued torrents in free seeding slots, oldest in the queue first, and sends the
+    /// newest seeders back to the queue when there are more than the limit.
+    fn run_seed_queue(&self) {
+        let (plan, lts) = {
+            let state = self.state();
+            let mut seeding = Vec::new();
+            let mut queued = Vec::new();
+            let mut lts = BTreeMap::new();
+            for (id, t) in &state.torrents {
+                let Some(lt) = t.lt else { continue };
+                match t.finish {
+                    Finish::Seeding { since } => seeding.push((*id, since)),
+                    Finish::SeedQueued { since } => queued.push((*id, since)),
+                    _ => continue,
+                }
+                lts.insert(*id, lt);
+            }
+            let plan = seed_queue_plan(state.settings.max_active_seeds, &seeding, &queued);
+            (plan, lts)
+        };
+        for (ids, start) in [(plan.start, true), (plan.demote, false)] {
+            for id in ids {
+                let lt = lts[&id];
+                let called = if start {
+                    self.session.resume(lt)
+                } else {
+                    self.session.pause(lt)
+                };
+                // Refused: the next poll plans again.
+                if called.is_err() {
+                    continue;
+                }
+                let since = self.tick();
+                let mut state = self.state();
+                let Some(t) = state.torrents.get_mut(&id) else {
+                    continue;
+                };
+                match (t.finish, start) {
+                    (Finish::SeedQueued { .. }, true) if t.lt == Some(lt) => {
+                        t.finish = Finish::Seeding { since }
+                    }
+                    (Finish::Seeding { .. }, false) if t.lt == Some(lt) => {
+                        t.finish = Finish::SeedQueued { since }
+                    }
+                    // Changed meanwhile, by the user: theirs stands.
+                    _ => {}
+                }
+            }
         }
     }
 
@@ -413,21 +522,54 @@ impl Shared {
         if done {
             finish = next;
         }
-        let mut snapshot = snapshot_of(seen.id, &status, finish, &phase);
-        if seen.partial && phase == Phase::Wanted {
-            if let Ok(entries) = self.session.files(lt) {
-                let (done, total) = wanted_bytes(&entries);
-                snapshot.progress.completed_bytes = done;
-                snapshot.progress.total_bytes = Some(total);
+        let partial = if seen.partial && phase == Phase::Wanted {
+            self.session
+                .files(lt)
+                .ok()
+                .map(|entries| wanted_bytes(&entries))
+        } else {
+            None
+        };
+        // Just completed and stopped: it joins the seeding queue if its policy lets it seed.
+        if finish == Finish::Done
+            && seen.finish != Finish::Done
+            && seen.seeding != (SeedPolicy::Never {})
+        {
+            finish = Finish::SeedQueued { since: self.tick() };
+        }
+        if finish.may_seed() {
+            let wanted = partial.map_or(
+                u64::try_from(status.total_wanted).unwrap_or(0),
+                |(_, total)| total,
+            );
+            let seeded = Duration::from_secs(u64::try_from(status.seeding_secs).unwrap_or(0));
+            let uploaded = u64::try_from(status.all_time_upload).unwrap_or(0);
+            if seen.seeding.done(seeded, uploaded, wanted) {
+                // A seeding torrent that libtorrent didn't stop is tried again at the next poll.
+                let stopped =
+                    !matches!(finish, Finish::Seeding { .. }) || self.session.pause(lt).is_ok();
+                if stopped {
+                    finish = Finish::Done;
+                }
             }
+        }
+        let mut snapshot = snapshot_of(seen.id, &status, finish, &phase);
+        if let Some((done, total)) = partial {
+            snapshot.progress.completed_bytes = done;
+            snapshot.progress.total_bytes = Some(total);
         }
         let mut state = self.state();
         let Some(torrent) = state.torrents.get_mut(&seen.id) else {
             // Removed meanwhile.
             return;
         };
-        // A choice made meanwhile changed the torrent: the next poll starts from it.
-        if torrent.phase != seen.phase || torrent.lt != Some(lt) {
+        // A choice, a pause or a policy made meanwhile changed the torrent: the next poll starts
+        // from it.
+        if torrent.phase != seen.phase
+            || torrent.lt != Some(lt)
+            || torrent.finish != seen.finish
+            || torrent.seeding != seen.seeding
+        {
             return;
         }
         torrent.phase = phase;
@@ -504,6 +646,7 @@ impl LtEngine {
                 subscribers: Vec::new(),
             }),
             stop: AtomicBool::new(false),
+            clock: AtomicU64::new(0),
         });
         let polled = Arc::clone(&shared);
         let poller = thread::Builder::new()
@@ -533,6 +676,7 @@ impl TorrentEngine for LtEngine {
     }
 
     fn set_settings(&mut self, settings: TorrentSettings) -> Result<(), ErrorCode> {
+        settings.check()?;
         self.shared
             .session
             .apply_config(&session_config(settings))
@@ -549,6 +693,7 @@ impl TorrentEngine for LtEngine {
         if spec.choose_files && spec.files.is_some() {
             return Err(ErrorCode::InvalidInput);
         }
+        spec.seeding.check()?;
         let settings = self.shared.state().settings;
         let mut base = AddParams {
             save_path,
@@ -616,6 +761,7 @@ impl TorrentEngine for LtEngine {
                 files,
                 partial,
                 choose_after_metadata: spec.choose_files,
+                seeding: spec.seeding,
                 base,
                 metadata,
                 readd: None,
@@ -628,18 +774,30 @@ impl TorrentEngine for LtEngine {
     fn pause(&mut self, id: TorrentId) -> Result<(), ErrorCode> {
         match self.shared.lt_of(id)? {
             (_, Finish::Done) => Err(ErrorCode::InvalidState),
-            (lt, _) => self
-                .shared
-                .session
-                .pause(lt)
-                .map_err(|_| ErrorCode::NotFound),
+            (lt, finish) => {
+                self.shared
+                    .session
+                    .pause(lt)
+                    .map_err(|_| ErrorCode::NotFound)?;
+                if finish.may_seed() {
+                    self.shared.set_finish(id, lt, Finish::SeedPaused);
+                }
+                Ok(())
+            }
         }
     }
 
     fn resume(&mut self, id: TorrentId) -> Result<(), ErrorCode> {
         match self.shared.lt_of(id)? {
-            // Seeding a completed torrent comes with the seeding policies (#62's later part).
+            // A completed torrent seeds again through `set_seeding`.
             (_, Finish::Done) => Err(ErrorCode::InvalidState),
+            // Back in the seeding queue, which starts it when a slot is free.
+            (lt, Finish::SeedPaused) => {
+                let since = self.shared.tick();
+                self.shared.set_finish(id, lt, Finish::SeedQueued { since });
+                Ok(())
+            }
+            (_, Finish::Seeding { .. } | Finish::SeedQueued { .. }) => Ok(()),
             (lt, _) => self
                 .shared
                 .session
@@ -678,7 +836,7 @@ impl TorrentEngine for LtEngine {
         // A torrent that wanted nothing, or that completed and stopped, has dropped its peers: it
         // goes out of the session and comes back with its files, and finds peers as a new one
         // does. libtorrent checks the files already on disk then.
-        if phase == Phase::Choosing || finish == Finish::Done {
+        if phase == Phase::Choosing || finish.complete() {
             {
                 let mut state = self.shared.state();
                 let torrent = state.torrents.get_mut(&id).ok_or(ErrorCode::NotFound)?;
@@ -718,6 +876,20 @@ impl TorrentEngine for LtEngine {
             .metadata(lt)
             .map_err(|_| ErrorCode::InvalidState)?;
         Ok(MetadataChunk::of(&bytes, offset, METADATA_CHUNK_BYTES))
+    }
+
+    fn set_seeding(&mut self, id: TorrentId, seeding: SeedPolicy) -> Result<(), ErrorCode> {
+        seeding.check()?;
+        let since = self.shared.tick();
+        let mut state = self.shared.state();
+        let torrent = state.torrents.get_mut(&id).ok_or(ErrorCode::NotFound)?;
+        torrent.seeding = seeding;
+        // A completed torrent may seed again: the poller checks the new policy before the queue
+        // starts it. One seeding under a policy now met is stopped by the poller.
+        if torrent.finish == Finish::Done && seeding != (SeedPolicy::Never {}) {
+            torrent.finish = Finish::SeedQueued { since };
+        }
+        Ok(())
     }
 
     fn snapshot(&self) -> Result<Vec<TorrentSnapshot>, ErrorCode> {
@@ -963,6 +1135,47 @@ mod tests {
         };
         let s = snapshot_of(TorrentId(4), &magnet, Finish::No, &Phase::Unchecked);
         assert_eq!((s.name, s.progress.total_bytes), (None, None));
+    }
+
+    /// Seeding (#62): what each place after completion shows, with libtorrent's totals.
+    #[test]
+    fn a_completed_torrent_shows_its_seeding_and_no_stale_speeds() {
+        let s = TorrentStatus {
+            upload_rate: 50,
+            download_rate: 3,
+            all_time_upload: 300,
+            seeding_secs: 9,
+            ..status(state::SEEDING)
+        };
+        let at = |finish| snapshot_of(TorrentId(1), &s, finish, &Phase::Wanted);
+        let seeding = at(Finish::Seeding { since: 0 });
+        assert_eq!(seeding.status, DownloadStatus::Seeding);
+        assert_eq!(seeding.progress.upload_speed_bps, 50);
+        assert_eq!((seeding.uploaded_bytes, seeding.seeding_secs), (300, 9));
+        assert!(!seeding.seed_queued);
+        let queued = at(Finish::SeedQueued { since: 0 });
+        assert_eq!(
+            (queued.status, queued.seed_queued),
+            (DownloadStatus::Completed, true)
+        );
+        assert_eq!(at(Finish::SeedPaused).status, DownloadStatus::Paused);
+        assert_eq!(at(Finish::Done).status, DownloadStatus::Completed);
+        // Stopped, libtorrent's averaged rates still fall for a while: a stopped torrent moves
+        // nothing, so it shows no speed.
+        for stopped in [
+            Finish::Done,
+            Finish::SeedQueued { since: 0 },
+            Finish::SeedPaused,
+        ] {
+            let p = at(stopped).progress;
+            assert_eq!(
+                (p.upload_speed_bps, p.download_speed_bps),
+                (0, 0),
+                "{stopped:?}"
+            );
+            // Its totals stay.
+            assert_eq!(at(stopped).uploaded_bytes, 300);
+        }
     }
 
     #[test]

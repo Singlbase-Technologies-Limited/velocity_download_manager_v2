@@ -12,6 +12,7 @@ use velocity_child::ledger::Ledger;
 use velocity_child::supervisor::{Book, Retired, Supervisor};
 pub use velocity_child::supervisor::{EngineHealth, SupervisorOptions};
 use velocity_core::domain::{DownloadStatus, ErrorCode, Progress};
+use velocity_core::seeding::SeedPolicy;
 use velocity_core::torrent_engine::{
     MetadataChunk, TorrentEngine, TorrentEvent, TorrentId, TorrentSettings, TorrentSnapshot,
     TorrentSpec,
@@ -173,6 +174,9 @@ impl TorrentEngine for SupervisedTorrentEngine {
             },
             peers: 0,
             seeds: 0,
+            uploaded_bytes: 0,
+            seeding_secs: 0,
+            seed_queued: false,
             error: None,
         };
         self.supervisor.update(|book, current| {
@@ -213,6 +217,10 @@ impl TorrentEngine for SupervisedTorrentEngine {
 
     fn metadata(&self, id: TorrentId, offset: u64) -> Result<MetadataChunk, ErrorCode> {
         self.running(id)?.metadata(id, offset)
+    }
+
+    fn set_seeding(&mut self, id: TorrentId, seeding: SeedPolicy) -> Result<(), ErrorCode> {
+        self.running(id)?.set_seeding(id, seeding)
     }
 
     fn snapshot(&self) -> Result<Vec<TorrentSnapshot>, ErrorCode> {

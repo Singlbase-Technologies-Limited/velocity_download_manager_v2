@@ -9,6 +9,7 @@ use std::time::Duration;
 use velocity_child::client::{ChildProcess, SpawnOptions};
 use velocity_child::serve::Server;
 use velocity_core::domain::ErrorCode;
+use velocity_core::seeding::SeedPolicy;
 use velocity_core::torrent_engine::{
     dispatch, MetadataChunk, TorrentCommand, TorrentEngine, TorrentEvent, TorrentId, TorrentReply,
     TorrentSettings, TorrentSnapshot, TorrentSpec,
@@ -41,6 +42,7 @@ pub const STARTING_SETTINGS: TorrentSettings = TorrentSettings {
     dht: false,
     peer_exchange: false,
     local_peer_discovery: false,
+    max_active_seeds: 0,
 };
 
 /// Runs the child's side: serves the torrent engine on stdin and stdout until stdin closes.
@@ -129,6 +131,10 @@ impl ChildTorrentEngine {
         }
     }
 
+    pub fn set_seeding(&self, id: TorrentId, seeding: SeedPolicy) -> Result<(), ErrorCode> {
+        self.done(TorrentCommand::SetSeeding { id, seeding })
+    }
+
     pub fn snapshot(&self) -> Result<Vec<TorrentSnapshot>, ErrorCode> {
         match self.process.request(TorrentCommand::Snapshot {})? {
             TorrentReply::Snapshot { torrents } => Ok(torrents),
@@ -180,6 +186,10 @@ impl TorrentEngine for ChildTorrentEngine {
 
     fn metadata(&self, id: TorrentId, offset: u64) -> Result<MetadataChunk, ErrorCode> {
         ChildTorrentEngine::metadata(self, id, offset)
+    }
+
+    fn set_seeding(&mut self, id: TorrentId, seeding: SeedPolicy) -> Result<(), ErrorCode> {
+        ChildTorrentEngine::set_seeding(self, id, seeding)
     }
 
     fn snapshot(&self) -> Result<Vec<TorrentSnapshot>, ErrorCode> {
