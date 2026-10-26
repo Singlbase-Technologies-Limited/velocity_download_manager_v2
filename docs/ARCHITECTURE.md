@@ -60,7 +60,7 @@ Each piece of state has one owner. Other components ask the owner instead of kee
 |---|---|
 | **Core** (the manager) | **Download records:** a stable app id per download, its source, destination, category and status, and its history. **Policy:** the queue order and concurrency limit, the schedule window, naming and conflict decisions, and settings. **Validation:** validation of all input. Records are stored in SQLite with versioned migrations (#26) |
 | **Transfer engine** | Active transfers: connections, leases, received bytes and rate. It also owns the durable progress of each transfer, written to its checkpoint before the record advances. Checkpoints live in the SQLite database (PO decision, 2026-10-22, on #26); their format, and how the engine's child process gets them there, are #43 |
-| **libtorrent** (in the torrent helper) | The torrent session: peers, pieces and resume data. The manager owns torrent records and seeding policies (#62) |
+| **libtorrent** (in the torrent helper) | The torrent session: peers, pieces and resume data. The helper applies each torrent's seeding policy and the seeding queue, and its supervisor keeps each torrent's latest resume data in memory (PO decisions on #62). The manager owns torrent records, and will store their policies and resume data (#58) |
 | **The user's file system** | Finished files, written atomically: download to a part file, verify, then rename without replacing anything (#43, #72) |
 | **Memory only** | Credentials, cookies and custom headers. Never written to the database, logs, checkpoints or process arguments (#70, #71) |
 
