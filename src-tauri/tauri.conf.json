@@ -4,7 +4,7 @@
   "version": "0.1.0",
   "identifier": "dev.velocity.downloadmanager.v2",
   "build": {
-    "beforeDevCommand": "pnpm dev:web",
+    "beforeDevCommand": "pnpm dev:engine && pnpm dev:web",
     "devUrl": "http://localhost:1430",
     "beforeBuildCommand": "pnpm native:verify && pnpm build:web",
     "frontendDist": "../dist"

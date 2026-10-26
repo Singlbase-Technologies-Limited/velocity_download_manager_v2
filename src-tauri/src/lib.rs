@@ -1,5 +1,7 @@
 //! Tauri desktop shell. Commands stay thin: they delegate to `velocity-core`.
 
+mod downloads;
+
 use tauri::Manager;
 use velocity_core::paths::Paths;
 use velocity_core::AppInfo;
@@ -21,16 +23,35 @@ pub fn run() {
                 let _ = window.set_focus();
             }
         }))
-        .setup(|_app| {
+        .setup(|app| {
             // V2's own data directory (velocity_core::paths). Failing to create it stops the
             // app with the reason, instead of running without a place for its data.
             let paths = Paths::resolve().map_err(|code| code.user_message().to_owned())?;
             paths.ensure().map_err(|code| {
                 format!("{} ({})", code.user_message(), paths.data_dir().display())
             })?;
+            // The downloads (#58): the database, the engine and the manager.
+            app.manage(downloads::start(app.handle(), &paths)?);
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![app_info])
+        .invoke_handler(tauri::generate_handler![
+            app_info,
+            downloads::get_snapshot,
+            downloads::pause_downloads,
+            downloads::resume_downloads,
+            downloads::cancel_downloads,
+            downloads::retry_downloads,
+            downloads::retry_failed,
+            downloads::remove_downloads,
+            downloads::pause_all,
+            downloads::resume_all,
+            downloads::clear_completed,
+            downloads::move_download,
+            downloads::set_download_connections,
+            downloads::set_download_speed_limit,
+            downloads::restart_engine,
+            downloads::trust_host_key,
+        ])
         .run(tauri::generate_context!())
         .expect("error while running the Velocity Download Manager desktop shell");
 }

@@ -5792,6 +5792,7 @@ dependencies = [
  "tauri-build",
  "tauri-plugin-single-instance",
  "velocity-core",
+ "velocity-transfer",
 ]
 
 [[package]]
