@@ -6,7 +6,6 @@ pub mod adaptive;
 mod budget;
 pub mod download;
 pub mod engine;
-pub mod engine_log;
 mod failure;
 pub mod files;
 pub mod integrity;

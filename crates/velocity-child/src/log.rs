@@ -1,5 +1,5 @@
-//! The engine's stderr, kept in memory for diagnostics (#39; #28 replaces the redaction with the
-//! shared redaction layer). Only the last [`LOG_LINES`] lines are kept, each cut at
+//! A child process's stderr, kept in memory for diagnostics (#39, #62; #28 replaces the redaction
+//! with the shared redaction layer). Only the last [`LOG_LINES`] lines are kept, each cut at
 //! [`MAX_LINE_CHARS`] characters, and nothing is written to disk. A login inside a URL
 //! (`https://user:password@host/`) is hidden before a line is stored.
 
@@ -16,13 +16,13 @@ pub const MAX_LINE_CHARS: usize = 2000;
 /// limit. A character is at most 4 bytes in UTF-8.
 const MAX_LINE_BYTES: u64 = 4 * MAX_LINE_CHARS as u64;
 
-/// The last lines an engine wrote to stderr, shared by every engine a supervisor starts.
+/// The last lines a child wrote to stderr, shared by every child a supervisor starts.
 #[derive(Clone, Default)]
-pub struct EngineLog {
+pub struct ChildLog {
     lines: Arc<Mutex<VecDeque<String>>>,
 }
 
-impl EngineLog {
+impl ChildLog {
     pub fn new() -> Self {
         Self::default()
     }
@@ -48,10 +48,14 @@ impl EngineLog {
 
     /// Reads `stream` line by line into the log on a thread of its own, until it ends. The stream
     /// must be read, or a child that writes a lot to stderr would block on a full pipe.
-    pub(crate) fn capture(&self, stream: impl Read + Send + 'static) -> std::io::Result<()> {
+    pub(crate) fn capture(
+        &self,
+        name: &str,
+        stream: impl Read + Send + 'static,
+    ) -> std::io::Result<()> {
         let log = self.clone();
         thread::Builder::new()
-            .name("velocity-engine-stderr".into())
+            .name(format!("velocity-{name}-stderr"))
             .spawn(move || {
                 let mut reader = BufReader::new(stream);
                 let mut line = Vec::new();
@@ -67,7 +71,7 @@ impl EngineLog {
                             log.push(text.trim_end_matches(['\n', '\r']));
                         }
                         Err(e) => {
-                            log.push(&format!("the engine's stderr couldn't be read: {e}"));
+                            log.push(&format!("stderr couldn't be read: {e}"));
                             break;
                         }
                     }
@@ -142,7 +146,7 @@ mod tests {
 
     #[test]
     fn keeps_only_the_last_lines() {
-        let log = EngineLog::new();
+        let log = ChildLog::new();
         for n in 0..=LOG_LINES {
             log.push(&format!("line {n}"));
         }
@@ -154,7 +158,7 @@ mod tests {
 
     #[test]
     fn cuts_long_lines_and_hides_logins_when_stored() {
-        let log = EngineLog::new();
+        let log = ChildLog::new();
         log.push(&"é".repeat(MAX_LINE_CHARS + 10));
         log.push("retrying https://user:secret@example.com/");
         let lines = log.lines();
@@ -164,11 +168,11 @@ mod tests {
 
     #[test]
     fn captures_a_stream_line_by_line_within_bounds() {
-        let log = EngineLog::new();
+        let log = ChildLog::new();
         let mut input = b"first\r\nhttps://a:b@h/ second\n".to_vec();
         input.extend(std::iter::repeat_n(b'x', 3 * MAX_LINE_BYTES as usize));
         input.extend_from_slice(b"\nlast");
-        log.capture(std::io::Cursor::new(input)).unwrap();
+        log.capture("test", std::io::Cursor::new(input)).unwrap();
         let deadline = Instant::now() + Duration::from_secs(10);
         while log.lines().last().map(String::as_str) != Some("last") {
             assert!(Instant::now() < deadline, "{:?}", log.lines());

@@ -13,6 +13,7 @@
 
 use std::time::Duration;
 
+use velocity_child::supervisor::doubled;
 use velocity_core::domain::FailureClass;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -92,11 +93,6 @@ impl RetryPolicy {
         (attempt <= self.download_retries)
             .then(|| doubled(first, attempt).min(self.max_download_wait))
     }
-}
-
-/// `first` doubled for each step after the first (`step` from 1), without overflowing.
-pub(crate) fn doubled(first: Duration, step: u32) -> Duration {
-    first.saturating_mul(1 << step.saturating_sub(1).min(31))
 }
 
 /// The connections a download keeps after a server throttled it: half, and at least one.

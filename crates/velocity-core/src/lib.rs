@@ -14,6 +14,7 @@ pub mod performance;
 pub mod queue;
 pub mod request;
 pub mod torrent;
+pub mod torrent_engine;
 pub mod transfer;
 
 use serde::Serialize;

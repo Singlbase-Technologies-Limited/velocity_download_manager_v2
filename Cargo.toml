@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/velocity-core", "crates/velocity-curl", "crates/velocity-sftp", "crates/velocity-test-http", "crates/velocity-transfer", "crates/velocity-transfer-h2c", "src-tauri"]
+members = ["crates/velocity-child", "crates/velocity-core", "crates/velocity-curl", "crates/velocity-lt", "crates/velocity-sftp", "crates/velocity-test-http", "crates/velocity-torrent", "crates/velocity-transfer", "crates/velocity-transfer-h2c", "src-tauri"]
 
 [workspace.package]
 version = "0.1.0"
@@ -72,6 +72,10 @@ bytes = "=1.12.1"
 rustls = { version = "=0.23.46", default-features = false, features = ["ring", "std", "tls12"] }
 tokio-rustls = { version = "=0.26.6", default-features = false, features = ["ring", "tls12"] }
 rcgen = { version = "=0.14.10", default-features = false, features = ["crypto", "pem", "ring"] }
+# The C++ bridge to libtorrent, in crates/velocity-lt only (PO-approved on #62, 2026-10-26). The same
+# version V1's bridge used. cxx-build compiles the shim against the vcpkg-built libtorrent.
+cxx = "=1.0.205"
+cxx-build = "=1.0.205"
 
 # Development builds: optimise dependencies once so the app runs at a usable
 # speed, while workspace crates stay unoptimised for fast incremental rebuilds.
