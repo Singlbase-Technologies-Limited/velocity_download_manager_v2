@@ -4,6 +4,8 @@
 
 use std::path::PathBuf;
 
+use serde::{Deserialize, Serialize};
+
 use crate::domain::ErrorCode;
 
 /// The longest folder path, in bytes, accepted from the user.
@@ -26,6 +28,45 @@ pub fn check_folder(path: &str) -> Result<PathBuf, ErrorCode> {
     Ok(folder)
 }
 
+/// Where downloads go when the user names no folder (#31, V1's `DownloadSettings`). Saved as
+/// the settings document's `downloads` section; #30 puts it on the Settings screen.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default, deny_unknown_fields)]
+pub struct FolderSettings {
+    /// The default folder; empty for the system's Downloads folder.
+    pub default_directory: String,
+    /// Give a download the category its file name's extension belongs to.
+    pub auto_categorize: bool,
+    /// Save a categorised download in a subfolder named after its category, when the category
+    /// has no folder of its own.
+    pub category_subfolders: bool,
+}
+
+impl Default for FolderSettings {
+    /// V1's defaults since its #38: an automatic category also chooses the folder.
+    fn default() -> Self {
+        FolderSettings {
+            default_directory: String::new(),
+            auto_categorize: true,
+            category_subfolders: true,
+        }
+    }
+}
+
+impl FolderSettings {
+    /// The settings as they are saved, with the folder trimmed, or `InvalidPath`.
+    pub fn checked(&self) -> Result<FolderSettings, ErrorCode> {
+        let default_directory = match self.default_directory.trim() {
+            "" => String::new(),
+            dir => check_folder(dir)?.to_string_lossy().into_owned(),
+        };
+        Ok(FolderSettings {
+            default_directory,
+            ..self.clone()
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -37,6 +78,40 @@ mod tests {
         } else {
             format!("/home/me/{rest}")
         }
+    }
+
+    #[test]
+    fn folder_settings_default_to_v1s() {
+        let s: FolderSettings = serde_json::from_str("{}").unwrap();
+        assert_eq!(s, FolderSettings::default());
+        assert_eq!(s.default_directory, "");
+        assert!(s.auto_categorize && s.category_subfolders);
+        let json = serde_json::to_value(&s).unwrap();
+        assert_eq!(
+            json,
+            serde_json::json!({
+                "defaultDirectory": "",
+                "autoCategorize": true,
+                "categorySubfolders": true
+            })
+        );
+    }
+
+    #[test]
+    fn folder_settings_are_checked() {
+        let with = |dir: &str| FolderSettings {
+            default_directory: dir.to_owned(),
+            ..FolderSettings::default()
+        };
+        assert_eq!(with("").checked(), Ok(with("")));
+        assert_eq!(with("  ").checked(), Ok(with("")));
+        let ok = absolute("Downloads");
+        assert_eq!(with(&format!(" {ok} ")).checked(), Ok(with(&ok)));
+        assert_eq!(with("Downloads").checked(), Err(ErrorCode::InvalidPath));
+        assert_eq!(
+            with(&absolute("a/../b")).checked(),
+            Err(ErrorCode::InvalidPath)
+        );
     }
 
     #[test]
