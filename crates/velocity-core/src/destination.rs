@@ -85,6 +85,9 @@ pub struct Resolved {
     /// The folder came from the category or the settings, not from the user.
     pub automatic_directory: bool,
     pub category: Option<Category>,
+    /// The category's subfolder at the end of `directory`, when it is in one: the one folder
+    /// adding may create.
+    pub subfolder: Option<String>,
 }
 
 /// The category and folder for a new download, as V1 chose them (V1 #38):
@@ -114,6 +117,7 @@ pub fn resolve(
         None => None,
     };
     let chosen = choice.directory.as_deref().map(str::trim);
+    let mut subfolder = None;
     let (directory, automatic_directory) = match chosen.filter(|d| !d.is_empty()) {
         Some(dir) => (check_folder(dir)?, false),
         None => match category.and_then(|c| c.directory.as_deref()) {
@@ -123,11 +127,13 @@ pub fn resolve(
                     "" => system_downloads.ok_or(ErrorCode::DestinationMissing)?,
                     dir => check_folder(dir)?,
                 };
-                let subfolder = category
+                subfolder = category
                     .filter(|_| settings.category_subfolders)
                     .map(|c| sanitize_file_name(&c.name));
                 (
-                    subfolder.map_or_else(|| default.clone(), |s| default.join(s)),
+                    subfolder
+                        .as_ref()
+                        .map_or_else(|| default.clone(), |s| default.join(s)),
                     true,
                 )
             }
@@ -137,6 +143,7 @@ pub fn resolve(
         directory,
         automatic_directory,
         category: category.cloned(),
+        subfolder,
     })
 }
 

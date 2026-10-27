@@ -11,6 +11,7 @@ use crate::destination::{
     existing, resolve, system_downloads, Choice, OnConflict, Place, Placement,
 };
 use crate::domain::{DestinationCheck, ErrorCode};
+use crate::metalink::create_folders;
 use crate::naming::{file_name_for_link, with_link_extension};
 
 impl Manager {
@@ -69,6 +70,15 @@ impl Manager {
         url: &str,
         choice: &Choice,
     ) -> Result<DestinationCheck, ErrorCode> {
+        self.checked(url, choice).map(|(check, _)| check)
+    }
+
+    /// [`Manager::check_destination`], with the category subfolder at the end of the folder.
+    fn checked(
+        &self,
+        url: &str,
+        choice: &Choice,
+    ) -> Result<(DestinationCheck, Option<String>), ErrorCode> {
         let categories = self.categories()?;
         let settings = self.database.folder_settings().map_err(|e| e.code)?;
         let link_name = file_name_for_link(url);
@@ -90,7 +100,7 @@ impl Manager {
         let found = existing(&resolved.directory, file_name.as_deref(), |name| {
             self.waiting_at(&resolved.directory, name)
         });
-        Ok(DestinationCheck {
+        let check = DestinationCheck {
             directory: resolved.directory.to_string_lossy().into_owned(),
             directory_exists: found.directory_exists,
             automatic_directory: resolved.automatic_directory,
@@ -99,19 +109,24 @@ impl Manager {
             file_exists: found.file_exists,
             partial_download_exists: found.partial_download_exists,
             suggested_name: found.suggested_name,
-        })
+        };
+        Ok((check, resolved.subfolder))
     }
 
     /// Where to add `url` with `choice`. A taken name is asked about (`Conflict`) or replaced by
     /// the first free one, as `on_conflict` says; an existing file is never replaced (PO decision
     /// on #31). `FileExists` when no free name is left.
+    ///
+    /// A missing category subfolder is created then, inside its existing parent, never through
+    /// a link (`InvalidPath`). Any other missing folder is `DestinationMissing`: the default
+    /// folder, a category's own and a chosen one.
     pub fn place(
         &self,
         url: &str,
         choice: &Choice,
         on_conflict: OnConflict,
     ) -> Result<Placement, ErrorCode> {
-        let check = self.check_destination(url, choice)?;
+        let (check, subfolder) = self.checked(url, choice)?;
         let file_name = if check.file_exists || check.partial_download_exists {
             match on_conflict {
                 OnConflict::Ask => return Ok(Placement::Conflict(check)),
@@ -122,8 +137,17 @@ impl Manager {
         } else {
             check.file_name
         };
+        let directory = PathBuf::from(check.directory);
+        if !check.directory_exists {
+            match (subfolder, directory.parent()) {
+                (Some(subfolder), Some(parent)) => {
+                    create_folders(parent, &[subfolder])?;
+                }
+                _ => return Err(ErrorCode::DestinationMissing),
+            }
+        }
         Ok(Placement::Placed(Place {
-            directory: PathBuf::from(check.directory),
+            directory,
             file_name,
             category_id: check.category_id,
         }))

@@ -3312,6 +3312,53 @@ mod categories {
     }
 
     #[test]
+    fn placing_creates_the_category_subfolder_and_nothing_else() {
+        let (m, _control, _db, dir) = in_folder("subfolder");
+        let url = "https://example.com/files/ubuntu.iso";
+        let Ok(Placement::Placed(place)) = m.place(url, &Choice::default(), OnConflict::Ask) else {
+            panic!("placed")
+        };
+        assert_eq!(place.directory, dir.join("Disk images"));
+        assert!(place.directory.is_dir(), "created");
+        // A chosen folder must exist: it isn't created.
+        let missing = dir.join("missing");
+        let chosen = Choice {
+            directory: Some(missing.to_string_lossy().into_owned()),
+            ..Choice::default()
+        };
+        assert_eq!(
+            m.place(url, &chosen, OnConflict::Ask),
+            Err(ErrorCode::DestinationMissing)
+        );
+        assert!(!missing.exists());
+        // Nor is a missing default folder.
+        fs::remove_dir_all(&dir).unwrap();
+        assert_eq!(
+            m.place(url, &Choice::default(), OnConflict::Ask),
+            Err(ErrorCode::DestinationMissing)
+        );
+        assert!(!dir.exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_link_in_place_of_the_category_subfolder_is_refused() {
+        let (m, _control, _db, dir) = in_folder("link");
+        let elsewhere = dir.join("elsewhere");
+        fs::create_dir(&elsewhere).unwrap();
+        std::os::unix::fs::symlink(&elsewhere, dir.join("Disk images")).unwrap();
+        assert_eq!(
+            m.place(
+                "https://example.com/files/ubuntu.iso",
+                &Choice::default(),
+                OnConflict::Ask
+            ),
+            Err(ErrorCode::InvalidPath)
+        );
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
     fn a_taken_name_is_asked_about_or_renamed_never_replaced() {
         // PO decision on #31: ask or rename only.
         let (mut m, _control, _db, dir) = in_folder("conflict");
