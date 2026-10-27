@@ -1,0 +1,243 @@
+{
+  "cases": [
+    {
+      "error": null,
+      "name": "My File.iso",
+      "typed": null,
+      "url": "https://e.com/a/My%20File.iso?x=1#part"
+    },
+    {
+      "error": null,
+      "name": "b_c.zip",
+      "typed": null,
+      "url": "https://e.com/a/b%2Fc.zip"
+    },
+    {
+      "error": null,
+      "name": "✓-résumé.pdf",
+      "typed": null,
+      "url": "https://e.com/%E2%9C%93-r%C3%A9sum%C3%A9.pdf"
+    },
+    {
+      "error": null,
+      "name": "bad��bytes.bin",
+      "typed": null,
+      "url": "https://e.com/bad%FF%FEbytes.bin"
+    },
+    {
+      "error": null,
+      "name": "half%2.bin",
+      "typed": null,
+      "url": "https://e.com/half%2.bin"
+    },
+    {
+      "error": null,
+      "name": "ctl__name.txt",
+      "typed": null,
+      "url": "https://e.com/ctl%0A%09name.txt"
+    },
+    {
+      "error": null,
+      "name": "_CON.txt",
+      "typed": null,
+      "url": "https://e.com/CON.txt"
+    },
+    {
+      "error": null,
+      "name": "_con .tar.gz",
+      "typed": null,
+      "url": "https://e.com/con%20.tar.gz"
+    },
+    {
+      "error": null,
+      "name": "_LPT¹.zip",
+      "typed": null,
+      "url": "https://e.com/LPT%C2%B9.zip"
+    },
+    {
+      "error": null,
+      "name": "a.zip.VDMPART_",
+      "typed": null,
+      "url": "https://e.com/a.zip.VDMPART"
+    },
+    {
+      "error": null,
+      "name": "archive.tar.gz",
+      "typed": null,
+      "url": "https://e.com/archive.tar.gz?token=abc"
+    },
+    {
+      "error": null,
+      "name": "file.ISO",
+      "typed": null,
+      "url": "ftp://e.com/pub/file.ISO"
+    },
+    {
+      "error": null,
+      "name": "trailing. . .zip",
+      "typed": null,
+      "url": "https://e.com/trailing.%20.%20.zip"
+    },
+    {
+      "error": null,
+      "name": null,
+      "typed": null,
+      "url": "https://e.com/%20%20.zip"
+    },
+    {
+      "error": null,
+      "name": null,
+      "typed": null,
+      "url": "https://e.com/dir/"
+    },
+    {
+      "error": null,
+      "name": null,
+      "typed": null,
+      "url": "https://e.com/files/12345"
+    },
+    {
+      "error": null,
+      "name": null,
+      "typed": null,
+      "url": "https://e.com/download.php?id=3"
+    },
+    {
+      "error": null,
+      "name": null,
+      "typed": null,
+      "url": "https://e.com/Get.ASPX?f=1"
+    },
+    {
+      "error": null,
+      "name": null,
+      "typed": null,
+      "url": "https://e.com/.hidden"
+    },
+    {
+      "error": null,
+      "name": null,
+      "typed": null,
+      "url": "https://e.com/has%20space.not%20ext"
+    },
+    {
+      "error": null,
+      "name": null,
+      "typed": null,
+      "url": "https://e.com/"
+    },
+    {
+      "error": null,
+      "name": null,
+      "typed": null,
+      "url": "https://e.com"
+    },
+    {
+      "error": null,
+      "name": null,
+      "typed": null,
+      "url": "https://e.com?q=/a.zip"
+    },
+    {
+      "error": null,
+      "name": null,
+      "typed": null,
+      "url": "not a url"
+    },
+    {
+      "error": null,
+      "name": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx.iso",
+      "typed": null,
+      "url": "https://e.com/xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx.iso"
+    },
+    {
+      "error": null,
+      "name": "Annual report.pdf",
+      "typed": "Annual report",
+      "url": "https://e.com/report.pdf"
+    },
+    {
+      "error": null,
+      "name": "release-1.2.zip",
+      "typed": "release-1.2",
+      "url": "https://e.com/r.zip"
+    },
+    {
+      "error": null,
+      "name": "Annual.PDF",
+      "typed": "Annual.PDF",
+      "url": "https://e.com/report.pdf"
+    },
+    {
+      "error": null,
+      "name": "notes.txt",
+      "typed": "notes.txt",
+      "url": "https://e.com/report.pdf"
+    },
+    {
+      "error": null,
+      "name": "backup.tar.gz",
+      "typed": "backup.tar",
+      "url": "https://e.com/b.tar.gz"
+    },
+    {
+      "error": null,
+      "name": "spaced.zip",
+      "typed": "  spaced  ",
+      "url": "https://e.com/r.zip"
+    },
+    {
+      "error": null,
+      "name": "r.zip",
+      "typed": "   ",
+      "url": "https://e.com/r.zip"
+    },
+    {
+      "error": null,
+      "name": "as typed",
+      "typed": "as typed",
+      "url": "https://e.com/files/12345"
+    },
+    {
+      "error": "INVALID_FILENAME",
+      "name": null,
+      "typed": "a/b",
+      "url": "https://e.com/r.zip"
+    },
+    {
+      "error": "INVALID_FILENAME",
+      "name": null,
+      "typed": "CON",
+      "url": "https://e.com/r.zip"
+    },
+    {
+      "error": "INVALID_FILENAME",
+      "name": null,
+      "typed": "x.vdmpart",
+      "url": "https://e.com/r.bin"
+    },
+    {
+      "error": "INVALID_FILENAME",
+      "name": null,
+      "typed": ".hidden",
+      "url": "https://e.com/r.zip"
+    },
+    {
+      "error": "INVALID_FILENAME",
+      "name": null,
+      "typed": "yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
+      "url": "https://e.com/r.zip"
+    },
+    {
+      "error": null,
+      "name": "yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
+      "typed": "yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
+      "url": "https://e.com/files/12345"
+    }
+  ],
+  "known": [
+    "zip",
+    "pdf",
+    "txt"
+  ]
+}

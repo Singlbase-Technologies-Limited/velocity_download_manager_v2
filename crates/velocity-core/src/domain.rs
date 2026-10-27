@@ -857,6 +857,77 @@ mod tests {
             );
         }
 
+        /// The names `src/naming.ts` must give, from the Rust rules (#31).
+        #[test]
+        fn contract_naming_cases() {
+            use crate::naming::name_for_download;
+            const KNOWN: [&str; 3] = ["zip", "pdf", "txt"];
+            let long = "x".repeat(300);
+            let long_url = format!("https://e.com/{long}.iso");
+            let long_typed = "y".repeat(238);
+            let urls = [
+                "https://e.com/a/My%20File.iso?x=1#part",
+                "https://e.com/a/b%2Fc.zip",
+                "https://e.com/%E2%9C%93-r%C3%A9sum%C3%A9.pdf",
+                "https://e.com/bad%FF%FEbytes.bin",
+                "https://e.com/half%2.bin",
+                "https://e.com/ctl%0A%09name.txt",
+                "https://e.com/CON.txt",
+                "https://e.com/con%20.tar.gz",
+                "https://e.com/LPT%C2%B9.zip",
+                "https://e.com/a.zip.VDMPART",
+                "https://e.com/archive.tar.gz?token=abc",
+                "ftp://e.com/pub/file.ISO",
+                "https://e.com/trailing.%20.%20.zip",
+                "https://e.com/%20%20.zip",
+                "https://e.com/dir/",
+                "https://e.com/files/12345",
+                "https://e.com/download.php?id=3",
+                "https://e.com/Get.ASPX?f=1",
+                "https://e.com/.hidden",
+                "https://e.com/has%20space.not%20ext",
+                "https://e.com/",
+                "https://e.com",
+                "https://e.com?q=/a.zip",
+                "not a url",
+                long_url.as_str(),
+            ];
+            let typed = [
+                ("Annual report", "https://e.com/report.pdf"),
+                ("release-1.2", "https://e.com/r.zip"),
+                ("Annual.PDF", "https://e.com/report.pdf"),
+                ("notes.txt", "https://e.com/report.pdf"),
+                ("backup.tar", "https://e.com/b.tar.gz"),
+                ("  spaced  ", "https://e.com/r.zip"),
+                ("   ", "https://e.com/r.zip"),
+                ("as typed", "https://e.com/files/12345"),
+                ("a/b", "https://e.com/r.zip"),
+                ("CON", "https://e.com/r.zip"),
+                ("x.vdmpart", "https://e.com/r.bin"),
+                (".hidden", "https://e.com/r.zip"),
+                (long_typed.as_str(), "https://e.com/r.zip"),
+                (long_typed.as_str(), "https://e.com/files/12345"),
+            ];
+            let case = |url: &str, typed: Option<&str>| {
+                let result = name_for_download(url, typed, |e| KNOWN.contains(&e));
+                serde_json::json!({
+                    "url": url,
+                    "typed": typed,
+                    "name": result.as_ref().ok().cloned().flatten(),
+                    "error": result.err(),
+                })
+            };
+            let cases: Vec<_> = urls
+                .iter()
+                .map(|url| case(url, None))
+                .chain(typed.iter().map(|(t, url)| case(url, Some(t))))
+                .collect();
+            check(
+                "naming-cases.json",
+                serde_json::json!({ "known": KNOWN, "cases": cases }),
+            );
+        }
+
         #[test]
         fn contract_on_conflict() {
             check(

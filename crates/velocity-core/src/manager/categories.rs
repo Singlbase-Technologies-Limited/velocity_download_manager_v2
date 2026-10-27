@@ -12,7 +12,7 @@ use crate::destination::{
 };
 use crate::domain::{DestinationCheck, ErrorCode};
 use crate::metalink::create_folders;
-use crate::naming::{file_name_for_link, with_link_extension};
+use crate::naming::name_for_download;
 use crate::request::MAX_URL_BYTES;
 
 impl Manager {
@@ -85,17 +85,11 @@ impl Manager {
         }
         let categories = self.categories()?;
         let settings = self.database.folder_settings().map_err(|e| e.code)?;
-        let link_name = file_name_for_link(url);
-        let file_name = match choice.file_name.as_deref().map(str::trim) {
-            Some(typed) if !typed.is_empty() => {
-                Some(with_link_extension(typed, link_name.as_deref(), |ext| {
-                    categories
-                        .iter()
-                        .any(|c| c.extensions.iter().any(|e| e == ext))
-                })?)
-            }
-            _ => link_name,
-        };
+        let file_name = name_for_download(url, choice.file_name.as_deref(), |ext| {
+            categories
+                .iter()
+                .any(|c| c.extensions.iter().any(|e| e == ext))
+        })?;
         let choice = Choice {
             file_name: file_name.clone(),
             ..choice.clone()

@@ -198,6 +198,24 @@ pub fn with_link_extension(
     }
 }
 
+/// The name a new download of `url` is saved under, before the server answers (#31): the name
+/// the user typed, trimmed and keeping the link's file type ([`with_link_extension`]), else the
+/// link's ([`file_name_for_link`]). `None` when the server will name it. `src/naming.ts` mirrors
+/// it for the Add form's preview, checked against `naming-cases.json`.
+pub fn name_for_download(
+    url: &str,
+    typed: Option<&str>,
+    is_known: impl Fn(&str) -> bool,
+) -> Result<Option<String>, ErrorCode> {
+    let link_name = file_name_for_link(url);
+    match typed.map(str::trim) {
+        Some(typed) if !typed.is_empty() => {
+            with_link_extension(typed, link_name.as_deref(), is_known).map(Some)
+        }
+        _ => Ok(link_name),
+    }
+}
+
 /// `name` if it is free, or else the first free `stem (n).ext`, n from 1 to 9999, shortened to fit
 /// [`MAX_FILE_NAME_BYTES`]. `None` when every one is taken.
 pub fn free_file_name(name: &str, mut is_taken: impl FnMut(&str) -> bool) -> Option<String> {
