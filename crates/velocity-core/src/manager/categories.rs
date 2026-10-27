@@ -13,6 +13,7 @@ use crate::destination::{
 use crate::domain::{DestinationCheck, ErrorCode};
 use crate::metalink::create_folders;
 use crate::naming::{file_name_for_link, with_link_extension};
+use crate::request::MAX_URL_BYTES;
 
 impl Manager {
     /// Every category, in the order the automatic category is chosen in.
@@ -79,6 +80,9 @@ impl Manager {
         url: &str,
         choice: &Choice,
     ) -> Result<(DestinationCheck, Option<String>), ErrorCode> {
+        if url.len() > MAX_URL_BYTES {
+            return Err(ErrorCode::InvalidUrl);
+        }
         let categories = self.categories()?;
         let settings = self.database.folder_settings().map_err(|e| e.code)?;
         let link_name = file_name_for_link(url);

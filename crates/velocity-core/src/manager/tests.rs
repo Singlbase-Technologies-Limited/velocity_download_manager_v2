@@ -3308,6 +3308,14 @@ mod categories {
             m.check_destination(url, &typed("a/b")),
             Err(ErrorCode::InvalidFilename)
         );
+        let long = format!(
+            "https://example.com/{}.pdf",
+            "x".repeat(crate::request::MAX_URL_BYTES)
+        );
+        assert_eq!(
+            m.check_destination(&long, &Choice::default()),
+            Err(ErrorCode::InvalidUrl)
+        );
         fs::remove_dir_all(&dir).unwrap();
     }
 

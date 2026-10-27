@@ -36,7 +36,10 @@ use serde::Serialize;
 /// Version 7 (#58) added the downloads commands and their types: [`domain::DownloadsSnapshot`],
 /// [`domain::EngineHealth`] and [`domain::BatchResult`].
 /// Version 8 (#58, torrents) added [`domain::DownloadsSnapshot::torrent_engine`].
-pub const COMMAND_API_VERSION: u32 = 8;
+/// Version 9 (#31) added the category commands, `set_download_category` and
+/// `check_destination`, their types ([`category::Category`], [`domain::DestinationCheck`]) and
+/// [`domain::ErrorCode::NameTaken`].
+pub const COMMAND_API_VERSION: u32 = 9;
 
 /// Name, version and contract version of the running application.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]

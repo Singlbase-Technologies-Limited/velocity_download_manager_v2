@@ -5,7 +5,7 @@
 import { z } from 'zod';
 
 /** Must equal `velocity_core::COMMAND_API_VERSION`; the app refuses to start on a mismatch. */
-export const COMMAND_API_VERSION = 8;
+export const COMMAND_API_VERSION = 9;
 
 const bytes = z.number().int().nonnegative();
 

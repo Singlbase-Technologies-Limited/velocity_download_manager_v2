@@ -1,5 +1,6 @@
 //! Tauri desktop shell. Commands stay thin: they delegate to `velocity-core`.
 
+mod categories;
 mod downloads;
 
 use tauri::Manager;
@@ -54,6 +55,12 @@ pub fn run() {
             downloads::choose_torrent_files,
             downloads::set_torrent_seeding,
             downloads::restart_torrent_helper,
+            categories::list_categories,
+            categories::create_category,
+            categories::update_category,
+            categories::delete_category,
+            categories::set_download_category,
+            categories::check_destination,
         ])
         .run(tauri::generate_context!())
         .expect("error while running the Velocity Download Manager desktop shell");
