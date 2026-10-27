@@ -252,6 +252,26 @@ pub struct DownloadsSnapshot {
     pub storage_error: Option<ErrorCode>,
 }
 
+/// What adding a download would do, before it is added (#31, V1's destination check): the
+/// folder and category chosen, the file's name when it is known, and whether that name is
+/// taken. Free disk space isn't reported yet.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct DestinationCheck {
+    pub directory: String,
+    pub directory_exists: bool,
+    /// The folder came from the category or the settings, not from the user.
+    pub automatic_directory: bool,
+    pub category_id: Option<String>,
+    /// `None` when the server will name the file.
+    pub file_name: Option<String>,
+    pub file_exists: bool,
+    /// A download, V2's or V1's, that hasn't finished has the name.
+    pub partial_download_exists: bool,
+    /// When the name is taken, the first free `name (n).ext`.
+    pub suggested_name: Option<String>,
+}
+
 /// What a command over several downloads did (#58, V1's batch result): the ids it was done for,
 /// in order, those it failed for with why, and, when removing with files, the files kept.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -474,7 +494,8 @@ impl DownloadRecord {
             source_url: "https://example.com/files/archive.zip".to_owned(),
             file_name: Some("archive.zip".to_owned()),
             directory: "/home/user/Downloads".to_owned(),
-            category_id: Some("archives".to_owned()),
+            // A built-in category (#31), so the sample can be saved.
+            category_id: Some("compressed".to_owned()),
             status: DownloadStatus::Retrying,
             progress: Progress {
                 completed_bytes: 1_048_576,
@@ -516,6 +537,22 @@ impl DownloadsSnapshot {
             engine: EngineHealth::Restarting { attempt: 1 },
             torrent_engine: EngineHealth::Running,
             storage_error: Some(ErrorCode::Database),
+        }
+    }
+}
+
+impl DestinationCheck {
+    /// A fixed example for the contract fixtures and UI tests.
+    pub fn sample() -> Self {
+        Self {
+            directory: "/home/user/Downloads/Documents".to_owned(),
+            directory_exists: true,
+            automatic_directory: true,
+            category_id: Some("documents".to_owned()),
+            file_name: Some("report.pdf".to_owned()),
+            file_exists: true,
+            partial_download_exists: false,
+            suggested_name: Some("report (1).pdf".to_owned()),
         }
     }
 }
@@ -809,6 +846,22 @@ mod tests {
             check(
                 "downloads-snapshot.json",
                 serde_json::to_value(DownloadsSnapshot::sample()).unwrap(),
+            );
+        }
+
+        #[test]
+        fn contract_destination_check() {
+            check(
+                "destination-check.json",
+                serde_json::to_value(DestinationCheck::sample()).unwrap(),
+            );
+        }
+
+        #[test]
+        fn contract_on_conflict() {
+            check(
+                "on-conflict.json",
+                serde_json::to_value(crate::destination::OnConflict::ALL).unwrap(),
             );
         }
 

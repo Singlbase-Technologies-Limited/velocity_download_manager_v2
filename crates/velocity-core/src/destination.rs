@@ -140,6 +140,46 @@ pub fn resolve(
     })
 }
 
+/// What adding does when the name is taken (PO decision on #31: an existing file is never
+/// replaced, and V1's partial downloads are never resumed).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum OnConflict {
+    /// Add nothing, and say what is there and which name is free.
+    #[default]
+    Ask,
+    /// Use the first free `name (n).ext`.
+    Rename,
+}
+
+impl OnConflict {
+    /// Every value, in contract order (the fixture shared with `src/contract.ts`).
+    pub const ALL: [OnConflict; 2] = [OnConflict::Ask, OnConflict::Rename];
+}
+
+/// Where a new download goes, once its name is free.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Place {
+    pub directory: PathBuf,
+    /// `None` when the server will name the file.
+    pub file_name: Option<String>,
+    pub category_id: Option<String>,
+}
+
+/// What placing a new download gave.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Placement {
+    Placed(Place),
+    /// The name is taken and [`OnConflict::Ask`] was chosen: nothing is added.
+    Conflict(crate::domain::DestinationCheck),
+}
+
+/// The system's Downloads folder, or `Downloads` in the home folder when the system names none
+/// (V1's fallback, without its last resort of the temporary folder).
+pub fn system_downloads() -> Option<PathBuf> {
+    dirs::download_dir().or_else(|| dirs::home_dir().map(|home| home.join("Downloads")))
+}
+
 /// The suffix of V1's control file beside a download it hasn't finished (aria2's). V2 never reads
 /// one; it only counts the name as taken, so V1's download is never written over.
 pub const V1_PART_SUFFIX: &str = ".aria2";
@@ -157,8 +197,9 @@ pub struct Existing {
 }
 
 /// What is in `directory` under `name`. A name is taken by anything at it, at its V2 part file or
-/// at its V1 control file. Nothing is created or changed.
-pub fn existing(directory: &Path, name: Option<&str>) -> Existing {
+/// at its V1 control file, or by a download `in_list` says has it and hasn't finished. Nothing
+/// is created or changed.
+pub fn existing(directory: &Path, name: Option<&str>, in_list: impl Fn(&str) -> bool) -> Existing {
     let directory_exists = directory.is_dir();
     let Some(name) = name.filter(|_| directory_exists) else {
         return Existing {
@@ -169,7 +210,9 @@ pub fn existing(directory: &Path, name: Option<&str>) -> Existing {
     // symlink_metadata doesn't follow a link: a broken link at the name counts.
     let at = |name: &str| std::fs::symlink_metadata(directory.join(name)).is_ok();
     let partial = |name: &str| {
-        at(&format!("{name}{PART_FILE_SUFFIX}")) || at(&format!("{name}{V1_PART_SUFFIX}"))
+        in_list(name)
+            || at(&format!("{name}{PART_FILE_SUFFIX}"))
+            || at(&format!("{name}{V1_PART_SUFFIX}"))
     };
     let file_exists = at(name);
     let partial_download_exists = partial(name);
@@ -270,20 +313,20 @@ mod tests {
     fn a_free_name_or_a_missing_folder_is_reported_as_such() {
         let dir = TempFolder::new("free");
         assert_eq!(
-            existing(&dir.0, Some("a.zip")),
+            existing(&dir.0, Some("a.zip"), |_| false),
             Existing {
                 directory_exists: true,
                 ..Existing::default()
             }
         );
         assert_eq!(
-            existing(&dir.0.join("missing"), Some("a.zip")),
+            existing(&dir.0.join("missing"), Some("a.zip"), |_| false),
             Existing::default()
         );
         // No name yet: the server names it later, and the engine finds it a free one.
         dir.touch("a.zip");
         assert_eq!(
-            existing(&dir.0, None),
+            existing(&dir.0, None, |_| false),
             Existing {
                 directory_exists: true,
                 ..Existing::default()
@@ -297,7 +340,7 @@ mod tests {
         dir.touch("a.zip");
         dir.touch("a (1).zip.vdmpart");
         assert_eq!(
-            existing(&dir.0, Some("a.zip")),
+            existing(&dir.0, Some("a.zip"), |_| false),
             Existing {
                 directory_exists: true,
                 file_exists: true,
@@ -308,7 +351,7 @@ mod tests {
         // A V2 download that hasn't finished, with no file yet. The suggestion numbers the name
         // as given, as the engine does (`free_file_name`, #40).
         assert_eq!(
-            existing(&dir.0, Some("a (1).zip")),
+            existing(&dir.0, Some("a (1).zip"), |_| false),
             Existing {
                 directory_exists: true,
                 file_exists: false,
@@ -318,7 +361,7 @@ mod tests {
         );
         // A folder at the name takes it too.
         std::fs::create_dir(dir.0.join("b.zip")).unwrap();
-        assert!(existing(&dir.0, Some("b.zip")).file_exists);
+        assert!(existing(&dir.0, Some("b.zip"), |_| false).file_exists);
     }
 
     #[test]
@@ -329,7 +372,7 @@ mod tests {
         dir.touch("ubuntu.iso.aria2");
         dir.touch("other.iso.aria2");
         assert_eq!(
-            existing(&dir.0, Some("ubuntu.iso")),
+            existing(&dir.0, Some("ubuntu.iso"), |_| false),
             Existing {
                 directory_exists: true,
                 file_exists: true,
@@ -338,7 +381,7 @@ mod tests {
             }
         );
         // Only V1's control file is there: the name is still taken.
-        let other = existing(&dir.0, Some("other.iso"));
+        let other = existing(&dir.0, Some("other.iso"), |_| false);
         assert!(other.partial_download_exists && !other.file_exists);
         assert_eq!(other.suggested_name.as_deref(), Some("other (1).iso"));
     }

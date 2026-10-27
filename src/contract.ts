@@ -220,6 +220,27 @@ export const CategorySchema = z.strictObject({
 });
 export type Category = z.infer<typeof CategorySchema>;
 
+/** What adding a download would do, before it is added (#31). Free disk space isn't reported yet. */
+export const DestinationCheckSchema = z.strictObject({
+  directory: z.string().min(1),
+  directoryExists: z.boolean(),
+  /** The folder came from the category or the settings, not from the user. */
+  automaticDirectory: z.boolean(),
+  categoryId: z.string().min(1).nullable(),
+  /** `null` when the server will name the file. */
+  fileName: z.string().min(1).nullable(),
+  fileExists: z.boolean(),
+  /** A download, V2's or V1's, that hasn't finished has the name. */
+  partialDownloadExists: z.boolean(),
+  /** When the name is taken, the first free `name (n).ext`. */
+  suggestedName: z.string().min(1).nullable(),
+});
+export type DestinationCheck = z.infer<typeof DestinationCheckSchema>;
+
+/** What adding does when the name is taken (#31): ask, or take the first free name. Never replace. */
+export const OnConflictSchema = z.enum(['ask', 'rename']);
+export type OnConflict = z.infer<typeof OnConflictSchema>;
+
 export const AppInfoSchema = z.strictObject({
   name: z.string().min(1),
   version: z.string().min(1),

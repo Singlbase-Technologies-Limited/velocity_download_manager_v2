@@ -272,7 +272,7 @@ impl Database {
             .map_err(|e| DatabaseError::new(ErrorCode::Internal, e.to_string()))?;
         let verification = record.verification.as_ref().map(wire_name).transpose()?;
         let changed = self.conn().execute(
-            "UPDATE downloads SET status = ?2, file_name = ?3, total_bytes = ?4,              completed_bytes = ?5, error_json = ?6, verification = ?7, completed_at_ms = ?8              WHERE id = ?1",
+            "UPDATE downloads SET status = ?2, file_name = ?3, total_bytes = ?4,              completed_bytes = ?5, error_json = ?6, verification = ?7, completed_at_ms = ?8,              category_id = ?9 WHERE id = ?1",
             rusqlite::params![
                 record.id,
                 wire_name(&record.status)?,
@@ -282,6 +282,7 @@ impl Database {
                 error,
                 verification,
                 record.completed_at_ms.map(to_sql_int).transpose()?,
+                record.category_id,
             ],
         )?;
         if changed != 1 {

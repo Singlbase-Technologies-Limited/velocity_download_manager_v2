@@ -9,12 +9,14 @@ import {
   CategorySchema,
   ConnectionLimitSchema,
   COMMAND_API_VERSION,
+  DestinationCheckSchema,
   DownloadRecordSchema,
   DownloadsSnapshotSchema,
   DownloadStatusSchema,
   EngineHealthSchema,
   ErrorCodeSchema,
   KeptReasonSchema,
+  OnConflictSchema,
   parseAppInfo,
   VerificationSchema,
 } from './contract';
@@ -74,6 +76,16 @@ describe('contract fixtures generated from Rust', () => {
 
   it('category icons: exactly the values the schema knows, in order (#31)', () => {
     expect(fixture('category-icons.json')).toEqual(CategoryIconSchema.options);
+  });
+
+  it('destination check (#31)', () => {
+    expect(DestinationCheckSchema.parse(fixture('destination-check.json'))).toEqual(
+      fixture('destination-check.json'),
+    );
+  });
+
+  it('conflict choices: exactly the values the schema knows, in order (#31)', () => {
+    expect(fixture('on-conflict.json')).toEqual(OnConflictSchema.options);
   });
 
   it('app info carries the same contract version as this UI', () => {

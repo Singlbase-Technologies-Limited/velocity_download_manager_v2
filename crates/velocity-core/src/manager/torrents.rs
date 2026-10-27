@@ -161,6 +161,7 @@ impl Manager {
             upload_limit: request.upload_limit,
             download_limit: request.download_limit,
         };
+        let category_id = self.known_category(options.category_id.as_deref())?;
         let paused =
             options.start_paused || (!self.settings.start_immediately && !options.scheduled);
         self.next_id += 1;
@@ -174,7 +175,7 @@ impl Manager {
                 source_url: source_url.clone(),
                 file_name: name.clone(),
                 directory: request.directory.to_string_lossy().into_owned(),
-                category_id: None,
+                category_id: category_id.clone(),
                 status: DownloadStatus::Queued,
                 progress: Progress {
                     completed_bytes: 0,
@@ -205,7 +206,7 @@ impl Manager {
             source_url,
             directory: download.record.directory.clone(),
             file_name: name,
-            category_id: None,
+            category_id,
             options: StoredOptions::default(),
             has_sensitive_options: false,
             created_at_ms: now_ms,
