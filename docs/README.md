@@ -18,7 +18,8 @@ Every document in `docs/` is listed here. A new document is added to this map in
 | [TORRENTS.md](TORRENTS.md) | Work on torrents: the bridge, the torrent helper, the checks before libtorrent, the torrent contract and statuses, seeding, resume data and recovery, deleting a torrent's files, trackers and peers, settings and port mapping, and what is still to come |
 | [DATA_AND_MIGRATIONS.md](DATA_AND_MIGRATIONS.md) | Change the app database: the file, the schema, unknown values, secrets, and how to add a migration |
 | [SECURITY.md](SECURITY.md) | See how V2 verifies TLS certificates on each platform, what was measured (purpose, host, expiry, revocation, TLS 1.3), and how the tests trust a test CA |
-| [SETTINGS.md](SETTINGS.md) | See each setting V2 has so far, what it does and its bounds: performance profiles, the queue, and what a build can do |
+| [SETTINGS.md](SETTINGS.md) | See each setting V2 has so far, what it does and its bounds: performance profiles, the queue, folders, and what a build can do |
+| [FILE_NAMING.md](FILE_NAMING.md) | Change how a download's file is named, its category and folder are chosen, and what happens when the name is taken |
 | [CONTRACTS.md](CONTRACTS.md) | Change a type shared by the UI and Rust: the domain types, contract fixtures and the contract version |
 | [CONVENTIONS.md](CONVENTIONS.md) | Name Rust and TypeScript code, files, tests, commands, events and error codes |
 

@@ -33,6 +33,19 @@ The settings V2 has so far, what each one does, and its bounds. The settings mod
 
 How the queue applies them is in [ENGINE_CONTRACT.md](ENGINE_CONTRACT.md#the-managers-side).
 
+## Folders
+
+`FolderSettings` in [`crates/velocity-core/src/destination.rs`](../crates/velocity-core/src/destination.rs) (#31), V1's `downloads` settings, saved as the settings document's `downloads` section. #30 puts them on the Settings screen (PO decision on #31). What they do is in [FILE_NAMING.md](FILE_NAMING.md#folders).
+
+| Setting | Default | Bounds |
+|---|---|---|
+| `defaultDirectory` | empty: the system's Downloads folder, or `Downloads` in the home folder when the system names none | An absolute folder, at most 4096 bytes, with no control character and no `..` part |
+| `autoCategorize` | on | — |
+| `categorySubfolders` | on, V1's default since its #38 | — |
+
+- **Before any are saved,** the defaults apply.
+- **Saved ones that can't be read,** or that fail their checks, are a `DATABASE` error and are left as they were, never replaced by the defaults.
+
 ## What a build can do
 
 Settings and details never offer what the build can't do. The engine reports its capabilities per protocol (`ProtocolCapabilities`, [CONTRACTS.md](CONTRACTS.md)): whether it downloads the protocol at all, and whether it segments, resumes, checks validators, uses HTTP/2 and can encrypt it. In the UI, `availability` ([`src/capabilities.ts`](../src/capabilities.ts)) turns that into "available" or a reason, and `CapabilityOption` shows a control that is disabled, with the reason beside it, when the build lacks something. #30 and the download details (R8) place it.
