@@ -389,6 +389,7 @@ pub enum ErrorCode {
     PermissionDenied,
     FileExists,
     NotFound,
+    NameTaken,
     InvalidState,
     EngineMissing,
     EngineIncompatible,
@@ -406,7 +407,7 @@ pub enum ErrorCode {
 
 impl ErrorCode {
     /// Every code. V1's codes without the four aria2 JSON-RPC ones (`RPC_*`).
-    pub const ALL: [Self; 22] = [
+    pub const ALL: [Self; 23] = [
         Self::InvalidInput,
         Self::InvalidUrl,
         Self::UnsupportedScheme,
@@ -416,6 +417,7 @@ impl ErrorCode {
         Self::PermissionDenied,
         Self::FileExists,
         Self::NotFound,
+        Self::NameTaken,
         Self::InvalidState,
         Self::EngineMissing,
         Self::EngineIncompatible,
@@ -443,6 +445,7 @@ impl ErrorCode {
             Self::PermissionDenied => "Velocity isn't allowed to write to that location.",
             Self::FileExists => "A file with that name already exists.",
             Self::NotFound => "That download or file no longer exists.",
+            Self::NameTaken => "That name is already taken.",
             Self::InvalidState => "That action isn't possible in the download's current state.",
             Self::EngineMissing => "The transfer engine is missing from this installation.",
             Self::EngineIncompatible => {
@@ -806,6 +809,22 @@ mod tests {
             check(
                 "downloads-snapshot.json",
                 serde_json::to_value(DownloadsSnapshot::sample()).unwrap(),
+            );
+        }
+
+        #[test]
+        fn contract_category() {
+            check(
+                "category.json",
+                serde_json::to_value(crate::category::Category::sample()).unwrap(),
+            );
+        }
+
+        #[test]
+        fn contract_category_icons() {
+            check(
+                "category-icons.json",
+                serde_json::to_value(crate::category::ICONS).unwrap(),
             );
         }
 

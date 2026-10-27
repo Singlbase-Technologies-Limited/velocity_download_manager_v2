@@ -1,0 +1,12 @@
+{
+  "builtin": false,
+  "color": "#112233",
+  "directory": "/home/user/Courses",
+  "extensions": [
+    "mp4",
+    "pdf"
+  ],
+  "icon": "book",
+  "id": "c-0a1b2c3d4e5f",
+  "name": "Курсы"
+}

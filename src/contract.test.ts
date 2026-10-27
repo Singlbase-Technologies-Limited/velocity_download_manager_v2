@@ -5,6 +5,8 @@ import {
   AppInfoSchema,
   BatchResultSchema,
   CapabilitiesSchema,
+  CategoryIconSchema,
+  CategorySchema,
   ConnectionLimitSchema,
   COMMAND_API_VERSION,
   DownloadRecordSchema,
@@ -64,6 +66,14 @@ describe('contract fixtures generated from Rust', () => {
 
   it('kept reasons: exactly the values the schema knows, in order (#58)', () => {
     expect(fixture('kept-reasons.json')).toEqual(KeptReasonSchema.options);
+  });
+
+  it('category (#31)', () => {
+    expect(CategorySchema.parse(fixture('category.json'))).toEqual(fixture('category.json'));
+  });
+
+  it('category icons: exactly the values the schema knows, in order (#31)', () => {
+    expect(fixture('category-icons.json')).toEqual(CategoryIconSchema.options);
   });
 
   it('app info carries the same contract version as this UI', () => {

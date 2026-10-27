@@ -127,6 +127,7 @@ export const ErrorCodeSchema = z.enum([
   'PERMISSION_DENIED',
   'FILE_EXISTS',
   'NOT_FOUND',
+  'NAME_TAKEN',
   'INVALID_STATE',
   'ENGINE_MISSING',
   'ENGINE_INCOMPATIBLE',
@@ -187,6 +188,37 @@ export const BatchResultSchema = z.strictObject({
   kept: z.array(z.strictObject({ path: z.string(), reason: KeptReasonSchema, code: ErrorCodeSchema.nullable() })),
 });
 export type BatchResult = z.infer<typeof BatchResultSchema>;
+
+/** The icons a category may have (#31), in the order the UI offers them. */
+export const CategoryIconSchema = z.enum([
+  'folder',
+  'archive',
+  'file-text',
+  'music',
+  'film',
+  'app-window',
+  'disc',
+  'image',
+  'code',
+  'book',
+  'package',
+  'star',
+]);
+export type CategoryIcon = z.infer<typeof CategoryIconSchema>;
+
+/** A download category (#31): built in (editable, not deletable) or the user's. */
+export const CategorySchema = z.strictObject({
+  id: z.string().min(1),
+  name: z.string().min(1).max(40),
+  color: z.string().regex(/^#[0-9a-f]{6}$/),
+  icon: CategoryIconSchema,
+  /** Lowercase, without the dot. */
+  extensions: z.array(z.string().regex(/^[0-9a-z]{1,16}$/)).max(100),
+  /** The category's own folder, if it has one. */
+  directory: z.string().min(1).nullable(),
+  builtin: z.boolean(),
+});
+export type Category = z.infer<typeof CategorySchema>;
 
 export const AppInfoSchema = z.strictObject({
   name: z.string().min(1),

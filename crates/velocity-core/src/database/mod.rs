@@ -10,6 +10,7 @@
 //!   record is never routed to an engine.
 //! - **No secrets:** nothing that holds credentials or header values can be stored.
 
+mod categories;
 mod checkpoints;
 mod downloads;
 mod queue;
@@ -349,7 +350,7 @@ mod tests {
 
     const NEXT: &str = "ALTER TABLE downloads ADD COLUMN note TEXT;";
 
-    fn sample(id: &str) -> NewDownload {
+    pub(super) fn sample(id: &str) -> NewDownload {
         NewDownload {
             id: id.to_owned(),
             engine: Engine::Velocity,

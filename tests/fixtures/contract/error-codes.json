@@ -36,6 +36,10 @@
     "message": "That download or file no longer exists."
   },
   {
+    "code": "NAME_TAKEN",
+    "message": "That name is already taken."
+  },
+  {
     "code": "INVALID_STATE",
     "message": "That action isn't possible in the download's current state."
   },
