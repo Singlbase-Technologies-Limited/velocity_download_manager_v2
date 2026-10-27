@@ -252,6 +252,26 @@ pub struct DownloadsSnapshot {
     pub storage_error: Option<ErrorCode>,
 }
 
+/// What adding a download would do, before it is added (#31, V1's destination check): the
+/// folder and category chosen, the file's name when it is known, and whether that name is
+/// taken. Free disk space isn't reported yet.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct DestinationCheck {
+    pub directory: String,
+    pub directory_exists: bool,
+    /// The folder came from the category or the settings, not from the user.
+    pub automatic_directory: bool,
+    pub category_id: Option<String>,
+    /// `None` when the server will name the file.
+    pub file_name: Option<String>,
+    pub file_exists: bool,
+    /// A download, V2's or V1's, that hasn't finished has the name.
+    pub partial_download_exists: bool,
+    /// When the name is taken, the first free `name (n).ext`.
+    pub suggested_name: Option<String>,
+}
+
 /// What a command over several downloads did (#58, V1's batch result): the ids it was done for,
 /// in order, those it failed for with why, and, when removing with files, the files kept.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -389,6 +409,7 @@ pub enum ErrorCode {
     PermissionDenied,
     FileExists,
     NotFound,
+    NameTaken,
     InvalidState,
     EngineMissing,
     EngineIncompatible,
@@ -406,7 +427,7 @@ pub enum ErrorCode {
 
 impl ErrorCode {
     /// Every code. V1's codes without the four aria2 JSON-RPC ones (`RPC_*`).
-    pub const ALL: [Self; 22] = [
+    pub const ALL: [Self; 23] = [
         Self::InvalidInput,
         Self::InvalidUrl,
         Self::UnsupportedScheme,
@@ -416,6 +437,7 @@ impl ErrorCode {
         Self::PermissionDenied,
         Self::FileExists,
         Self::NotFound,
+        Self::NameTaken,
         Self::InvalidState,
         Self::EngineMissing,
         Self::EngineIncompatible,
@@ -443,6 +465,7 @@ impl ErrorCode {
             Self::PermissionDenied => "Velocity isn't allowed to write to that location.",
             Self::FileExists => "A file with that name already exists.",
             Self::NotFound => "That download or file no longer exists.",
+            Self::NameTaken => "That name is already taken.",
             Self::InvalidState => "That action isn't possible in the download's current state.",
             Self::EngineMissing => "The transfer engine is missing from this installation.",
             Self::EngineIncompatible => {
@@ -471,7 +494,8 @@ impl DownloadRecord {
             source_url: "https://example.com/files/archive.zip".to_owned(),
             file_name: Some("archive.zip".to_owned()),
             directory: "/home/user/Downloads".to_owned(),
-            category_id: Some("archives".to_owned()),
+            // A built-in category (#31), so the sample can be saved.
+            category_id: Some("compressed".to_owned()),
             status: DownloadStatus::Retrying,
             progress: Progress {
                 completed_bytes: 1_048_576,
@@ -513,6 +537,22 @@ impl DownloadsSnapshot {
             engine: EngineHealth::Restarting { attempt: 1 },
             torrent_engine: EngineHealth::Running,
             storage_error: Some(ErrorCode::Database),
+        }
+    }
+}
+
+impl DestinationCheck {
+    /// A fixed example for the contract fixtures and UI tests.
+    pub fn sample() -> Self {
+        Self {
+            directory: "/home/user/Downloads/Documents".to_owned(),
+            directory_exists: true,
+            automatic_directory: true,
+            category_id: Some("documents".to_owned()),
+            file_name: Some("report.pdf".to_owned()),
+            file_exists: true,
+            partial_download_exists: false,
+            suggested_name: Some("report (1).pdf".to_owned()),
         }
     }
 }
@@ -806,6 +846,109 @@ mod tests {
             check(
                 "downloads-snapshot.json",
                 serde_json::to_value(DownloadsSnapshot::sample()).unwrap(),
+            );
+        }
+
+        #[test]
+        fn contract_destination_check() {
+            check(
+                "destination-check.json",
+                serde_json::to_value(DestinationCheck::sample()).unwrap(),
+            );
+        }
+
+        /// The names `src/naming.ts` must give, from the Rust rules (#31).
+        #[test]
+        fn contract_naming_cases() {
+            use crate::naming::name_for_download;
+            const KNOWN: [&str; 3] = ["zip", "pdf", "txt"];
+            let long = "x".repeat(300);
+            let long_url = format!("https://e.com/{long}.iso");
+            let long_typed = "y".repeat(238);
+            let urls = [
+                "https://e.com/a/My%20File.iso?x=1#part",
+                "https://e.com/a/b%2Fc.zip",
+                "https://e.com/%E2%9C%93-r%C3%A9sum%C3%A9.pdf",
+                "https://e.com/bad%FF%FEbytes.bin",
+                "https://e.com/half%2.bin",
+                "https://e.com/ctl%0A%09name.txt",
+                "https://e.com/CON.txt",
+                "https://e.com/con%20.tar.gz",
+                "https://e.com/LPT%C2%B9.zip",
+                "https://e.com/a.zip.VDMPART",
+                "https://e.com/archive.tar.gz?token=abc",
+                "ftp://e.com/pub/file.ISO",
+                "https://e.com/trailing.%20.%20.zip",
+                "https://e.com/%20%20.zip",
+                "https://e.com/dir/",
+                "https://e.com/files/12345",
+                "https://e.com/download.php?id=3",
+                "https://e.com/Get.ASPX?f=1",
+                "https://e.com/.hidden",
+                "https://e.com/has%20space.not%20ext",
+                "https://e.com/",
+                "https://e.com",
+                "https://e.com?q=/a.zip",
+                "not a url",
+                long_url.as_str(),
+            ];
+            let typed = [
+                ("Annual report", "https://e.com/report.pdf"),
+                ("release-1.2", "https://e.com/r.zip"),
+                ("Annual.PDF", "https://e.com/report.pdf"),
+                ("notes.txt", "https://e.com/report.pdf"),
+                ("backup.tar", "https://e.com/b.tar.gz"),
+                ("  spaced  ", "https://e.com/r.zip"),
+                ("   ", "https://e.com/r.zip"),
+                ("as typed", "https://e.com/files/12345"),
+                ("a/b", "https://e.com/r.zip"),
+                ("CON", "https://e.com/r.zip"),
+                ("x.vdmpart", "https://e.com/r.bin"),
+                (".hidden", "https://e.com/r.zip"),
+                (long_typed.as_str(), "https://e.com/r.zip"),
+                (long_typed.as_str(), "https://e.com/files/12345"),
+            ];
+            let case = |url: &str, typed: Option<&str>| {
+                let result = name_for_download(url, typed, |e| KNOWN.contains(&e));
+                serde_json::json!({
+                    "url": url,
+                    "typed": typed,
+                    "name": result.as_ref().ok().cloned().flatten(),
+                    "error": result.err(),
+                })
+            };
+            let cases: Vec<_> = urls
+                .iter()
+                .map(|url| case(url, None))
+                .chain(typed.iter().map(|(t, url)| case(url, Some(t))))
+                .collect();
+            check(
+                "naming-cases.json",
+                serde_json::json!({ "known": KNOWN, "cases": cases }),
+            );
+        }
+
+        #[test]
+        fn contract_on_conflict() {
+            check(
+                "on-conflict.json",
+                serde_json::to_value(crate::destination::OnConflict::ALL).unwrap(),
+            );
+        }
+
+        #[test]
+        fn contract_category() {
+            check(
+                "category.json",
+                serde_json::to_value(crate::category::Category::sample()).unwrap(),
+            );
+        }
+
+        #[test]
+        fn contract_category_icons() {
+            check(
+                "category-icons.json",
+                serde_json::to_value(crate::category::ICONS).unwrap(),
             );
         }
 

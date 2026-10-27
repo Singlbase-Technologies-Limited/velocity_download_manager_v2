@@ -479,6 +479,7 @@ mod queue {
                 AddOptions {
                     start_paused: true,
                     scheduled: false,
+                    category_id: None,
                 },
                 T0,
             )
@@ -535,6 +536,7 @@ mod queue {
                 AddOptions {
                     start_paused: false,
                     scheduled: true,
+                    category_id: None,
                 },
                 T0,
             )
@@ -617,6 +619,7 @@ mod queue {
                 AddOptions {
                     start_paused: false,
                     scheduled: true,
+                    category_id: None,
                 },
                 T0,
             )
@@ -1279,6 +1282,7 @@ mod persistence {
                 AddOptions {
                     start_paused: false,
                     scheduled: true,
+                    category_id: None,
                 },
                 T0,
             )
@@ -1505,6 +1509,7 @@ mod recovery {
         let paused = |scheduled| AddOptions {
             start_paused: true,
             scheduled,
+            category_id: None,
         };
         let order = {
             let (mut m, _control) = restart(&db, 1);
@@ -1989,6 +1994,7 @@ mod removal {
                 AddOptions {
                     start_paused: true,
                     scheduled: false,
+                    category_id: None,
                 },
                 T0,
             )
@@ -2148,6 +2154,7 @@ mod engine_loss {
                 AddOptions {
                     start_paused: true,
                     scheduled: false,
+                    category_id: None,
                 },
                 T0,
             )
@@ -2178,6 +2185,7 @@ mod per_download {
             AddOptions {
                 start_paused: true,
                 scheduled: false,
+                category_id: None,
             },
             T0,
         )
@@ -3081,6 +3089,335 @@ mod torrents {
             m.snapshot().torrent_engine,
             EngineHealth::Unavailable { .. }
         ));
+        fs::remove_dir_all(&dir).unwrap();
+    }
+}
+
+/// Categories and destinations in the manager (#31): a download's category, the folder and name
+/// it is placed at, and what happens when the name is taken. The rules themselves are tested in
+/// `destination` and `category`.
+mod categories {
+    use super::*;
+    use crate::category::CategoryInput;
+    use crate::destination::{Choice, FolderSettings, OnConflict, Placement};
+    use crate::domain::DestinationCheck;
+    use std::fs;
+
+    /// A manager whose default folder is a fresh `dir`, with its database.
+    fn in_folder(test: &str) -> (Manager, FakeControl, Arc<Database>, PathBuf) {
+        let dir = std::env::temp_dir().join(format!("v2-categories-{test}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let db = Arc::new(Database::open_in_memory().unwrap());
+        db.save_folder_settings(
+            &FolderSettings {
+                default_directory: dir.to_string_lossy().into_owned(),
+                ..FolderSettings::default()
+            },
+            T0,
+        )
+        .unwrap();
+        let fake = FakeTransfer::new();
+        let control = fake.control();
+        let m = Manager::open(Box::new(fake), Arc::clone(&db)).unwrap();
+        (m, control, db, dir)
+    }
+
+    fn with_category(category_id: &str) -> AddOptions {
+        AddOptions {
+            category_id: Some(category_id.to_owned()),
+            ..AddOptions::default()
+        }
+    }
+
+    fn stored_category(db: &Database, id: &str) -> Option<String> {
+        db.downloads()
+            .unwrap()
+            .into_iter()
+            .find(|d| d.id == id)
+            .expect("stored")
+            .category_id
+    }
+
+    fn typed(name: &str) -> Choice {
+        Choice {
+            file_name: Some(name.to_owned()),
+            ..Choice::default()
+        }
+    }
+
+    #[test]
+    fn a_download_added_with_a_category_keeps_it_after_a_restart() {
+        let (mut m, _control, db, dir) = in_folder("added");
+        let id = m
+            .add_with(DownloadKind::Http, spec(), with_category("video"), T0)
+            .unwrap();
+        assert_eq!(m.get(&id).unwrap().category_id.as_deref(), Some("video"));
+        assert_eq!(stored_category(&db, &id).as_deref(), Some("video"));
+        // An unknown category adds nothing.
+        assert_eq!(
+            m.add_with(DownloadKind::Http, spec(), with_category("c-404"), T0),
+            Err(ErrorCode::NotFound)
+        );
+        assert_eq!(db.downloads().unwrap().len(), 1);
+        drop(m);
+        let m = Manager::open(Box::new(FakeTransfer::new()), Arc::clone(&db)).unwrap();
+        assert_eq!(m.get(&id).unwrap().category_id.as_deref(), Some("video"));
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn changing_a_downloads_category_moves_nothing() {
+        // V1's `set_download_category`; moving files is a non-goal of #31.
+        let (mut m, _control, db, dir) = in_folder("set");
+        let id = m.add(DownloadKind::Http, spec(), T0).unwrap();
+        m.set_download_category(&id, Some("documents")).unwrap();
+        let r = m.get(&id).unwrap();
+        assert_eq!(r.category_id.as_deref(), Some("documents"));
+        assert_eq!(r.directory, "downloads", "the folder is unchanged");
+        assert_eq!(stored_category(&db, &id).as_deref(), Some("documents"));
+        m.set_download_category(&id, None).unwrap();
+        assert_eq!(m.get(&id).unwrap().category_id, None);
+        assert_eq!(stored_category(&db, &id), None);
+        assert_eq!(
+            m.set_download_category(&id, Some("c-404")),
+            Err(ErrorCode::NotFound)
+        );
+        assert_eq!(
+            m.set_download_category("d-404", Some("video")),
+            Err(ErrorCode::NotFound)
+        );
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_deleted_categorys_downloads_are_left_without_one_and_still_save() {
+        let (mut m, control, db, dir) = in_folder("deleted");
+        let mine = m
+            .create_category(&CategoryInput {
+                name: "Mine".to_owned(),
+                color: "#112233".to_owned(),
+                icon: "folder".to_owned(),
+                extensions: vec!["zip".to_owned()],
+                directory: None,
+            })
+            .unwrap();
+        assert_eq!(m.categories().unwrap().last(), Some(&mine));
+        let id = m
+            .add_with(DownloadKind::Http, spec(), with_category(&mine.id), T0)
+            .unwrap();
+        m.delete_category(&mine.id).unwrap();
+        assert_eq!(m.get(&id).unwrap().category_id, None);
+        // The next save of the record doesn't name the deleted category.
+        m.pump(T0);
+        control.complete(TransferId(1));
+        m.pump(T0);
+        assert_eq!(m.snapshot().storage_error, None);
+        assert_eq!(stored_category(&db, &id), None);
+        assert_eq!(
+            m.delete_category("video"),
+            Err(ErrorCode::InvalidState),
+            "built in"
+        );
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_name_learned_after_the_start_sets_the_automatic_category_and_keeps_the_folder() {
+        // PO decision on #31: the server's name categorises the download; nothing is moved.
+        let (mut m, control, db, dir) = in_folder("learned");
+        let unnamed = || TransferSpec {
+            urls: vec!["https://example.com/download.php?id=3".to_owned()],
+            directory: dir.clone(),
+            file_name: None,
+            ..spec()
+        };
+        let id = m.add(DownloadKind::Http, unnamed(), T0).unwrap();
+        m.pump(T0);
+        assert_eq!(m.get(&id).unwrap().category_id, None);
+        control.named(TransferId(1), "report.pdf");
+        m.pump(T0);
+        let r = m.get(&id).unwrap();
+        assert_eq!(r.category_id.as_deref(), Some("documents"));
+        assert_eq!(PathBuf::from(&r.directory), dir, "not moved");
+        assert_eq!(stored_category(&db, &id).as_deref(), Some("documents"));
+
+        // A chosen category stays.
+        let chosen = m
+            .add_with(DownloadKind::Http, unnamed(), with_category("music"), T0)
+            .unwrap();
+        m.pump(T0);
+        control.named(TransferId(2), "report.pdf");
+        m.pump(T0);
+        assert_eq!(
+            m.get(&chosen).unwrap().category_id.as_deref(),
+            Some("music")
+        );
+
+        // With automatic categories off, none is set.
+        db.save_folder_settings(
+            &FolderSettings {
+                auto_categorize: false,
+                default_directory: dir.to_string_lossy().into_owned(),
+                ..FolderSettings::default()
+            },
+            T0,
+        )
+        .unwrap();
+        let off = m.add(DownloadKind::Http, unnamed(), T0).unwrap();
+        m.pump(T0);
+        control.named(TransferId(3), "report.pdf");
+        m.pump(T0);
+        assert_eq!(m.get(&off).unwrap().category_id, None);
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn the_destination_check_shows_what_adding_would_do() {
+        let (m, _control, _db, dir) = in_folder("check");
+        let url = "https://example.com/files/report.pdf";
+        assert_eq!(
+            m.check_destination(url, &Choice::default()),
+            Ok(DestinationCheck {
+                directory: dir.join("Documents").to_string_lossy().into_owned(),
+                directory_exists: false,
+                automatic_directory: true,
+                category_id: Some("documents".to_owned()),
+                file_name: Some("report.pdf".to_owned()),
+                file_exists: false,
+                partial_download_exists: false,
+                suggested_name: None,
+            })
+        );
+        // A typed name keeps the link's file type (V1 #46).
+        let check = m.check_destination(url, &typed("Annual report")).unwrap();
+        assert_eq!(check.file_name.as_deref(), Some("Annual report.pdf"));
+        // A link the server names: no name, no category, the default folder.
+        let check = m
+            .check_destination("https://example.com/download.php?id=3", &Choice::default())
+            .unwrap();
+        assert_eq!(
+            (
+                check.file_name,
+                check.category_id,
+                PathBuf::from(check.directory)
+            ),
+            (None, None, dir.clone())
+        );
+        assert_eq!(
+            m.check_destination(url, &typed("a/b")),
+            Err(ErrorCode::InvalidFilename)
+        );
+        let long = format!(
+            "https://example.com/{}.pdf",
+            "x".repeat(crate::request::MAX_URL_BYTES)
+        );
+        assert_eq!(
+            m.check_destination(&long, &Choice::default()),
+            Err(ErrorCode::InvalidUrl)
+        );
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn placing_creates_the_category_subfolder_and_nothing_else() {
+        let (m, _control, _db, dir) = in_folder("subfolder");
+        let url = "https://example.com/files/ubuntu.iso";
+        let Ok(Placement::Placed(place)) = m.place(url, &Choice::default(), OnConflict::Ask) else {
+            panic!("placed")
+        };
+        assert_eq!(place.directory, dir.join("Disk images"));
+        assert!(place.directory.is_dir(), "created");
+        // A chosen folder must exist: it isn't created.
+        let missing = dir.join("missing");
+        let chosen = Choice {
+            directory: Some(missing.to_string_lossy().into_owned()),
+            ..Choice::default()
+        };
+        assert_eq!(
+            m.place(url, &chosen, OnConflict::Ask),
+            Err(ErrorCode::DestinationMissing)
+        );
+        assert!(!missing.exists());
+        // Nor is a missing default folder.
+        fs::remove_dir_all(&dir).unwrap();
+        assert_eq!(
+            m.place(url, &Choice::default(), OnConflict::Ask),
+            Err(ErrorCode::DestinationMissing)
+        );
+        assert!(!dir.exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_link_in_place_of_the_category_subfolder_is_refused() {
+        let (m, _control, _db, dir) = in_folder("link");
+        let elsewhere = dir.join("elsewhere");
+        fs::create_dir(&elsewhere).unwrap();
+        std::os::unix::fs::symlink(&elsewhere, dir.join("Disk images")).unwrap();
+        assert_eq!(
+            m.place(
+                "https://example.com/files/ubuntu.iso",
+                &Choice::default(),
+                OnConflict::Ask
+            ),
+            Err(ErrorCode::InvalidPath)
+        );
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_taken_name_is_asked_about_or_renamed_never_replaced() {
+        // PO decision on #31: ask or rename only.
+        let (mut m, _control, _db, dir) = in_folder("conflict");
+        let documents = dir.join("Documents");
+        fs::create_dir_all(&documents).unwrap();
+        fs::write(documents.join("report.pdf"), b"keep me").unwrap();
+        let url = "https://example.com/files/report.pdf";
+
+        let Ok(Placement::Conflict(check)) = m.place(url, &Choice::default(), OnConflict::Ask)
+        else {
+            panic!("asked")
+        };
+        assert!(check.file_exists);
+        assert_eq!(check.suggested_name.as_deref(), Some("report (1).pdf"));
+
+        let Ok(Placement::Placed(place)) = m.place(url, &Choice::default(), OnConflict::Rename)
+        else {
+            panic!("renamed")
+        };
+        assert_eq!(place.directory, documents);
+        assert_eq!(place.file_name.as_deref(), Some("report (1).pdf"));
+        assert_eq!(place.category_id.as_deref(), Some("documents"));
+        assert_eq!(fs::read(documents.join("report.pdf")).unwrap(), b"keep me");
+
+        // A download waiting in the list takes its name too, before it has any file.
+        let waiting = TransferSpec {
+            directory: documents.clone(),
+            file_name: Some("report (1).pdf".to_owned()),
+            ..spec()
+        };
+        m.add_with(
+            DownloadKind::Http,
+            waiting,
+            AddOptions {
+                start_paused: true,
+                ..AddOptions::default()
+            },
+            T0,
+        )
+        .unwrap();
+        let Ok(Placement::Placed(place)) = m.place(url, &Choice::default(), OnConflict::Rename)
+        else {
+            panic!("renamed")
+        };
+        assert_eq!(place.file_name.as_deref(), Some("report (2).pdf"));
+
+        // A free name is placed as it is, whatever the choice.
+        let Ok(Placement::Placed(place)) = m.place(url, &typed("Fresh"), OnConflict::Ask) else {
+            panic!("placed")
+        };
+        assert_eq!(place.file_name.as_deref(), Some("Fresh.pdf"));
         fs::remove_dir_all(&dir).unwrap();
     }
 }

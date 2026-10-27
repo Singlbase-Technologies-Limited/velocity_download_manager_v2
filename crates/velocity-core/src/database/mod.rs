@@ -10,6 +10,7 @@
 //!   record is never routed to an engine.
 //! - **No secrets:** nothing that holds credentials or header values can be stored.
 
+mod categories;
 mod checkpoints;
 mod downloads;
 mod queue;
@@ -37,6 +38,7 @@ const MIGRATIONS: &[M<'static>] = &[
     M::up(include_str!("../../migrations/0003_queue.sql")),
     M::up(include_str!("../../migrations/0004_verification.sql")),
     M::up(include_str!("../../migrations/0005_torrents.sql")),
+    M::up(include_str!("../../migrations/0006_builtin_categories.sql")),
 ];
 
 /// The migrations this build applies.
@@ -348,7 +350,7 @@ mod tests {
 
     const NEXT: &str = "ALTER TABLE downloads ADD COLUMN note TEXT;";
 
-    fn sample(id: &str) -> NewDownload {
+    pub(super) fn sample(id: &str) -> NewDownload {
         NewDownload {
             id: id.to_owned(),
             engine: Engine::Velocity,
@@ -371,7 +373,7 @@ mod tests {
     #[test]
     fn the_migrations_are_valid() {
         assert_eq!(migrations().validate(), Ok(()));
-        assert_eq!(latest_schema_version(), 5);
+        assert_eq!(latest_schema_version(), 6);
     }
 
     #[test]
@@ -489,8 +491,8 @@ mod tests {
             db.insert_download(&sample("d-0001")).unwrap();
         }
         let db = Database::open(&dir.db()).expect("upgrades");
-        // To the latest schema, 5 since #58's torrents.
-        assert_eq!(db.schema_version(), Ok(5));
+        // To the latest schema, 6 since #31's built-in categories.
+        assert_eq!(db.schema_version(), Ok(6));
         assert_eq!(db.downloads().unwrap()[0].id, "d-0001");
         db.save_checkpoint("d-0001", &checkpoint(), 5).unwrap();
         assert!(dir.names().iter().any(|n| n.contains(".bak-v1-")));
@@ -506,8 +508,8 @@ mod tests {
             db.insert_download(&sample("d-0001")).unwrap();
         }
         let db = Database::open(&dir.db()).expect("upgrades");
-        // To the latest schema, 5 since #58's torrents.
-        assert_eq!(db.schema_version(), Ok(5));
+        // To the latest schema, 6 since #31's built-in categories.
+        assert_eq!(db.schema_version(), Ok(6));
         assert_eq!(db.downloads().unwrap()[0].id, "d-0001");
         let entry = QueueEntry {
             id: "d-0001".to_owned(),
@@ -528,8 +530,8 @@ mod tests {
             db.insert_download(&sample("d-0001")).unwrap();
         }
         let db = Database::open(&dir.db()).expect("upgrades");
-        // To the latest schema, 5 since #58's torrents.
-        assert_eq!(db.schema_version(), Ok(5));
+        // To the latest schema, 6 since #31's built-in categories.
+        assert_eq!(db.schema_version(), Ok(6));
         let before = db.downloads().unwrap().remove(0);
         assert_eq!(before.id, "d-0001");
         assert_eq!(before.verification, None);
@@ -542,6 +544,39 @@ mod tests {
             Some(Stored::Known(Verification::Verified))
         );
         assert!(dir.names().iter().any(|n| n.contains(".bak-v3-")));
+    }
+
+    #[test]
+    fn schema_5_is_upgraded_with_its_downloads_and_gains_the_built_in_categories() {
+        // Migration 0006 (#31), from the previous schema with a record in it.
+        let dir = Dir::new("v5-to-v6");
+        {
+            let db = open_with(&dir.db(), &Migrations::from_slice(&MIGRATIONS[..5])).unwrap();
+            assert_eq!(db.schema_version(), Ok(5));
+            db.insert_download(&sample("d-0001")).unwrap();
+        }
+        let db = Database::open(&dir.db()).expect("upgrades");
+        assert_eq!(db.schema_version(), Ok(6));
+        assert_eq!(db.downloads().unwrap()[0].id, "d-0001");
+        let built_in: Vec<(String, String, bool)> = db
+            .conn()
+            .prepare("SELECT id, name, builtin FROM categories ORDER BY sort_order")
+            .unwrap()
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        let expected = [
+            ("compressed", "Compressed"),
+            ("documents", "Documents"),
+            ("music", "Music"),
+            ("video", "Video"),
+            ("programs", "Programs"),
+            ("images", "Disk images"),
+        ]
+        .map(|(id, name)| (id.to_owned(), name.to_owned(), true));
+        assert_eq!(built_in, expected);
+        assert!(dir.names().iter().any(|n| n.contains(".bak-v5-")));
     }
 
     #[test]
@@ -988,7 +1023,8 @@ mod tests {
                 db.insert_download(&sample("d-0001")).unwrap();
             }
             let db = Database::open(&dir.db()).expect("upgrades");
-            assert_eq!(db.schema_version(), Ok(5));
+            // To the latest schema, 6 since #31's built-in categories.
+            assert_eq!(db.schema_version(), Ok(6));
             assert_eq!(db.downloads().unwrap()[0].id, "d-0001");
             db.insert_torrent(&torrent_row("d-0002"), &options())
                 .unwrap();

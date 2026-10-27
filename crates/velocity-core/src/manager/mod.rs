@@ -86,13 +86,15 @@ impl DirectJob {
     }
 }
 
-/// How a new download starts (V1's `startPaused` and `scheduled`).
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+/// How a new download starts (V1's `startPaused` and `scheduled`), and its category (#31).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct AddOptions {
     /// Added paused: it waits for a resume.
     pub start_paused: bool,
     /// It runs only while the schedule's window is open.
     pub scheduled: bool,
+    /// Its category, which must exist; `None` for none yet ([`Manager::place`] chooses one).
+    pub category_id: Option<String>,
 }
 
 /// Which of a Metalink document's files to download, and where (#54).
@@ -291,6 +293,7 @@ impl Manager {
         if !supported {
             return Err(ErrorCode::Unsupported);
         }
+        let category_id = self.known_category(options.category_id.as_deref())?;
         // No name yet when the server names the file; the engine reports it (#40).
         let file_name = spec.file_name.clone();
         let directory = spec.directory.to_string_lossy().into_owned();
@@ -306,7 +309,7 @@ impl Manager {
                 source_url,
                 file_name,
                 directory,
-                category_id: None,
+                category_id: category_id.clone(),
                 status: DownloadStatus::Queued,
                 progress: Progress {
                     completed_bytes: 0,
@@ -332,6 +335,7 @@ impl Manager {
         let request = &download.direct().expect("a direct download").request;
         let mut new = NewDownload::from_transfer(&id, kind, request, now_ms);
         new.status = download.record.status;
+        new.category_id = category_id;
         self.database.insert_download(&new).map_err(|e| e.code)?;
         let starts_now = download.may_run(self.window_open) && self.free_slots() > 0;
         self.downloads.insert(id.clone(), download);
@@ -429,7 +433,7 @@ impl Manager {
                         max_connections: self.connections_for_new_downloads(),
                         resume: None,
                     };
-                    self.add_with(DownloadKind::Metalink, spec, options, now_ms)
+                    self.add_with(DownloadKind::Metalink, spec, options.clone(), now_ms)
                 },
             );
             match result {
@@ -707,6 +711,7 @@ impl Manager {
         let options = AddOptions {
             start_paused: false,
             scheduled: download.scheduled,
+            category_id: None,
         };
         let result = metalink::read_document(&directory.join(&name))
             .map_err(|e| e.to_string())
@@ -926,6 +931,12 @@ impl Manager {
                 if snapshot.file_name.is_some() {
                     record.file_name = snapshot.file_name;
                 }
+                // The server named it: its automatic category, in the folder it started in
+                // (PO decision on #31).
+                if before.file_name.is_none() && record.category_id.is_none() {
+                    record.category_id =
+                        categories::automatic(&self.database, record.file_name.as_deref());
+                }
                 if let (Some(content_type), Some(job)) =
                     (snapshot.content_type, download.direct_mut())
                 {
@@ -945,6 +956,7 @@ impl Manager {
                     || record.error != before.error
                     || record.verification != before.verification
                     || record.file_name != before.file_name
+                    || record.category_id != before.category_id
                     || record.completed_at_ms != before.completed_at_ms;
                 let due = download
                     .saved_at_ms
@@ -983,6 +995,7 @@ impl Manager {
 }
 
 mod batch;
+mod categories;
 mod finished;
 mod options;
 mod persist;

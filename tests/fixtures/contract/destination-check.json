@@ -1,0 +1,10 @@
+{
+  "automaticDirectory": true,
+  "categoryId": "documents",
+  "directory": "/home/user/Downloads/Documents",
+  "directoryExists": true,
+  "fileExists": true,
+  "fileName": "report.pdf",
+  "partialDownloadExists": false,
+  "suggestedName": "report (1).pdf"
+}

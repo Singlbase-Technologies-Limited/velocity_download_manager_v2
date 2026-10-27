@@ -5,7 +5,7 @@
 import { z } from 'zod';
 
 /** Must equal `velocity_core::COMMAND_API_VERSION`; the app refuses to start on a mismatch. */
-export const COMMAND_API_VERSION = 8;
+export const COMMAND_API_VERSION = 9;
 
 const bytes = z.number().int().nonnegative();
 
@@ -127,6 +127,7 @@ export const ErrorCodeSchema = z.enum([
   'PERMISSION_DENIED',
   'FILE_EXISTS',
   'NOT_FOUND',
+  'NAME_TAKEN',
   'INVALID_STATE',
   'ENGINE_MISSING',
   'ENGINE_INCOMPATIBLE',
@@ -187,6 +188,58 @@ export const BatchResultSchema = z.strictObject({
   kept: z.array(z.strictObject({ path: z.string(), reason: KeptReasonSchema, code: ErrorCodeSchema.nullable() })),
 });
 export type BatchResult = z.infer<typeof BatchResultSchema>;
+
+/** The icons a category may have (#31), in the order the UI offers them. */
+export const CategoryIconSchema = z.enum([
+  'folder',
+  'archive',
+  'file-text',
+  'music',
+  'film',
+  'app-window',
+  'disc',
+  'image',
+  'code',
+  'book',
+  'package',
+  'star',
+]);
+export type CategoryIcon = z.infer<typeof CategoryIconSchema>;
+
+/** A download category (#31): built in (editable, not deletable) or the user's. */
+export const CategorySchema = z.strictObject({
+  id: z.string().min(1),
+  name: z.string().min(1).max(40),
+  color: z.string().regex(/^#[0-9a-f]{6}$/),
+  icon: CategoryIconSchema,
+  /** Lowercase, without the dot. */
+  extensions: z.array(z.string().regex(/^[0-9a-z]{1,16}$/)).max(100),
+  /** The category's own folder, if it has one. */
+  directory: z.string().min(1).nullable(),
+  builtin: z.boolean(),
+});
+export type Category = z.infer<typeof CategorySchema>;
+
+/** What adding a download would do, before it is added (#31). Free disk space isn't reported yet. */
+export const DestinationCheckSchema = z.strictObject({
+  directory: z.string().min(1),
+  directoryExists: z.boolean(),
+  /** The folder came from the category or the settings, not from the user. */
+  automaticDirectory: z.boolean(),
+  categoryId: z.string().min(1).nullable(),
+  /** `null` when the server will name the file. */
+  fileName: z.string().min(1).nullable(),
+  fileExists: z.boolean(),
+  /** A download, V2's or V1's, that hasn't finished has the name. */
+  partialDownloadExists: z.boolean(),
+  /** When the name is taken, the first free `name (n).ext`. */
+  suggestedName: z.string().min(1).nullable(),
+});
+export type DestinationCheck = z.infer<typeof DestinationCheckSchema>;
+
+/** What adding does when the name is taken (#31): ask, or take the first free name. Never replace. */
+export const OnConflictSchema = z.enum(['ask', 'rename']);
+export type OnConflict = z.infer<typeof OnConflictSchema>;
 
 export const AppInfoSchema = z.strictObject({
   name: z.string().min(1),

@@ -60,7 +60,7 @@ pub fn start(app: &AppHandle, paths: &Paths) -> Result<Downloads, String> {
 }
 
 /// Runs `f` on the manager's thread, off the window's thread.
-async fn on_manager<R: Send + 'static>(
+pub(crate) async fn on_manager<R: Send + 'static>(
     downloads: &Downloads,
     f: impl FnOnce(&mut Manager) -> R + Send + 'static,
 ) -> Result<R, ErrorCode> {

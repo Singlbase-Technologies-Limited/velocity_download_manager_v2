@@ -5,14 +5,18 @@ import {
   AppInfoSchema,
   BatchResultSchema,
   CapabilitiesSchema,
+  CategoryIconSchema,
+  CategorySchema,
   ConnectionLimitSchema,
   COMMAND_API_VERSION,
+  DestinationCheckSchema,
   DownloadRecordSchema,
   DownloadsSnapshotSchema,
   DownloadStatusSchema,
   EngineHealthSchema,
   ErrorCodeSchema,
   KeptReasonSchema,
+  OnConflictSchema,
   parseAppInfo,
   VerificationSchema,
 } from './contract';
@@ -66,6 +70,24 @@ describe('contract fixtures generated from Rust', () => {
     expect(fixture('kept-reasons.json')).toEqual(KeptReasonSchema.options);
   });
 
+  it('category (#31)', () => {
+    expect(CategorySchema.parse(fixture('category.json'))).toEqual(fixture('category.json'));
+  });
+
+  it('category icons: exactly the values the schema knows, in order (#31)', () => {
+    expect(fixture('category-icons.json')).toEqual(CategoryIconSchema.options);
+  });
+
+  it('destination check (#31)', () => {
+    expect(DestinationCheckSchema.parse(fixture('destination-check.json'))).toEqual(
+      fixture('destination-check.json'),
+    );
+  });
+
+  it('conflict choices: exactly the values the schema knows, in order (#31)', () => {
+    expect(fixture('on-conflict.json')).toEqual(OnConflictSchema.options);
+  });
+
   it('app info carries the same contract version as this UI', () => {
     const info = AppInfoSchema.parse(fixture('app-info.json'));
     expect(info.commandApiVersion).toBe(COMMAND_API_VERSION);
@@ -113,7 +135,7 @@ describe('parseAppInfo', () => {
 
   it('refuses a native side with another contract version, saying so', () => {
     expect(() => parseAppInfo({ ...ok, commandApiVersion: COMMAND_API_VERSION + 1 })).toThrow(
-      /contract version 9.*expects 8/,
+      /contract version 10.*expects 9/,
     );
   });
 

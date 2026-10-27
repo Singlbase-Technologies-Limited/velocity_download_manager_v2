@@ -175,6 +175,47 @@ pub fn file_name_for_link(url: &str) -> Option<String> {
     (!SCRIPT_EXTENSIONS.contains(&ext.as_str())).then_some(name)
 }
 
+/// Keeps the link's file type on a name the user typed: "Annual report" for `report.pdf` becomes
+/// "Annual report.pdf" (V1 #46). A typed name that already ends with the link's extension, or with
+/// another one `is_known` accepts (a category's), is kept as typed. `InvalidFilename` unless the
+/// typed name, and the name with the extension, are safe file names.
+pub fn with_link_extension(
+    typed: &str,
+    link_name: Option<&str>,
+    is_known: impl Fn(&str) -> bool,
+) -> Result<String, ErrorCode> {
+    check_file_name(typed)?;
+    let Some(ext) = link_name.and_then(extension_of) else {
+        return Ok(typed.to_owned());
+    };
+    match extension_of(typed) {
+        Some(own) if own == ext || is_known(&own) => Ok(typed.to_owned()),
+        _ => {
+            let name = format!("{typed}.{ext}");
+            check_file_name(&name)?;
+            Ok(name)
+        }
+    }
+}
+
+/// The name a new download of `url` is saved under, before the server answers (#31): the name
+/// the user typed, trimmed and keeping the link's file type ([`with_link_extension`]), else the
+/// link's ([`file_name_for_link`]). `None` when the server will name it. `src/naming.ts` mirrors
+/// it for the Add form's preview, checked against `naming-cases.json`.
+pub fn name_for_download(
+    url: &str,
+    typed: Option<&str>,
+    is_known: impl Fn(&str) -> bool,
+) -> Result<Option<String>, ErrorCode> {
+    let link_name = file_name_for_link(url);
+    match typed.map(str::trim) {
+        Some(typed) if !typed.is_empty() => {
+            with_link_extension(typed, link_name.as_deref(), is_known).map(Some)
+        }
+        _ => Ok(link_name),
+    }
+}
+
 /// `name` if it is free, or else the first free `stem (n).ext`, n from 1 to 9999, shortened to fit
 /// [`MAX_FILE_NAME_BYTES`]. `None` when every one is taken.
 pub fn free_file_name(name: &str, mut is_taken: impl FnMut(&str) -> bool) -> Option<String> {
@@ -433,6 +474,28 @@ mod tests {
         for (url, want) in cases {
             assert_eq!(file_name_for_link(url).as_deref(), want, "{url}");
         }
+    }
+
+    #[test]
+    fn typed_names_keep_the_link_extension() {
+        let known = |e: &str| ["zip", "pdf", "txt"].contains(&e);
+        let name = |typed, link| with_link_extension(typed, link, known).unwrap();
+        assert_eq!(
+            name("Annual report", Some("report.pdf")),
+            "Annual report.pdf"
+        );
+        assert_eq!(name("release-1.2", Some("r.zip")), "release-1.2.zip");
+        assert_eq!(name("Annual.PDF", Some("report.pdf")), "Annual.PDF");
+        assert_eq!(name("notes.txt", Some("report.pdf")), "notes.txt");
+        assert_eq!(name("backup.tar", Some("b.tar.gz")), "backup.tar.gz");
+        assert_eq!(name("as typed", None), "as typed");
+        assert_eq!(name("as typed", Some("12345")), "as typed");
+        let invalid = Err(ErrorCode::InvalidFilename);
+        assert_eq!(with_link_extension("a/b", Some("r.zip"), known), invalid);
+        assert_eq!(with_link_extension("", Some("r.zip"), known), invalid);
+        let long = "x".repeat(MAX_FILE_NAME_BYTES);
+        assert_eq!(with_link_extension(&long, None, known), Ok(long.clone()));
+        assert_eq!(with_link_extension(&long, Some("r.zip"), known), invalid);
     }
 
     #[test]

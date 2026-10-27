@@ -16,10 +16,13 @@ They're defined once in Rust, in `crates/velocity-core/src/domain.rs` (plus `App
 | `ConnectionDetail` | A direct download's connections: `requested`, `allowed` (at least 1, never above `requested`) and `limitedBy`, what holds `allowed` below `requested`: `perHostCap`, `sharedBudget`, `serverThrottling`, `rampingUp` (adaptive connections are still being added), `noGain` (more connections stopped making it faster) or `fileSize`, or `null` (#47). The fixture `connection-limits.json` lists them | `null` for torrents and while no engine reports it. Added in contract version 2 |
 | `TransferError` | `{ class, httpStatus, message, retryable, hostKey }`. `class` is `transient`, `throttled` or `permanent`. `hostKey` is `{ host, port, fingerprint, pinned }` when an SFTP server's host key isn't trusted, else `null` | Engine-neutral. A permanent failure is never retryable. With `hostKey`, the UI shows the SHA-256 `fingerprint` for the user to confirm; with `pinned` set, the key changed and is always refused ([SECURITY.md](SECURITY.md#sftp-host-keys-53)). `hostKey` since contract version 6 (#53) |
 | `Capabilities` | What an engine really supports: the protocols, each as a `ProtocolCapabilities` (`kind`, `segmented`, `resume`, `validatorResume`, `http2`, and `encryption`: whether the connection can be encrypted with its certificate checked, `https://` or FTPS; a protocol not listed isn't supported), live connection changes, Metalink, and the most connections per host now (the performance profile's cap) | Reported, never assumed (research report section 4.2). Per protocol since contract version 4 (#57), with `encryption` since version 5 (#51). `cleartextWarning` in `src/capabilities.ts` holds the warning for a plain `ftp://` download (PO decision on #51); [SETTINGS.md](SETTINGS.md#what-a-build-can-do) says how the UI uses it |
-| `ErrorCode` | Stable codes for command failures, in `SCREAMING_SNAKE_CASE` (22 codes: V1's, without the four aria2 `RPC_*` codes). Each has a user-facing sentence (`user_message`) | The code is the contract; the message is for people |
+| `ErrorCode` | Stable codes for command failures, in `SCREAMING_SNAKE_CASE` (23 codes: V1's, without the four aria2 `RPC_*` codes, plus `NAME_TAKEN`, since contract version 9, for a category name another category has). Each has a user-facing sentence (`user_message`) | The code is the contract; the message is for people |
 | `AppInfo` | `{ name, version, commandApiVersion }` | Returned by `app_info` |
 | `DownloadsSnapshot` | What the UI is sent about the downloads (#58): `downloads` (records, the unfinished ones in queue order, then the finished ones, newest first), `unavailable` (stored downloads this build can't act on: `id`, `sourceUrl`, `fileName`, `directory`, `createdAtMs`), `needsLogin` (ids of downloads that came back after a restart without their login), `engine`, `torrentEngine` (the torrent helper's health, since version 8) and `storageError` (the last failure to save, or `null`) | Sent as the `downloads-snapshot` event and returned by `get_snapshot` |
 | `EngineHealth` | `{ state: "running" }`, `{ state: "restarting", attempt }` or `{ state: "unavailable", code }` | The fixture `engine-health.json` lists one of each |
+| `Category` | A download category (#31): `id`, `name`, `color` (`#rrggbb`), `icon`, `extensions` (lowercase, without the dot), `directory` (its own folder, or `null`) and `builtin`. The fixture `category-icons.json` lists the icons | Since contract version 9. Created and edited as a `CategoryInput` (the same fields without `id` and `builtin`). The rules are in [FILE_NAMING.md](FILE_NAMING.md#categories) |
+| `DestinationCheck` | What adding a download would do (#31): `directory`, `directoryExists`, `automaticDirectory`, `categoryId`, `fileName` (`null` when the server will name it), `fileExists`, `partialDownloadExists` (V2's or V1's) and `suggestedName` (the first free name when it is taken) | Since contract version 9. Free disk space isn't reported yet |
+| `OnConflict` | What adding does when the name is taken (#31): `ask` or `rename`. The fixture `on-conflict.json` lists them | Never replace (PO decision on #31). For #60's Add command |
 | `BatchResult` | What a command over several downloads did: `done` (ids), `failed` (`{ id, code }`), and `kept` (`{ path, reason, code }`, files a removal with files left in place). `reason` is `notPlain`, `tooLarge`, `behindLink`, `notEmpty` or `failed`; `code` is set only for `failed` | The fixture `kept-reasons.json` lists the reasons |
 
 **Conventions:**
@@ -53,9 +56,22 @@ The commands of [`src-tauri/src/downloads.rs`](../src-tauri/src/downloads.rs) (#
 
 Adding downloads is #60's, and giving a login back to a download that needs it comes with its dialog (#59, #60).
 
+## The category commands
+
+The commands of [`src-tauri/src/categories.rs`](../src-tauri/src/categories.rs) (#31), V1's category commands and `check_destination`. A command that fails returns its `ErrorCode`. The rules are in [FILE_NAMING.md](FILE_NAMING.md).
+
+| Command | Arguments | Returns |
+|---|---|---|
+| `list_categories` | — | `Category[]`, in the order the automatic category is chosen in |
+| `create_category` | `input` (a `CategoryInput`) | the `Category`; `INVALID_INPUT`, `INVALID_PATH` or `NAME_TAKEN` |
+| `update_category` | `id`, `input` | the `Category`; also `NOT_FOUND` |
+| `delete_category` | `id` | nothing; `NOT_FOUND`, or `INVALID_STATE` for a built-in one. Its downloads are left without one |
+| `set_download_category` | `id`, `categoryId` (`null` for none) | nothing; nothing is moved |
+| `check_destination` | `url`, `directory`, `fileName`, `categoryId` (each `null` for automatic) | `DestinationCheck` |
+
 ## How the two sides stay in step
 
-1. **Rust generates contract fixtures** in `tests/fixtures/contract/` from the real types: `statuses.json`, `error-codes.json`, `download-record.json`, `capabilities.json`, `app-info.json`, `downloads-snapshot.json`, `engine-health.json`, `batch-result.json` and `kept-reasons.json`. A Rust test fails when a fixture no longer matches the types: "fixture … is out of date; regenerate it with `VELOCITY_UPDATE_FIXTURES=1`".
+1. **Rust generates contract fixtures** in `tests/fixtures/contract/` from the real types: `statuses.json`, `error-codes.json`, `download-record.json`, `capabilities.json`, `app-info.json`, `downloads-snapshot.json`, `engine-health.json`, `batch-result.json`, `kept-reasons.json`, `category.json`, `category-icons.json`, `destination-check.json` and `on-conflict.json`. `naming-cases.json` holds the names `src/naming.ts` must give ([FILE_NAMING.md](FILE_NAMING.md#file-names)). A Rust test fails when a fixture no longer matches the types: "fixture … is out of date; regenerate it with `VELOCITY_UPDATE_FIXTURES=1`".
 2. **Vitest validates the same fixtures** with the UI's strict schemas (`src/contract.test.ts`). An unknown field, a missing field, an unknown enum value or a wrong type fails the test.
 3. **So a change on one side alone always fails a test:**
    - Change Rust without regenerating, and the Rust contract test fails.

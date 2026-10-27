@@ -448,3 +448,152 @@ fn after_the_app_starts_again_an_unfinished_download_resumes_from_its_checkpoint
     assert_eq!(std::fs::read(dir.files().join("f.bin")).unwrap(), data());
     assert!(!part(&dir.files(), "f.bin").exists());
 }
+
+/// Categories and destinations on the real engine (#31): the manager places a download, the
+/// engine names and saves it, and the record and the files show both.
+mod categories {
+    use super::*;
+    use velocity_core::destination::{Choice, FolderSettings, OnConflict, Placement};
+    use velocity_core::manager::AddOptions;
+    use velocity_test_http::FileHeaders;
+
+    /// The app, with `dir.files()` as its default folder.
+    fn open(dir: &Dir) -> (App, Arc<Database>) {
+        let (app, db) = App::open(dir, fast(5));
+        db.save_folder_settings(
+            &FolderSettings {
+                default_directory: dir.files().to_string_lossy().into_owned(),
+                ..FolderSettings::default()
+            },
+            App::now(),
+        )
+        .unwrap();
+        (app, db)
+    }
+
+    /// Adds `url` where the manager placed it.
+    fn add_placed(app: &mut App, url: String, placement: Placement) -> String {
+        let Placement::Placed(place) = placement else {
+            panic!("not placed: {placement:?}")
+        };
+        let mut s = spec(url, &place.directory, "unused");
+        s.file_name = place.file_name;
+        let options = AddOptions {
+            category_id: place.category_id,
+            ..AddOptions::default()
+        };
+        app.manager
+            .add_with(DownloadKind::Http, s, options, App::now())
+            .expect("added")
+    }
+
+    #[test]
+    fn a_name_the_server_gives_sets_the_category_and_the_file_stays_in_its_folder() {
+        // PO decision on #31; the name is the server's `Content-Disposition` (V1 #46).
+        let server = TestServer::start(
+            vec![("get".into(), data())],
+            ServerOptions {
+                file_headers: FileHeaders {
+                    content_disposition: Some("attachment; filename=\"report.pdf\"".to_owned()),
+                    ..FileHeaders::default()
+                },
+                ..ServerOptions::default()
+            },
+        );
+        let dir = Dir::new("server-named");
+        let (mut app, db) = open(&dir);
+        let url = server.url("get");
+        let placement = app
+            .manager
+            .place(&url, &Choice::default(), OnConflict::Ask)
+            .unwrap();
+        // No extension in the link: the server names it, and the default folder is used.
+        let Placement::Placed(place) = &placement else {
+            panic!("placed")
+        };
+        assert_eq!(
+            (&place.directory, &place.file_name, &place.category_id),
+            (&dir.files(), &None, &None)
+        );
+        let id = add_placed(&mut app, url, placement);
+        app.until_status(&id, DownloadStatus::Completed);
+        let r = app.manager.get(&id).unwrap();
+        assert_eq!(r.file_name.as_deref(), Some("report.pdf"));
+        assert_eq!(r.category_id.as_deref(), Some("documents"));
+        assert_eq!(PathBuf::from(&r.directory), dir.files(), "not moved");
+        assert_eq!(
+            std::fs::read(dir.files().join("report.pdf")).unwrap(),
+            data()
+        );
+        assert!(!dir.files().join("Documents").exists());
+        let stored = db.downloads().unwrap().remove(0);
+        assert_eq!(stored.category_id.as_deref(), Some("documents"));
+    }
+
+    #[test]
+    fn an_automatic_category_chooses_its_folder_and_a_v1_download_there_is_never_written_over() {
+        let server = TestServer::start(
+            vec![("ubuntu.iso".into(), data())],
+            ServerOptions::default(),
+        );
+        let dir = Dir::new("category-folder");
+        let (mut app, _db) = open(&dir);
+        let url = server.url("ubuntu.iso");
+        let images = dir.files().join("Disk images");
+
+        // V1 (aria2) is downloading the same file into the same folder.
+        std::fs::create_dir(&images).unwrap();
+        std::fs::write(images.join("ubuntu.iso"), b"V1's partial file").unwrap();
+        std::fs::write(images.join("ubuntu.iso.aria2"), b"V1's control file").unwrap();
+
+        let Placement::Conflict(check) = app
+            .manager
+            .place(&url, &Choice::default(), OnConflict::Ask)
+            .unwrap()
+        else {
+            panic!("asked")
+        };
+        assert!(check.file_exists && check.partial_download_exists);
+        assert_eq!(check.category_id.as_deref(), Some("images"));
+
+        let placement = app
+            .manager
+            .place(&url, &Choice::default(), OnConflict::Rename)
+            .unwrap();
+        let id = add_placed(&mut app, url, placement);
+        app.until_status(&id, DownloadStatus::Completed);
+        let r = app.manager.get(&id).unwrap();
+        assert_eq!(r.category_id.as_deref(), Some("images"));
+        assert_eq!(r.file_name.as_deref(), Some("ubuntu (1).iso"));
+        assert_eq!(
+            std::fs::read(images.join("ubuntu (1).iso")).unwrap(),
+            data()
+        );
+        assert_eq!(
+            std::fs::read(images.join("ubuntu.iso")).unwrap(),
+            b"V1's partial file"
+        );
+        assert_eq!(
+            std::fs::read(images.join("ubuntu.iso.aria2")).unwrap(),
+            b"V1's control file"
+        );
+    }
+
+    #[test]
+    fn a_missing_category_folder_is_created_when_placed() {
+        let server = TestServer::start(vec![("song.mp3".into(), data())], ServerOptions::default());
+        let dir = Dir::new("created");
+        let (mut app, _db) = open(&dir);
+        let url = server.url("song.mp3");
+        let placement = app
+            .manager
+            .place(&url, &Choice::default(), OnConflict::Ask)
+            .unwrap();
+        let id = add_placed(&mut app, url, placement);
+        app.until_status(&id, DownloadStatus::Completed);
+        assert_eq!(
+            std::fs::read(dir.files().join("Music").join("song.mp3")).unwrap(),
+            data()
+        );
+    }
+}
