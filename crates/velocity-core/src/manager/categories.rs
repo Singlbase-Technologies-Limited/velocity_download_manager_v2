@@ -115,8 +115,8 @@ impl Manager {
     /// the first free one, as `on_conflict` says; an existing file is never replaced (PO decision
     /// on #31). `FileExists` when no free name is left.
     ///
-    /// A missing category subfolder is created then, inside its existing parent, never through
-    /// a link (`InvalidPath`). Any other missing folder is `DestinationMissing`: the default
+    /// A missing category subfolder is created then, inside its existing parent; anything at its
+    /// name but a plain folder, such as a link, is refused (`InvalidPath`). Any other missing folder is `DestinationMissing`: the default
     /// folder, a category's own and a chosen one.
     pub fn place(
         &self,
@@ -136,13 +136,14 @@ impl Manager {
             check.file_name
         };
         let directory = PathBuf::from(check.directory);
-        if !check.directory_exists {
-            match (subfolder, directory.parent()) {
-                (Some(subfolder), Some(parent)) => {
-                    create_folders(parent, &[subfolder])?;
-                }
-                _ => return Err(ErrorCode::DestinationMissing),
+        match (subfolder, directory.parent()) {
+            // Always through `create_folders`, even when the folder seems to exist: `is_dir`
+            // follows a link, and a link in place of the subfolder must be refused, not used.
+            (Some(subfolder), Some(parent)) => {
+                create_folders(parent, &[subfolder])?;
             }
+            _ if !check.directory_exists => return Err(ErrorCode::DestinationMissing),
+            _ => {}
         }
         Ok(Placement::Placed(Place {
             directory,
