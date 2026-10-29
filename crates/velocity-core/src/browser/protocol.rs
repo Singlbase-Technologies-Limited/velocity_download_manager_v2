@@ -316,6 +316,7 @@ mod tests {
             json!({"v":1,"id":"a","type":"download.add","payload":{"url":"https://e/x","source":"evil"}}),
             json!({"v":1,"id":"a","type":"download.add","payload":{"url":"https://e/x","source":"popup","referrer":"javascript:1"}}),
             json!({"v":1,"id":"a","type":"download.add","payload":{"url":"https://e/x","source":"popup","mime":"a\u{0}b"}}),
+            json!({"v":1,"id":"a","type":"download.add","payload":{"url":"https://e/x","source":"popup","filename":"a\u{1}b"}}),
             json!({"v":1,"id":"a","type":"download.add","payload":{"url":"https://e/x","source":"popup","fileSize":9_007_199_254_740_993_u64}}),
         ];
         for c in cases {

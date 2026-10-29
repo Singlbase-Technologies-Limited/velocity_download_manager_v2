@@ -429,7 +429,8 @@ mod tests {
 
     #[test]
     fn an_unsafe_file_name_from_the_browser_is_dropped() {
-        for bad in ["..", "con", "a\u{1}b"] {
+        // A control character never gets this far: the protocol refuses the whole message.
+        for bad in ["..", "con", "a<b"] {
             let message = json!({"v":1,"id":"a1","type":"download.add","payload":{"url":"https://e.example/x","source":"popup","filename":bad}});
             let r = route_with(&BrowserSettings::default(), &envelope(&chrome(), message));
             let Route::Ask { prompt, .. } = r else {

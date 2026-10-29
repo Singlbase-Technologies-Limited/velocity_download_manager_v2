@@ -61,7 +61,10 @@ async fn handle(
     .await;
     // Settings that can't be read are the defaults: links are taken, and each opens the dialog.
     let (settings, engine_running) = match state {
-        Ok((settings, health)) => (settings.unwrap_or_default(), health == EngineHealth::Running),
+        Ok((settings, health)) => (
+            settings.unwrap_or_default(),
+            health == EngineHealth::Running,
+        ),
         Err(_) => (BrowserSettings::default(), false),
     };
     let status = AppStatus {
@@ -69,7 +72,9 @@ async fn handle(
         engine_running,
     };
     let decided = {
-        let mut limiter = limiter.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut limiter = limiter
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         route(&env, &settings, &mut limiter, Instant::now(), &status)
     };
     match decided {
