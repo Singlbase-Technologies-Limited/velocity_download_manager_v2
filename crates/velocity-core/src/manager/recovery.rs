@@ -178,6 +178,9 @@ impl Manager {
                     retry_at_ms: None,
                     started_at_ms: stored.activity.started_at_ms,
                     average_speed_bps: activity.average_speed_bps(),
+                    speed_limit_bps: None,
+                    requested_connections: None,
+                    torrent: None,
                 },
                 job,
                 running: false,
@@ -187,6 +190,7 @@ impl Manager {
                 needs_login,
                 activity,
             };
+            download.show_settings();
             if !finished {
                 download.record.status = download.waiting_status();
                 if needs_login {

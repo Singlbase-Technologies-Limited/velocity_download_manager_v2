@@ -10,7 +10,9 @@ use super::{
     Chunk, NetworkStatus, PeerStatus, PortMapState, TorrentEngine, TorrentEvent, TorrentId,
     TorrentSettings, TorrentSnapshot, TorrentSource, TorrentSpec, TrackerStatus, CHUNK_BYTES,
 };
-use crate::domain::{DownloadStatus, EngineHealth, ErrorCode, Progress, TransferError};
+use crate::domain::{
+    DownloadStatus, EngineHealth, ErrorCode, Progress, TorrentActivity, TransferError,
+};
 use crate::seeding::SeedPolicy;
 
 struct Torrent {
@@ -151,6 +153,17 @@ impl FakeTorrentControl {
         } else {
             DownloadStatus::Seeding
         };
+        s.changed(id);
+    }
+
+    /// The torrent's peers and seeding, as the helper reports them.
+    pub fn activity(&self, id: TorrentId, activity: TorrentActivity) {
+        let mut s = lock(&self.state);
+        let t = s.torrents.get_mut(&id).expect("known torrent");
+        t.snapshot.peers = activity.peers;
+        t.snapshot.seeds = activity.seeds;
+        t.snapshot.uploaded_bytes = activity.uploaded_bytes;
+        t.snapshot.seeding_secs = activity.seeding_secs;
         s.changed(id);
     }
 

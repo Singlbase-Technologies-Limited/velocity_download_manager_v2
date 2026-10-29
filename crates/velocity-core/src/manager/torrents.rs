@@ -23,7 +23,9 @@ use std::time::{Duration, Instant};
 
 use super::{AddOptions, Download, Job, Manager};
 use crate::database::{Engine, NewDownload, StoredOptions, TorrentOptions, TorrentOrigin};
-use crate::domain::{DownloadKind, DownloadRecord, DownloadStatus, ErrorCode, Progress};
+use crate::domain::{
+    DownloadKind, DownloadRecord, DownloadStatus, ErrorCode, Progress, TorrentActivity,
+};
 use crate::seeding::SeedPolicy;
 use crate::torrent::{
     check_tracker, parse_magnet, parse_metadata, strip_trackers, MagnetInfo, TorrentMeta,
@@ -192,6 +194,9 @@ impl Manager {
                 retry_at_ms: None,
                 started_at_ms: None,
                 average_speed_bps: None,
+                speed_limit_bps: None,
+                requested_connections: None,
+                torrent: None,
             },
             job: Job::Torrent(Box::new(job)),
             running: false,
@@ -202,6 +207,7 @@ impl Manager {
             activity: super::activity::Tracker::default(),
         };
         download.record.status = download.waiting_status();
+        download.show_settings();
         let new = NewDownload {
             id: id.clone(),
             engine: Engine::Libtorrent,
@@ -277,6 +283,10 @@ impl Manager {
             self.torrents.set_limits(torrent, upload, download)?;
         }
         self.torrent_job_mut(id)?.options.download_limit = download;
+        self.downloads
+            .get_mut(id)
+            .expect("a torrent job's download")
+            .show_settings();
         self.store_torrent_options(id);
         Ok(())
     }
@@ -524,6 +534,12 @@ impl Manager {
         record.status = status;
         record.progress = snapshot.progress.clone();
         record.error = snapshot.error.clone();
+        record.torrent = Some(TorrentActivity {
+            peers: snapshot.peers,
+            seeds: snapshot.seeds,
+            uploaded_bytes: snapshot.uploaded_bytes,
+            seeding_secs: snapshot.seeding_secs,
+        });
         if snapshot.name.is_some() {
             record.file_name = snapshot.name.clone();
         }

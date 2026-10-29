@@ -1,10 +1,10 @@
 import { useMemo, useState } from 'react';
 import { toast } from 'sonner';
 import { confirmAction } from '../../components/confirmStore';
-import type { BatchResult, DownloadRecord, KeptReason, MoveDirection } from '../../contract';
+import type { BatchResult, DownloadRecord, ErrorCode, KeptReason, MoveDirection } from '../../contract';
 import { displayName } from '../../downloads/list';
 import { api } from '../../lib/api';
-import { ERROR_MESSAGES, toApiError } from '../../lib/errors';
+import { ApiError, ERROR_MESSAGES, toApiError } from '../../lib/errors';
 import { useDownloadsStore } from '../../stores/downloads';
 import { useUiStore } from '../../stores/ui';
 
@@ -28,6 +28,15 @@ function report(r: BatchResult, verb: string) {
   if (kept) toast.warning(`${plural(r.kept.length, 'file')} left in place, as ${KEPT[kept.reason]}: ${kept.path}`);
 }
 
+/** Why a file or folder couldn't be opened, in the words for opening (#61); other codes keep their usual sentence. */
+const OPEN_FAILED: Partial<Record<ErrorCode, string>> = {
+  NOT_FOUND: 'The file is no longer there. It may have been moved or deleted.',
+  INVALID_PATH: 'Velocity doesn’t open a file reached through a link.',
+  INVALID_STATE: 'The download hasn’t finished, so there is no file to open yet.',
+  DESTINATION_MISSING: 'The download’s folder is no longer there.',
+  IO: 'The system couldn’t start the program that opens it.',
+};
+
 async function copy(text: string, what: string) {
   try {
     await navigator.clipboard.writeText(text);
@@ -46,12 +55,13 @@ export function useDownloadActions() {
   const [pending, setPending] = useState(0);
   const askLogin = useUiStore((s) => s.askLogin);
   const actions = useMemo(() => {
-    async function send(fn: () => Promise<unknown>) {
+    async function send(fn: () => Promise<unknown>, messages: Partial<Record<ErrorCode, string>> = {}) {
       setPending((n) => n + 1);
       try {
         await fn();
       } catch (e) {
-        toast.error(toApiError(e).message);
+        const error = toApiError(e);
+        toast.error(messages[error.code] ?? error.message);
       } finally {
         setPending((n) => n - 1);
       }
@@ -99,6 +109,30 @@ export function useDownloadActions() {
           await Promise.all(ids.map((id) => api.stopSeeding(id)));
           toast.success(ids.length > 1 ? `Stopped seeding ${plural(ids.length, 'torrent')}` : 'Stopped seeding');
         }),
+      /** Opens the finished file; a program only once the user confirmed it (PO decision on #61). */
+      openFile: (d: DownloadRecord) =>
+        send(async () => {
+          try {
+            await api.openFile(d.id, false);
+          } catch (e) {
+            if (!(e instanceof ApiError) || e.code !== 'CONFIRMATION_REQUIRED') throw e;
+            const ok = await confirmAction({
+              title: 'Open a program file?',
+              description: `“${displayName(d)}” can run code on your computer. Only open it if you trust where it came from.`,
+              confirmLabel: 'Open anyway',
+              destructive: true,
+            });
+            if (ok) await api.openFile(d.id, true);
+          }
+        }, OPEN_FAILED),
+      openFolder: (id: string) => send(() => api.openFolder(id), OPEN_FAILED),
+      setSpeedLimit: (id: string, kib: number) => send(() => api.setSpeedLimit(id, kib)),
+      setConnections: (id: string, connections: number) =>
+        send(async () => {
+          const applied = await api.setConnections(id, connections);
+          toast.success(applied === connections ? `Connections set to ${String(applied)}` : `Asked for ${String(connections)} connections; ${String(applied)} apply`);
+        }),
+      setCategory: (id: string, categoryId: string | null) => send(() => api.setCategory(id, categoryId)),
       copyLink: (d: DownloadRecord) => copy(d.sourceUrl, 'Link'),
       copyName: (d: DownloadRecord) => copy(displayName(d), 'Name'),
       pauseAll: () => send(async () => { await api.pauseAll(); toast.success('Paused all downloads'); }),

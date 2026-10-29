@@ -5,7 +5,7 @@
 import { z } from 'zod';
 
 /** Must equal `velocity_core::COMMAND_API_VERSION`; the app refuses to start on a mismatch. */
-export const COMMAND_API_VERSION = 12;
+export const COMMAND_API_VERSION = 13;
 
 const bytes = z.number().int().nonnegative();
 
@@ -81,6 +81,15 @@ export const ProgressSchema = z.strictObject({
 });
 export type Progress = z.infer<typeof ProgressSchema>;
 
+/** A torrent's peers and seeding, as the torrent helper reports them (#61). */
+export const TorrentActivitySchema = z.strictObject({
+  peers: z.number().int().nonnegative(),
+  seeds: z.number().int().nonnegative(),
+  uploadedBytes: bytes,
+  seedingSecs: bytes,
+});
+export type TorrentActivity = z.infer<typeof TorrentActivitySchema>;
+
 export const DownloadRecordSchema = z.strictObject({
   id: z.string().min(1),
   kind: DownloadKindSchema,
@@ -100,6 +109,12 @@ export const DownloadRecordSchema = z.strictObject({
   startedAtMs: bytes.nullable(),
   /** Bytes per second while it ran, once it ran for a second (#59). */
   averageSpeedBps: bytes.nullable(),
+  /** Its own speed limit, in bytes per second; `null` for none (#61). */
+  speedLimitBps: bytes.nullable(),
+  /** The connections a direct download asks for; `null` for a torrent (#61). */
+  requestedConnections: z.number().int().positive().nullable(),
+  /** What the torrent helper last reported about a torrent's peers and seeding; `null` for a direct download, and until it reports (#61). */
+  torrent: TorrentActivitySchema.nullable(),
 });
 export type DownloadRecord = z.infer<typeof DownloadRecordSchema>;
 

@@ -1,6 +1,6 @@
 use super::*;
 use crate::database::{Database, Engine, Stored, StoredDownload};
-use crate::domain::{Capabilities, FailureClass, TransferError, Verification};
+use crate::domain::{Capabilities, FailureClass, TorrentActivity, TransferError, Verification};
 use crate::transfer::fake::{FakeControl, FakeTransfer};
 use crate::transfer::{Limits, TransferSnapshot};
 use std::path::PathBuf;
@@ -2464,6 +2464,33 @@ mod per_download {
     }
 
     #[test]
+    fn the_download_shows_its_own_limit_and_connections_after_a_restart_too() {
+        let db = Arc::new(Database::open_in_memory().unwrap());
+        let mut m = Manager::open(Box::new(FakeTransfer::new()), Arc::clone(&db)).unwrap();
+        let id = paused_one(&mut m);
+        let r = m.get(&id).unwrap();
+        assert_eq!(r.speed_limit_bps, None, "no limit of its own");
+        assert_eq!(r.requested_connections, Some(4), "the spec's");
+        m.set_download_limits(
+            &id,
+            Limits {
+                max_download_bps: Some(64 * 1024),
+            },
+        )
+        .unwrap();
+        m.set_download_connections(&id, 2).unwrap();
+        let r = m.get(&id).unwrap();
+        assert_eq!(r.speed_limit_bps, Some(64 * 1024));
+        assert_eq!(r.requested_connections, Some(2));
+        assert_eq!(r.torrent, None, "a direct download");
+        drop(m);
+        let again = Manager::open(Box::new(FakeTransfer::new()), Arc::clone(&db)).unwrap();
+        let r = again.get(&id).unwrap();
+        assert_eq!(r.speed_limit_bps, Some(64 * 1024));
+        assert_eq!(r.requested_connections, Some(2));
+    }
+
+    #[test]
     fn a_finished_download_takes_neither() {
         let (mut m, control, id) = setup();
         control.complete(TransferId(1));
@@ -2476,6 +2503,150 @@ mod per_download {
             m.set_download_connections(&id, 2),
             Err(ErrorCode::InvalidState)
         );
+    }
+}
+
+/// Opening a finished download's file, and showing it in its folder (#61).
+mod opening {
+    use super::*;
+    use std::fs;
+
+    fn folder(test: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("v2-opening-{test}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    /// A manager with a download of `name` into `dir`, completed when `complete`.
+    fn download(dir: &std::path::Path, name: &str, complete: bool) -> (Manager, String) {
+        let fake = FakeTransfer::new();
+        let control = fake.control();
+        let mut m = in_memory(fake);
+        let spec = TransferSpec {
+            directory: dir.to_path_buf(),
+            file_name: Some(name.to_owned()),
+            ..spec()
+        };
+        let id = m.add(DownloadKind::Http, spec, T0).unwrap();
+        if complete {
+            control.complete(TransferId(1));
+        }
+        m.pump(T0 + 1);
+        (m, id)
+    }
+
+    #[test]
+    fn a_completed_download_opens_its_own_file() {
+        let dir = folder("file");
+        let (m, id) = download(&dir, "a.zip", true);
+        fs::write(dir.join("a.zip"), b"zip").unwrap();
+        assert_eq!(m.file_to_open(&id, false), Ok(dir.join("a.zip")));
+        assert_eq!(m.file_to_open("d-9999", false), Err(ErrorCode::NotFound));
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn an_unfinished_download_has_no_file_to_open() {
+        let dir = folder("unfinished");
+        let (m, id) = download(&dir, "a.zip", false);
+        fs::write(dir.join("a.zip"), b"someone else's").unwrap();
+        assert_eq!(m.file_to_open(&id, false), Err(ErrorCode::InvalidState));
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_file_that_is_gone_is_reported_not_found() {
+        let dir = folder("gone");
+        let (m, id) = download(&dir, "a.zip", true);
+        assert_eq!(m.file_to_open(&id, false), Err(ErrorCode::NotFound));
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_program_opens_only_once_the_user_confirmed() {
+        let dir = folder("program");
+        for name in [
+            "setup.exe",
+            "install.MSI",
+            "run.sh",
+            "tool.AppImage",
+            "start.bat",
+        ] {
+            let (m, id) = download(&dir, name, true);
+            fs::write(dir.join(name), b"program").unwrap();
+            assert_eq!(
+                m.file_to_open(&id, false),
+                Err(ErrorCode::ConfirmationRequired),
+                "{name}"
+            );
+            assert_eq!(m.file_to_open(&id, true), Ok(dir.join(name)), "{name}");
+        }
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// On Linux a file the system would run is a program whatever its name.
+    #[cfg(unix)]
+    #[test]
+    fn an_executable_file_is_a_program_whatever_its_name() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = folder("mode");
+        let (m, id) = download(&dir, "notes.txt", true);
+        fs::write(dir.join("notes.txt"), b"#!/bin/sh").unwrap();
+        fs::set_permissions(dir.join("notes.txt"), fs::Permissions::from_mode(0o755)).unwrap();
+        assert_eq!(
+            m.file_to_open(&id, false),
+            Err(ErrorCode::ConfirmationRequired)
+        );
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_link_at_the_files_name_is_never_opened() {
+        let dir = folder("link");
+        let outside = folder("link-outside");
+        let (m, id) = download(&dir, "album", true);
+        let link = dir.join("album");
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&outside, &link).unwrap();
+        // A junction needs no administrator rights, unlike a symbolic link.
+        #[cfg(windows)]
+        {
+            let made = std::process::Command::new("cmd")
+                .args(["/C", "mklink", "/J"])
+                .arg(&link)
+                .arg(&outside)
+                .output()
+                .unwrap();
+            assert!(made.status.success(), "{made:?}");
+        }
+        assert_eq!(m.file_to_open(&id, true), Err(ErrorCode::InvalidPath));
+        assert_eq!(
+            m.folder_to_open(&id),
+            Ok(FolderView::Folder(dir.clone())),
+            "the folder, without selecting the link"
+        );
+        fs::remove_dir_all(&dir).unwrap();
+        fs::remove_dir_all(&outside).unwrap();
+    }
+
+    #[test]
+    fn open_folder_selects_the_file_or_shows_the_folder_when_the_file_is_gone() {
+        let dir = folder("folder");
+        let (m, id) = download(&dir, "a.zip", false);
+        assert_eq!(m.folder_to_open(&id), Ok(FolderView::Folder(dir.clone())));
+        fs::write(dir.join("a.zip"), b"zip").unwrap();
+        assert_eq!(
+            m.folder_to_open(&id),
+            Ok(FolderView::Select(dir.join("a.zip")))
+        );
+        fs::remove_dir_all(&dir).unwrap();
+        assert_eq!(
+            m.folder_to_open(&id),
+            Err(ErrorCode::DestinationMissing),
+            "the folder is gone too"
+        );
+        assert_eq!(m.folder_to_open("d-9999"), Err(ErrorCode::NotFound));
     }
 }
 
@@ -3055,6 +3226,77 @@ mod torrents {
             Err(ErrorCode::Unsupported),
             "libtorrent chooses its peers"
         );
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_torrent_shows_its_peers_and_seeding_once_the_helper_reports_them() {
+        let dir = folder("activity");
+        let mut s = setup(3);
+        let id =
+            s.m.add_torrent(request(&dir), AddOptions::default(), T0)
+                .unwrap();
+        s.m.pump(T0 + 1);
+        let r = s.m.get(&id).unwrap();
+        assert_eq!(
+            r.torrent,
+            Some(TorrentActivity {
+                peers: 0,
+                seeds: 0,
+                uploaded_bytes: 0,
+                seeding_secs: 0,
+            }),
+            "what the helper reported on adding it"
+        );
+        assert_eq!(r.requested_connections, None, "libtorrent chooses peers");
+        s.torrents.activity(
+            TorrentId(1),
+            TorrentActivity {
+                peers: 7,
+                seeds: 2,
+                uploaded_bytes: 4096,
+                seeding_secs: 30,
+            },
+        );
+        s.m.pump(T0 + 2);
+        let r = s.m.get(&id).unwrap();
+        assert_eq!(r.torrent.map(|t| (t.peers, t.seeds)), Some((7, 2)));
+        assert_eq!(
+            r.torrent.map(|t| (t.uploaded_bytes, t.seeding_secs)),
+            Some((4096, 30))
+        );
+        s.m.set_download_limits(
+            &id,
+            Limits {
+                max_download_bps: Some(64 * 1024),
+            },
+        )
+        .unwrap();
+        assert_eq!(s.m.get(&id).unwrap().speed_limit_bps, Some(64 * 1024));
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_torrent_read_back_after_a_restart_waits_for_the_helper_before_showing_peers() {
+        let dir = folder("activity-restart");
+        let db = Arc::new(Database::open_in_memory().unwrap());
+        let mut s = with_db(&db, 3);
+        let id =
+            s.m.add_torrent(request(&dir), AddOptions::default(), T0)
+                .unwrap();
+        s.m.set_download_limits(
+            &id,
+            Limits {
+                max_download_bps: Some(64 * 1024),
+            },
+        )
+        .unwrap();
+        s.m.pump(T0 + 1);
+        drop(s);
+        let again = with_db(&db, 3);
+        let r = again.m.get(&id).unwrap();
+        assert_eq!(r.torrent, None, "nothing reported yet");
+        assert_eq!(r.speed_limit_bps, Some(64 * 1024));
         fs::remove_dir_all(&dir).unwrap();
     }
 

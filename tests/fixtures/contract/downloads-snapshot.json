@@ -28,10 +28,45 @@
         "totalBytes": 4194304,
         "uploadSpeedBps": 0
       },
+      "requestedConnections": 8,
       "retryAtMs": 1792600030000,
       "sourceUrl": "https://example.com/files/archive.zip",
+      "speedLimitBps": 524288,
       "startedAtMs": 1792600001000,
       "status": "retrying",
+      "torrent": null,
+      "verification": null
+    },
+    {
+      "averageSpeedBps": 262144,
+      "categoryId": null,
+      "completedAtMs": 1792600060000,
+      "createdAtMs": 1792600000000,
+      "directory": "/home/user/Downloads",
+      "error": null,
+      "fileName": "album",
+      "id": "d-0003",
+      "kind": "magnet",
+      "progress": {
+        "completedBytes": 4194304,
+        "connectionDetail": null,
+        "connections": 7,
+        "downloadSpeedBps": 0,
+        "totalBytes": 4194304,
+        "uploadSpeedBps": 65536
+      },
+      "requestedConnections": null,
+      "retryAtMs": null,
+      "sourceUrl": "magnet:?xt=urn:btih:0123456789abcdef0123456789abcdef01234567",
+      "speedLimitBps": null,
+      "startedAtMs": 1792600001000,
+      "status": "seeding",
+      "torrent": {
+        "peers": 7,
+        "seedingSecs": 600,
+        "seeds": 2,
+        "uploadedBytes": 8388608
+      },
       "verification": null
     }
   ],

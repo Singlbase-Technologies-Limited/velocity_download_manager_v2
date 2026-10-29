@@ -3,6 +3,7 @@
 mod adding;
 mod categories;
 mod downloads;
+mod opening;
 mod shell;
 mod tray;
 
@@ -81,6 +82,8 @@ pub fn run() {
             downloads::choose_torrent_files,
             downloads::set_torrent_seeding,
             downloads::restart_torrent_helper,
+            opening::open_download_file,
+            opening::open_download_folder,
             adding::add_downloads,
             adding::get_capabilities,
             adding::choose_torrents,

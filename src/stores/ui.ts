@@ -28,6 +28,8 @@ interface UiState {
   categoryFilter: string | null;
   /** Panel sizes and visibility, loaded from and saved to the `appearance` settings. */
   layout: LayoutPrefs;
+  /** The download the details panel was opened for; while open, the panel follows the focused row instead (#61). */
+  detailsId: string | null;
   /** The Add dialog, and what it opened with. */
   addDialog: { open: boolean; prefill: AddPrefill | null };
   /** A download that came back without its login, and what to do once it is given again (#59). */
@@ -35,6 +37,8 @@ interface UiState {
   setView: (view: View) => void;
   setCategoryFilter: (id: string | null) => void;
   setLayout: (patch: Partial<LayoutPrefs>) => void;
+  /** Opens the details panel for a download, or closes it (`null`); whether it is open is saved with the layout. */
+  showDetails: (id: string | null) => void;
   /** Opens the Add dialog; what it opened with replaces an open one's. */
   openAdd: (prefill?: AddPrefill) => void;
   closeAdd: () => void;
@@ -46,11 +50,15 @@ export const useUiStore = create<UiState>((set) => ({
   view: 'all',
   categoryFilter: null,
   layout: { ...DEFAULT_LAYOUT },
+  detailsId: null,
   addDialog: { open: false, prefill: null },
   loginRequest: null,
   setView: (view) => { set({ view, categoryFilter: null }); },
   setCategoryFilter: (categoryFilter) => { set({ categoryFilter, view: 'all' }); },
   setLayout: (patch) => { set((s) => ({ layout: { ...s.layout, ...patch } })); },
+  showDetails: (detailsId) => {
+    set((s) => ({ detailsId, layout: s.layout.detailsVisible === (detailsId !== null) ? s.layout : { ...s.layout, detailsVisible: detailsId !== null } }));
+  },
   openAdd: (prefill) => { set({ addDialog: { open: true, prefill: prefill ?? null } }); },
   closeAdd: () => { set({ addDialog: { open: false, prefill: null } }); },
   askLogin: (loginRequest) => { set({ loginRequest }); },

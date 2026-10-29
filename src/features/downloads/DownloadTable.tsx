@@ -3,9 +3,10 @@ import { ArrowDown, ArrowUp } from 'lucide-react';
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react';
 import { ContextMenu } from '../../components/Menu';
 import { COLUMN_MAX_WIDTH, COLUMN_MIN_WIDTH, type Category, type ColumnId, type Density, type DownloadRecord } from '../../contract';
-import { displayName, type SortKey, type SortState } from '../../downloads/list';
+import { canOpenFile, displayName, type SortKey, type SortState } from '../../downloads/list';
 import { cn } from '../../lib/cn';
 import { useDownloadsStore } from '../../stores/downloads';
+import { useUiStore } from '../../stores/ui';
 import { clampColumnWidth, type ColumnDef } from './columns';
 import { buildMenu } from './menus';
 import type { DownloadActions } from './useDownloadActions';
@@ -124,6 +125,7 @@ export function DownloadTable({ rows, columns, widths: saved, onResize, sort, on
   const select = useDownloadsStore((s) => s.select);
   const selectAll = useDownloadsStore((s) => s.selectAll);
   const clearSelection = useDownloadsStore((s) => s.clearSelection);
+  const showDetails = useUiStore((s) => s.showDetails);
   const byId = useMemo(() => new Map(categories.map((c) => [c.id, c])), [categories]);
   const rowHeight = density === 'compact' ? 32 : 40;
   const template = [`${String(CHECK_WIDTH)}px`, ...columns.map((c) => { const w = widths[c.id]; return w ? `${String(w)}px` : c.width; })].join(' ');
@@ -180,6 +182,9 @@ export function DownloadTable({ rows, columns, widths: saved, onResize, sort, on
         break;
       case 'Escape':
         clearSelection();
+        break;
+      case 'Enter':
+        if (focus) showDetails(focus);
         break;
       case ' ': {
         e.preventDefault();
@@ -266,7 +271,7 @@ export function DownloadTable({ rows, columns, widths: saved, onResize, sort, on
             return (
               <ContextMenu
                 key={d.id}
-                items={() => buildMenu(selection.has(d.id) ? selectedRows() : [d], actions, busy)}
+                items={() => buildMenu(selection.has(d.id) ? selectedRows() : [d], actions, busy, showDetails)}
                 onOpenChange={(open) => {
                   if (open && !selection.has(d.id)) select(d.id, 'single', ids);
                 }}
@@ -278,6 +283,8 @@ export function DownloadTable({ rows, columns, widths: saved, onResize, sort, on
                   aria-rowindex={vi.index + 1}
                   data-status={d.status}
                   onClick={(e) => { select(d.id, e.shiftKey ? 'range' : e.ctrlKey || e.metaKey ? 'toggle' : 'single', ids); }}
+                  // V1's: a finished download opens its file; any other shows its details. Choosing a torrent's files is #63's.
+                  onDoubleClick={() => { if (canOpenFile(d)) void actions.openFile(d); else showDetails(d.id); }}
                   className={cn(
                     'absolute left-0 top-0 grid w-full cursor-default items-center gap-3 border-b border-border/60 px-4 text-[12.5px] text-fg-muted',
                     selected ? 'bg-row-selected' : 'hover:bg-row-hover',
@@ -286,7 +293,7 @@ export function DownloadTable({ rows, columns, widths: saved, onResize, sort, on
                   style={{ gridTemplateColumns: template, height: vi.size, transform: `translateY(${String(vi.start)}px)` }}
                 >
                   {/* The checkbox toggles this row without changing the rest of the selection. */}
-                  <div role="gridcell" className="flex items-center" onClick={(e) => { e.stopPropagation(); }}>
+                  <div role="gridcell" className="flex items-center" onClick={(e) => { e.stopPropagation(); }} onDoubleClick={(e) => { e.stopPropagation(); }}>
                     <SelectBox checked={selected} label={`Select ${displayName(d)}`} onChange={() => { select(d.id, 'toggle', ids); }} />
                   </div>
                   {columns.map((c) => (

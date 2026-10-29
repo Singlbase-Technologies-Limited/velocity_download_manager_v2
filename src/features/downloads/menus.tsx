@@ -1,18 +1,21 @@
-import { ArrowDownToLine, ArrowUpToLine, ChevronDown, ChevronUp, Copy, Pause, Play, RotateCcw, Square, Trash2, UploadCloud, X } from 'lucide-react';
+import { ArrowDownToLine, ArrowUpToLine, ChevronDown, ChevronUp, Copy, FileSearch, FolderOpen, Info, Pause, Play, RotateCcw, Square, Trash2, UploadCloud, X } from 'lucide-react';
 import type { MenuSpec } from '../../components/Menu';
 import type { DownloadRecord } from '../../contract';
-import { actionsForSelection } from '../../downloads/list';
+import { actionsForSelection, canOpenFile } from '../../downloads/list';
 import type { DownloadActions } from './useDownloadActions';
 
 /**
  * The right-click menu for a selection (V1's menus.tsx). An action the selection doesn't allow is shown disabled.
- * Opening a file or its folder and the details come with the details panel (#61); choosing a torrent's files with #63.
+ * Choosing a torrent's files comes with #63.
  */
-export function buildMenu(selection: DownloadRecord[], a: DownloadActions, busy: boolean): MenuSpec {
+export function buildMenu(selection: DownloadRecord[], a: DownloadActions, busy: boolean, showDetails: (id: string) => void): MenuSpec {
   const can = actionsForSelection(selection);
   const ids = selection.map((d) => d.id);
   const one = selection.length === 1 ? selection[0] : undefined;
   return [
+    { label: 'Open file', icon: <FileSearch />, disabled: !one || !canOpenFile(one), onSelect: () => { if (one) void a.openFile(one); } },
+    { label: 'Open folder', icon: <FolderOpen />, disabled: !one, onSelect: () => { if (one) void a.openFolder(one.id); } },
+    'separator',
     { label: 'Resume', icon: <Play />, disabled: busy || !can.resume, onSelect: () => void a.resume(ids) },
     { label: 'Pause', icon: <Pause />, disabled: busy || !can.pause, onSelect: () => void a.pause(ids) },
     { label: 'Cancel', icon: <Square />, disabled: busy || !can.cancel, onSelect: () => void a.cancel(ids) },
@@ -26,6 +29,7 @@ export function buildMenu(selection: DownloadRecord[], a: DownloadActions, busy:
     'separator',
     { label: 'Copy link', icon: <Copy />, disabled: !one, onSelect: () => { if (one) void a.copyLink(one); } },
     { label: 'Copy name', icon: <Copy />, disabled: !one, onSelect: () => { if (one) void a.copyName(one); } },
+    { label: 'Details', icon: <Info />, disabled: !one, onSelect: () => { if (one) showDetails(one.id); } },
     'separator',
     { label: 'Remove from list', icon: <X />, disabled: busy || !can.remove, shortcut: 'Del', onSelect: () => void a.remove(selection) },
     { label: 'Delete files…', icon: <Trash2 />, destructive: true, disabled: busy || !can.deleteFiles, shortcut: 'Shift+Del', onSelect: () => void a.removeAndDelete(selection) },

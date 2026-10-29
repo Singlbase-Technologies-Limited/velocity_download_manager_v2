@@ -95,6 +95,16 @@ export const api = {
   moveDownload: (id: string, direction: MoveDirection) => call('move_download', { id, direction }, nothing),
   /** Stops a torrent seeding: its seeding policy becomes "never". */
   stopSeeding: (id: string) => call('set_torrent_seeding', { id, seeding: { mode: 'never' } }, nothing),
+  // The details panel's (#61).
+  /** Sets a download's own speed limit in KiB/s; 0 for none. */
+  setSpeedLimit: (id: string, kib: number) => call('set_download_speed_limit', { id, kib }, nothing),
+  /** Asks for `connections`; answers how many apply. */
+  setConnections: (id: string, connections: number) => call('set_download_connections', { id, connections }, z.number().int().positive()),
+  setCategory: (id: string, categoryId: string | null) => call('set_download_category', { id, categoryId }, nothing),
+  /** Opens the finished file; `CONFIRMATION_REQUIRED` for a program until `allowProgram`. */
+  openFile: (id: string, allowProgram: boolean) => call('open_download_file', { id, allowProgram }, nothing),
+  /** Shows the file in its folder, or the folder when the file is gone. */
+  openFolder: (id: string) => call('open_download_folder', { id }, nothing),
   /** Gives a download that came back without its login, headers or SSH key those again; then resume or retry it. */
   setDownloadLogin: (id: string, login: DownloadLogin) => call('set_download_login', { id, login }, nothing),
 };
