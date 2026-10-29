@@ -115,6 +115,14 @@ fn files_holding(dir: &Path, secrets: &[&str]) -> Vec<String> {
     found
 }
 
+/// Logs every download's record, one line each, the way the app logs what the manager reports:
+/// the core logs nothing while a download runs, so the log check needs these lines to read.
+fn log_records(m: &Manager) {
+    for record in m.snapshot().downloads {
+        tracing::info!("{record:?}");
+    }
+}
+
 /// The log lines that hold one of `secrets`.
 fn log_holding(log: &AppLog, secrets: &[&str]) -> Vec<String> {
     log.lines()
@@ -203,6 +211,7 @@ fn http_and_ftp_logins_leave_no_trace_through_the_child_engine() {
             });
         }
         m.pump(now());
+        log_records(&m);
         assert_eq!(
             files_holding(&dir.0, &secrets),
             Vec::<String>::new(),
@@ -331,6 +340,7 @@ fn sftp_key_and_password_logins_leave_no_trace() {
         Err(why) => eprintln!("SFTP password login: NOT RUN ({why})"),
     }
     m.pump(now());
+    log_records(&m);
     drop(m);
     let secrets: Vec<&str> = secrets.iter().map(String::as_str).collect();
     assert_eq!(files_holding(&dir.0, &secrets), Vec::<String>::new());
