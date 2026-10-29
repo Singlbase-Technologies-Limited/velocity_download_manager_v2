@@ -34,6 +34,8 @@ interface UiState {
   addDialog: { open: boolean; prefill: AddPrefill | null };
   /** A download that came back without its login, and what to do once it is given again (#59). */
   loginRequest: LoginRequest | null;
+  /** The torrent whose files are being chosen (#63). */
+  chooseFilesId: string | null;
   setView: (view: View) => void;
   setCategoryFilter: (id: string | null) => void;
   setLayout: (patch: Partial<LayoutPrefs>) => void;
@@ -44,6 +46,8 @@ interface UiState {
   closeAdd: () => void;
   askLogin: (request: LoginRequest) => void;
   closeLogin: () => void;
+  openChooseFiles: (id: string) => void;
+  closeChooseFiles: () => void;
 }
 
 export const useUiStore = create<UiState>((set) => ({
@@ -53,6 +57,7 @@ export const useUiStore = create<UiState>((set) => ({
   detailsId: null,
   addDialog: { open: false, prefill: null },
   loginRequest: null,
+  chooseFilesId: null,
   setView: (view) => { set({ view, categoryFilter: null }); },
   setCategoryFilter: (categoryFilter) => { set({ categoryFilter, view: 'all' }); },
   setLayout: (patch) => { set((s) => ({ layout: { ...s.layout, ...patch } })); },
@@ -63,4 +68,6 @@ export const useUiStore = create<UiState>((set) => ({
   closeAdd: () => { set({ addDialog: { open: false, prefill: null } }); },
   askLogin: (loginRequest) => { set({ loginRequest }); },
   closeLogin: () => { set({ loginRequest: null }); },
+  openChooseFiles: (chooseFilesId) => { set({ chooseFilesId }); },
+  closeChooseFiles: () => { set({ chooseFilesId: null }); },
 }));

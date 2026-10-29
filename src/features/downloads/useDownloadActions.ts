@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react';
 import { toast } from 'sonner';
 import { confirmAction } from '../../components/confirmStore';
-import type { BatchResult, DownloadRecord, ErrorCode, KeptReason, MoveDirection } from '../../contract';
+import type { BatchResult, DownloadRecord, ErrorCode, KeptFile, KeptReason, MoveDirection } from '../../contract';
 import { displayName } from '../../downloads/list';
 import { api } from '../../lib/api';
 import { ApiError, ERROR_MESSAGES, toApiError } from '../../lib/errors';
@@ -18,14 +18,19 @@ const KEPT: Record<KeptReason, string> = {
   failed: 'it couldn’t be deleted',
 };
 
+/** The files left in place, with why the first was. */
+function reportKept(kept: readonly KeptFile[]) {
+  const first = kept[0];
+  if (first) toast.warning(`${plural(kept.length, 'file')} left in place, as ${KEPT[first.reason]}: ${first.path}`);
+}
+
 /** What a command over several downloads did (V1's report): every one, or how many and why the rest couldn't. */
 function report(r: BatchResult, verb: string) {
   const first = r.failed[0];
   if (!first) toast.success(r.done.length > 1 ? `${verb} ${plural(r.done.length, 'download')}` : verb);
   else if (r.done.length > 0) toast.warning(`${verb} ${String(r.done.length)}; ${String(r.failed.length)} couldn’t be changed: ${ERROR_MESSAGES[first.code]}`);
   else toast.error(ERROR_MESSAGES[first.code]);
-  const kept = r.kept[0];
-  if (kept) toast.warning(`${plural(r.kept.length, 'file')} left in place, as ${KEPT[kept.reason]}: ${kept.path}`);
+  reportKept(r.kept);
 }
 
 /** Why a file or folder couldn't be opened, in the words for opening (#61); other codes keep their usual sentence. */
@@ -133,6 +138,19 @@ export function useDownloadActions() {
           toast.success(applied === connections ? `Connections set to ${String(applied)}` : `Asked for ${String(connections)} connections; ${String(applied)} apply`);
         }),
       setCategory: (id: string, categoryId: string | null) => send(() => api.setCategory(id, categoryId)),
+      // A torrent's (#63).
+      reannounce: (id: string) => send(async () => { await api.reannounce(id); toast.success('Asked the trackers for peers'); }),
+      setUploadLimit: (id: string, kib: number) => send(() => api.setUploadLimit(id, kib)),
+      /** Changes a torrent's files; whether it was done. */
+      async changeFiles(id: string, files: number[], deleteDropped: boolean) {
+        let ok = false;
+        await send(async () => {
+          reportKept(await api.chooseTorrentFiles(id, files, deleteDropped));
+          toast.success('File choice changed');
+          ok = true;
+        });
+        return ok;
+      },
       copyLink: (d: DownloadRecord) => copy(d.sourceUrl, 'Link'),
       copyName: (d: DownloadRecord) => copy(displayName(d), 'Name'),
       pauseAll: () => send(async () => { await api.pauseAll(); toast.success('Paused all downloads'); }),

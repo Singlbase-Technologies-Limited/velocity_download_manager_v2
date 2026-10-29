@@ -178,6 +178,8 @@ export function statusLabel(d: DownloadRecord, now: number, opts: { needsLogin?:
     const left = Math.round((d.retryAtMs - now) / 1000);
     return left > 0 ? `Retrying in ${formatDuration(left)}` : 'Retrying now';
   }
+  // Completed, and waiting for a free seeding slot (#63).
+  if (d.status === 'completed' && d.torrent?.seedQueued) return 'Waiting to seed';
   // Only torrents have peers; a direct download that stalls is waiting on its server.
   if (d.status === 'stalled' && d.kind !== 'torrent' && d.kind !== 'magnet') return 'No data received';
   return STATUS_LABEL[d.status];

@@ -54,7 +54,7 @@ const album = makeRecord({
   status: 'seeding',
   createdAtMs: 6,
   requestedConnections: null,
-  torrent: { peers: 7, seeds: 2, uploadedBytes: 8 * 1024 * 1024, seedingSecs: 600 },
+  torrent: { peers: 7, seeds: 2, uploadedBytes: 8 * 1024 * 1024, seedingSecs: 600, seedQueued: false },
 });
 
 function withDownloads(downloads: DownloadRecord[], over: Partial<DownloadsSnapshot> = {}): DownloadsSnapshot {
