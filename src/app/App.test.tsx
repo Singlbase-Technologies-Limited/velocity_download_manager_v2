@@ -274,7 +274,7 @@ describe('the panels', () => {
   });
 
   it('keeps a layout change made while the last one is being saved', async () => {
-    let release = () => undefined as void;
+    let release: () => void = () => undefined;
     const backend = installFakeBackend({ hold: { set_appearance: new Promise<void>((r) => { release = r; }) } });
     renderApp();
     fireEvent.click(await screen.findByRole('button', { name: 'Collapse navigation' }));
