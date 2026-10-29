@@ -1,4 +1,5 @@
 {
+  "averageSpeedBps": 262144,
   "categoryId": "compressed",
   "completedAtMs": null,
   "createdAtMs": 1792600000000,
@@ -27,6 +28,7 @@
   },
   "retryAtMs": 1792600030000,
   "sourceUrl": "https://example.com/files/archive.zip",
+  "startedAtMs": 1792600001000,
   "status": "retrying",
   "verification": null
 }

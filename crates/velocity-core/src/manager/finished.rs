@@ -97,7 +97,7 @@ impl Manager {
         }
         let saved = self
             .database
-            .update_download(&d.record)
+            .update_download(&d.record, &d.activity.totals)
             .and_then(|()| self.database.remove_checkpoint(id))
             .and_then(|()| self.database.hide_download(id));
         if let Err(e) = saved {

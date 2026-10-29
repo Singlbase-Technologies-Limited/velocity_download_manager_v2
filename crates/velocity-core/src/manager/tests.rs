@@ -1150,6 +1150,33 @@ mod persistence {
     }
 
     #[test]
+    fn when_it_started_and_its_average_speed_are_shown_and_survive_a_restart() {
+        // #59, V1's "Started" and "Avg. speed" columns.
+        let (mut m, control, db) = with_database();
+        let id = m.add(DownloadKind::Http, spec(), T0).unwrap();
+        m.pump(T0);
+        assert_eq!(
+            m.get(&id).unwrap().started_at_ms,
+            None,
+            "queued isn't started"
+        );
+        control.progress(TransferId(1), 0, Some(4_000_000));
+        m.pump(T0 + 1_000);
+        control.progress(TransferId(1), 2_000_000, Some(4_000_000));
+        m.pump(T0 + 3_000);
+        let r = m.get(&id).unwrap();
+        assert_eq!(r.started_at_ms, Some(T0 + 1_000));
+        assert_eq!(r.average_speed_bps, Some(1_000_000));
+        m.pause(&id).unwrap();
+        m.pump(T0 + 3_000);
+
+        let again = Manager::open(Box::new(FakeTransfer::new()), Arc::clone(&db)).unwrap();
+        let r = again.get(&id).unwrap();
+        assert_eq!(r.started_at_ms, Some(T0 + 1_000));
+        assert_eq!(r.average_speed_bps, Some(1_000_000));
+    }
+
+    #[test]
     fn an_added_download_is_stored_with_what_it_needs_to_restart_and_no_secret() {
         let (mut m, _control, db) = with_database();
         let checksum = Checksum {

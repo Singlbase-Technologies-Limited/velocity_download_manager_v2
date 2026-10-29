@@ -52,6 +52,8 @@ struct Download {
     /// It came back after a restart without the login it had (#70); it waits, paused, for
     /// [`Manager::set_login`].
     needs_login: bool,
+    /// When it started and how fast it went while it ran (#59).
+    activity: activity::Tracker,
 }
 
 /// What a download's engine needs: the direct-download engine's or the torrent helper's.
@@ -339,6 +341,8 @@ impl Manager {
                 created_at_ms: now_ms,
                 completed_at_ms: None,
                 retry_at_ms: None,
+                started_at_ms: None,
+                average_speed_bps: None,
             },
             job: Job::Direct(Box::new(DirectJob::new(spec, None))),
             running: false,
@@ -346,6 +350,7 @@ impl Manager {
             scheduled: options.scheduled,
             saved_at_ms: None,
             needs_login: false,
+            activity: activity::Tracker::default(),
         };
         download.record.status = download.waiting_status();
         let request = &download.direct().expect("a direct download").request;
@@ -891,6 +896,8 @@ impl Manager {
     /// on disk, under the name it was saved as.
     fn start(&mut self, id: &str) -> Result<(), ErrorCode> {
         let d = self.downloads.get_mut(id).expect("known");
+        // Until the engine reports it running, this run doesn't count.
+        d.activity.forget_run();
         let name = d.record.file_name.clone();
         let Some(job) = d.direct_mut() else {
             self.start_torrent(id)?;
@@ -953,7 +960,14 @@ impl Manager {
                     status
                 };
                 let before = download.record.clone();
+                download.activity.observe(
+                    now_ms,
+                    download.running && is_running_status(shown),
+                    snapshot.progress.completed_bytes,
+                );
                 let record = &mut download.record;
+                record.started_at_ms = download.activity.totals.started_at_ms;
+                record.average_speed_bps = download.activity.average_speed_bps();
                 record.status = shown;
                 // Not saved: a download read back at start-up isn't waiting to retry.
                 record.retry_at_ms = snapshot
@@ -991,7 +1005,8 @@ impl Manager {
                     || record.verification != before.verification
                     || record.file_name != before.file_name
                     || record.category_id != before.category_id
-                    || record.completed_at_ms != before.completed_at_ms;
+                    || record.completed_at_ms != before.completed_at_ms
+                    || record.started_at_ms != before.started_at_ms;
                 let due = download
                     .saved_at_ms
                     .is_none_or(|at| now_ms.saturating_sub(at) >= persist::PROGRESS_SAVE_MS);
@@ -1028,6 +1043,7 @@ impl Manager {
     }
 }
 
+mod activity;
 mod adding;
 mod batch;
 mod categories;

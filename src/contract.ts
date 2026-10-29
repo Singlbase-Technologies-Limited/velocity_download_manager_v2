@@ -96,6 +96,10 @@ export const DownloadRecordSchema = z.strictObject({
   completedAtMs: bytes.nullable(),
   /** While retrying, when the engine tries again (#59); `null` in every other status. */
   retryAtMs: bytes.nullable(),
+  /** The first time the engine reported it running (#59). */
+  startedAtMs: bytes.nullable(),
+  /** Bytes per second while it ran, once it ran for a second (#59). */
+  averageSpeedBps: bytes.nullable(),
 });
 export type DownloadRecord = z.infer<typeof DownloadRecordSchema>;
 

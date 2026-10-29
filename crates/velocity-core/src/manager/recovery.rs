@@ -148,6 +148,7 @@ impl Manager {
                 Some(crate::database::Stored::Known(e)) => Some(e.clone()),
                 _ => None,
             };
+            let activity = super::activity::Tracker::new(stored.activity);
             let mut download = Download {
                 record: DownloadRecord {
                     id: stored.id.clone(),
@@ -173,6 +174,8 @@ impl Manager {
                     created_at_ms: stored.created_at_ms,
                     completed_at_ms: stored.completed_at_ms,
                     retry_at_ms: None,
+                    started_at_ms: stored.activity.started_at_ms,
+                    average_speed_bps: activity.average_speed_bps(),
                 },
                 job,
                 running: false,
@@ -180,6 +183,7 @@ impl Manager {
                 scheduled,
                 saved_at_ms: None,
                 needs_login,
+                activity,
             };
             if !finished {
                 download.record.status = download.waiting_status();
@@ -227,6 +231,7 @@ impl Manager {
             job.resume = Some(resume);
         }
         d.running = false;
+        d.activity.forget_run();
         d.record.progress.download_speed_bps = 0;
         d.record.progress.connections = 0;
         d.record.error = Some(error);

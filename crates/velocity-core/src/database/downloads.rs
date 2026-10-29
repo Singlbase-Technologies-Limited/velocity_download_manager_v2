@@ -188,6 +188,20 @@ pub struct StoredDownload {
     pub info_hash: Option<String>,
     pub info_hash_v2: Option<String>,
     pub uploaded_bytes: u64,
+    /// When it started, and how long and how much it ran (#59); schema 7.
+    pub activity: Activity,
+}
+
+/// When a download started and how long and how much it ran (#59): what its "Started" and
+/// "Avg. speed" come from; schema 7.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Activity {
+    /// The first time the engine reported it running, in milliseconds since the Unix epoch.
+    pub started_at_ms: Option<u64>,
+    /// How long it ran, in milliseconds.
+    pub active_ms: u64,
+    /// The bytes it received while it ran.
+    pub transferred_bytes: u64,
 }
 
 impl StoredDownload {
@@ -253,7 +267,7 @@ pub fn without_login(url: &str) -> (String, bool) {
 const INSERT_COLUMNS: &str = "id, engine, kind, status, source_url, directory, file_name,     category_id, total_bytes, completed_bytes, options_json, has_sensitive_options, created_at_ms,     completed_at_ms, in_list, in_history";
 
 /// The columns a record is read back with.
-const COLUMNS: &str = "id, engine, kind, status, source_url, directory, file_name, category_id,     total_bytes, completed_bytes, options_json, has_sensitive_options, created_at_ms,     completed_at_ms, in_list, in_history, error_json, verification, info_hash, info_hash_v2,     uploaded_bytes";
+const COLUMNS: &str = "id, engine, kind, status, source_url, directory, file_name, category_id,     total_bytes, completed_bytes, options_json, has_sensitive_options, created_at_ms,     completed_at_ms, in_list, in_history, error_json, verification, info_hash, info_hash_v2,     uploaded_bytes, started_at_ms, active_ms, transferred_bytes";
 
 impl Database {
     /// Adds a download. Its options are checked, and its URL loses any login.
@@ -262,8 +276,13 @@ impl Database {
     }
 
     /// Saves what changed in a download as the engine reported it: its status, name, byte counts,
-    /// error, verification and completion time. `NotFound` for a download that isn't stored.
-    pub fn update_download(&self, record: &DownloadRecord) -> Result<(), DatabaseError> {
+    /// error, verification, completion time and `activity` (#59). `NotFound` for a download that
+    /// isn't stored.
+    pub fn update_download(
+        &self,
+        record: &DownloadRecord,
+        activity: &Activity,
+    ) -> Result<(), DatabaseError> {
         let error = record
             .error
             .as_ref()
@@ -272,7 +291,7 @@ impl Database {
             .map_err(|e| DatabaseError::new(ErrorCode::Internal, e.to_string()))?;
         let verification = record.verification.as_ref().map(wire_name).transpose()?;
         let changed = self.conn().execute(
-            "UPDATE downloads SET status = ?2, file_name = ?3, total_bytes = ?4,              completed_bytes = ?5, error_json = ?6, verification = ?7, completed_at_ms = ?8,              category_id = ?9 WHERE id = ?1",
+            "UPDATE downloads SET status = ?2, file_name = ?3, total_bytes = ?4,              completed_bytes = ?5, error_json = ?6, verification = ?7, completed_at_ms = ?8,              category_id = ?9, started_at_ms = ?10, active_ms = ?11, transferred_bytes = ?12              WHERE id = ?1",
             rusqlite::params![
                 record.id,
                 wire_name(&record.status)?,
@@ -283,6 +302,9 @@ impl Database {
                 verification,
                 record.completed_at_ms.map(to_sql_int).transpose()?,
                 record.category_id,
+                activity.started_at_ms.map(to_sql_int).transpose()?,
+                to_sql_int(activity.active_ms)?,
+                to_sql_int(activity.transferred_bytes)?,
             ],
         )?;
         if changed != 1 {
@@ -379,6 +401,9 @@ impl Database {
                 info_hash: r.get(18)?,
                 info_hash_v2: r.get(19)?,
                 uploaded_bytes: r.get(20)?,
+                started_at_ms: r.get(21)?,
+                active_ms: r.get(22)?,
+                transferred_bytes: r.get(23)?,
             })
         })?;
         let mut out = Vec::new();
@@ -458,6 +483,9 @@ struct Row {
     info_hash: Option<String>,
     info_hash_v2: Option<String>,
     uploaded_bytes: i64,
+    started_at_ms: Option<i64>,
+    active_ms: i64,
+    transferred_bytes: i64,
 }
 
 impl Row {
@@ -490,6 +518,11 @@ impl Row {
             info_hash: self.info_hash,
             info_hash_v2: self.info_hash_v2,
             uploaded_bytes: from_sql_int(self.uploaded_bytes)?,
+            activity: Activity {
+                started_at_ms: self.started_at_ms.map(from_sql_int).transpose()?,
+                active_ms: from_sql_int(self.active_ms)?,
+                transferred_bytes: from_sql_int(self.transferred_bytes)?,
+            },
         })
     }
 }
