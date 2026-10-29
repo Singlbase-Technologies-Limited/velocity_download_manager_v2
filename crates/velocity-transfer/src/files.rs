@@ -246,7 +246,7 @@ mod tests {
         );
     }
 
-    #[cfg(windows)]
+    /// On every platform: Unix never marks part files sparse, and Windows doesn't when asked not to.
     #[test]
     fn a_part_file_isnt_sparse_when_the_user_chose_no_preallocation() {
         let dir = Dir::new("not-sparse");
@@ -255,6 +255,7 @@ mod tests {
         assert!(!part.sparse);
     }
 
+    #[cfg(windows)]
     #[test]
     fn a_part_file_is_sparse_on_windows() {
         use std::os::windows::fs::MetadataExt;
