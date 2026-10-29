@@ -24,6 +24,7 @@ They're defined once in Rust, in `crates/velocity-core/src/domain.rs` (plus `App
 | `DestinationCheck` | What adding a download would do (#31): `directory`, `directoryExists`, `automaticDirectory`, `categoryId`, `fileName` (`null` when the server will name it), `fileExists`, `partialDownloadExists` (V2's or V1's) and `suggestedName` (the first free name when it is taken) | Since contract version 9. Free disk space isn't reported yet |
 | `OnConflict` | What adding does when the name is taken (#31): `ask` or `rename`. The fixture `on-conflict.json` lists them | Never replace (PO decision on #31). Used by `add_downloads` |
 | `AddRequest` | What the Add dialog asks for (#60): `links` (direct and magnet links, and links to `.torrent` files), `torrentFiles` (absolute paths), `directory`, `fileName` (one direct link only), `categoryId` (each `null` for automatic), `createDirectory`, `onConflict`, `allowDuplicate` ("Add anyway"), `startPaused`, `connections` (`null` for the performance profile's), `speedLimitKib` (0 for none), `headers`, `referrer`, `credentials` (`{ userName, password }`), `sshKey` (`{ path, passphrase }`, for `sftp://` links), `checksum` (`{ algorithm, hex }`), `requireEncryption` (for `ftp://` links) and `chooseFiles` (torrents wait in Choosing files) | Since contract version 11. The fixture `add-request.json` sets every field. The login, headers and passphrase stay in memory |
+| `DownloadLogin` | What `set_download_login` gives a download again (#59): `credentials` (`{ userName, password }` or `null`), `sshKey` (`{ path, passphrase }` or `null`) and `headers`. The fixture `download-login.json` sets every part | Since contract version 12. Kept in memory only, never saved, and redacted in diagnostics |
 | `AddResult` | `{ source, outcome }` for each link and `.torrent` file, in the request's order. `outcome.kind` is `added` (`id`), `conflict` (`check`, a `DestinationCheck`), `duplicate` (`duplicate`: `existingId`, `name`, `status`, `inList`, `canAddAnyway`), `failed` (`code`) or `notFetched` (`error`, a `TransferError`: a `.torrent` link couldn't be fetched) | Since contract version 11. The fixture `add-results.json` has one of each |
 | `ShellSettings` | What the window starts with (#29): `appearance` (`theme`, `density`, `layout`, and the download list's `visibleColumns` and `columnWidths`), `onboardingCompleted`, and `defaultDirectory`, the folder downloads go to now (`null` when the system names none). The fixtures `themes.json` and `densities.json` list the themes and densities, and `columns.json` the column ids, the default columns and the width bounds | Since contract version 10; the columns since version 12 (#59). The settings are in [SETTINGS.md](SETTINGS.md#the-window). `set_appearance` takes and returns an `AppearanceSettings` |
 | `BatchResult` | What a command over several downloads did: `done` (ids), `failed` (`{ id, code }`), and `kept` (`{ path, reason, code }`, files a removal with files left in place). `reason` is `notPlain`, `tooLarge`, `behindLink`, `notEmpty` or `failed`; `code` is set only for `failed` | The fixture `kept-reasons.json` lists the reasons |
@@ -49,6 +50,7 @@ The commands of [`src-tauri/src/downloads.rs`](../src-tauri/src/downloads.rs) (#
 | `retry_failed`, `pause_all`, `resume_all` | — | nothing |
 | `clear_completed` | — | how many were cleared |
 | `move_download` | `id`, `direction` (`top`, `up`, `down`, `bottom`) | nothing |
+| `set_download_login` | `id`, `login` (a `DownloadLogin`) | nothing; `INVALID_STATE` for a download that doesn't need its login, and the Add path's codes for an invalid one. The window then resumes or retries it (#59) |
 | `set_download_connections` | `id`, `connections` | the connections that apply |
 | `set_download_speed_limit` | `id`, `kib` (KiB/s; 0 for no limit, otherwise at least 1) | nothing |
 | `restart_engine` | — | `EngineHealth` |
@@ -57,7 +59,7 @@ The commands of [`src-tauri/src/downloads.rs`](../src-tauri/src/downloads.rs) (#
 | `set_torrent_seeding` | `id`, `seeding` (a seeding policy; `{ "mode": "never" }` stops seeding) | nothing |
 | `restart_torrent_helper` | — | `EngineHealth` |
 
-Adding downloads is #60's, and giving a login back to a download that needs it comes with its dialog (#59, #60).
+Adding downloads is #60's. A download in the snapshot's `needsLogin` came back after a restart without its login, custom headers or SSH key, which are never saved; `set_download_login` gives them again, checked as when it was added, and refused whole if one isn't valid (PO decision on #59).
 
 ## The category commands
 
