@@ -29,7 +29,8 @@ pub const MAX_TRACKERS: usize = 64;
 const MAX_TRACKER_LEN: usize = 2048;
 
 /// Which BitTorrent metadata a torrent carries.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub enum TorrentVersion {
     /// BitTorrent v1 (SHA-1 pieces) only.
     V1,

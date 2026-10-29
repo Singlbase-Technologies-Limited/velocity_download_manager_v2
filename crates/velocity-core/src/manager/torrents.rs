@@ -342,14 +342,14 @@ impl Manager {
         }
     }
 
-    fn torrent_job_mut(&mut self, id: &str) -> Result<&mut TorrentJob, ErrorCode> {
+    pub(super) fn torrent_job_mut(&mut self, id: &str) -> Result<&mut TorrentJob, ErrorCode> {
         match &mut self.downloads.get_mut(id).ok_or(ErrorCode::NotFound)?.job {
             Job::Torrent(job) => Ok(job),
             Job::Direct(_) => Err(ErrorCode::Unsupported),
         }
     }
 
-    fn store_torrent_options(&mut self, id: &str) {
+    pub(super) fn store_torrent_options(&mut self, id: &str) {
         let Ok(job) = self.torrent_job(id) else {
             return;
         };
@@ -510,9 +510,13 @@ impl Manager {
         }
         let d = self.downloads.get_mut(id).expect("known");
         let before = d.record.clone();
-        // The queue pauses torrents it holds back; they show as waiting.
+        // The queue pauses torrents it holds back; they show as waiting. A running status sent
+        // before the helper paused one the user paused doesn't undo that (#63, V1 #40), as for
+        // direct downloads (#59).
         let status = if snapshot.status == DownloadStatus::Paused && !d.running {
             d.waiting_status()
+        } else if !d.running && super::is_running_status(snapshot.status) {
+            d.record.status
         } else {
             snapshot.status
         };
@@ -539,6 +543,7 @@ impl Manager {
             seeds: snapshot.seeds,
             uploaded_bytes: snapshot.uploaded_bytes,
             seeding_secs: snapshot.seeding_secs,
+            seed_queued: snapshot.seed_queued,
         });
         if snapshot.name.is_some() {
             record.file_name = snapshot.name.clone();

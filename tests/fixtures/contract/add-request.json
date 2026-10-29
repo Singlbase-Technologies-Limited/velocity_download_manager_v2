@@ -13,6 +13,15 @@
     "userName": "me"
   },
   "directory": "/home/user/Downloads",
+  "fileChoices": [
+    {
+      "files": [
+        1,
+        3
+      ],
+      "torrentFile": "/home/user/album.torrent"
+    }
+  ],
   "fileName": null,
   "headers": [
     {
@@ -26,6 +35,10 @@
   "onConflict": "rename",
   "referrer": "https://example.com/page",
   "requireEncryption": true,
+  "seeding": {
+    "mode": "ratio",
+    "ratio": 2.0
+  },
   "speedLimitKib": 512,
   "sshKey": {
     "passphrase": "phrase",
@@ -34,5 +47,6 @@
   "startPaused": true,
   "torrentFiles": [
     "/home/user/album.torrent"
-  ]
+  ],
+  "uploadLimitKib": 64
 }

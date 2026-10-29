@@ -2910,6 +2910,7 @@ mod batch {
 mod torrents {
     use super::*;
     use crate::database::TorrentOrigin;
+    use crate::manager::ContentFile;
     use crate::queue::QueueSettings;
     use crate::seeding::SeedPolicy;
     use crate::torrent::bencode::{encode, Value};
@@ -3245,6 +3246,7 @@ mod torrents {
                 seeds: 0,
                 uploaded_bytes: 0,
                 seeding_secs: 0,
+                seed_queued: false,
             }),
             "what the helper reported on adding it"
         );
@@ -3256,6 +3258,7 @@ mod torrents {
                 seeds: 2,
                 uploaded_bytes: 4096,
                 seeding_secs: 30,
+                seed_queued: false,
             },
         );
         s.m.pump(T0 + 2);
@@ -3297,6 +3300,217 @@ mod torrents {
         let r = again.m.get(&id).unwrap();
         assert_eq!(r.torrent, None, "nothing reported yet");
         assert_eq!(r.speed_limit_bps, Some(64 * 1024));
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// The album's metadata is known to the helper and stored by the manager.
+    fn with_metadata(s: &mut Setup, dir: &std::path::Path, choose_files: bool) -> String {
+        let id =
+            s.m.add_torrent(
+                TorrentRequest {
+                    choose_files,
+                    ..request(dir)
+                },
+                AddOptions::default(),
+                T0,
+            )
+            .unwrap();
+        let (meta, hash) = metadata();
+        s.torrents
+            .metadata_known(TorrentId(1), "album", &hash, 32_000, meta);
+        s.m.pump(T0 + 1);
+        id
+    }
+
+    #[test]
+    fn a_torrents_details_say_its_files_once_the_metadata_is_known() {
+        let dir = folder("details");
+        let mut s = setup(3);
+        let id =
+            s.m.add_torrent(request(&dir), AddOptions::default(), T0)
+                .unwrap();
+        let before = s.m.torrent_details(&id).unwrap();
+        assert_eq!(before.contents, None, "a magnet before its metadata");
+        assert_eq!(before.chosen, None);
+        assert_eq!(before.upload_limit_bps, 0);
+        assert_eq!(before.seeding, SeedPolicy::Never {});
+
+        let (meta, hash) = metadata();
+        s.torrents
+            .metadata_known(TorrentId(1), "album", &hash, 32_000, meta);
+        s.m.pump(T0 + 1);
+        let contents = s.m.torrent_details(&id).unwrap().contents.unwrap();
+        assert_eq!(contents.name, "album");
+        assert_eq!(contents.info_hash_v1, Some(hash));
+        assert_eq!(contents.version, crate::torrent::TorrentVersion::V1);
+        assert_eq!(contents.total_bytes, 32_000);
+        assert_eq!(
+            contents.files,
+            [
+                ContentFile {
+                    index: 1,
+                    path: "album/a.bin".to_owned(),
+                    length: 20_000
+                },
+                ContentFile {
+                    index: 2,
+                    path: "album/b.bin".to_owned(),
+                    length: 12_000
+                },
+            ]
+        );
+        assert_eq!(s.m.torrent_details("d-9999"), Err(ErrorCode::NotFound));
+        let direct = s.m.add(DownloadKind::Http, spec(), T0).unwrap();
+        assert_eq!(
+            s.m.torrent_details(&direct),
+            Err(ErrorCode::Unsupported),
+            "not a torrent"
+        );
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn trackers_and_peers_come_from_the_helper_and_re_announcing_goes_to_it() {
+        use crate::torrent_engine::{PeerStatus, TrackerState, TrackerStatus};
+        let dir = folder("swarm");
+        let mut s = setup(3);
+        let id = with_metadata(&mut s, &dir, false);
+        let tracker = TrackerStatus {
+            url: "https://tracker.example/announce?passkey=REDACTED".to_owned(),
+            tier: 0,
+            state: TrackerState::Working,
+            message: None,
+            fails: 0,
+            next_announce_secs: Some(1800),
+            seeds: Some(4),
+            peers: Some(9),
+        };
+        let peer = PeerStatus {
+            ip: "203.0.113.7".to_owned(),
+            port: 51413,
+            download_speed_bps: 1024,
+            upload_speed_bps: 0,
+            seed: true,
+            progress_permille: 1000,
+            client: "Transmission 4.0".to_owned(),
+        };
+        s.torrents
+            .set_swarm(TorrentId(1), vec![tracker.clone()], vec![peer.clone()]);
+        assert_eq!(s.m.torrent_trackers(&id), Ok(vec![tracker]));
+        assert_eq!(s.m.torrent_peers(&id), Ok(vec![peer]));
+        s.m.reannounce(&id).unwrap();
+        assert!(s.torrents.log().contains(&"reannounce 1".to_owned()));
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_torrent_the_helper_doesnt_have_has_no_trackers_or_peers_to_show() {
+        let dir = folder("swarm-paused");
+        let mut s = setup(3);
+        let id =
+            s.m.add_torrent(
+                request(&dir),
+                AddOptions {
+                    start_paused: true,
+                    ..AddOptions::default()
+                },
+                T0,
+            )
+            .unwrap();
+        assert_eq!(s.m.torrent_trackers(&id), Err(ErrorCode::InvalidState));
+        assert_eq!(s.m.torrent_peers(&id), Err(ErrorCode::InvalidState));
+        assert_eq!(s.m.reannounce(&id), Err(ErrorCode::InvalidState));
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn the_upload_limit_changes_live_and_is_stored() {
+        let dir = folder("upload");
+        let mut s = setup(3);
+        let id =
+            s.m.add_torrent(request(&dir), AddOptions::default(), T0)
+                .unwrap();
+        s.m.set_upload_limit(&id, 64 * 1024).unwrap();
+        assert!(s
+            .torrents
+            .log()
+            .contains(&"set_limits 1 65536 0".to_owned()));
+        let stored =
+            s.db.torrent(&id)
+                .unwrap()
+                .unwrap()
+                .options
+                .known()
+                .unwrap()
+                .clone();
+        assert_eq!(stored.upload_limit, 64 * 1024);
+        assert_eq!(
+            s.m.torrent_details(&id).unwrap().upload_limit_bps,
+            64 * 1024
+        );
+        assert_eq!(
+            s.m.set_upload_limit(&id, crate::torrent_engine::MAX_RATE_LIMIT + 1),
+            Err(ErrorCode::InvalidInput)
+        );
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn files_dropped_from_a_torrent_are_kept_unless_the_user_asks_to_delete_them() {
+        let dir = folder("drop");
+        let mut s = setup(3);
+        let id = with_metadata(&mut s, &dir, false);
+        fs::create_dir_all(dir.join("album")).unwrap();
+        fs::write(dir.join("album").join("a.bin"), vec![1u8; 20_000]).unwrap();
+        fs::write(dir.join("album").join("b.bin"), vec![2u8; 12_000]).unwrap();
+
+        assert_eq!(s.m.change_files(&id, vec![1], false), Ok(Vec::new()));
+        assert!(dir.join("album").join("b.bin").exists(), "kept");
+        assert_eq!(s.m.torrent_details(&id).unwrap().chosen, Some(vec![1]));
+
+        s.m.change_files(&id, vec![1, 2], false).unwrap();
+        assert_eq!(s.m.change_files(&id, vec![2], true), Ok(Vec::new()));
+        assert!(
+            !dir.join("album").join("a.bin").exists(),
+            "deleted when asked"
+        );
+        assert!(dir.join("album").join("b.bin").exists(), "still chosen");
+        assert_eq!(
+            s.m.change_files(&id, Vec::new(), true),
+            Err(ErrorCode::InvalidInput),
+            "at least one file"
+        );
+        assert!(dir.join("album").join("b.bin").exists());
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_late_running_status_doesnt_undo_a_pause() {
+        let dir = folder("late");
+        let mut s = setup(3);
+        let id =
+            s.m.add_torrent(request(&dir), AddOptions::default(), T0)
+                .unwrap();
+        s.m.pump(T0 + 1);
+        s.m.pause(&id).unwrap();
+        // The helper's snapshot from before it paused arrives after the pause.
+        s.torrents.progress(TorrentId(1), 1000);
+        s.m.pump(T0 + 2);
+        assert_eq!(status(&s.m, &id), DownloadStatus::Paused);
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_torrent_waiting_for_a_seeding_slot_says_so() {
+        let dir = folder("seed-queue");
+        let mut s = setup(3);
+        let id = with_metadata(&mut s, &dir, false);
+        s.torrents.seed_queued(TorrentId(1), true);
+        s.m.pump(T0 + 2);
+        assert_eq!(
+            s.m.get(&id).unwrap().torrent.map(|t| t.seed_queued),
+            Some(true)
+        );
         fs::remove_dir_all(&dir).unwrap();
     }
 
@@ -3859,7 +4073,8 @@ mod adding {
     //! folder, and the options that reach the engines.
     use super::*;
     use crate::destination::{FolderSettings, OnConflict};
-    use crate::manager::adding::{AddOutcome, AddRequest, Duplicate, MAX_ADD};
+    use crate::manager::adding::{AddOutcome, AddRequest, Duplicate, FileChoice, MAX_ADD};
+    use crate::seeding::SeedPolicy;
     use crate::torrent::bencode::{encode, Value};
     use crate::torrent::tests::{file, multi, sha1_hex, torrent};
     use crate::torrent_engine::fake::{FakeTorrentControl, FakeTorrentEngine};
@@ -4167,6 +4382,111 @@ mod adding {
             "{:?}",
             again[0].outcome
         );
+    }
+
+    /// V1's `inspect_torrent_file` (#63): the files and identity before adding, and what it repeats.
+    #[test]
+    fn a_torrent_file_is_previewed_with_its_files_and_the_download_it_repeats() {
+        let mut s = setup("torrent-preview");
+        let source = s.dir.join("from");
+        fs::create_dir_all(&source).unwrap();
+        let (path, hash) = album_file(&source);
+        let preview = s.m.preview_torrent(&path).unwrap();
+        assert_eq!(preview.contents.name, "album");
+        assert_eq!(
+            preview.contents.info_hash_v1.as_deref(),
+            Some(hash.as_str())
+        );
+        let files: Vec<_> = preview
+            .contents
+            .files
+            .iter()
+            .map(|f| (f.index, f.path.as_str(), f.length))
+            .collect();
+        assert_eq!(
+            files,
+            [
+                (1, "album/clip.mp4", 20_000),
+                (2, "album/notes.txt", 12_000)
+            ]
+        );
+        assert_eq!(preview.duplicate, None);
+        assert!(s.torrents.log().is_empty(), "nothing added");
+
+        let request = AddRequest {
+            torrent_files: vec![path.to_string_lossy().into_owned()],
+            ..AddRequest::default()
+        };
+        let id = added(&s.m.add_request(&request, T0).unwrap()[0].outcome);
+        let duplicate = s.m.preview_torrent(&path).unwrap().duplicate.unwrap();
+        assert_eq!(duplicate.existing_id, id);
+        assert!(duplicate.in_list);
+        assert!(!duplicate.can_add_anyway, "a torrent still in the list");
+        assert_eq!(
+            s.m.preview_torrent(Path::new("relative.torrent")),
+            Err(ErrorCode::InvalidPath)
+        );
+    }
+
+    /// V1's "adds only the chosen files" and its seeding fields (#63).
+    #[test]
+    fn a_torrent_file_is_added_with_the_files_chosen_its_seeding_and_its_upload_limit() {
+        let mut s = setup("torrent-choice");
+        let source = s.dir.join("from");
+        fs::create_dir_all(&source).unwrap();
+        let (path, _) = album_file(&source);
+        let path = path.to_string_lossy().into_owned();
+        let request = AddRequest {
+            torrent_files: vec![path.clone()],
+            file_choices: vec![FileChoice {
+                torrent_file: path,
+                files: vec![2],
+            }],
+            seeding: Some(SeedPolicy::Ratio { ratio: 2.0 }),
+            upload_limit_kib: 64,
+            ..AddRequest::default()
+        };
+        let id = added(&s.m.add_request(&request, T0).unwrap()[0].outcome);
+        let spec = s.torrents.spec(TorrentId(1));
+        assert_eq!(spec.files, Some(vec![2]));
+        assert_eq!(spec.seeding, SeedPolicy::Ratio { ratio: 2.0 });
+        assert_eq!(spec.upload_limit, 64 * 1024);
+        let details = s.m.torrent_details(&id).unwrap();
+        assert_eq!(details.chosen, Some(vec![2]));
+        assert_eq!(details.upload_limit_bps, 64 * 1024);
+    }
+
+    #[test]
+    fn a_file_choice_must_name_one_of_the_requests_torrent_files_and_some_files() {
+        let mut s = setup("torrent-choice-bad");
+        let source = s.dir.join("from");
+        fs::create_dir_all(&source).unwrap();
+        let (path, _) = album_file(&source);
+        let path = path.to_string_lossy().into_owned();
+        for choice in [
+            FileChoice {
+                torrent_file: "/elsewhere/other.torrent".to_owned(),
+                files: vec![1],
+            },
+            FileChoice {
+                torrent_file: path.clone(),
+                files: Vec::new(),
+            },
+        ] {
+            let request = AddRequest {
+                torrent_files: vec![path.clone()],
+                file_choices: vec![choice],
+                ..AddRequest::default()
+            };
+            assert_eq!(s.m.add_request(&request, T0), Err(ErrorCode::InvalidInput));
+        }
+        let request = AddRequest {
+            torrent_files: vec![path],
+            seeding: Some(SeedPolicy::Ratio { ratio: 1000.0 }),
+            ..AddRequest::default()
+        };
+        assert_eq!(s.m.add_request(&request, T0), Err(ErrorCode::InvalidInput));
+        assert!(s.torrents.log().is_empty());
     }
 
     #[test]
