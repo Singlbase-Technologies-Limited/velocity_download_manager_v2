@@ -380,7 +380,10 @@ fn a_name_that_resolves_to_this_computer_is_caught_on_its_address() {
     match o.done {
         Err(FetchError::LocalAddress(AddressProblem { host, address })) => {
             assert_eq!(host, "localhost");
-            assert!(["127.0.0.1", "::1"].contains(&address.as_str()), "{address}");
+            assert!(
+                ["127.0.0.1", "::1"].contains(&address.as_str()),
+                "{address}"
+            );
         }
         other => panic!("expected a local address, got {other:?}"),
     }
@@ -391,7 +394,10 @@ fn a_name_that_resolves_to_this_computer_is_caught_on_its_address() {
 fn a_request_without_the_check_reaches_a_local_address() {
     let (s, data) = serve("a.bin", 100, ServerOptions::default());
     let l = start_loop(LoopOptions::default());
-    let o = collect(&l.fetch(FetchRequest::get(s.url("a.bin")), accept_all), None);
+    let o = collect(
+        &l.fetch(FetchRequest::get(s.url("a.bin")), accept_all),
+        None,
+    );
     assert_eq!(o.done, Ok(()));
     assert!(o.data == data);
 }

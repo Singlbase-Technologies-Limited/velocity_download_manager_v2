@@ -71,11 +71,7 @@ impl Manager {
         if !waiting {
             return Err(ErrorCode::InvalidState);
         }
-        let trust = &mut d
-            .direct_mut()
-            .ok_or(ErrorCode::InvalidState)?
-            .request
-            .trust;
+        let trust = &mut d.direct_mut().ok_or(ErrorCode::InvalidState)?.request.trust;
         match kind {
             ConfirmKind::InsecureRedirect => trust.insecure_redirect_confirmed = true,
             ConfirmKind::LocalAddress => trust.local_address_confirmed = true,
