@@ -139,19 +139,55 @@ impl Manager {
             check.file_name
         };
         let directory = PathBuf::from(check.directory);
-        match (subfolder, directory.parent()) {
-            // Always through `create_folders`, even when the folder seems to exist: `is_dir`
-            // follows a link, and a link in place of the subfolder must be refused, not used.
-            (Some(subfolder), Some(parent)) => {
-                create_folders(parent, &[subfolder])?;
-            }
-            _ if !check.directory_exists => return Err(ErrorCode::DestinationMissing),
-            _ => {}
-        }
+        ready_folder(&directory, subfolder, check.directory_exists)?;
         Ok(Placement::Placed(Place {
             directory,
             file_name,
             category_id: check.category_id,
+        }))
+    }
+
+    /// Where to add a torrent with `choice`, whose file name, if any, chooses the automatic
+    /// category, as [`Manager::place`] does for a link. `name` is the torrent's own: its file, or
+    /// its folder for several files, once known. A taken one is asked about whatever
+    /// `on_conflict` says, because a torrent's names come from its metadata and aren't changed;
+    /// the check then suggests none.
+    pub(super) fn place_torrent(
+        &self,
+        choice: &Choice,
+        name: Option<&str>,
+    ) -> Result<Placement, ErrorCode> {
+        let categories = self.categories()?;
+        let settings = self
+            .database
+            .section::<FolderSettings>()
+            .map_err(|e| e.code)?;
+        let resolved = resolve(choice, &settings, &categories, system_downloads())?;
+        let found = existing(&resolved.directory, name, |n| {
+            self.waiting_at(&resolved.directory, n)
+        });
+        let category_id = resolved.category.map(|c| c.id);
+        if found.file_exists || found.partial_download_exists {
+            return Ok(Placement::Conflict(DestinationCheck {
+                directory: resolved.directory.to_string_lossy().into_owned(),
+                directory_exists: found.directory_exists,
+                automatic_directory: resolved.automatic_directory,
+                category_id,
+                file_name: name.map(str::to_owned),
+                file_exists: found.file_exists,
+                partial_download_exists: found.partial_download_exists,
+                suggested_name: None,
+            }));
+        }
+        ready_folder(
+            &resolved.directory,
+            resolved.subfolder,
+            found.directory_exists,
+        )?;
+        Ok(Placement::Placed(Place {
+            directory: resolved.directory,
+            file_name: None,
+            category_id,
         }))
     }
 
@@ -172,6 +208,25 @@ impl Manager {
                 && Path::new(&d.record.directory) == directory
         })
     }
+}
+
+/// Makes `directory` ready for a new download: a missing category `subfolder` at its end is created
+/// inside its existing parent; any other missing folder is `DestinationMissing`.
+fn ready_folder(
+    directory: &Path,
+    subfolder: Option<String>,
+    directory_exists: bool,
+) -> Result<(), ErrorCode> {
+    match (subfolder, directory.parent()) {
+        // Always through `create_folders`, even when the folder seems to exist: `is_dir`
+        // follows a link, and a link in place of the subfolder must be refused, not used.
+        (Some(subfolder), Some(parent)) => {
+            create_folders(parent, &[subfolder])?;
+        }
+        _ if !directory_exists => return Err(ErrorCode::DestinationMissing),
+        _ => {}
+    }
+    Ok(())
 }
 
 /// The automatic category for a name the server gave after the download started, when automatic

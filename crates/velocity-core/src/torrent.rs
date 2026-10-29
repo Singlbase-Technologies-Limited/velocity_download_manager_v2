@@ -921,6 +921,39 @@ pub fn strip_trackers(bytes: &[u8]) -> TorrentResult<(Vec<u8>, Vec<String>)> {
     Ok((without, trackers))
 }
 
+/// A `.torrent` file checked with [`parse_torrent`], without its trackers (`announce` and
+/// `announce-list`), and the trackers it had, in tier order: the counterpart of
+/// [`strip_trackers`] for a `.torrent` the app keeps (#60). Everything else, such as v2 piece
+/// layers and web seeds, is kept as it was.
+pub fn strip_torrent_trackers(bytes: &[u8]) -> TorrentResult<(Vec<u8>, Vec<String>)> {
+    let meta = parse_torrent(bytes)?;
+    let mut p = Parser {
+        b: bytes,
+        pos: 0,
+        nodes: 0,
+    };
+    let B::Dict(top) = p.value(0)? else {
+        return Err(bad("The torrent file is not a dictionary."));
+    };
+    // Each key, `<length>:<key>`, is right before its value.
+    let mut cuts: Vec<(usize, usize)> = ["announce", "announce-list"]
+        .iter()
+        .filter_map(|key| {
+            get_span(&top, key)
+                .map(|(_, (start, end))| (start - format!("{}:{key}", key.len()).len(), end))
+        })
+        .collect();
+    cuts.sort_unstable();
+    let mut without = Vec::with_capacity(bytes.len());
+    let mut at = 0;
+    for (start, end) in cuts {
+        without.extend_from_slice(&bytes[at..start]);
+        at = end;
+    }
+    without.extend_from_slice(&bytes[at..]);
+    Ok((without, meta.trackers))
+}
+
 /// The keys libtorrent 2.0.15 writes in resume data (`write_resume_data`): those seen in its
 /// output, and those it writes only in some states, such as `file_priority` for a partial choice,
 /// `unfinished` for partly downloaded pieces, and the peers it knew. `mapped_files` is left out
@@ -1281,7 +1314,7 @@ pub(crate) mod tests {
     use super::*;
     use sha1::{Digest, Sha1};
 
-    fn file(path: &[&str], len: i64) -> Value {
+    pub(crate) fn file(path: &[&str], len: i64) -> Value {
         Value::dict(vec![
             ("length", Value::Int(len)),
             (
@@ -1295,7 +1328,7 @@ pub(crate) mod tests {
         Value::Bytes(vec![7u8; 20 * n])
     }
 
-    fn multi(name: &str, files: Vec<Value>, piece_len: i64, n: usize) -> Value {
+    pub(crate) fn multi(name: &str, files: Vec<Value>, piece_len: i64, n: usize) -> Value {
         Value::dict(vec![
             ("name", Value::str(name)),
             ("piece length", Value::Int(piece_len)),
@@ -1304,7 +1337,7 @@ pub(crate) mod tests {
         ])
     }
 
-    fn torrent(info: Value, extra: Vec<(&str, Value)>) -> Vec<u8> {
+    pub(crate) fn torrent(info: Value, extra: Vec<(&str, Value)>) -> Vec<u8> {
         let mut entries = vec![("info", info)];
         entries.extend(extra);
         encode(&Value::dict(entries))
@@ -1783,6 +1816,45 @@ pub(crate) mod tests {
         assert_eq!(checked.meta.name, "album");
         assert_eq!(checked.meta.info_hash, Some(sha1_hex(&encode(&info))));
         assert_eq!(checked.meta.files.len(), 2);
+    }
+
+    /// A `.torrent` the app keeps has no tracker in it (#60); the rest, and its identity, stay.
+    #[test]
+    fn trackers_are_taken_out_of_a_torrent_file_and_the_rest_is_kept() {
+        let info = album();
+        let with = torrent(
+            info,
+            vec![
+                (
+                    "announce",
+                    Value::str("https://tracker.example/announce?passkey=secret-key"),
+                ),
+                (
+                    "announce-list",
+                    Value::List(vec![Value::List(vec![Value::str(
+                        "udp://backup.example:80/announce",
+                    )])]),
+                ),
+                ("url-list", Value::str("https://seed.example/album/")),
+            ],
+        );
+        let (without, trackers) = strip_torrent_trackers(&with).unwrap();
+        assert_eq!(
+            trackers,
+            parse_torrent(&with).unwrap().trackers,
+            "in the order the torrent gives them"
+        );
+        assert!(trackers.len() >= 2, "{trackers:?}");
+        let text = String::from_utf8_lossy(&without);
+        assert!(
+            !text.contains("secret-key") && !text.contains("backup.example"),
+            "{text}"
+        );
+        assert!(text.contains("seed.example"), "web seeds stay");
+        let kept = parse_torrent(&without).unwrap();
+        assert_eq!(kept.info_hash, parse_torrent(&with).unwrap().info_hash);
+        assert!(kept.trackers.is_empty());
+        assert!(strip_torrent_trackers(b"junk").is_err());
     }
 
     /// Tracker passkeys never reach the database (PO decision on #58): the resume data is stored

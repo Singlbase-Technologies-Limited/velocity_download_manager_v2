@@ -1,4 +1,4 @@
-import { AlertCircle, ArrowDownToLine, ArrowUpFromLine, CheckCircle2, Clock3, FolderCog, Layers, PanelLeftClose, PanelLeftOpen, type LucideIcon } from 'lucide-react';
+import { AlertCircle, ArrowDownToLine, ArrowUpFromLine, CheckCircle2, Clock3, FolderCog, Layers, PanelLeftClose, PanelLeftOpen, Plus, type LucideIcon } from 'lucide-react';
 import { useMemo, type ReactNode } from 'react';
 import { BrandIcon } from '../components/BrandIcon';
 import { CategoryGlyph } from '../components/CategoryGlyph';
@@ -71,6 +71,7 @@ export function Sidebar({ app, compact, autoCompact }: { app: AppInfo; compact: 
   const setCategoryFilter = useUiStore((s) => s.setCategoryFilter);
   const collapsed = useUiStore((s) => s.layout.sidebarCollapsed);
   const setLayout = useUiStore((s) => s.setLayout);
+  const openAdd = useUiStore((s) => s.openAdd);
   const downloads = useDownloadsStore((s) => s.snapshot?.downloads);
   const { data: categories } = useCategories();
   const counts = useMemo(() => countByView(downloads ?? []), [downloads]);
@@ -92,6 +93,19 @@ export function Sidebar({ app, compact, autoCompact }: { app: AppInfo; compact: 
         </div>
       </div>
       <div className={cn('flex-1 space-y-5 overflow-y-auto overflow-x-hidden py-2', compact ? 'px-2' : 'px-2.5')}>
+        <button
+          type="button"
+          onClick={() => { openAdd(); }}
+          title={compact ? 'Add download (Ctrl+N)' : undefined}
+          aria-keyshortcuts="Control+N"
+          className={cn(
+            'flex h-8 w-full items-center gap-2 rounded-md bg-accent text-[13px] font-medium text-accent-fg shadow-sm hover:bg-accent-strong',
+            compact ? 'justify-center' : 'px-2.5',
+          )}
+        >
+          <Plus className="size-4 shrink-0" aria-hidden />
+          <span className={compact ? 'sr-only' : 'min-w-0 flex-1 truncate text-left'}>Add download</span>
+        </button>
         <div className="space-y-0.5">
           {LIST_ITEMS.map((it) => (
             <NavButton key={it.view} compact={compact} active={view === it.view && categoryFilter === null} icon={it.icon} label={it.label} count={counts[it.view]} onClick={() => { setView(it.view); }} />

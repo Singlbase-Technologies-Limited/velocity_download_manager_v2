@@ -232,6 +232,18 @@ impl Limits {
             _ => Ok(()),
         }
     }
+
+    /// A limit in KiB/s, as V1's commands and the UI give it: 0 for none.
+    pub fn from_kib(kib: u64) -> Result<Limits, ErrorCode> {
+        let limits = Limits {
+            max_download_bps: match kib {
+                0 => None,
+                kib => Some(kib.checked_mul(1024).ok_or(ErrorCode::InvalidInput)?),
+            },
+        };
+        limits.check()?;
+        Ok(limits)
+    }
 }
 
 /// How far an engine may go for every transfer it runs (#57): set by the performance profile
@@ -1184,6 +1196,18 @@ mod tests {
             engine.set_connections(TransferId(99), 2),
             Err(ErrorCode::NotFound)
         );
+    }
+
+    #[test]
+    fn a_speed_limit_is_in_kib_per_second_and_0_is_none() {
+        assert_eq!(Limits::from_kib(0), Ok(Limits::default()));
+        assert_eq!(
+            Limits::from_kib(64),
+            Ok(Limits {
+                max_download_bps: Some(64 * 1024)
+            })
+        );
+        assert_eq!(Limits::from_kib(u64::MAX), Err(ErrorCode::InvalidInput));
     }
 
     #[test]

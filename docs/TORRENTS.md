@@ -213,7 +213,7 @@ The settings screen is #30. A new helper starts with every kind of peer discover
 
 The manager runs torrents beside direct downloads, through the `TorrentEngine` contract (`manager/torrents.rs`).
 
-- **Adding:** `Manager::add_torrent` takes a `.torrent` file's absolute path or a magnet link, the folder, extra trackers, the file choice, the seeding policy and the limits. It checks them first: the magnet with `parse_magnet`, each tracker with `check_tracker`, and the policy and limits against their bounds. Nothing is stored when one is refused. Adding the form is #60's.
+- **Adding:** `Manager::add_torrent` takes a `.torrent` file's absolute path or a magnet link, the folder, extra trackers, the file choice, the seeding policy and the limits. It checks them first: the magnet with `parse_magnet`, each tracker with `check_tracker`, and the policy and limits against their bounds. Nothing is stored when one is refused. The Add dialog (#60) adds through `Manager::add_request`: duplicates by info hash, the category from the largest file, and `.torrent` links fetched into the app's `torrent-links` folder and kept there without their trackers ([CONTRACTS.md](CONTRACTS.md#adding-downloads)).
 - **The queue** (PO decision on #58): a torrent takes a slot of the queue while it fetches its metadata or downloads, as in V1, where aria2 counted torrents. Choosing files, seeding and paused don't take one; seeding has its own limit, `maxActiveSeeds`.
 - **What is stored** (the `torrents` table, [DATA_AND_MIGRATIONS.md](DATA_AND_MIGRATIONS.md)):
   - where it came from: the `.torrent` file's path, or the magnet link without its trackers;
@@ -229,7 +229,7 @@ The manager runs torrents beside direct downloads, through the `TorrentEngine` c
 
 ## Not yet
 
-- **The add form, the file chooser, the details panel's trackers and peers, and the seeding, limit and network settings and controls** (#60, #63, #30).
+- **The file tree in the Add dialog, the details panel's trackers and peers, and the seeding, limit and network settings and controls** (#63, #30). The Add dialog (#60) adds torrents with the default seeding policy and no upload limit until #63 adds those choices (PO decision on #60).
 - **Keeping trackers across a restart** (#70).
 
 ## Tests

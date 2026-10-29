@@ -1,0 +1,38 @@
+{
+  "allowDuplicate": true,
+  "categoryId": "compressed",
+  "checksum": {
+    "algorithm": "sha256",
+    "hex": "abababababababababababababababababababababababababababababababab"
+  },
+  "chooseFiles": true,
+  "connections": 4,
+  "createDirectory": true,
+  "credentials": {
+    "password": "secret",
+    "userName": "me"
+  },
+  "directory": "/home/user/Downloads",
+  "fileName": null,
+  "headers": [
+    {
+      "name": "Cookie",
+      "value": "session=1"
+    }
+  ],
+  "links": [
+    "https://example.com/files/archive.zip"
+  ],
+  "onConflict": "rename",
+  "referrer": "https://example.com/page",
+  "requireEncryption": true,
+  "speedLimitKib": 512,
+  "sshKey": {
+    "passphrase": "phrase",
+    "path": "/home/user/.ssh/id_ed25519"
+  },
+  "startPaused": true,
+  "torrentFiles": [
+    "/home/user/album.torrent"
+  ]
+}

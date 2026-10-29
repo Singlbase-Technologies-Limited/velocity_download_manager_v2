@@ -93,6 +93,16 @@ A Metalink document is untrusted input, from a file the user chose or from any l
 - **No credentials from a document:** a source with a login in it is dropped, and a Metalink download sends no login, custom header or referrer. SFTP sources are dropped, since they would need a login and a host key the user confirms.
 - **Off by default,** as in V1, so a link that turns out to be a Metalink file is just a file until the user turns Metalink on.
 
+## Adding downloads (#60)
+
+Everything the Add dialog sends is checked again natively (`Manager::add_request`); the dialog's own checks are for usability. What protects V2:
+
+- **A login never goes in a link.** A link with one is refused (`INVALID_URL`); the login has its own fields and stays in memory, as do custom headers and a key's passphrase.
+- **`.torrent` files are read only as plain files:** an absolute path, never a link or a reparse point, at most 16 MiB, parsed by V2's own bounded parser before the torrent helper sees it. Files dropped on the window reach Rust, which passes the page only plain `.torrent` files, at most 500; the manager checks each again when it is added.
+- **A chosen folder is created only when the user agrees,** inside its nearest existing parent, one level at a time, never through a link.
+- **Fetched `.torrent` links** go through the transfer engine with its usual TLS checks, into the app's own `torrent-links` folder, at most 16 MiB and 60 seconds. What arrives must parse as a torrent. It is kept without its trackers, whose addresses can carry a private tracker's passkey; they stay in memory, as every torrent's do (PO decision on #58). When the app starts, it deletes any plain file in that folder that no download comes from, and touches nothing else there.
+- **SFTP host keys** are confirmed by the user in the window, after the download stops before logging in (below). A changed key is only explained, never offered for trust.
+
 ## SFTP host keys (#53)
 
 SSH has no certificate authority to vouch for a server, so a host key is trusted only once the user has seen and confirmed its fingerprint, and it is pinned from then on (research report section 8). How it works is in [ENGINE_INTERNALS.md](ENGINE_INTERNALS.md#host-keys); the backend is russh ([ADR-0013](decisions/0013-sftp-russh.md)).

@@ -44,7 +44,10 @@ use serde::Serialize;
 /// Version 10 (#29) added the window's commands (`get_shell_settings`, `set_appearance`,
 /// `complete_onboarding`, `choose_directory`, `quit_app`), [`app_settings::ShellSettings`]
 /// and the `quit-requested` event.
-pub const COMMAND_API_VERSION: u32 = 10;
+/// Version 11 (#60) added the Add dialog's commands (`add_downloads`, `get_capabilities`,
+/// `choose_torrents`, `choose_ssh_key`), their types ([`manager::AddRequest`],
+/// [`manager::AddResult`]) and the `torrents-dropped` event.
+pub const COMMAND_API_VERSION: u32 = 11;
 
 /// Name, version and contract version of the running application.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]

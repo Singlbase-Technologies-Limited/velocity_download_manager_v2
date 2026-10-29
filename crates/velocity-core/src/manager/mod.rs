@@ -151,6 +151,8 @@ pub struct Manager {
     /// Downloads that completed in the events being applied, to follow when they are Metalink
     /// files.
     just_completed: Vec<String>,
+    /// `.torrent` links being fetched, and the trackers of those fetched (#60).
+    links: torrent_links::TorrentLinks,
 }
 
 /// Statuses a direct engine may report. The torrent-only ones (fetching metadata, choosing files,
@@ -246,6 +248,7 @@ impl Manager {
             window_open: false,
             metalink_enabled: false,
             just_completed: Vec::new(),
+            links: torrent_links::TorrentLinks::default(),
         }
     }
 
@@ -351,6 +354,11 @@ impl Manager {
         }
         self.flush();
         Ok(id)
+    }
+
+    /// What the transfer engine can do (#57), so the UI offers only that (#60).
+    pub fn capabilities(&self) -> crate::domain::Capabilities {
+        self.engine.capabilities()
     }
 
     /// Turns Metalink on or off (V1's `advanced.enable_metalink`, off by default; ADR-0005). Its
@@ -899,6 +907,9 @@ impl Manager {
     fn apply(&mut self, event: TransferEvent, now_ms: u64) -> bool {
         match event {
             TransferEvent::Changed { snapshot } => {
+                if self.apply_fetch(&snapshot) {
+                    return true;
+                }
                 let Some(app_id) = self.by_transfer.get(&snapshot.id).cloned() else {
                     return false;
                 };
@@ -994,6 +1005,7 @@ impl Manager {
     }
 }
 
+mod adding;
 mod batch;
 mod categories;
 mod finished;
@@ -1002,11 +1014,16 @@ mod persist;
 mod recovery;
 mod service;
 mod settings;
+mod torrent_links;
 mod torrents;
 
+pub use adding::{
+    is_torrent_link, AddOutcome, AddRequest, AddResult, Duplicate, FETCH_WAIT, MAX_ADD,
+};
 pub use batch::MAX_BATCH;
 pub use recovery::SensitiveOptions;
 pub use service::{now_ms, ManagerService, SNAPSHOT_EVERY, TICK};
+pub use torrent_links::FetchReply;
 pub use torrents::TorrentRequest;
 
 #[cfg(test)]

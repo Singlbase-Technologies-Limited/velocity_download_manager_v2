@@ -3,6 +3,9 @@ import { Splitter } from '../components/Splitter';
 import { confirmAction } from '../components/confirmStore';
 import type { AppearanceSettings, AppInfo } from '../contract';
 import { CategoriesView } from '../features/categories/CategoriesView';
+import { AddDownloadDialog } from '../features/add/AddDownloadDialog';
+import { HostKeyPrompt } from '../features/add/HostKeyPrompt';
+import { useAddEntryPoints } from '../features/add/useAddEntryPoints';
 import { DownloadsView } from '../features/downloads/DownloadsView';
 import { commitSidebarWidth, LAYOUT, resolveLayout } from '../layout/layoutLogic';
 import { useLayoutPersistence, useViewportWidth } from '../layout/useLayout';
@@ -38,6 +41,7 @@ function useQuitRequests() {
 export function Shell({ app, appearance }: { app: AppInfo; appearance: AppearanceSettings }) {
   useLayoutPersistence(appearance);
   useQuitRequests();
+  useAddEntryPoints();
   const view = useUiStore((s) => s.view);
   const layout = useUiStore((s) => s.layout);
   const setLayout = useUiStore((s) => s.setLayout);
@@ -84,6 +88,8 @@ export function Shell({ app, appearance }: { app: AppInfo; appearance: Appearanc
         </main>
       </div>
       <StatusBar />
+      <AddDownloadDialog />
+      <HostKeyPrompt />
     </div>
   );
 }

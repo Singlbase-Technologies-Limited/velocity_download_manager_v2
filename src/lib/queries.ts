@@ -6,6 +6,7 @@ export const keys = {
   appInfo: ['app-info'] as const,
   shellSettings: ['shell-settings'] as const,
   categories: ['categories'] as const,
+  capabilities: ['capabilities'] as const,
 };
 
 /** V1's query defaults: no refetching on focus, one retry for queries, none for commands. */
@@ -21,4 +22,9 @@ export function useShellSettings(enabled = true) {
 
 export function useCategories() {
   return useQuery({ queryKey: keys.categories, queryFn: api.categories });
+}
+
+/** What the transfer engine can do (#57): the Add dialog offers only that. */
+export function useCapabilities() {
+  return useQuery({ queryKey: keys.capabilities, queryFn: api.capabilities });
 }
