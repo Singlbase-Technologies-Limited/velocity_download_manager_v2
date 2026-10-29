@@ -24,7 +24,7 @@ export function Dialog({
   footer?: ReactNode;
   className?: string;
 }) {
-  const returnFocus = useReturnFocus();
+  const returnFocus = useReturnFocus(open);
   return (
     <DialogPrimitive.Root open={open} onOpenChange={onOpenChange}>
       <DialogPrimitive.Portal>

@@ -26,7 +26,7 @@ export function ConfirmDialog({
   onConfirm: () => void;
   onCancel: () => void;
 }) {
-  const returnFocus = useReturnFocus();
+  const returnFocus = useReturnFocus(open);
   return (
     <AlertDialogPrimitive.Root open={open} onOpenChange={(o) => {
         if (!o) onCancel();
