@@ -709,6 +709,12 @@ export const NewTorrentSettingsSchema = z.strictObject({
   uploadLimitKib: z.number().int().nonnegative(),
 });
 
+/** What the app does with links from the browser extension (#65). */
+export const BrowserSettingsSchema = z.strictObject({
+  acceptRequests: z.boolean(),
+  confirmBeforeAdding: z.boolean(),
+});
+
 export const SettingsSchema = z.strictObject({
   general: GeneralSettingsSchema,
   notifications: NotificationSettingsSchema,
@@ -720,6 +726,7 @@ export const SettingsSchema = z.strictObject({
   torrent: TorrentSettingsSchema,
   newTorrents: NewTorrentSettingsSchema,
   storage: StorageSettingsSchema,
+  browser: BrowserSettingsSchema,
 });
 export type Settings = z.infer<typeof SettingsSchema>;
 

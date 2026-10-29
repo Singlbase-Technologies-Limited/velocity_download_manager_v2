@@ -5,6 +5,7 @@
 
 pub mod app_settings;
 pub mod branding;
+pub mod browser;
 pub mod category;
 pub mod crash;
 pub mod database;
