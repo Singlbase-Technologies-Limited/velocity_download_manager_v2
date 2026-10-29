@@ -273,6 +273,19 @@ describe('the panels', () => {
     expect(await screen.findByRole('complementary', { name: 'Download details' })).toBeTruthy();
   });
 
+  it('keeps a layout change made while the last one is being saved', async () => {
+    let release = () => undefined as void;
+    const backend = installFakeBackend({ hold: { set_appearance: new Promise<void>((r) => { release = r; }) } });
+    renderApp();
+    fireEvent.click(await screen.findByRole('button', { name: 'Collapse navigation' }));
+    await waitFor(() => { expect(callsOf(backend, 'set_appearance')).toHaveLength(1); });
+    // The collapse is being saved; the user expands the navigation again before it is.
+    fireEvent.click(screen.getByRole('button', { name: 'Expand navigation' }));
+    await act(async () => { release(); await new Promise((r) => setTimeout(r, 50)); });
+    expect(screen.getByRole('navigation', { name: 'Primary' }).getAttribute('data-mode')).toBe('full');
+    await waitFor(() => { expect(callsOf(backend, 'set_appearance').at(-1)?.args).toMatchObject({ appearance: { layout: { sidebarCollapsed: false } } }); });
+  });
+
   it('says so when the layout can’t be saved', async () => {
     const user = userEvent.setup();
     installFakeBackend({ failures: { set_appearance: 'DATABASE' } });

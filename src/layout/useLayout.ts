@@ -1,5 +1,5 @@
 import { useQueryClient } from '@tanstack/react-query';
-import { createContext, useContext, useEffect, useLayoutEffect, useSyncExternalStore } from 'react';
+import { createContext, useContext, useEffect, useLayoutEffect, useRef, useSyncExternalStore } from 'react';
 import { toast } from 'sonner';
 import type { AppearanceSettings, ShellSettings } from '../contract';
 import { api } from '../lib/api';
@@ -25,9 +25,13 @@ const sameLayout = (a: LayoutPrefs, b: LayoutPrefs) =>
  */
 export function useLayoutPersistence(saved: AppearanceSettings) {
   const qc = useQueryClient();
+  // The layout this window last sent: its echo in the saved settings is never applied back, because the window may
+  // have moved on since it was sent (#61).
+  const sent = useRef<LayoutPrefs | null>(null);
 
   useLayoutEffect(() => {
     const next = sanitizeLayout(saved.layout);
+    if (sent.current && sameLayout(next, sent.current)) return;
     if (!sameLayout(next, useUiStore.getState().layout)) useUiStore.getState().setLayout(next);
   }, [saved.layout]);
 
@@ -39,6 +43,7 @@ export function useLayoutPersistence(saved: AppearanceSettings) {
       const current = qc.getQueryData<ShellSettings>(keys.shellSettings);
       const layout = useUiStore.getState().layout;
       if (!current || sameLayout(current.appearance.layout, layout)) return;
+      sent.current = { ...layout };
       api
         .setAppearance({ ...current.appearance, layout: { ...layout } })
         .then((appearance) => {
