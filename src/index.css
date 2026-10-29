@@ -1,4 +1,5 @@
-/* V1's design tokens and base styles (src/index.css), ported for #29: the PO's brand colours. */
+/* V1's design tokens and base styles (src/index.css), ported for #29: the PO's brand colours. Six text colours
+ * were nudged on #66 so text reaches WCAG AA's 4.5:1 in both themes (PO decision; src/a11y.test.ts). */
 @import 'tailwindcss';
 @import '@fontsource-variable/inter';
 
@@ -18,14 +19,14 @@
   --border-strong: #cbd3de;
   --fg: #0f172a;
   --fg-muted: #526077;
-  --fg-subtle: #7b879a;
-  --accent: #1d6fd8;
+  --fg-subtle: #606b7d;
+  --accent: #1b68cb;
   --accent-strong: #1659b3;
   --accent-soft: #e5effc;
   --accent-fg: #ffffff;
-  --success: #15803d;
+  --success: #14793a;
   --success-soft: #e3f5e9;
-  --warning: #b45309;
+  --warning: #aa4f09;
   --warning-soft: #fdf1e1;
   --danger: #c2271d;
   --danger-soft: #fde8e6;
@@ -46,8 +47,8 @@
   --border-strong: #334155;
   --fg: #e6ebf2;
   --fg-muted: #9aa6b8;
-  --fg-subtle: #6f7b8f;
-  --accent: #4b8ff0;
+  --fg-subtle: #8993a3;
+  --accent: #5092f0;
   --accent-strong: #6aa3f5;
   --accent-soft: #172a45;
   --accent-fg: #06101f;
