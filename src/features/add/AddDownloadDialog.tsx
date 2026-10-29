@@ -10,11 +10,11 @@ import { Field } from '../../components/Field';
 import { Input } from '../../components/Input';
 import { Select } from '../../components/Select';
 import { Textarea } from '../../components/Textarea';
-import type { AddRequest, AddResult, SeedPolicy } from '../../contract';
+import type { AddRequest, AddResult, SeedPolicy, Settings } from '../../contract';
 import { api } from '../../lib/api';
 import { toApiError } from '../../lib/errors';
 import { formatBytes } from '../../lib/format';
-import { useCapabilities, useCategories } from '../../lib/queries';
+import { useCapabilities, useCategories, useSettings } from '../../lib/queries';
 import { nameForDownload } from '../../naming';
 import { useUiStore, type AddPrefill } from '../../stores/ui';
 import { showDownload } from '../downloads/showDownload';
@@ -42,11 +42,14 @@ function useDebounced<T>(value: T, ms: number): T {
 export function AddDownloadDialog() {
   const { open, prefill } = useUiStore((s) => s.addDialog);
   const closeAdd = useUiStore((s) => s.closeAdd);
+  // New torrents start with the saved defaults (#30); V1's when they can't be read.
+  const settings = useSettings();
+  if (!open || settings.isPending) return null;
   // A new prefill, from a drop or the browser, starts a fresh form.
-  return open ? <AddForm key={JSON.stringify(prefill)} prefill={prefill} onClose={closeAdd} /> : null;
+  return <AddForm key={JSON.stringify(prefill)} prefill={prefill} defaults={settings.data?.newTorrents ?? null} onClose={closeAdd} />;
 }
 
-function AddForm({ prefill, onClose }: { prefill: AddPrefill | null; onClose: () => void }) {
+function AddForm({ prefill, defaults, onClose }: { prefill: AddPrefill | null; defaults: Settings['newTorrents'] | null; onClose: () => void }) {
   const { data: categories } = useCategories();
   const { data: capabilities } = useCapabilities();
 
@@ -57,10 +60,10 @@ function AddForm({ prefill, onClose }: { prefill: AddPrefill | null; onClose: ()
   const [categoryId, setCategoryId] = useState(AUTOMATIC);
   const [createDirectory, setCreateDirectory] = useState(false);
   const [requireEncryption, setRequireEncryption] = useState(false);
-  const [chooseFiles, setChooseFiles] = useState(false);
+  const [chooseFiles, setChooseFiles] = useState(defaults?.chooseFilesForMagnets ?? false);
   // A torrent's seeding, upload limit and, for a single `.torrent` file, its files (#63).
-  const [seeding, setSeeding] = useState<SeedPolicy>({ mode: 'never' });
-  const [uploadLimit, setUploadLimit] = useState('');
+  const [seeding, setSeeding] = useState<SeedPolicy>(defaults?.seeding ?? { mode: 'never' });
+  const [uploadLimit, setUploadLimit] = useState(defaults && defaults.uploadLimitKib > 0 ? String(defaults.uploadLimitKib) : '');
   const [chosenFiles, setChosenFiles] = useState<Set<number> | null>(null);
   const [advanced, setAdvanced] = useState(false);
   const [connections, setConnections] = useState('');

@@ -7,6 +7,7 @@ export const keys = {
   shellSettings: ['shell-settings'] as const,
   categories: ['categories'] as const,
   capabilities: ['capabilities'] as const,
+  settings: ['settings'] as const,
   torrent: (id: string) => ['torrent', id] as const,
   trackers: (id: string) => ['torrent', id, 'trackers'] as const,
   peers: (id: string) => ['torrent', id, 'peers'] as const,
@@ -46,4 +47,9 @@ export function useSwarm(id: string, live: boolean) {
   const trackers = useQuery({ queryKey: keys.trackers(id), queryFn: () => api.trackers(id), ...options });
   const peers = useQuery({ queryKey: keys.peers(id), queryFn: () => api.peers(id), ...options });
   return { trackers, peers };
+}
+
+/** Every setting the Settings screen edits (#30). */
+export function useSettings() {
+  return useQuery({ queryKey: keys.settings, queryFn: api.settings, retry: false });
 }

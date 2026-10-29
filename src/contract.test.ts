@@ -38,6 +38,7 @@ import {
   TorrentDetailsSchema,
   TorrentPreviewSchema,
   TrackerStatusSchema,
+  SettingsSchema,
 } from './contract';
 import { z } from 'zod';
 
@@ -114,6 +115,11 @@ describe('contract fixtures generated from Rust', () => {
 
   it('a login given again (#59), with every part set', () => {
     expect(DownloadLoginSchema.parse(fixture('download-login.json'))).toEqual(fixture('download-login.json'));
+  });
+
+  // The acceptance criterion of #30: the default settings, made in Rust, read by Zod.
+  it('reads the default settings (#30)', () => {
+    expect(SettingsSchema.parse(fixture('settings.json'))).toEqual(fixture('settings.json'));
   });
 
   it('reads the diagnostics (#28)', () => {

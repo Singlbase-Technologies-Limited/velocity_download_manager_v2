@@ -3,7 +3,10 @@ import { DEFAULT_LAYOUT, type LayoutPrefs } from '../layout/layoutLogic';
 import type { ListView } from '../downloads/views';
 
 /** What the main area shows: a list of downloads, or a screen. */
-export type View = ListView | 'categories' | 'history';
+export type View = ListView | 'categories' | 'history' | 'settings';
+
+/** The Settings screen's sections (#30). */
+export type SettingsSection = 'general' | 'downloads' | 'performance' | 'bittorrent' | 'notifications' | 'appearance' | 'storage' | 'advanced' | 'about';
 
 /** What the Add dialog opens with (#60): pasted or dropped input, or what the browser sent (#64, #65). */
 export interface AddPrefill {
@@ -36,6 +39,8 @@ interface UiState {
   loginRequest: LoginRequest | null;
   /** The torrent whose files are being chosen (#63). */
   chooseFilesId: string | null;
+  /** The Settings screen's section shown (#30). */
+  settingsSection: SettingsSection;
   setView: (view: View) => void;
   setCategoryFilter: (id: string | null) => void;
   setLayout: (patch: Partial<LayoutPrefs>) => void;
@@ -47,6 +52,7 @@ interface UiState {
   askLogin: (request: LoginRequest) => void;
   closeLogin: () => void;
   openChooseFiles: (id: string) => void;
+  setSettingsSection: (section: SettingsSection) => void;
   closeChooseFiles: () => void;
 }
 
@@ -58,6 +64,7 @@ export const useUiStore = create<UiState>((set) => ({
   addDialog: { open: false, prefill: null },
   loginRequest: null,
   chooseFilesId: null,
+  settingsSection: 'general',
   setView: (view) => { set({ view, categoryFilter: null }); },
   setCategoryFilter: (categoryFilter) => { set({ categoryFilter, view: 'all' }); },
   setLayout: (patch) => { set((s) => ({ layout: { ...s.layout, ...patch } })); },
@@ -69,5 +76,6 @@ export const useUiStore = create<UiState>((set) => ({
   askLogin: (loginRequest) => { set({ loginRequest }); },
   closeLogin: () => { set({ loginRequest: null }); },
   openChooseFiles: (chooseFilesId) => { set({ chooseFilesId }); },
+  setSettingsSection: (settingsSection) => { set({ settingsSection }); },
   closeChooseFiles: () => { set({ chooseFilesId: null }); },
 }));

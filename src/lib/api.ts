@@ -16,6 +16,8 @@ import {
   HistoryPageSchema,
   KeptFileSchema,
   PeerStatusSchema,
+  NetworkStatusSchema,
+  SettingsSchema,
   ShellSettingsSchema,
   StorageSettingsSchema,
   TorrentDetailsSchema,
@@ -25,6 +27,7 @@ import {
   type AppearanceSettings,
   type Category,
   type DownloadLogin,
+  type Settings,
   type HistoryQuery,
   type StorageSettings,
   type MoveDirection,
@@ -70,6 +73,12 @@ export const api = {
   },
   shellSettings: () => call('get_shell_settings', undefined, ShellSettingsSchema),
   setAppearance: (appearance: AppearanceSettings) => call('set_appearance', { appearance }, AppearanceSettingsSchema),
+  // The Settings screen (#30).
+  settings: () => call('get_settings', undefined, SettingsSchema),
+  /** Checks, saves and applies every section; the settings as saved. */
+  setSettings: (settings: Settings) => call('set_settings', { settings }, SettingsSchema),
+  resetSettings: () => call('reset_settings', undefined, SettingsSchema),
+  torrentNetwork: () => call('get_torrent_network', undefined, NetworkStatusSchema),
   completeOnboarding: (directory: string) => call('complete_onboarding', { directory }, ShellSettingsSchema),
   /** The system's folder chooser; `null` when the user cancels. */
   chooseDirectory: (initial: string | null) => call('choose_directory', { initial }, z.string().min(1).nullable()),

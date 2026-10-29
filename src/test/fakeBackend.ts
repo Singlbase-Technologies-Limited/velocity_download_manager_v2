@@ -19,6 +19,8 @@ import {
   type HistoryQuery,
   type ErrorCode,
   type PeerStatus,
+  type NetworkStatus,
+  type Settings,
   type ShellSettings,
   type TorrentDetails,
   type TorrentPreview,
@@ -53,6 +55,9 @@ export interface FakeState {
   exportedTo: string | null;
   /** What `get_history` answers for a query (#32). */
   history: (query: HistoryQuery) => HistoryPage;
+  /** The Settings screen's settings, as `set_settings` saved them, and the helper's network (#30). */
+  appSettings: Settings;
+  network: NetworkStatus;
   /** Commands that fail, with the code they fail with. */
   failures: Partial<Record<string, ErrorCode>>;
   /** Downloads whose file is a program: opening one needs `allowProgram` (#61). */
@@ -117,6 +122,8 @@ export function installFakeBackend(over: Partial<FakeState> = {}): FakeState {
     diagnostics: () => fixture('diagnostics.json') as DiagnosticReport,
     exportedTo: null,
     history: () => ({ entries: [], total: 0 }),
+    appSettings: fixture('settings.json') as Settings,
+    network: { listenPort: 6890, listenError: null, portMapping: { state: 'off' } },
     failures: {},
     programs: [],
     preview: () => {
@@ -221,6 +228,16 @@ export function installFakeBackend(over: Partial<FakeState> = {}): FakeState {
           return null;
         case 'clear_completed':
           return 0;
+        case 'get_settings':
+          return state.appSettings;
+        case 'set_settings':
+          state.appSettings = args.settings as Settings;
+          return state.appSettings;
+        case 'reset_settings':
+          state.appSettings = { ...(fixture('settings.json') as Settings), downloads: state.appSettings.downloads };
+          return state.appSettings;
+        case 'get_torrent_network':
+          return state.network;
         case 'get_diagnostics':
           return state.diagnostics();
         case 'export_diagnostics':

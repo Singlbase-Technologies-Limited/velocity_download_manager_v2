@@ -460,7 +460,7 @@ The asked-for count is the most a download may use, not a must (PO decision on #
 
 ### The values
 
-All are starting values to tune by measurement (#77), and #30 makes them settings.
+All are starting values to tune by measurement (#77); the user can change them ([SETTINGS.md](SETTINGS.md#engine), #30).
 
 | Value | Starting value | Where it comes from |
 |---|---|---|
@@ -725,12 +725,12 @@ Run it with `cargo run --release -p velocity-transfer --example high_offset_writ
 - **Credentials beyond memory:** the keychain, zeroisation and the secret-leak scan are #70 and #71.
 - **Requiring encryption from the add form:** `TransferSpec::require_encryption` and the cleartext warning are ready; the add form that sets one and shows the other is R8's. Until then, the app's FTP downloads are plain unless the link is `ftps://`.
 - **FTP over several connections:** one connection until #77 measures whether more help.
-- **Connection values:** the per-host cap and the smallest piece come from the performance profile (#57). The budget and the ramp's values are engine defaults until the settings model passes the user's (#30). Tuning them by measurement is #77.
+- **Connection values:** the per-host cap and the smallest piece come from the performance profile (#57), and the budget from the user's engine settings ([SETTINGS.md](SETTINGS.md#engine), #30). The ramp's values are engine defaults, to tune by measurement (#77).
 - **Learning per host:** what a host allowed isn't remembered between downloads (a non-goal of #47).
 - **Throttling across downloads:** a `429` or `503` halves the connections of the download that got it, not of the other downloads to that host.
-- **Retry settings:** the values are engine defaults until the settings model passes the user's (#30).
+- **Retry settings:** the user's engine settings over `RetryPolicy::DEFAULT` ([SETTINGS.md](SETTINGS.md#engine), #30), read when a download starts or retries.
 - **Integrity without the app:** a whole-file hash that a server gives (`Repr-Digest`) is deferred (report section 5.3).
-- **Metalink in the app:** the Metalink switch's storage and Settings page are #30's; the file chooser, the file selection and their Tauri commands are #60's. Until then `Manager::add_metalink` and following a link are reachable from code only.
+- **Metalink in the app:** off by default, as in V1; the Settings screen's Advanced section turns it on (`advanced.enableMetalink`, #30).
 - **Mirror health isn't remembered** between downloads, or between the engine's restarts of one download, like the per-host learning #47 left out.
 - **Connections to mirrors** count against the first URL's host in the engine's budget (#47), so a download with mirrors never opens more connections than one without; they're only spread. Per-mirror budgets, and more connections across several hosts as aria2's `split` allowed, are #77's to measure.
 - **Mirror values:** the cooldown, the failure limit and the scoring are starting values; #77 measures them.

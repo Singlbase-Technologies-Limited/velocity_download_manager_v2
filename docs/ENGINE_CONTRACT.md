@@ -2,7 +2,7 @@
 
 The manager talks to a direct-download engine (HTTP, FTP, SFTP, Metalink) only through the `DirectTransfer` contract in [`crates/velocity-core/src/transfer.rs`](../crates/velocity-core/src/transfer.rs) (#36, [ADR-0002](decisions/0002-engine-crate-layout.md)). The manager never sees libcurl types, engine-internal ids or aria2 vocabulary. Torrent operations (trackers, peers, file priorities, seeding, magnet metadata) are not part of this contract; they belong to the torrent bridge (research report section 4.2).
 
-Contract version: `TRANSFER_CONTRACT_VERSION = 13`. Raise it with any incompatible change to a command, reply, event or type. Version 2 added checkpoints (#43), version 3 the global speed limit (#49), version 4 the connection detail in snapshots (#47), version 5 the checkpoint's `contentEncoding` (#45), version 6 integrity (#46): checked checksums with SHA-224 and SHA-384, `pieces` in the spec, and `verification` in snapshots, version 7 the performance profile (#57): `set_engine_limits`, and capabilities per protocol, and version 8 HTTP details (#40): `directory` and an optional `fileName` in place of `destination`, `credentials` in place of the credential handle, `referrer` and `userAgent` in the spec, and `fileName` in snapshots, version 9 FTP and FTPS (#51): `requireEncryption` in the spec and `encryption` in each protocol's capabilities, version 10 SFTP (#53): `sshKey` in the spec, `hostKey` in errors, and `trust_host_key`, version 11 Metalink (#54): `contentType` in snapshots, and engines may report `metalink`, version 12 the retry countdown (#59): `retryAtMs` in snapshots, and version 13 diagnostics (#28): `libcurl` in the capabilities, the version and TLS backend the engine runs on.
+Contract version: `TRANSFER_CONTRACT_VERSION = 14`. Raise it with any incompatible change to a command, reply, event or type. Version 2 added checkpoints (#43), version 3 the global speed limit (#49), version 4 the connection detail in snapshots (#47), version 5 the checkpoint's `contentEncoding` (#45), version 6 integrity (#46): checked checksums with SHA-224 and SHA-384, `pieces` in the spec, and `verification` in snapshots, version 7 the performance profile (#57): `set_engine_limits`, and capabilities per protocol, and version 8 HTTP details (#40): `directory` and an optional `fileName` in place of `destination`, `credentials` in place of the credential handle, `referrer` and `userAgent` in the spec, and `fileName` in snapshots, version 9 FTP and FTPS (#51): `requireEncryption` in the spec and `encryption` in each protocol's capabilities, version 10 SFTP (#53): `sshKey` in the spec, `hostKey` in errors, and `trust_host_key`, version 11 Metalink (#54): `contentType` in snapshots, and engines may report `metalink`, version 12 the retry countdown (#59): `retryAtMs` in snapshots, version 13 diagnostics (#28): `libcurl` in the capabilities, the version and TLS backend the engine runs on, and version 14 the engine settings (#30): `set_engine_settings`, with `EngineSettings` ([SETTINGS.md](SETTINGS.md#engine)).
 
 ## Commands
 
@@ -149,7 +149,7 @@ In `manager/finished.rs`:
 
 Torrents run beside direct downloads in the same manager and queue; how is in [TORRENTS.md](TORRENTS.md#in-the-app-58).
 
-Saving the queue settings is #30.
+The queue settings are saved with the Settings screen's ([SETTINGS.md](SETTINGS.md#the-settings-screen), #30).
 
 ## The fake engine for tests
 

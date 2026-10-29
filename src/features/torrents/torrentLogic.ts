@@ -1,5 +1,5 @@
 // Pure torrent rules for the Add dialog, the file chooser and the details panel (V1's torrentLogic, #63).
-import type { ContentFile, SeedPolicy, TorrentVersion, TrackerState, TrackerStatus } from '../../contract';
+import type { ContentFile, NetworkStatus, SeedPolicy, TorrentVersion, TrackerState, TrackerStatus } from '../../contract';
 import { linkKind } from '../add/addLogic';
 
 export interface FileTreeNode {
@@ -141,4 +141,21 @@ export function trackerSummary(t: TrackerStatus): string {
     parts.push(`next announce in ${s < 90 ? `${String(s)} s` : `${String(Math.round(s / 60))} min`}`);
   }
   return parts.join(' · ');
+}
+
+/** The router's port mapping in one sentence (V1's `portMapText`). */
+export function portMapText(n: NetworkStatus): string {
+  const p = n.portMapping;
+  switch (p.state) {
+    case 'off':
+      return 'Off. Turn it on above to ask the router to forward the port.';
+    case 'searching':
+      return 'Looking for a router that supports UPnP or NAT-PMP…';
+    case 'mapped':
+      return `Port ${String(n.listenPort)} forwarded by the router as ${String(p.externalPort)} (${p.via === 'upnp' ? 'UPnP' : 'NAT-PMP'}).`;
+    case 'failed':
+      return `The router refused: ${p.message}`;
+    case 'noRouter':
+      return 'No router answered. Forward the port by hand if peers can’t reach you.';
+  }
 }

@@ -8,6 +8,7 @@ import { HostKeyPrompt } from '../features/add/HostKeyPrompt';
 import { useAddEntryPoints } from '../features/add/useAddEntryPoints';
 import { DownloadsView } from '../features/downloads/DownloadsView';
 import { HistoryView } from '../features/history/HistoryView';
+import { SettingsView } from '../features/settings/SettingsView';
 import { ChooseFilesDialog } from '../features/torrents/ChooseFilesDialog';
 import { commitSidebarWidth, LAYOUT, resolveLayout } from '../layout/layoutLogic';
 import { ShellLayoutContext, useLayoutPersistence, useViewportWidth, type ShellLayout } from '../layout/useLayout';
@@ -49,7 +50,7 @@ export function Shell({ app, appearance }: { app: AppInfo; appearance: Appearanc
   const setLayout = useUiStore((s) => s.setLayout);
   const viewport = useViewportWidth();
   // The details panel belongs to the download lists (#61).
-  const detailsOpen = layout.detailsVisible && view !== 'categories';
+  const detailsOpen = layout.detailsVisible && view !== 'categories' && view !== 'history' && view !== 'settings';
   const resolved = useMemo(() => resolveLayout(layout, viewport, detailsOpen), [layout, viewport, detailsOpen]);
   const rootRef = useRef<HTMLDivElement>(null);
 
@@ -62,7 +63,18 @@ export function Shell({ app, appearance }: { app: AppInfo; appearance: Appearanc
   });
   const shellLayout = useMemo<ShellLayout>(() => ({ resolved, previewDetails: (w) => writeVar('--details-w', w) }), [resolved, writeVar]);
 
-  const content = useMemo(() => (view === 'categories' ? <CategoriesView /> : view === 'history' ? <HistoryView /> : <DownloadsView view={view} />), [view]);
+  const content = useMemo(() => {
+    switch (view) {
+      case 'categories':
+        return <CategoriesView />;
+      case 'history':
+        return <HistoryView />;
+      case 'settings':
+        return <SettingsView />;
+      default:
+        return <DownloadsView view={view} />;
+    }
+  }, [view]);
   const sidebar = resolved.sidebar;
   const rail = sidebar.mode === 'rail';
 

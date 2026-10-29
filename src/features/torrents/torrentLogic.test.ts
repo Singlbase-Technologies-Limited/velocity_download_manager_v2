@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import type { TrackerStatus } from '../../contract';
-import { buildFileTree, fileChoice, folderState, sameSelection, seedingSummary, selectedSize, toggleFolder, torrentLinksInPaste, trackerSummary } from './torrentLogic';
+import { buildFileTree, fileChoice, folderState, portMapText, sameSelection, seedingSummary, selectedSize, toggleFolder, torrentLinksInPaste, trackerSummary } from './torrentLogic';
 
-// V1's tests/unit/torrentLogic.test.ts, ported (#63). Port mapping's text is #30's, with the BitTorrent settings.
+// V1's tests/unit/torrentLogic.test.ts, ported (#63); port mapping's text came with the BitTorrent settings (#30).
 
 function must<T>(v: T | undefined): T {
   if (v === undefined) throw new Error('missing');
@@ -90,5 +90,16 @@ describe('tracker text', () => {
   it('compares file selections as sets', () => {
     expect(sameSelection(new Set([1, 2]), new Set([2, 1]))).toBe(true);
     expect(sameSelection(new Set([1]), new Set([1, 2]))).toBe(false);
+  });
+});
+
+describe('port mapping text (#30)', () => {
+  const at = (portMapping: Parameters<typeof portMapText>[0]['portMapping']) => portMapText({ listenPort: 6882, listenError: null, portMapping });
+  it('describes every port mapping state', () => {
+    expect(at({ state: 'mapped', externalPort: 40000, via: 'natpmp' })).toBe('Port 6882 forwarded by the router as 40000 (NAT-PMP).');
+    expect(at({ state: 'off' })).toMatch(/^Off/);
+    expect(at({ state: 'failed', message: 'conflict' })).toBe('The router refused: conflict');
+    expect(at({ state: 'noRouter' })).toMatch(/No router answered/);
+    expect(at({ state: 'searching' })).toMatch(/Looking for a router/);
   });
 });

@@ -621,3 +621,107 @@ export const PeerStatusSchema = z.strictObject({
   client: z.string(),
 });
 export type PeerStatus = z.infer<typeof PeerStatusSchema>;
+
+// The Settings screen's settings (#30): every section, checked again in Rust whatever the window sends
+// (crates/velocity-core/src/settings.rs). The bounds below mirror Rust's, for the screen to say.
+
+export const GeneralSettingsSchema = z.strictObject({ closeToTray: z.boolean(), startMinimized: z.boolean(), confirmExitWithActive: z.boolean() });
+export const NotificationSettingsSchema = z.strictObject({ onComplete: z.boolean(), onFailure: z.boolean(), onStart: z.boolean(), onEngineFailure: z.boolean() });
+export const FolderSettingsSchema = z.strictObject({ defaultDirectory: z.string(), autoCategorize: z.boolean(), categorySubfolders: z.boolean() });
+
+export const QueueSettingsSchema = z.strictObject({
+  maxConcurrentDownloads: z.number().int().min(1).max(32),
+  startImmediately: z.boolean(),
+  schedule: z.strictObject({
+    enabled: z.boolean(),
+    /** `HH:MM`, 24-hour, local time. */
+    startTime: z.string(),
+    /** `null` for "until midnight". */
+    stopTime: z.string().nullable(),
+    /** 0 is Monday, 6 is Sunday. */
+    days: z.array(z.number().int().min(0).max(6)),
+  }),
+});
+export type QueueSettings = z.infer<typeof QueueSettingsSchema>;
+
+export const PerformanceProfileSchema = z.enum(['conservative', 'balanced', 'maximum', 'custom']);
+export type PerformanceProfile = z.infer<typeof PerformanceProfileSchema>;
+export const PerformanceSettingsSchema = z.strictObject({
+  profile: PerformanceProfileSchema,
+  custom: z.strictObject({ maxConnectionsPerServer: z.number().int().min(1).max(16), minSegmentMib: z.number().int().min(1).max(1024) }),
+});
+
+export const PreallocationSchema = z.enum(['none', 'sparse', 'full']);
+export type Preallocation = z.infer<typeof PreallocationSchema>;
+export const EngineSettingsSchema = z.strictObject({
+  failuresInARow: z.number().int().min(1).max(100),
+  maxRetryWaitSecs: z.number().int().min(1).max(600),
+  stalledAfterSecs: z.number().int().min(5).max(600),
+  resetAfterSecs: z.number().int().min(5).max(3600),
+  connectTimeoutSecs: z.number().int().min(1).max(300),
+  downloadRetries: z.number().int().min(0).max(10),
+  connectionBudget: z.number().int().min(1).max(256),
+  preallocation: PreallocationSchema,
+  writeBufferMib: z.number().int().min(1).max(64),
+});
+export type EngineSettings = z.infer<typeof EngineSettingsSchema>;
+
+export const AdvancedSettingsSchema = z.strictObject({
+  globalDownloadLimitKib: z.number().int().nonnegative(),
+  enableBittorrent: z.boolean(),
+  enableMetalink: z.boolean(),
+  /** `null` for V2's own. At most 256 bytes. */
+  userAgent: z.string().nullable(),
+});
+
+export const TorrentSettingsSchema = z.strictObject({
+  dht: z.boolean(),
+  peerExchange: z.boolean(),
+  localPeerDiscovery: z.boolean(),
+  /** 0 for no limit. */
+  maxActiveSeeds: z.number().int().min(0).max(1000),
+  /** 0 for a random one, otherwise at least 1024. */
+  listenPort: z.number().int().min(0).max(65535),
+  portMapping: z.boolean(),
+  /** Bytes per second, 0 for no limit. */
+  uploadLimit: bytes,
+  downloadLimit: bytes,
+  extraTrackers: z.array(z.string()),
+  maxPeersPerTorrent: z.number().int().min(1).max(512),
+  dhtBootstrapNodes: z.array(z.string()),
+});
+export type TorrentSettings = z.infer<typeof TorrentSettingsSchema>;
+
+export const NewTorrentSettingsSchema = z.strictObject({
+  chooseFilesForMagnets: z.boolean(),
+  seeding: SeedPolicySchema,
+  uploadLimitKib: z.number().int().nonnegative(),
+});
+
+export const SettingsSchema = z.strictObject({
+  general: GeneralSettingsSchema,
+  notifications: NotificationSettingsSchema,
+  downloads: FolderSettingsSchema,
+  queue: QueueSettingsSchema,
+  performance: PerformanceSettingsSchema,
+  engine: EngineSettingsSchema,
+  advanced: AdvancedSettingsSchema,
+  torrent: TorrentSettingsSchema,
+  newTorrents: NewTorrentSettingsSchema,
+  storage: StorageSettingsSchema,
+});
+export type Settings = z.infer<typeof SettingsSchema>;
+
+/** The torrent helper's listening port and port mapping (#30). */
+export const NetworkStatusSchema = z.strictObject({
+  listenPort: z.number().int().min(0).max(65535),
+  listenError: z.string().nullable(),
+  portMapping: z.discriminatedUnion('state', [
+    z.strictObject({ state: z.literal('off') }),
+    z.strictObject({ state: z.literal('searching') }),
+    z.strictObject({ state: z.literal('mapped'), externalPort: z.number().int(), via: z.string() }),
+    z.strictObject({ state: z.literal('failed'), message: z.string() }),
+    z.strictObject({ state: z.literal('noRouter') }),
+  ]),
+});
+export type NetworkStatus = z.infer<typeof NetworkStatusSchema>;

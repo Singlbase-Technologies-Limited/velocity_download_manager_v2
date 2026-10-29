@@ -117,6 +117,10 @@ The commands of [`src-tauri/src/shell.rs`](../src-tauri/src/shell.rs) (#29). A c
 | `complete_onboarding` | `directory`: an existing folder, not a link | `ShellSettings`; `INVALID_PATH`, or `DESTINATION_MISSING` when it doesn't exist |
 | `choose_directory` | `initial` (`null`, or a folder to start in) | the folder chosen with the system's chooser, or `null` when the user cancels |
 | `quit_app` | — | nothing: the app quits. The window calls it only after the user confirms |
+| `get_settings` | — | `Settings`: every section the Settings screen edits ([SETTINGS.md](SETTINGS.md#the-settings-screen)). The fixture `settings.json` has the defaults. Since contract version 15 (#30) |
+| `set_settings` | `settings` | the `Settings` saved; `INVALID_INPUT`, with nothing saved or applied, when a section is out of bounds |
+| `reset_settings` | — | the defaults saved, keeping the download folder |
+| `get_torrent_network` | — | the torrent helper's `NetworkStatus`: `listenPort`, `listenError` and `portMapping` |
 
 **The `quit-requested` event** carries `{ active }`: quitting would stop that many downloads, and `general.confirmExitWithActive` is on. The window asks the user, and calls `quit_app` only if they confirm.
 
