@@ -61,7 +61,12 @@ fn run_host(data_dir: &Path, args: &[String], input: Vec<u8>) -> Vec<Value> {
         .stderr(Stdio::null())
         .spawn()
         .unwrap();
-    child.stdin.take().unwrap().write_all(&input).unwrap();
+    // A host that refuses its caller exits without reading its input, so the pipe may be closed
+    // before the message is written: what it answered is still checked.
+    match child.stdin.take().unwrap().write_all(&input) {
+        Err(e) if e.kind() == std::io::ErrorKind::BrokenPipe => {}
+        written => written.unwrap(),
+    }
     let mut out = Vec::new();
     child.stdout.take().unwrap().read_to_end(&mut out).unwrap();
     child.wait().unwrap();
