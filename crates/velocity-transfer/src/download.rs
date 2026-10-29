@@ -76,8 +76,9 @@ const PIECE_REFETCHES: u32 = 2;
 type ProgressFn = Box<dyn Fn(u64, Option<u64>) + Send + Sync>;
 /// Called with each checkpoint, after the part file was synced.
 type CheckpointFn = Box<dyn Fn(Checkpoint) + Send + Sync>;
-/// Called when the download starts waiting to retry, stalls, or receives bytes again.
-type StatusFn = Box<dyn Fn(DownloadStatus) + Send + Sync>;
+/// Called when the download starts waiting to retry, with when it tries again, stalls, or
+/// receives bytes again.
+type StatusFn = Box<dyn Fn(DownloadStatus, Option<SystemTime>) + Send + Sync>;
 /// Called with the name a download into a folder chose, once its part file has it (#40).
 type NamedFn = Box<dyn Fn(&str) + Send + Sync>;
 /// Called with the file's media type, once the server answered with the file (#54).
@@ -91,8 +92,8 @@ pub struct Control {
     progress: Option<ProgressFn>,
     checkpoints: Option<CheckpointFn>,
     status: Option<StatusFn>,
-    /// The status last passed to `status`, so each change is reported once.
-    shown: Mutex<Option<DownloadStatus>>,
+    /// The status and retry time last passed to `status`, so each change is reported once.
+    shown: Mutex<Option<(DownloadStatus, Option<SystemTime>)>>,
     /// The speed limits every request of the download draws from (#49).
     limits: Vec<RateLimit>,
     /// The most bytes one of its requests held for the writer (#49); shared with the forwarders.
@@ -175,10 +176,14 @@ impl Control {
         self
     }
 
-    /// `status` is called with [`DownloadStatus::Retrying`] when the download waits to retry,
-    /// [`DownloadStatus::Stalled`] when no byte has come from the network for a while, and
-    /// [`DownloadStatus::Downloading`] when bytes come again (#48).
-    pub fn with_status(mut self, status: impl Fn(DownloadStatus) + Send + Sync + 'static) -> Self {
+    /// `status` is called with [`DownloadStatus::Retrying`] and when the next attempt starts
+    /// while the download waits to retry (#59), [`DownloadStatus::Stalled`] when no byte has come
+    /// from the network for a while, and [`DownloadStatus::Downloading`] when bytes come again
+    /// (#48). The time is `None` for every status but Retrying.
+    pub fn with_status(
+        mut self,
+        status: impl Fn(DownloadStatus, Option<SystemTime>) + Send + Sync + 'static,
+    ) -> Self {
         self.status = Some(Box::new(status));
         self
     }
@@ -298,14 +303,25 @@ impl Control {
 
     /// Reports `status`, if it isn't the one reported last.
     fn show(&self, status: DownloadStatus) {
+        self.report_status(status, None);
+    }
+
+    /// Reports Retrying until `at`, the next attempt (#59), unless that was reported last.
+    fn retrying_until(&self, at: Instant) {
+        let left = at.saturating_duration_since(Instant::now());
+        self.report_status(DownloadStatus::Retrying, Some(SystemTime::now() + left));
+    }
+
+    fn report_status(&self, status: DownloadStatus, retry_at: Option<SystemTime>) {
         let Some(s) = &self.status else { return };
+        let now = Some((status, retry_at));
         let changed = {
             let mut shown = self.shown.lock().expect("the status lock");
-            shown.replace(status) != Some(status)
+            std::mem::replace(&mut *shown, now) != now
         };
         // Called outside the lock, so a callback may take its time.
         if changed {
-            s(status);
+            s(status, retry_at);
         }
     }
 
@@ -1491,10 +1507,11 @@ impl Retrier {
     }
 }
 
-/// Waits `wait` before a retry, showing Retrying, and stops early for a pause or a cancel.
+/// Waits `wait` before a retry, showing Retrying and when it ends, and stops early for a pause
+/// or a cancel.
 pub(crate) fn wait_out(control: &Control, wait: Duration) -> Result<(), DownloadError> {
-    control.show(DownloadStatus::Retrying);
     let until = Instant::now() + wait;
+    control.retrying_until(until);
     loop {
         if control.is_cancelled() {
             return Err(DownloadError::Cancelled);
@@ -1903,10 +1920,12 @@ fn fetch_ranges(
         }
         control.running(active.len() as u32, file_bound);
         if active.is_empty() {
-            if waiting.is_empty() {
+            // Every connection waits to retry; the first to try again is the download's next
+            // attempt.
+            let Some(&next) = waiting.iter().min() else {
                 break;
-            }
-            control.show(DownloadStatus::Retrying);
+            };
+            control.retrying_until(next);
         }
         if control.is_cancelled() {
             // Dropping `rx` ends the forwarders, and dropping their fetches cancels them.

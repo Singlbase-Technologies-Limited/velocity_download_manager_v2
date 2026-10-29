@@ -143,6 +143,38 @@ fn a_late_running_status_does_not_undo_a_cancel() {
     assert_eq!(status(&m, &id), DownloadStatus::Removed);
 }
 
+#[test]
+fn a_retrying_download_shows_when_the_engine_tries_again() {
+    // #59: the list counts down to the engine's time; it never invents one.
+    let (mut m, control, id) = setup();
+    let retry_at = T0 + 30_000;
+    control.emit(TransferEvent::Changed {
+        snapshot: TransferSnapshot {
+            status: DownloadStatus::Retrying,
+            retry_at_ms: Some(retry_at),
+            ..control.snapshot(TransferId(1))
+        },
+    });
+    m.pump(T0);
+    let r = m.get(&id).unwrap();
+    assert_eq!(r.status, DownloadStatus::Retrying);
+    assert_eq!(r.retry_at_ms, Some(retry_at));
+    // Paused, a late Retrying keeps the pause, without a time.
+    m.pause(&id).unwrap();
+    m.pump(T0);
+    control.emit(TransferEvent::Changed {
+        snapshot: TransferSnapshot {
+            status: DownloadStatus::Retrying,
+            retry_at_ms: Some(retry_at),
+            ..control.snapshot(TransferId(1))
+        },
+    });
+    m.pump(T0);
+    let r = m.get(&id).unwrap();
+    assert_eq!(r.status, DownloadStatus::Paused);
+    assert_eq!(r.retry_at_ms, None);
+}
+
 /// A Downloading snapshot of transfer 1 with `completed_bytes`, sent late: the fake engine's own
 /// state stays as it is.
 fn late_progress(control: &FakeControl, completed_bytes: u64) -> TransferEvent {
@@ -257,6 +289,7 @@ fn events_for_unknown_transfers_are_ignored() {
         verification: None,
         file_name: None,
         content_type: None,
+        retry_at_ms: None,
     };
     stray.progress.completed_bytes = 999;
     control.emit(TransferEvent::Changed { snapshot: stray });
@@ -2153,6 +2186,27 @@ mod engine_loss {
         let r = m.get(&id).unwrap();
         assert_eq!(r.status, DownloadStatus::Downloading);
         assert_eq!(r.error, None);
+    }
+
+    #[test]
+    fn a_retrying_download_the_engine_lost_waits_without_a_retry_time() {
+        // #59: the engine that would have tried again is gone, so there's nothing to count to.
+        let (mut m, control, id) = setup();
+        control.emit(TransferEvent::Changed {
+            snapshot: TransferSnapshot {
+                status: DownloadStatus::Retrying,
+                retry_at_ms: Some(T0 + 30_000),
+                ..control.snapshot(TransferId(1))
+            },
+        });
+        m.pump(T0 + 1);
+        control.fail(TransferId(1), lost());
+        control.set_unavailable(Some(ErrorCode::EngineUnavailable));
+        m.pump(T0 + 2);
+        let r = m.get(&id).unwrap();
+        assert_eq!(r.status, DownloadStatus::Queued);
+        assert_eq!(r.retry_at_ms, None);
+        assert_eq!(m.snapshot().downloads[0].retry_at_ms, None);
     }
 
     #[test]

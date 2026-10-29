@@ -230,6 +230,9 @@ pub struct DownloadRecord {
     /// Milliseconds since the Unix epoch.
     pub created_at_ms: u64,
     pub completed_at_ms: Option<u64>,
+    /// While Retrying, when the engine tries again, in milliseconds since the Unix epoch (#59);
+    /// `None` in every other status. Never invented: only an engine reports it.
+    pub retry_at_ms: Option<u64>,
 }
 
 /// What the UI is sent about the downloads (#58, V1's `get_snapshot`), whenever something in it
@@ -517,6 +520,7 @@ impl DownloadRecord {
             verification: None,
             created_at_ms: 1_792_600_000_000,
             completed_at_ms: None,
+            retry_at_ms: Some(1_792_600_030_000),
         }
     }
 }

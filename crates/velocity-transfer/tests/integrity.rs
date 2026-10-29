@@ -128,7 +128,7 @@ fn run_expected(
     let checkpoints = Arc::new(Mutex::new(Vec::new()));
     let (s, c) = (Arc::clone(&statuses), Arc::clone(&checkpoints));
     let control = Control::with_progress(|_, _| {})
-        .with_status(move |status| s.lock().unwrap().push(status))
+        .with_status(move |status, _| s.lock().unwrap().push(status))
         .with_checkpoints(move |checkpoint| c.lock().unwrap().push(checkpoint));
     let result = download_resumable(&curl_loop(), url, dest, options, resume, expected, &control);
     let statuses = statuses.lock().unwrap().clone();

@@ -5,7 +5,7 @@
 import { z } from 'zod';
 
 /** Must equal `velocity_core::COMMAND_API_VERSION`; the app refuses to start on a mismatch. */
-export const COMMAND_API_VERSION = 11;
+export const COMMAND_API_VERSION = 12;
 
 const bytes = z.number().int().nonnegative();
 
@@ -94,6 +94,8 @@ export const DownloadRecordSchema = z.strictObject({
   verification: VerificationSchema.nullable(),
   createdAtMs: bytes,
   completedAtMs: bytes.nullable(),
+  /** While retrying, when the engine tries again (#59); `null` in every other status. */
+  retryAtMs: bytes.nullable(),
 });
 export type DownloadRecord = z.infer<typeof DownloadRecordSchema>;
 

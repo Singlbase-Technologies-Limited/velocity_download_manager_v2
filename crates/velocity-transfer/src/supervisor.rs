@@ -88,6 +88,7 @@ impl TransferBook {
             verification: None,
             file_name: None,
             content_type: None,
+            retry_at_ms: None,
         };
         // When the engine stopped between assigning the id and this reply, the transfer is lost.
         self.transfers

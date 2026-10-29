@@ -27,6 +27,7 @@
         "totalBytes": 4194304,
         "uploadSpeedBps": 0
       },
+      "retryAtMs": 1792600030000,
       "sourceUrl": "https://example.com/files/archive.zip",
       "status": "retrying",
       "verification": null

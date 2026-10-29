@@ -338,6 +338,7 @@ impl Manager {
                 verification: None,
                 created_at_ms: now_ms,
                 completed_at_ms: None,
+                retry_at_ms: None,
             },
             job: Job::Direct(Box::new(DirectJob::new(spec, None))),
             running: false,
@@ -954,6 +955,10 @@ impl Manager {
                 let before = download.record.clone();
                 let record = &mut download.record;
                 record.status = shown;
+                // Not saved: a download read back at start-up isn't waiting to retry.
+                record.retry_at_ms = snapshot
+                    .retry_at_ms
+                    .filter(|_| shown == DownloadStatus::Retrying);
                 record.progress = snapshot.progress;
                 record.error = snapshot.error;
                 record.verification = snapshot.verification;

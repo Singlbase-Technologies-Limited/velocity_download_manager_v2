@@ -172,6 +172,7 @@ impl Manager {
                         .and_then(|v| v.known().copied()),
                     created_at_ms: stored.created_at_ms,
                     completed_at_ms: stored.completed_at_ms,
+                    retry_at_ms: None,
                 },
                 job,
                 running: false,
@@ -230,6 +231,8 @@ impl Manager {
         d.record.progress.connections = 0;
         d.record.error = Some(error);
         d.record.status = d.waiting_status();
+        // The engine that would have tried again is gone (#59).
+        d.record.retry_at_ms = None;
         self.mark(id);
     }
 

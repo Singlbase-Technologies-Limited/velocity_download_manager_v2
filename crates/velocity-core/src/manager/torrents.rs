@@ -189,6 +189,7 @@ impl Manager {
                 verification: None,
                 created_at_ms: now_ms,
                 completed_at_ms: None,
+                retry_at_ms: None,
             },
             job: Job::Torrent(Box::new(job)),
             running: false,

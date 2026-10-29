@@ -43,7 +43,8 @@ use std::sync::mpsc::Receiver;
 /// [`DirectTransfer::trust_host_key`]; engines now download `sftp`.
 /// Version 11 (#54) added [`TransferSnapshot::content_type`], and engines may report
 /// [`crate::domain::Capabilities::metalink`].
-pub const TRANSFER_CONTRACT_VERSION: u32 = 11;
+/// Version 12 (#59) added [`TransferSnapshot::retry_at_ms`].
+pub const TRANSFER_CONTRACT_VERSION: u32 = 12;
 
 /// An engine's id for one transfer. Assigned by the engine, never reused, and never shown as the
 /// app's download id.
@@ -462,6 +463,9 @@ pub struct TransferSnapshot {
     /// lowercase), once it answered with the file (#54): how a link to a Metalink file is known.
     /// `None` for FTP and SFTP, and when the server gave none or an invalid one.
     pub content_type: Option<String>,
+    /// While Retrying, when the next attempt starts, in milliseconds since the Unix epoch (#59);
+    /// `None` in every other status.
+    pub retry_at_ms: Option<u64>,
 }
 
 /// Something that happened to a transfer, pushed by the engine.
@@ -841,6 +845,7 @@ mod tests {
             verification: None,
             file_name: Some("a.zip".to_owned()),
             content_type: None,
+            retry_at_ms: None,
         }
     }
 
