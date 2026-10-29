@@ -601,25 +601,29 @@ mod tests {
     fn v1s_registration_is_never_touched() {
         let f = Fixture::new("v1");
         let v1: Vec<_> = Browser::ALL.iter().map(|&b| (b, f.install_v1(b))).collect();
+        let unchanged = |after: &str| {
+            for (browser, (path, body)) in &v1 {
+                assert_eq!(
+                    &std::fs::read(path).unwrap(),
+                    body,
+                    "{browser:?}: V1's manifest {after}"
+                );
+                #[cfg(windows)]
+                assert_eq!(
+                    registry::get_default(&f.v1_key(*browser)).as_deref(),
+                    Some(&*path.to_string_lossy()),
+                    "{browser:?}: V1's registry value {after}"
+                );
+            }
+        };
         for browser in Browser::ALL {
             f.locations.register(browser, &f.host).unwrap();
         }
+        unchanged("after registering V2");
         for browser in Browser::ALL {
             f.locations.unregister(browser).unwrap();
         }
-        for (browser, (path, body)) in v1 {
-            assert_eq!(
-                std::fs::read(&path).unwrap(),
-                body,
-                "{browser:?}: V1's manifest"
-            );
-            #[cfg(windows)]
-            assert_eq!(
-                registry::get_default(&f.v1_key(browser)).as_deref(),
-                Some(&*path.to_string_lossy()),
-                "{browser:?}: V1's registry value"
-            );
-        }
+        unchanged("after unregistering V2");
     }
 
     #[test]
