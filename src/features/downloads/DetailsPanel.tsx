@@ -7,7 +7,7 @@ import { ProgressBar } from '../../components/ProgressBar';
 import { Select } from '../../components/Select';
 import { ConnectionLine } from '../../ConnectionLine';
 import type { Verification } from '../../contract';
-import { actionsFor, canOpenFile, displayName, etaSeconds, percentOf, STATUS_TONE, statusLabel } from '../../downloads/list';
+import { actionsFor, canOpenFile, displayName, etaSeconds, percentOf, RUNNING, STATUS_TONE, statusLabel } from '../../downloads/list';
 import { formatBytes, formatDuration, formatPercent, formatShortDate, formatSpeed, formatTransferred, relativeFromNow } from '../../lib/format';
 import { useCategories } from '../../lib/queries';
 import { useDownloadsStore } from '../../stores/downloads';
@@ -144,7 +144,8 @@ export function DetailsPanel({ id, hidden, actions, busy, needsLogin, now, onClo
           <Row label="Time left">{d.status === 'downloading' ? formatDuration(etaSeconds(d)) : '—'}</Row>
           {torrent ? null : (
             <Row label="Connections">
-              <ConnectionLine active={d.progress.connections} detail={d.progress.connectionDetail} />
+              {/* What held its connections back while it ran says nothing once it stopped. */}
+              {RUNNING.includes(d.status) ? <ConnectionLine active={d.progress.connections} detail={d.progress.connectionDetail} /> : <ConnectionLine active={0} detail={null} />}
             </Row>
           )}
           {d.status === 'retrying' && d.retryAtMs !== null ? <Row label="Next try">{relativeFromNow(d.retryAtMs, now)}</Row> : null}

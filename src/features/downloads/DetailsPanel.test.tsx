@@ -175,6 +175,16 @@ describe('the details panel (#61)', () => {
     expect(transfer.textContent).toContain('Using 3 connections, up to 4 of the 8 asked for: the server asked Velocity to slow down.');
   });
 
+  it('says a download that isn’t running isn’t connected, without the reason it had while it ran', async () => {
+    const user = userEvent.setup();
+    state.snapshot = withDownloads([{ ...movie, progress: { ...movie.progress, connections: 0, connectionDetail: { requested: 8, allowed: 4, limitedBy: 'serverThrottling' } } }]);
+    renderApp();
+    await user.dblClick(await rowFor('movie.mp4'));
+    const transfer = within(await panel()).getByRole('region', { name: 'Transfer' });
+    expect(transfer.textContent).toContain('Not connected.');
+    expect(transfer.textContent).not.toContain('slow down');
+  });
+
   it('changes the connections of a running download at once, with no restart to confirm', async () => {
     const user = userEvent.setup();
     renderApp();

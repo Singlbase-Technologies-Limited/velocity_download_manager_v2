@@ -114,7 +114,8 @@ export interface ActionAvailability {
   stopSeeding: boolean;
 }
 
-const RUNNING: readonly DownloadStatus[] = ['connecting', 'downloading', 'verifying', 'fetchingMetadata', 'stalled'];
+/** The statuses in which an engine is working on a download now. */
+export const RUNNING: readonly DownloadStatus[] = ['connecting', 'downloading', 'verifying', 'fetchingMetadata', 'stalled'];
 
 export function actionsFor(d: DownloadRecord): ActionAvailability {
   const s = d.status;
