@@ -4,9 +4,11 @@
 
 use std::time::{Duration, Instant};
 
+use std::sync::Arc;
+
 use velocity_curl::{
     CurlFailure, CurlLoop, FetchError, FetchEvent, FetchRequest, Gate, Libcurl, LoopOptions,
-    ResponseHead,
+    RequestOptions, ResponseHead,
 };
 use velocity_test_http::tls::{Alpn, Leaf, TlsFront};
 use velocity_test_http::{seeded_bytes, Http2Options, Http2Server, ServerOptions, TestServer};
@@ -39,6 +41,71 @@ fn fetch(front: &TlsFront, trust_ca: bool, name: &str) -> Outcome {
             FetchEvent::Done(done) => return Outcome { head, data, done },
         }
     }
+}
+
+/// An `https://` link whose server redirects `/go` to `http://` (#67): a TLS front on a backend
+/// that redirects to a plain HTTP server holding the file. Returns what a fetch of `/go` ends
+/// with, and the file.
+fn insecure_redirect(allow: bool) -> (Outcome, Vec<u8>) {
+    let (target, data) = backend();
+    let redirecting = TestServer::start(
+        Vec::new(),
+        ServerOptions {
+            redirects: vec![("/go".into(), target.url("f.bin"))],
+            ..ServerOptions::default()
+        },
+    );
+    let front = TlsFront::start(redirecting.addr(), Leaf::Valid, Alpn::Http1);
+    let curl = Libcurl::start().expect("libcurl starts");
+    let options = LoopOptions {
+        ca_file: Some(front.ca_file().to_owned()),
+        ..LoopOptions::default()
+    };
+    let lp = CurlLoop::start(&curl, options).expect("the loop starts");
+    let request = FetchRequest::get(front.url("go")).with_options(Arc::new(RequestOptions {
+        allow_insecure_redirect: allow,
+        ..RequestOptions::default()
+    }));
+    let fetch = lp.fetch(request, |_: &ResponseHead| Gate::Accept);
+    let (mut head, mut body) = (None, Vec::new());
+    let deadline = Instant::now() + WAIT;
+    loop {
+        let left = deadline.saturating_duration_since(Instant::now());
+        match fetch.next_event(left).expect("the fetch ends in time") {
+            FetchEvent::Head(h) => head = Some(h),
+            FetchEvent::Data(chunk) => body.extend_from_slice(&chunk),
+            FetchEvent::Done(done) => {
+                return (
+                    Outcome {
+                        head,
+                        data: body,
+                        done,
+                    },
+                    data,
+                )
+            }
+        }
+    }
+}
+
+#[test]
+fn a_redirect_from_https_to_http_waits_for_the_users_confirmation() {
+    let (o, _) = insecure_redirect(false);
+    assert_eq!(
+        o.done,
+        Err(FetchError::InsecureRedirect {
+            host: "127.0.0.1".to_owned()
+        })
+    );
+    assert!(o.data.is_empty());
+}
+
+#[test]
+fn a_confirmed_redirect_from_https_to_http_is_followed() {
+    let (o, data) = insecure_redirect(true);
+    assert_eq!(o.done, Ok(()));
+    assert!(o.data == data, "the body differs");
+    assert!(o.head.is_some_and(|h| h.url.starts_with("http://")));
 }
 
 fn backend() -> (TestServer, Vec<u8>) {

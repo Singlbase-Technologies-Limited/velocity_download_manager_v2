@@ -4,8 +4,8 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use velocity_curl::{
-    CurlFailure, CurlLoop, Fetch, FetchError, FetchEvent, FetchRequest, Gate, Libcurl, LoopOptions,
-    RateLimit, RequestOptions, ResponseHead,
+    AddressProblem, CurlFailure, CurlLoop, Fetch, FetchError, FetchEvent, FetchRequest, Gate,
+    Libcurl, LoopOptions, RateLimit, RequestOptions, ResponseHead,
 };
 use velocity_test_http::{seeded_bytes, RangeMode, ServerOptions, TestServer};
 
@@ -309,30 +309,91 @@ fn a_cancelled_fetch_ends_and_the_loop_keeps_working() {
     assert_eq!((o.done, o.data), (Ok(()), data[..10].to_vec()));
 }
 
+/// `file://`, `scp://` and `sftp://` are never reached through a redirect (#67; CVE-2026-86410
+/// was a redirect to SFTP in the curl tool).
 #[test]
 fn a_redirect_to_a_protocol_outside_the_allowlist_is_refused() {
-    let (s, _) = serve(
-        "a.bin",
-        10,
-        ServerOptions {
-            redirects: vec![("/go".into(), "file:///etc/hosts".into())],
-            ..ServerOptions::default()
-        },
-    );
+    for to in [
+        "file:///etc/hosts",
+        "scp://127.0.0.1:9/etc/hosts",
+        "sftp://127.0.0.1:9/etc/hosts",
+    ] {
+        let (s, _) = serve(
+            "a.bin",
+            10,
+            ServerOptions {
+                redirects: vec![("/go".into(), to.into())],
+                ..ServerOptions::default()
+            },
+        );
+        let l = start_loop(LoopOptions::default());
+        let o = collect(&l.fetch(FetchRequest::get(s.url("go")), accept_all), None);
+        assert!(
+            matches!(
+                o.done,
+                Err(FetchError::RedirectRefused {
+                    kind: CurlFailure::Refused,
+                    ..
+                })
+            ),
+            "{to}: {:?}",
+            o.done
+        );
+        assert!(o.data.is_empty(), "{to}");
+    }
+}
+
+/// A request that must confirm local addresses (#67, ADR-0006).
+fn confirming_local_addresses() -> Arc<RequestOptions> {
+    Arc::new(RequestOptions {
+        confirm_local_addresses: true,
+        ..RequestOptions::default()
+    })
+}
+
+#[test]
+fn a_request_that_must_confirm_local_addresses_stops_at_one_before_sending() {
+    let (s, _) = serve("a.bin", 100, ServerOptions::default());
     let l = start_loop(LoopOptions::default());
-    let o = collect(&l.fetch(FetchRequest::get(s.url("go")), accept_all), None);
-    assert!(
-        matches!(
-            o.done,
-            Err(FetchError::RedirectRefused {
-                kind: CurlFailure::Refused,
-                ..
-            })
-        ),
-        "{:?}",
-        o.done
+    let request = FetchRequest::get(s.url("a.bin")).with_options(confirming_local_addresses());
+    let o = collect(&l.fetch(request, accept_all), None);
+    assert_eq!(
+        o.done,
+        Err(FetchError::LocalAddress(AddressProblem {
+            host: "127.0.0.1".to_owned(),
+            address: "127.0.0.1".to_owned(),
+        }))
     );
-    assert!(o.data.is_empty());
+    assert!(o.head.is_none() && o.data.is_empty());
+    assert_eq!(s.counters().gets, 0, "no request reached the server");
+}
+
+/// The check is on the address connected to, not on the name: a name that resolves to this
+/// computer is caught too, as DNS rebinding would make it.
+#[test]
+fn a_name_that_resolves_to_this_computer_is_caught_on_its_address() {
+    let (s, _) = serve("a.bin", 100, ServerOptions::default());
+    let l = start_loop(LoopOptions::default());
+    let url = format!("http://localhost:{}/a.bin", s.addr().port());
+    let request = FetchRequest::get(url).with_options(confirming_local_addresses());
+    let o = collect(&l.fetch(request, accept_all), None);
+    match o.done {
+        Err(FetchError::LocalAddress(AddressProblem { host, address })) => {
+            assert_eq!(host, "localhost");
+            assert!(["127.0.0.1", "::1"].contains(&address.as_str()), "{address}");
+        }
+        other => panic!("expected a local address, got {other:?}"),
+    }
+    assert_eq!(s.counters().gets, 0, "no request reached the server");
+}
+
+#[test]
+fn a_request_without_the_check_reaches_a_local_address() {
+    let (s, data) = serve("a.bin", 100, ServerOptions::default());
+    let l = start_loop(LoopOptions::default());
+    let o = collect(&l.fetch(FetchRequest::get(s.url("a.bin")), accept_all), None);
+    assert_eq!(o.done, Ok(()));
+    assert!(o.data == data);
 }
 
 #[test]
@@ -390,6 +451,8 @@ fn options() -> Arc<RequestOptions> {
         login: Some(("alice".to_owned(), "hunter2".to_owned())),
         require_encryption: false,
         ssh_key: None,
+        allow_insecure_redirect: false,
+        confirm_local_addresses: false,
     })
 }
 

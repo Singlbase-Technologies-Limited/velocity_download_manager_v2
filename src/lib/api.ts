@@ -24,6 +24,7 @@ import {
   TorrentPreviewSchema,
   TrackerStatusSchema,
   type AddRequest,
+  type ConfirmKind,
   type AppearanceSettings,
   type Category,
   type DownloadLogin,
@@ -101,6 +102,8 @@ export const api = {
   chooseSshKey: () => call('choose_ssh_key', undefined, z.string().min(1).nullable()),
   /** Trusts the SFTP host key the user confirmed (#53); the download is then retried. */
   trustHostKey: (host: string, port: number, fingerprint: string) => call('trust_host_key', { host, port, fingerprint }, nothing),
+  /** Allows what a download stopped at for the user's confirmation (#67), and retries it. */
+  allowDownload: (id: string, kind: ConfirmKind) => call('allow_download', { id, kind }, nothing),
   retryDownloads: (ids: string[]) => call('retry_downloads', { ids }, BatchResultSchema),
   // The list's commands (#58, #59). Those over several downloads say what each did.
   pauseDownloads: (ids: string[]) => call('pause_downloads', { ids }, BatchResultSchema),

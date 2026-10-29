@@ -101,6 +101,7 @@ fn spec(url: String, destination: &Path, resume: Option<Resume>) -> TransferSpec
         resume,
         require_encryption: false,
         ssh_key: None,
+        trust: Default::default(),
     }
 }
 

@@ -116,6 +116,7 @@ impl Manager {
             limits: Limits::default(),
             max_connections: 1,
             resume: None,
+            trust: Default::default(),
         };
         spec.check_request()?;
         let transfer = self.engine.add(spec)?;

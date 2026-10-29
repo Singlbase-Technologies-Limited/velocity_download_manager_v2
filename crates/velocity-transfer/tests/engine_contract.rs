@@ -9,12 +9,12 @@ use std::sync::{Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
 use velocity_core::domain::{
-    ConnectionDetail, ConnectionLimit, DownloadKind, DownloadStatus, ErrorCode,
+    Confirm, ConnectionDetail, ConnectionLimit, DownloadKind, DownloadStatus, ErrorCode,
     ProtocolCapabilities, Verification,
 };
 use velocity_core::transfer::{
     Checkpoint, Checksum, Credentials, DirectTransfer, EngineLimits, HashAlgorithm, Limits,
-    PieceHashes, TransferEvent, TransferId, TransferSnapshot, TransferSpec,
+    PieceHashes, TransferEvent, TransferId, TransferSnapshot, TransferSpec, Trust,
 };
 use velocity_test_http::ftp::{FtpOptions, FtpServer};
 use velocity_test_http::{seeded_bytes, ServerOptions, TestServer};
@@ -74,6 +74,7 @@ fn spec(url: String, destination: PathBuf) -> TransferSpec {
         resume: None,
         require_encryption: false,
         ssh_key: None,
+        trust: Default::default(),
     }
 }
 
@@ -1114,5 +1115,62 @@ fn small_files_reuse_connections() {
             "{mode}: 40 files at once used {at_once} new connections, over the cap of {cap}"
         );
         assert_eq!(server.counters().gets, 80, "{mode}: one GET per file");
+    }
+}
+
+/// A link from the browser that reaches this computer waits for the user (#67, ADR-0006), in both
+/// modes: the trust crosses the child process's pipe, and the confirmation comes back in the error.
+#[test]
+fn a_link_from_the_browser_to_this_computer_waits_until_the_user_allows_it() {
+    let data = seeded_bytes(50_000, 67);
+    let server = TestServer::start(
+        vec![("f.bin".into(), data.clone())],
+        ServerOptions::default(),
+    );
+    for (mode, mut engine) in engines() {
+        let dir = Dir::new(&format!("local-{}", mode.replace(' ', "-")));
+        let events = engine.subscribe();
+        let from_browser = Trust {
+            from_browser: true,
+            ..Trust::default()
+        };
+        let dest = dir.0.join("held.bin");
+        let before = server.counters().gets;
+        let id = engine
+            .add(TransferSpec {
+                trust: from_browser,
+                ..spec(server.url("f.bin"), dest.clone())
+            })
+            .expect("add");
+        let done = wait_for(&events, id, |s| {
+            matches!(s, DownloadStatus::Completed | DownloadStatus::Failed)
+        });
+        assert_eq!(done.status, DownloadStatus::Failed, "{mode}: {done:?}");
+        assert_eq!(
+            done.error.and_then(|e| e.confirm),
+            Some(Confirm::LocalAddress {
+                host: "127.0.0.1".to_owned(),
+                address: "127.0.0.1".to_owned(),
+            }),
+            "{mode}"
+        );
+        assert!(!dest.exists(), "{mode}");
+        assert_eq!(server.counters().gets, before, "{mode}: nothing was requested");
+
+        let dest = dir.0.join("allowed.bin");
+        let id = engine
+            .add(TransferSpec {
+                trust: Trust {
+                    local_address_confirmed: true,
+                    ..from_browser
+                },
+                ..spec(server.url("f.bin"), dest.clone())
+            })
+            .expect("add");
+        let done = wait_for(&events, id, |s| {
+            matches!(s, DownloadStatus::Completed | DownloadStatus::Failed)
+        });
+        assert_eq!(done.status, DownloadStatus::Completed, "{mode}: {done:?}");
+        assert!(std::fs::read(&dest).unwrap() == data, "{mode}");
     }
 }

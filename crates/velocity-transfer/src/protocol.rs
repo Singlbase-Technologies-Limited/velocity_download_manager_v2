@@ -120,6 +120,7 @@ mod tests {
                 resume: None,
                 require_encryption: false,
                 ssh_key: None,
+                trust: Default::default(),
             };
             let add = ToChild::Request {
                 seq: 1,

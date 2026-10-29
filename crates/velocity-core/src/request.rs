@@ -69,6 +69,65 @@ pub fn check_headers(headers: &[Header]) -> Result<(), ErrorCode> {
     }
 }
 
+/// A direct link as V2 stores and sends it (#67): `InvalidUrl` for one with a space or a control
+/// character, as V1 refused, or a host that isn't a valid domain name. An international domain
+/// name becomes its ASCII form (`bücher.example` is `xn--bcher-kva.example`, PO decision on #67),
+/// which is what is shown and stored, and any other character outside ASCII is percent-encoded.
+/// A link that is ASCII already comes back as it is.
+pub fn normalize_link(link: &str) -> Result<String, ErrorCode> {
+    if link.chars().any(|c| c.is_whitespace() || c.is_control()) {
+        return Err(ErrorCode::InvalidUrl);
+    }
+    if link.is_ascii() {
+        return Ok(link.to_owned());
+    }
+    let Some((scheme, rest)) = link.split_once("://") else {
+        return Err(ErrorCode::InvalidUrl);
+    };
+    let end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
+    let (authority, tail) = rest.split_at(end);
+    let (login, host_port) = match authority.rfind('@') {
+        Some(at) => authority.split_at(at + 1),
+        None => ("", authority),
+    };
+    let (host, port) = match host_port.rfind(':') {
+        Some(colon)
+            if !host_port.starts_with('[')
+                && host_port[colon + 1..].bytes().all(|b| b.is_ascii_digit()) =>
+        {
+            host_port.split_at(colon)
+        }
+        _ => (host_port, ""),
+    };
+    let host = if host.is_ascii() {
+        host.to_owned()
+    } else {
+        match url::Host::parse(host) {
+            Ok(url::Host::Domain(ascii)) => ascii,
+            _ => return Err(ErrorCode::InvalidUrl),
+        }
+    };
+    let encode = |s: &str| {
+        s.chars()
+            .map(|c| match c {
+                c if c.is_ascii() => c.to_string(),
+                c => {
+                    let mut buf = [0; 4];
+                    c.encode_utf8(&mut buf)
+                        .bytes()
+                        .map(|b| format!("%{b:02X}"))
+                        .collect()
+                }
+            })
+            .collect::<String>()
+    };
+    Ok(format!(
+        "{scheme}://{}{host}{port}{}",
+        encode(login),
+        encode(tail)
+    ))
+}
+
 /// `InvalidUrl` unless `referrer` is an `http` or `https` URL with a host and without a login,
 /// spaces or control characters, within [`MAX_URL_BYTES`].
 pub fn check_referrer(referrer: &str) -> Result<(), ErrorCode> {
@@ -346,5 +405,63 @@ mod tests {
             !shown.contains("alice") && !shown.contains("hunter2"),
             "{shown}"
         );
+    }
+
+    #[test]
+    fn a_link_with_a_space_or_a_control_character_is_refused() {
+        for link in [
+            "https://example.com/a b.zip",
+            "https://example.com/a.zip\n",
+            "https://example.com/\u{7}a.zip",
+            "https://exa mple.com/a.zip",
+            "https://example.com/a.zip\t",
+        ] {
+            assert_eq!(normalize_link(link), Err(ErrorCode::InvalidUrl), "{link:?}");
+        }
+    }
+
+    #[test]
+    fn an_ascii_link_is_kept_as_it_is() {
+        for link in [
+            "https://example.com/a%20b.zip?x=1#top",
+            "ftp://user@files.example.com:2121/pub/a.zip",
+            "sftp://[::1]:22/home/a.zip",
+            "HTTPS://Example.COM/A.zip",
+        ] {
+            assert_eq!(normalize_link(link).as_deref(), Ok(link));
+        }
+    }
+
+    #[test]
+    fn an_international_domain_name_becomes_its_ascii_form() {
+        assert_eq!(
+            normalize_link("https://b\u{fc}cher.example/a.zip").as_deref(),
+            Ok("https://xn--bcher-kva.example/a.zip")
+        );
+        // The port, the path and the case of the rest are kept.
+        assert_eq!(
+            normalize_link("http://B\u{dc}CHER.example:8080/Dir/a.zip?q=1").as_deref(),
+            Ok("http://xn--bcher-kva.example:8080/Dir/a.zip?q=1")
+        );
+        // A look-alike name, with a Cyrillic "a", shows as what it is.
+        assert_eq!(
+            normalize_link("https://ex\u{430}mple.com/a.zip").as_deref(),
+            Ok("https://xn--exmple-4nf.com/a.zip")
+        );
+    }
+
+    #[test]
+    fn other_characters_outside_ascii_are_percent_encoded() {
+        assert_eq!(
+            normalize_link("https://example.com/na\u{ef}ve/\u{fc}.zip?name=\u{e9}").as_deref(),
+            Ok("https://example.com/na%C3%AFve/%C3%BC.zip?name=%C3%A9")
+        );
+    }
+
+    #[test]
+    fn a_host_that_isnt_a_valid_domain_name_is_refused() {
+        for link in ["https://exa\u{200b}%.com/a.zip", "nothing-here-\u{fc}b"] {
+            assert_eq!(normalize_link(link), Err(ErrorCode::InvalidUrl), "{link:?}");
+        }
     }
 }
