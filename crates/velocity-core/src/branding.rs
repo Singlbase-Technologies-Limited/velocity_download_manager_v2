@@ -133,7 +133,10 @@ mod tests {
     fn the_extension_has_a_chrome_id_and_key() {
         let b = branding();
         assert_eq!(b.chrome_extension_ids.len(), 1);
-        assert!(b.chrome_extension_key.starts_with("MII"), "a base64 DER key");
+        assert!(
+            b.chrome_extension_key.starts_with("MII"),
+            "a base64 DER key"
+        );
         assert_ne!(b.extension_name, b.release_extension_name);
     }
 
