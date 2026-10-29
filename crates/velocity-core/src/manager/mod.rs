@@ -1067,6 +1067,7 @@ mod batch;
 mod categories;
 mod finished;
 mod opening;
+mod history;
 mod options;
 mod persist;
 mod recovery;

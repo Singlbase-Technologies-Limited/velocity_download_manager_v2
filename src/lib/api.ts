@@ -11,9 +11,11 @@ import {
   DestinationCheckSchema,
   DownloadsSnapshotSchema,
   parseAppInfo,
+  HistoryPageSchema,
   KeptFileSchema,
   PeerStatusSchema,
   ShellSettingsSchema,
+  StorageSettingsSchema,
   TorrentDetailsSchema,
   TorrentPreviewSchema,
   TrackerStatusSchema,
@@ -21,6 +23,8 @@ import {
   type AppearanceSettings,
   type Category,
   type DownloadLogin,
+  type HistoryQuery,
+  type StorageSettings,
   type MoveDirection,
 } from '../contract';
 import { ApiError, ERROR_MESSAGES, toApiError } from './errors';
@@ -121,6 +125,13 @@ export const api = {
   setUploadLimit: (id: string, kib: number) => call('set_torrent_upload_limit', { id, kib }, nothing),
   /** Downloads exactly `files`; with `deleteDropped`, deletes the torrent's own files no longer chosen. Answers the files kept. */
   chooseTorrentFiles: (id: string, files: number[], deleteDropped: boolean) => call('choose_torrent_files', { id, files, deleteDropped }, z.array(KeptFileSchema)),
+  // The history (#32).
+  history: (query: HistoryQuery) => call('get_history', { query }, HistoryPageSchema),
+  /** How many entries left the history. */
+  clearHistory: () => call('clear_history', undefined, z.number().int().nonnegative()),
+  deleteHistoryEntries: (ids: string[]) => call('delete_history_entries', { ids }, nothing),
+  storageSettings: () => call('get_storage_settings', undefined, StorageSettingsSchema),
+  setStorageSettings: (settings: StorageSettings) => call('set_storage_settings', { settings }, StorageSettingsSchema),
   /** Gives a download that came back without its login, headers or SSH key those again; then resume or retry it. */
   setDownloadLogin: (id: string, login: DownloadLogin) => call('set_download_login', { id, login }, nothing),
 };

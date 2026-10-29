@@ -46,6 +46,19 @@ How the queue applies them is in [ENGINE_CONTRACT.md](ENGINE_CONTRACT.md#the-man
 - **Before any are saved,** the defaults apply.
 - **Saved ones that can't be read,** or that fail their checks, are a `DATABASE` error and are left as they were, never replaced by the defaults.
 
+## History
+
+`StorageSettings` in [`crates/velocity-core/src/history.rs`](../crates/velocity-core/src/history.rs) (#32), V1's `storage` settings, saved as the settings document's `storage` section. `set_storage_settings` saves them and applies them at once; the app also applies them when it starts. #30 puts them on the Settings screen.
+
+| Setting | Default | Bounds |
+|---|---|---|
+| `historyRetentionDays` | 90 | 0 to 3650; 0 keeps entries forever |
+| `maxHistoryEntries` | 10,000 | 100 to 1,000,000 |
+
+- **What they forget:** entries no longer in the download list that finished more than the retention ago, then the oldest beyond the most kept. An entry still in the list is never forgotten.
+- **Never files:** forgetting an entry deletes its record, with its checkpoint and torrent row, and never a file on disk.
+- **A failure to apply them** at start is the snapshot's `storageError`, which the window shows; the app runs on.
+
 ## The window
 
 V1's `general`, `notifications` and `appearance` settings and its first-run flag, in [`crates/velocity-core/src/app_settings.rs`](../crates/velocity-core/src/app_settings.rs) (#29). Each is a section of the settings document. #30 puts them on the Settings screen. What the window does with them is in [UI_ARCHITECTURE.md](UI_ARCHITECTURE.md).

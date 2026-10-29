@@ -63,7 +63,7 @@ fn wire_name(value: &impl Serialize) -> Result<String, DatabaseError> {
 }
 
 /// A domain value from its stored name, or the name itself when this build doesn't know it.
-fn from_wire_name<T: DeserializeOwned>(raw: String) -> Stored<T> {
+pub(super) fn from_wire_name<T: DeserializeOwned>(raw: String) -> Stored<T> {
     match serde_json::from_value(serde_json::Value::String(raw.clone())) {
         Ok(v) => Stored::Known(v),
         Err(_) => Stored::Unknown(raw),

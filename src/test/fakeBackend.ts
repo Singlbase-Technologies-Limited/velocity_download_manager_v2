@@ -14,6 +14,8 @@ import {
   type Category,
   type DestinationCheck,
   type DownloadsSnapshot,
+  type HistoryPage,
+  type HistoryQuery,
   type ErrorCode,
   type PeerStatus,
   type ShellSettings,
@@ -45,6 +47,8 @@ export interface FakeState {
   batch: (cmd: string, ids: string[]) => BatchResult;
   /** Commands that wait for this promise before they answer, to see the window while one is sent. */
   hold: Partial<Record<string, Promise<void>>>;
+  /** What `get_history` answers for a query (#32). */
+  history: (query: HistoryQuery) => HistoryPage;
   /** Commands that fail, with the code they fail with. */
   failures: Partial<Record<string, ErrorCode>>;
   /** Downloads whose file is a program: opening one needs `allowProgram` (#61). */
@@ -106,6 +110,7 @@ export function installFakeBackend(over: Partial<FakeState> = {}): FakeState {
       [...request.links, ...request.torrentFiles].map((source, i) => ({ source, outcome: { kind: 'added', id: `d-${String(100 + i)}` } })),
     batch: (_cmd, ids) => ({ done: ids, failed: [], kept: [] }),
     hold: {},
+    history: () => ({ entries: [], total: 0 }),
     failures: {},
     programs: [],
     preview: () => {
@@ -210,6 +215,12 @@ export function installFakeBackend(over: Partial<FakeState> = {}): FakeState {
           return null;
         case 'clear_completed':
           return 0;
+        case 'get_history':
+          return state.history(args.query as HistoryQuery);
+        case 'clear_history':
+          return 2;
+        case 'delete_history_entries':
+          return null;
         default:
           throw new Error(`the fake backend has no command ${cmd}`);
       }

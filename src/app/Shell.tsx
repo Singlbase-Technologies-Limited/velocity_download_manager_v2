@@ -8,6 +8,7 @@ import { HostKeyPrompt } from '../features/add/HostKeyPrompt';
 import { useAddEntryPoints } from '../features/add/useAddEntryPoints';
 import { DownloadsView } from '../features/downloads/DownloadsView';
 import { ChooseFilesDialog } from '../features/torrents/ChooseFilesDialog';
+import { HistoryView } from '../features/history/HistoryView';
 import { commitSidebarWidth, LAYOUT, resolveLayout } from '../layout/layoutLogic';
 import { ShellLayoutContext, useLayoutPersistence, useViewportWidth, type ShellLayout } from '../layout/useLayout';
 import { api } from '../lib/api';
@@ -61,7 +62,7 @@ export function Shell({ app, appearance }: { app: AppInfo; appearance: Appearanc
   });
   const shellLayout = useMemo<ShellLayout>(() => ({ resolved, previewDetails: (w) => writeVar('--details-w', w) }), [resolved, writeVar]);
 
-  const content = useMemo(() => (view === 'categories' ? <CategoriesView /> : <DownloadsView view={view} />), [view]);
+  const content = useMemo(() => (view === 'categories' ? <CategoriesView /> : view === 'history' ? <HistoryView /> : <DownloadsView view={view} />), [view]);
   const sidebar = resolved.sidebar;
   const rail = sidebar.mode === 'rail';
 

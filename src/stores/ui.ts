@@ -3,7 +3,7 @@ import { DEFAULT_LAYOUT, type LayoutPrefs } from '../layout/layoutLogic';
 import type { ListView } from '../downloads/views';
 
 /** What the main area shows: a list of downloads, or a screen. */
-export type View = ListView | 'categories';
+export type View = ListView | 'categories' | 'history';
 
 /** What the Add dialog opens with (#60): pasted or dropped input, or what the browser sent (#64, #65). */
 export interface AddPrefill {
