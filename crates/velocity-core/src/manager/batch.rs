@@ -50,22 +50,27 @@ impl Manager {
         let mut kept = Vec::new();
         let mut result = self.batch(ids, |m, id| {
             for (path, why) in m.remove(id, delete_files)? {
-                let (reason, code) = match why {
-                    Kept::NotPlain => (KeptReason::NotPlain, None),
-                    Kept::TooLarge => (KeptReason::TooLarge, None),
-                    Kept::BehindLink => (KeptReason::BehindLink, None),
-                    Kept::NotEmpty => (KeptReason::NotEmpty, None),
-                    Kept::Failed(code) => (KeptReason::Failed, Some(code)),
-                };
-                kept.push(KeptFile {
-                    path: path.to_string_lossy().into_owned(),
-                    reason,
-                    code,
-                });
+                kept.push(kept_file(&path, why));
             }
             Ok(())
         })?;
         result.kept = kept;
         Ok(result)
+    }
+}
+
+/// A file left in place, as the UI is told it.
+pub(super) fn kept_file(path: &std::path::Path, why: Kept) -> KeptFile {
+    let (reason, code) = match why {
+        Kept::NotPlain => (KeptReason::NotPlain, None),
+        Kept::TooLarge => (KeptReason::TooLarge, None),
+        Kept::BehindLink => (KeptReason::BehindLink, None),
+        Kept::NotEmpty => (KeptReason::NotEmpty, None),
+        Kept::Failed(code) => (KeptReason::Failed, Some(code)),
+    };
+    KeptFile {
+        path: path.to_string_lossy().into_owned(),
+        reason,
+        code,
     }
 }

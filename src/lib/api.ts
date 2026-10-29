@@ -14,8 +14,13 @@ import {
   DiagnosticReportSchema,
   EngineHealthSchema,
   HistoryPageSchema,
+  KeptFileSchema,
+  PeerStatusSchema,
   ShellSettingsSchema,
   StorageSettingsSchema,
+  TorrentDetailsSchema,
+  TorrentPreviewSchema,
+  TrackerStatusSchema,
   type AddRequest,
   type AppearanceSettings,
   type Category,
@@ -115,6 +120,27 @@ export const api = {
   deleteHistoryEntries: (ids: string[]) => call('delete_history_entries', { ids }, nothing),
   storageSettings: () => call('get_storage_settings', undefined, StorageSettingsSchema),
   setStorageSettings: (settings: StorageSettings) => call('set_storage_settings', { settings }, StorageSettingsSchema),
+  // The details panel's (#61).
+  /** Sets a download's own speed limit in KiB/s; 0 for none. */
+  setSpeedLimit: (id: string, kib: number) => call('set_download_speed_limit', { id, kib }, nothing),
+  /** Asks for `connections`; answers how many apply. */
+  setConnections: (id: string, connections: number) => call('set_download_connections', { id, connections }, z.number().int().positive()),
+  setCategory: (id: string, categoryId: string | null) => call('set_download_category', { id, categoryId }, nothing),
+  /** Opens the finished file; `CONFIRMATION_REQUIRED` for a program until `allowProgram`. */
+  openFile: (id: string, allowProgram: boolean) => call('open_download_file', { id, allowProgram }, nothing),
+  /** Shows the file in its folder, or the folder when the file is gone. */
+  openFolder: (id: string) => call('open_download_folder', { id }, nothing),
+  // Torrents (#63).
+  /** What adding the `.torrent` file at `path` would add. */
+  previewTorrent: (path: string) => call('preview_torrent_file', { path }, TorrentPreviewSchema),
+  torrentDetails: (id: string) => call('get_torrent_details', { id }, TorrentDetailsSchema),
+  trackers: (id: string) => call('get_torrent_trackers', { id }, z.array(TrackerStatusSchema)),
+  peers: (id: string) => call('get_torrent_peers', { id }, z.array(PeerStatusSchema)),
+  reannounce: (id: string) => call('reannounce_torrent', { id }, nothing),
+  /** KiB/s; 0 for no limit. */
+  setUploadLimit: (id: string, kib: number) => call('set_torrent_upload_limit', { id, kib }, nothing),
+  /** Downloads exactly `files`; with `deleteDropped`, deletes the torrent's own files no longer chosen. Answers the files kept. */
+  chooseTorrentFiles: (id: string, files: number[], deleteDropped: boolean) => call('choose_torrent_files', { id, files, deleteDropped }, z.array(KeptFileSchema)),
   /** Gives a download that came back without its login, headers or SSH key those again; then resume or retry it. */
   setDownloadLogin: (id: string, login: DownloadLogin) => call('set_download_login', { id, login }, nothing),
 };

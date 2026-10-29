@@ -34,7 +34,12 @@ import {
   HistoryPageSchema,
   HistoryQuerySchema,
   StorageSettingsSchema,
+  PeerStatusSchema,
+  TorrentDetailsSchema,
+  TorrentPreviewSchema,
+  TrackerStatusSchema,
 } from './contract';
+import { z } from 'zod';
 
 // Fixtures are generated from the Rust types (crates/velocity-core/src/domain.rs):
 // VELOCITY_UPDATE_FIXTURES=1 cargo test -p velocity-core contract
@@ -120,6 +125,14 @@ describe('contract fixtures generated from Rust', () => {
     expect(HistoryPageSchema.parse(f.page)).toEqual(f.page);
     expect(HistoryQuerySchema.parse(f.query)).toEqual(f.query);
     expect(StorageSettingsSchema.parse(f.storage)).toEqual({ historyRetentionDays: 90, maxHistoryEntries: 10_000 });
+  });
+
+  it('reads a torrent’s details, a .torrent preview, its trackers and its peers (#63)', () => {
+    const f = fixture('torrent.json') as Record<string, unknown>;
+    expect(TorrentDetailsSchema.parse(f.details)).toEqual(f.details);
+    expect(TorrentPreviewSchema.parse(f.preview)).toEqual(f.preview);
+    expect(z.array(TrackerStatusSchema).parse(f.trackers)).toEqual(f.trackers);
+    expect(z.array(PeerStatusSchema).parse(f.peers)).toEqual(f.peers);
   });
 
   it('the list columns: exactly the ids the schema knows, in order, the defaults and the width bounds (#59)', () => {

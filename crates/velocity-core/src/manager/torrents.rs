@@ -23,7 +23,9 @@ use std::time::{Duration, Instant};
 
 use super::{AddOptions, Download, Job, Manager};
 use crate::database::{Engine, NewDownload, StoredOptions, TorrentOptions, TorrentOrigin};
-use crate::domain::{DownloadKind, DownloadRecord, DownloadStatus, ErrorCode, Progress};
+use crate::domain::{
+    DownloadKind, DownloadRecord, DownloadStatus, ErrorCode, Progress, TorrentActivity,
+};
 use crate::seeding::SeedPolicy;
 use crate::torrent::{
     check_tracker, parse_magnet, parse_metadata, strip_trackers, MagnetInfo, TorrentMeta,
@@ -192,6 +194,9 @@ impl Manager {
                 retry_at_ms: None,
                 started_at_ms: None,
                 average_speed_bps: None,
+                speed_limit_bps: None,
+                requested_connections: None,
+                torrent: None,
             },
             job: Job::Torrent(Box::new(job)),
             running: false,
@@ -202,6 +207,7 @@ impl Manager {
             activity: super::activity::Tracker::default(),
         };
         download.record.status = download.waiting_status();
+        download.show_settings();
         let new = NewDownload {
             id: id.clone(),
             engine: Engine::Libtorrent,
@@ -277,6 +283,10 @@ impl Manager {
             self.torrents.set_limits(torrent, upload, download)?;
         }
         self.torrent_job_mut(id)?.options.download_limit = download;
+        self.downloads
+            .get_mut(id)
+            .expect("a torrent job's download")
+            .show_settings();
         self.store_torrent_options(id);
         Ok(())
     }
@@ -332,14 +342,14 @@ impl Manager {
         }
     }
 
-    fn torrent_job_mut(&mut self, id: &str) -> Result<&mut TorrentJob, ErrorCode> {
+    pub(super) fn torrent_job_mut(&mut self, id: &str) -> Result<&mut TorrentJob, ErrorCode> {
         match &mut self.downloads.get_mut(id).ok_or(ErrorCode::NotFound)?.job {
             Job::Torrent(job) => Ok(job),
             Job::Direct(_) => Err(ErrorCode::Unsupported),
         }
     }
 
-    fn store_torrent_options(&mut self, id: &str) {
+    pub(super) fn store_torrent_options(&mut self, id: &str) {
         let Ok(job) = self.torrent_job(id) else {
             return;
         };
@@ -500,9 +510,13 @@ impl Manager {
         }
         let d = self.downloads.get_mut(id).expect("known");
         let before = d.record.clone();
-        // The queue pauses torrents it holds back; they show as waiting.
+        // The queue pauses torrents it holds back; they show as waiting. A running status sent
+        // before the helper paused one the user paused doesn't undo that (#63, V1 #40), as for
+        // direct downloads (#59).
         let status = if snapshot.status == DownloadStatus::Paused && !d.running {
             d.waiting_status()
+        } else if !d.running && super::is_running_status(snapshot.status) {
+            d.record.status
         } else {
             snapshot.status
         };
@@ -524,6 +538,13 @@ impl Manager {
         record.status = status;
         record.progress = snapshot.progress.clone();
         record.error = snapshot.error.clone();
+        record.torrent = Some(TorrentActivity {
+            peers: snapshot.peers,
+            seeds: snapshot.seeds,
+            uploaded_bytes: snapshot.uploaded_bytes,
+            seeding_secs: snapshot.seeding_secs,
+            seed_queued: snapshot.seed_queued,
+        });
         if snapshot.name.is_some() {
             record.file_name = snapshot.name.clone();
         }

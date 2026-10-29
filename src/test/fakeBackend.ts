@@ -18,7 +18,11 @@ import {
   type HistoryPage,
   type HistoryQuery,
   type ErrorCode,
+  type PeerStatus,
   type ShellSettings,
+  type TorrentDetails,
+  type TorrentPreview,
+  type TrackerStatus,
 } from '../contract';
 
 export const fixture = (name: string): unknown =>
@@ -51,6 +55,14 @@ export interface FakeState {
   history: (query: HistoryQuery) => HistoryPage;
   /** Commands that fail, with the code they fail with. */
   failures: Partial<Record<string, ErrorCode>>;
+  /** Downloads whose file is a program: opening one needs `allowProgram` (#61). */
+  programs: string[];
+  /** What `preview_torrent_file` answers for a path (#63). */
+  preview: (path: string) => TorrentPreview;
+  /** What `get_torrent_details`, `get_torrent_trackers` and `get_torrent_peers` answer for an id (#63). */
+  torrentDetails: (id: string) => TorrentDetails;
+  trackers: (id: string) => TrackerStatus[];
+  peers: (id: string) => PeerStatus[];
   calls: { cmd: string; args: Record<string, unknown> }[];
 }
 
@@ -106,6 +118,14 @@ export function installFakeBackend(over: Partial<FakeState> = {}): FakeState {
     exportedTo: null,
     history: () => ({ entries: [], total: 0 }),
     failures: {},
+    programs: [],
+    preview: () => {
+      const sample = fixture('torrent.json') as { preview: TorrentPreview };
+      return { ...sample.preview, duplicate: null };
+    },
+    torrentDetails: () => (fixture('torrent.json') as { details: TorrentDetails }).details,
+    trackers: () => [],
+    peers: () => [],
     calls: [],
     ...over,
   };
@@ -176,6 +196,28 @@ export function installFakeBackend(over: Partial<FakeState> = {}): FakeState {
         case 'move_download':
         case 'set_torrent_seeding':
         case 'set_download_login':
+        case 'set_download_speed_limit':
+        case 'set_download_category':
+        case 'open_download_folder':
+          return null;
+        case 'set_download_connections':
+          return args.connections;
+        case 'preview_torrent_file':
+          return state.preview(args.path as string);
+        case 'get_torrent_details':
+          return state.torrentDetails(args.id as string);
+        case 'get_torrent_trackers':
+          return state.trackers(args.id as string);
+        case 'get_torrent_peers':
+          return state.peers(args.id as string);
+        case 'choose_torrent_files':
+          return [];
+        case 'reannounce_torrent':
+        case 'set_torrent_upload_limit':
+          return null;
+        case 'open_download_file':
+          // eslint-disable-next-line @typescript-eslint/only-throw-error
+          if (state.programs.includes(args.id as string) && args.allowProgram !== true) throw 'CONFIRMATION_REQUIRED';
           return null;
         case 'clear_completed':
           return 0;

@@ -8,8 +8,9 @@ import { HostKeyPrompt } from '../features/add/HostKeyPrompt';
 import { useAddEntryPoints } from '../features/add/useAddEntryPoints';
 import { DownloadsView } from '../features/downloads/DownloadsView';
 import { HistoryView } from '../features/history/HistoryView';
+import { ChooseFilesDialog } from '../features/torrents/ChooseFilesDialog';
 import { commitSidebarWidth, LAYOUT, resolveLayout } from '../layout/layoutLogic';
-import { useLayoutPersistence, useViewportWidth } from '../layout/useLayout';
+import { ShellLayoutContext, useLayoutPersistence, useViewportWidth, type ShellLayout } from '../layout/useLayout';
 import { api } from '../lib/api';
 import { onQuitRequested } from '../lib/events';
 import { useUiStore } from '../stores/ui';
@@ -47,15 +48,19 @@ export function Shell({ app, appearance }: { app: AppInfo; appearance: Appearanc
   const layout = useUiStore((s) => s.layout);
   const setLayout = useUiStore((s) => s.setLayout);
   const viewport = useViewportWidth();
-  // The details panel comes with the download list (#59).
-  const resolved = useMemo(() => resolveLayout(layout, viewport, false), [layout, viewport]);
+  // The details panel belongs to the download lists (#61).
+  const detailsOpen = layout.detailsVisible && view !== 'categories';
+  const resolved = useMemo(() => resolveLayout(layout, viewport, detailsOpen), [layout, viewport, detailsOpen]);
   const rootRef = useRef<HTMLDivElement>(null);
 
-  // The navigation's width lives in a CSS variable, so a drag updates it without a React render.
-  const writeWidth = useCallback((width: number) => rootRef.current?.style.setProperty('--sidebar-w', `${String(width)}px`), []);
+  // The panels' widths live in CSS variables, so a drag updates them without a React render.
+  const writeVar = useCallback((name: '--sidebar-w' | '--details-w', width: number) => rootRef.current?.style.setProperty(name, `${String(width)}px`), []);
+  const writeWidth = useCallback((width: number) => writeVar('--sidebar-w', width), [writeVar]);
   useLayoutEffect(() => {
     writeWidth(resolved.sidebar.width);
+    writeVar('--details-w', resolved.details.width);
   });
+  const shellLayout = useMemo<ShellLayout>(() => ({ resolved, previewDetails: (w) => writeVar('--details-w', w) }), [resolved, writeVar]);
 
   const content = useMemo(() => (view === 'categories' ? <CategoriesView /> : view === 'history' ? <HistoryView /> : <DownloadsView view={view} />), [view]);
   const sidebar = resolved.sidebar;
@@ -85,11 +90,12 @@ export function Shell({ app, appearance }: { app: AppInfo; appearance: Appearanc
           </>
         ) : null}
         <main className="flex min-w-0 flex-1 flex-col overflow-hidden bg-bg" aria-label="Main content">
-          {content}
+          <ShellLayoutContext.Provider value={shellLayout}>{content}</ShellLayoutContext.Provider>
         </main>
       </div>
       <StatusBar />
       <AddDownloadDialog />
+      <ChooseFilesDialog />
       <HostKeyPrompt />
     </div>
   );

@@ -32,7 +32,8 @@ use crate::request::{
     check_credentials, check_headers, check_referrer, split_login, MAX_URL_BYTES,
 };
 use crate::seeding::SeedPolicy;
-use crate::torrent::{parse_magnet, parse_torrent, MAX_TORRENT_BYTES};
+use crate::torrent::{parse_magnet, parse_torrent, TorrentMeta, MAX_TORRENT_BYTES};
+use crate::torrent_engine::MAX_RATE_LIMIT;
 use crate::transfer::{Checksum, Credentials, Header, Limits, SshKey, TransferSpec};
 
 /// The most links and `.torrent` files one request adds (V1's `MAX_SOURCES`).
@@ -40,7 +41,7 @@ pub const MAX_ADD: usize = 500;
 
 /// What the Add dialog asks for: the links and `.torrent` files, and the choices that apply to
 /// each of them. Secrets in it (the login, the headers, the key's passphrase) stay in memory.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AddRequest {
     /// Direct links (`http`, `https`, `ftp`, `ftps`, `sftp`) and magnet links, in order.
@@ -73,6 +74,23 @@ pub struct AddRequest {
     pub require_encryption: bool,
     /// Torrents wait in Choosing files until the files are chosen.
     pub choose_files: bool,
+    /// The files chosen for some of the `.torrent` files, by index (#63); the others get every
+    /// file.
+    pub file_choices: Vec<FileChoice>,
+    /// When the torrents stop seeding (#63); `None` for the default.
+    pub seeding: Option<SeedPolicy>,
+    /// KiB/s each torrent uploads at most (#63); 0 for no limit.
+    pub upload_limit_kib: u64,
+}
+
+/// The files chosen for one `.torrent` file of an [`AddRequest`] (#63).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct FileChoice {
+    /// One of the request's `torrent_files`, as given.
+    pub torrent_file: String,
+    /// The files, by [`crate::torrent::TorrentFile::index`]; never empty.
+    pub files: Vec<u32>,
 }
 
 /// What adding one link or `.torrent` file did.
@@ -154,6 +172,12 @@ impl AddRequest {
             }),
             require_encryption: true,
             choose_files: true,
+            file_choices: vec![FileChoice {
+                torrent_file: "/home/user/album.torrent".to_owned(),
+                files: vec![1, 3],
+            }],
+            seeding: Some(SeedPolicy::Ratio { ratio: 2.0 }),
+            upload_limit_kib: 64,
         }
     }
 }
@@ -217,19 +241,24 @@ struct NewTorrent {
     hashes: Option<(Option<String>, Option<String>)>,
     /// Its hashes as duplicate keys.
     keys: Vec<String>,
+    /// The files the user chose from its file (#63); `None` for every file.
+    files: Option<Vec<u32>>,
 }
 
 /// What every download of a request shares, checked once.
 struct Shared {
     checksum: Option<Checksum>,
     limits: Limits,
+    seeding: SeedPolicy,
+    /// Bytes per second; 0 for no limit.
+    upload_limit: u64,
 }
 
 /// The downloads added before, by link and by info hash.
 #[derive(Default)]
-struct Known {
+pub(super) struct Known {
     links: HashMap<String, Duplicate>,
-    hashes: HashMap<String, Duplicate>,
+    pub(super) hashes: HashMap<String, Duplicate>,
 }
 
 impl Known {
@@ -294,7 +323,7 @@ fn is_magnet(link: &str) -> bool {
 }
 
 /// A torrent's hashes as duplicate keys.
-fn hash_keys(v1: Option<&String>, v2: Option<&String>) -> Vec<String> {
+pub(super) fn hash_keys(v1: Option<&String>, v2: Option<&String>) -> Vec<String> {
     v1.into_iter().chain(v2).cloned().collect()
 }
 
@@ -352,6 +381,14 @@ impl Manager {
         if let Some(credentials) = &request.credentials {
             check_credentials(credentials)?;
         }
+        check_file_choices(request)?;
+        let seeding = request.seeding.unwrap_or_default();
+        seeding.check()?;
+        let upload_limit = request
+            .upload_limit_kib
+            .checked_mul(1024)
+            .filter(|&bps| bps <= MAX_RATE_LIMIT)
+            .ok_or(ErrorCode::InvalidInput)?;
         let shared = Shared {
             checksum: request
                 .checksum
@@ -359,6 +396,8 @@ impl Manager {
                 .map(Checksum::normalized)
                 .transpose()?,
             limits: Limits::from_kib(request.speed_limit_kib)?,
+            seeding,
+            upload_limit,
         };
         if request.create_directory {
             let directory = request.directory.as_deref().map(str::trim);
@@ -380,8 +419,20 @@ impl Manager {
             });
         }
         for file in &request.torrent_files {
+            let files = request
+                .file_choices
+                .iter()
+                .find(|c| c.torrent_file == *file)
+                .map(|c| c.files.clone());
             let outcome = self
-                .add_torrent_file(Path::new(file.trim()), request, &shared, &mut known, now_ms)
+                .add_torrent_file(
+                    Path::new(file.trim()),
+                    files,
+                    request,
+                    &shared,
+                    &mut known,
+                    now_ms,
+                )
                 .unwrap_or_else(|code| AddOutcome::Failed { code });
             results.push(AddResult {
                 source: file.clone(),
@@ -486,6 +537,7 @@ impl Manager {
             // The hashes are in the stored link.
             hashes: None,
             keys: hash_keys(magnet.info_hash.as_ref(), magnet.info_hash_v2.as_ref()),
+            files: None,
         };
         self.add_new_torrent(torrent, request, shared, known, now_ms)
     }
@@ -493,28 +545,20 @@ impl Manager {
     fn add_torrent_file(
         &mut self,
         path: &Path,
+        files: Option<Vec<u32>>,
         request: &AddRequest,
         shared: &Shared,
         known: &mut Known,
         now_ms: u64,
     ) -> Result<AddOutcome, ErrorCode> {
-        if !path.is_absolute() {
-            return Err(ErrorCode::InvalidPath);
+        let meta = read_torrent_file(path)?;
+        // Only files the torrent has, and never only padding (the helper refuses the rest too).
+        if let Some(files) = &files {
+            let real = |i: &u32| meta.user_files().any(|f| f.index == *i);
+            if !files.iter().all(real) {
+                return Err(ErrorCode::InvalidInput);
+            }
         }
-        let meta = std::fs::symlink_metadata(path).map_err(|e| match e.kind() {
-            std::io::ErrorKind::NotFound => ErrorCode::NotFound,
-            std::io::ErrorKind::PermissionDenied => ErrorCode::PermissionDenied,
-            _ => ErrorCode::Io,
-        })?;
-        // Never read through a link (AGENTS.md, "File safety").
-        if is_link(&meta) || !meta.is_file() {
-            return Err(ErrorCode::InvalidPath);
-        }
-        if meta.len() > MAX_TORRENT_BYTES as u64 {
-            return Err(ErrorCode::InvalidInput);
-        }
-        let bytes = std::fs::read(path).map_err(|_| ErrorCode::Io)?;
-        let meta = parse_torrent(&bytes).map_err(|e| e.code())?;
         let torrent = NewTorrent {
             origin: TorrentOrigin::File {
                 path: path.to_path_buf(),
@@ -527,6 +571,7 @@ impl Manager {
             keys: hash_keys(meta.info_hash.as_ref(), meta.info_hash_v2.as_ref()),
             hashes: Some((meta.info_hash, meta.info_hash_v2)),
             name: Some(meta.name),
+            files,
         };
         self.add_new_torrent(torrent, request, shared, known, now_ms)
     }
@@ -560,10 +605,11 @@ impl Manager {
             trackers: self.fetched_trackers(&torrent.origin),
             origin: torrent.origin,
             directory: place.directory,
-            choose_files: request.choose_files,
-            files: None,
-            seeding: SeedPolicy::default(),
-            upload_limit: 0,
+            // A file choice made before adding is the choice: nothing waits to be chosen.
+            choose_files: request.choose_files && torrent.files.is_none(),
+            files: torrent.files,
+            seeding: shared.seeding,
+            upload_limit: shared.upload_limit,
             download_limit: shared.limits.max_download_bps.unwrap_or(0),
         };
         let options = Self::options(request, place.category_id);
@@ -585,7 +631,7 @@ impl Manager {
     }
 
     /// The downloads in the list or the history, by link and by info hash.
-    fn known_downloads(&self) -> Result<Known, ErrorCode> {
+    pub(super) fn known_downloads(&self) -> Result<Known, ErrorCode> {
         let mut known = Known::default();
         for stored in self.database.downloads().map_err(|e| e.code)? {
             if !stored.in_list && !stored.in_history {
@@ -734,4 +780,43 @@ impl ManagerService {
         results.extend(files);
         Ok(results)
     }
+}
+
+/// Reads and checks the `.torrent` file at `path`, an absolute path: never through a link, and at
+/// most [`MAX_TORRENT_BYTES`].
+pub(super) fn read_torrent_file(path: &Path) -> Result<TorrentMeta, ErrorCode> {
+    if !path.is_absolute() {
+        return Err(ErrorCode::InvalidPath);
+    }
+    let meta = std::fs::symlink_metadata(path).map_err(|e| match e.kind() {
+        std::io::ErrorKind::NotFound => ErrorCode::NotFound,
+        std::io::ErrorKind::PermissionDenied => ErrorCode::PermissionDenied,
+        _ => ErrorCode::Io,
+    })?;
+    // Never read through a link (AGENTS.md, "File safety").
+    if is_link(&meta) || !meta.is_file() {
+        return Err(ErrorCode::InvalidPath);
+    }
+    if meta.len() > MAX_TORRENT_BYTES as u64 {
+        return Err(ErrorCode::InvalidInput);
+    }
+    let bytes = std::fs::read(path).map_err(|_| ErrorCode::Io)?;
+    parse_torrent(&bytes).map_err(|e| e.code())
+}
+
+/// `InvalidInput` unless each file choice names one of the request's `.torrent` files, once, and
+/// chooses some files, each once.
+fn check_file_choices(request: &AddRequest) -> Result<(), ErrorCode> {
+    let mut named = std::collections::HashSet::new();
+    for choice in &request.file_choices {
+        let mut files = std::collections::HashSet::new();
+        let ok = request.torrent_files.contains(&choice.torrent_file)
+            && named.insert(choice.torrent_file.as_str())
+            && !choice.files.is_empty()
+            && choice.files.iter().all(|f| files.insert(*f));
+        if !ok {
+            return Err(ErrorCode::InvalidInput);
+        }
+    }
+    Ok(())
 }
