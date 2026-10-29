@@ -349,11 +349,40 @@ export const LayoutSettingsSchema = z.strictObject({
 });
 export type LayoutSettings = z.infer<typeof LayoutSettingsSchema>;
 
-/** How the window looks (#29). */
+/** A column of the download list (#59, V1's ids), in the order the column chooser lists them. */
+export const ColumnIdSchema = z.enum([
+  'name',
+  'size',
+  'downloaded',
+  'progress',
+  'speed',
+  'avgSpeed',
+  'eta',
+  'status',
+  'category',
+  'destination',
+  'added',
+  'started',
+  'completed',
+]);
+export type ColumnId = z.infer<typeof ColumnIdSchema>;
+
+/** The columns of a new install (V1's), as `ColumnId::DEFAULT` in `app_settings.rs`. */
+export const DEFAULT_COLUMNS: readonly ColumnId[] = ['name', 'size', 'progress', 'speed', 'eta', 'status', 'category', 'added'];
+
+/** Bounds for a column width the user set, in CSS pixels, as Rust checks them. */
+export const COLUMN_MIN_WIDTH = 48;
+export const COLUMN_MAX_WIDTH = 1200;
+
+/** How the window looks (#29), and the download list's columns (#59). */
 export const AppearanceSettingsSchema = z.strictObject({
   theme: ThemeSchema,
   density: DensitySchema,
   layout: LayoutSettingsSchema,
+  /** In display order; always with `name`, and each column once. */
+  visibleColumns: z.array(ColumnIdSchema).min(1),
+  /** Only the columns the user resized; the rest have their default width. */
+  columnWidths: z.partialRecord(ColumnIdSchema, z.number().int().min(COLUMN_MIN_WIDTH).max(COLUMN_MAX_WIDTH)),
 });
 export type AppearanceSettings = z.infer<typeof AppearanceSettingsSchema>;
 

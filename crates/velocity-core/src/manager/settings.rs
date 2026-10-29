@@ -168,7 +168,7 @@ mod tests {
             },
             ..AppearanceSettings::default()
         };
-        assert_eq!(m.set_appearance(&dark, T0), Ok(dark));
+        assert_eq!(m.set_appearance(&dark, T0), Ok(dark.clone()));
         assert_eq!(m.shell_settings().unwrap().appearance, dark);
         assert_eq!(m.settings_section::<GeneralSettings>(), Ok(quiet));
         let wide = AppearanceSettings {

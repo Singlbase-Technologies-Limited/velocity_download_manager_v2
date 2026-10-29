@@ -1024,6 +1024,20 @@ mod tests {
         }
 
         #[test]
+        fn contract_columns() {
+            use crate::app_settings::{ColumnId, COLUMN_MAX_WIDTH, COLUMN_MIN_WIDTH};
+            check(
+                "columns.json",
+                serde_json::json!({
+                    "all": ColumnId::ALL,
+                    "default": ColumnId::DEFAULT,
+                    "minWidth": COLUMN_MIN_WIDTH,
+                    "maxWidth": COLUMN_MAX_WIDTH,
+                }),
+            );
+        }
+
+        #[test]
         fn contract_app_info() {
             check(
                 "app-info.json",

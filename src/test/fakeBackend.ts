@@ -5,6 +5,7 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import {
   COMMAND_API_VERSION,
+  DEFAULT_COLUMNS,
   type AddRequest,
   type AddResult,
   type AppInfo,
@@ -47,6 +48,8 @@ export function firstRun(): ShellSettings {
       theme: 'system',
       density: 'compact',
       layout: { sidebarWidth: null, sidebarCollapsed: false, sidebarVisible: true, detailsWidth: null, detailsVisible: false },
+      visibleColumns: [...DEFAULT_COLUMNS],
+      columnWidths: {},
     },
     onboardingCompleted: false,
     defaultDirectory: '/home/user/Downloads',

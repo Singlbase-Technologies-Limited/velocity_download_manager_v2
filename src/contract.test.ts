@@ -9,6 +9,10 @@ import {
   CapabilitiesSchema,
   CategoryIconSchema,
   CategorySchema,
+  COLUMN_MAX_WIDTH,
+  COLUMN_MIN_WIDTH,
+  ColumnIdSchema,
+  DEFAULT_COLUMNS,
   DensitySchema,
   ConnectionLimitSchema,
   COMMAND_API_VERSION,
@@ -96,6 +100,15 @@ describe('contract fixtures generated from Rust', () => {
 
   it('shell settings (#29)', () => {
     expect(ShellSettingsSchema.parse(fixture('shell-settings.json'))).toEqual(fixture('shell-settings.json'));
+  });
+
+  it('the list columns: exactly the ids the schema knows, in order, the defaults and the width bounds (#59)', () => {
+    expect(fixture('columns.json')).toEqual({
+      all: ColumnIdSchema.options,
+      default: DEFAULT_COLUMNS,
+      minWidth: COLUMN_MIN_WIDTH,
+      maxWidth: COLUMN_MAX_WIDTH,
+    });
   });
 
   it('themes and densities: exactly the values the schemas know, in order (#29)', () => {
