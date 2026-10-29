@@ -3,11 +3,16 @@
 import { invoke, type InvokeArgs } from '@tauri-apps/api/core';
 import { z } from 'zod';
 import {
+  AddResultSchema,
   AppearanceSettingsSchema,
+  BatchResultSchema,
+  CapabilitiesSchema,
   CategorySchema,
+  DestinationCheckSchema,
   DownloadsSnapshotSchema,
   parseAppInfo,
   ShellSettingsSchema,
+  type AddRequest,
   type AppearanceSettings,
   type Category,
 } from '../contract';
@@ -61,4 +66,18 @@ export const api = {
   createCategory: (input: CategoryInput) => call('create_category', { input }, CategorySchema),
   updateCategory: (id: string, input: CategoryInput) => call('update_category', { id, input }, CategorySchema),
   deleteCategory: (id: string) => call('delete_category', { id }, nothing),
+  /** What adding `url` would do with these choices, each `null` for automatic (#31). */
+  checkDestination: (url: string, directory: string | null, fileName: string | null, categoryId: string | null) =>
+    call('check_destination', { url, directory, fileName, categoryId }, DestinationCheckSchema),
+  /** Adds the Add dialog's links and `.torrent` files: a result for each, in order (#60). */
+  addDownloads: (request: AddRequest) => call('add_downloads', { request }, z.array(AddResultSchema)),
+  /** What the transfer engine can do (#57). */
+  capabilities: () => call('get_capabilities', undefined, CapabilitiesSchema),
+  /** The system's chooser for `.torrent` files; empty when the user cancels. */
+  chooseTorrents: () => call('choose_torrents', undefined, z.array(z.string().min(1))),
+  /** The system's chooser for an SSH private key; `null` when the user cancels. */
+  chooseSshKey: () => call('choose_ssh_key', undefined, z.string().min(1).nullable()),
+  /** Trusts the SFTP host key the user confirmed (#53); the download is then retried. */
+  trustHostKey: (host: string, port: number, fingerprint: string) => call('trust_host_key', { host, port, fingerprint }, nothing),
+  retryDownloads: (ids: string[]) => call('retry_downloads', { ids }, BatchResultSchema),
 };

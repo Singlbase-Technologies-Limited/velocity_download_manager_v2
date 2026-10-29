@@ -22,7 +22,9 @@ They're defined once in Rust, in `crates/velocity-core/src/domain.rs` (plus `App
 | `EngineHealth` | `{ state: "running" }`, `{ state: "restarting", attempt }` or `{ state: "unavailable", code }` | The fixture `engine-health.json` lists one of each |
 | `Category` | A download category (#31): `id`, `name`, `color` (`#rrggbb`), `icon`, `extensions` (lowercase, without the dot), `directory` (its own folder, or `null`) and `builtin`. The fixture `category-icons.json` lists the icons | Since contract version 9. Created and edited as a `CategoryInput` (the same fields without `id` and `builtin`). The rules are in [FILE_NAMING.md](FILE_NAMING.md#categories) |
 | `DestinationCheck` | What adding a download would do (#31): `directory`, `directoryExists`, `automaticDirectory`, `categoryId`, `fileName` (`null` when the server will name it), `fileExists`, `partialDownloadExists` (V2's or V1's) and `suggestedName` (the first free name when it is taken) | Since contract version 9. Free disk space isn't reported yet |
-| `OnConflict` | What adding does when the name is taken (#31): `ask` or `rename`. The fixture `on-conflict.json` lists them | Never replace (PO decision on #31). For #60's Add command |
+| `OnConflict` | What adding does when the name is taken (#31): `ask` or `rename`. The fixture `on-conflict.json` lists them | Never replace (PO decision on #31). Used by `add_downloads` |
+| `AddRequest` | What the Add dialog asks for (#60): `links` (direct and magnet links, and links to `.torrent` files), `torrentFiles` (absolute paths), `directory`, `fileName` (one direct link only), `categoryId` (each `null` for automatic), `createDirectory`, `onConflict`, `allowDuplicate` ("Add anyway"), `startPaused`, `connections` (`null` for the performance profile's), `speedLimitKib` (0 for none), `headers`, `referrer`, `credentials` (`{ userName, password }`), `sshKey` (`{ path, passphrase }`, for `sftp://` links), `checksum` (`{ algorithm, hex }`), `requireEncryption` (for `ftp://` links) and `chooseFiles` (torrents wait in Choosing files) | Since contract version 11. The fixture `add-request.json` sets every field. The login, headers and passphrase stay in memory |
+| `AddResult` | `{ source, outcome }` for each link and `.torrent` file, in the request's order. `outcome.kind` is `added` (`id`), `conflict` (`check`, a `DestinationCheck`), `duplicate` (`duplicate`: `existingId`, `name`, `status`, `inList`, `canAddAnyway`), `failed` (`code`) or `notFetched` (`error`, a `TransferError`: a `.torrent` link couldn't be fetched) | Since contract version 11. The fixture `add-results.json` has one of each |
 | `ShellSettings` | What the window starts with (#29): `appearance` (`theme`, `density` and `layout`), `onboardingCompleted`, and `defaultDirectory`, the folder downloads go to now (`null` when the system names none). The fixtures `themes.json` and `densities.json` list the themes and densities | Since contract version 10. The settings are in [SETTINGS.md](SETTINGS.md#the-window). `set_appearance` takes and returns an `AppearanceSettings` |
 | `BatchResult` | What a command over several downloads did: `done` (ids), `failed` (`{ id, code }`), and `kept` (`{ path, reason, code }`, files a removal with files left in place). `reason` is `notPlain`, `tooLarge`, `behindLink`, `notEmpty` or `failed`; `code` is set only for `failed` | The fixture `kept-reasons.json` lists the reasons |
 
@@ -84,9 +86,31 @@ The commands of [`src-tauri/src/shell.rs`](../src-tauri/src/shell.rs) (#29). A c
 
 **The `quit-requested` event** carries `{ active }`: quitting would stop that many downloads, and `general.confirmExitWithActive` is on. The window asks the user, and calls `quit_app` only if they confirm.
 
+## Adding downloads
+
+The commands of [`src-tauri/src/adding.rs`](../src-tauri/src/adding.rs) (#60). A command that fails returns its `ErrorCode`. The rules are in the module docs of `velocity_core::manager::adding` and `torrent_links`.
+
+| Command | Arguments | Returns |
+|---|---|---|
+| `add_downloads` | `request`: an `AddRequest` | an `AddResult` for each link and file, in order. The whole request is refused with `INVALID_INPUT`, adding nothing, when it is empty, has more than 500 links and files, names a file for more than one, or has a header, referrer, login, checksum or speed limit outside its rules. `.torrent` links are fetched first, for up to 60 seconds |
+| `get_capabilities` | — | the transfer engine's `Capabilities`, so the dialog offers only what it can do |
+| `choose_torrents` | — | the `.torrent` files chosen with the system's chooser; empty when the user cancels |
+| `choose_ssh_key` | — | the SSH private key chosen with the system's chooser, starting in `~/.ssh`; `null` when the user cancels |
+
+**What each link gets:**
+- **Duplicates (PO decision on #60, V1's rules):** a direct link is the same download when its link is, as typed; a torrent when it shares an info hash, from a magnet link or a `.torrent` file. A torrent still in the list is `duplicate` with `canAddAnyway: false`, even with `allowDuplicate`, because two copies can't run. Anything else in the list or the history is `duplicate` until `allowDuplicate` is set.
+- **Taken names:** `conflict` with `onConflict: ask`, or the first free name with `rename`. A torrent's names come from its metadata, so a taken one is always `conflict`, with no `suggestedName`.
+- **The chosen folder** is created only with `createDirectory`, one level at a time and never through a link (`INVALID_PATH`).
+- **A torrent's category** comes from its largest file, or from a magnet link's display name.
+- **`.torrent` links** (an `http` or `https` link whose path ends in `.torrent`, as V1 told them apart) are fetched through the transfer engine into the app's `torrent-links` folder, at most 16 MiB, then added as the file. The file is kept without its trackers, which stay in memory as every torrent's do. A fetch that fails is `notFetched` with the server's or network's reason; one larger than 16 MiB, or that isn't a torrent, is `failed` with `INVALID_INPUT`.
+
+**The `torrents-dropped` event** carries `{ paths, ignored }`: the `.torrent` files dropped on the window (plain files, never through a link, at most 500), and how many other things were dropped. The window opens the Add dialog with the files, or says only `.torrent` files can be dropped.
+
+**The SFTP host key** has no command of its own here: an SFTP download stops before logging in with `error.hostKey` set (#53). The window then asks, and "Trust and continue" calls `trust_host_key` and then `retry_downloads`.
+
 ## How the two sides stay in step
 
-1. **Rust generates contract fixtures** in `tests/fixtures/contract/` from the real types: `statuses.json`, `error-codes.json`, `download-record.json`, `capabilities.json`, `app-info.json`, `downloads-snapshot.json`, `engine-health.json`, `batch-result.json`, `kept-reasons.json`, `category.json`, `category-icons.json`, `destination-check.json`, `on-conflict.json`, `shell-settings.json`, `themes.json` and `densities.json`. `naming-cases.json` holds the names `src/naming.ts` must give ([FILE_NAMING.md](FILE_NAMING.md#file-names)). A Rust test fails when a fixture no longer matches the types: "fixture … is out of date; regenerate it with `VELOCITY_UPDATE_FIXTURES=1`".
+1. **Rust generates contract fixtures** in `tests/fixtures/contract/` from the real types: `statuses.json`, `error-codes.json`, `download-record.json`, `capabilities.json`, `app-info.json`, `downloads-snapshot.json`, `engine-health.json`, `batch-result.json`, `kept-reasons.json`, `category.json`, `category-icons.json`, `destination-check.json`, `on-conflict.json`, `shell-settings.json`, `themes.json`, `densities.json`, `add-request.json` and `add-results.json`. `naming-cases.json` holds the names `src/naming.ts` must give ([FILE_NAMING.md](FILE_NAMING.md#file-names)). A Rust test fails when a fixture no longer matches the types: "fixture … is out of date; regenerate it with `VELOCITY_UPDATE_FIXTURES=1`".
 2. **Vitest validates the same fixtures** with the UI's strict schemas (`src/contract.test.ts`). An unknown field, a missing field, an unknown enum value or a wrong type fails the test.
 3. **So a change on one side alone always fails a test:**
    - Change Rust without regenerating, and the Rust contract test fails.

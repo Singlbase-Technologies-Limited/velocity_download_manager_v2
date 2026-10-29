@@ -134,7 +134,7 @@ Cancelling the fetch, or dropping it, ends the task at its next step.
 
 - **The store:** `<data folder>/known_hosts` (`Paths::known_hosts`), V2's own, never `~/.ssh/known_hosts`. It is unhashed, one OpenSSH line per host (`[host]:port key-type base64-key`), and compares the whole key. A host is shown by its key's SHA-256 fingerprint (`SHA256:…`, as OpenSSH prints it). Writes go to a temporary file, then a rename.
 - **Unknown key:** refused before the login. The download fails at once, permanently, and `TransferError.hostKey` carries the host, port and fingerprint for the user to check. The transport remembers that key.
-- **Trusting it:** `DirectTransfer::trust_host_key(host, port, fingerprint)` pins the key the transport saw with that fingerprint, and only that one: a fingerprint it didn't see is `NotFound`. The caller then retries the download. The app's `trust_host_key` command (#58) calls it through `Manager::trust_host_key`, and the dialog that shows the fingerprint is #60's.
+- **Trusting it:** `DirectTransfer::trust_host_key(host, port, fingerprint)` pins the key the transport saw with that fingerprint, and only that one: a fingerprint it didn't see is `NotFound`. The caller then retries the download. The app's `trust_host_key` command (#58) calls it through `Manager::trust_host_key`, and the window's host-key question (#60) shows the fingerprint and calls it.
 - **Changed key:** always refused, before the login. `hostKey.pinned` holds the pinned key's fingerprint. Such a key is never offered for trust, and `trust_host_key` never replaces a pinned key (`InvalidState`).
 - **Host certificates** are refused: V2 trusts no SSH certificate authority.
 

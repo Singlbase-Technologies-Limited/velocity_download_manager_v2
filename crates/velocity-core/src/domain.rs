@@ -857,6 +857,21 @@ mod tests {
             );
         }
 
+        /// The Add dialog's request and its results (#60).
+        #[test]
+        fn contract_add() {
+            use crate::manager::{AddRequest, AddResult};
+            let request = AddRequest::sample();
+            check("add-request.json", serde_json::to_value(&request).unwrap());
+            let back: AddRequest =
+                serde_json::from_value(serde_json::to_value(&request).unwrap()).unwrap();
+            assert_eq!(back, request);
+            check(
+                "add-results.json",
+                serde_json::to_value(AddResult::samples()).unwrap(),
+            );
+        }
+
         /// The names `src/naming.ts` must give, from the Rust rules (#31).
         #[test]
         fn contract_naming_cases() {

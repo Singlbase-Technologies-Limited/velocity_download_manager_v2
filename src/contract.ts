@@ -5,7 +5,7 @@
 import { z } from 'zod';
 
 /** Must equal `velocity_core::COMMAND_API_VERSION`; the app refuses to start on a mismatch. */
-export const COMMAND_API_VERSION = 10;
+export const COMMAND_API_VERSION = 11;
 
 const bytes = z.number().int().nonnegative();
 
@@ -240,6 +240,87 @@ export type DestinationCheck = z.infer<typeof DestinationCheckSchema>;
 /** What adding does when the name is taken (#31): ask, or take the first free name. Never replace. */
 export const OnConflictSchema = z.enum(['ask', 'rename']);
 export type OnConflict = z.infer<typeof OnConflictSchema>;
+
+/** A custom request header (#40). Its value may be a secret: kept in memory only. */
+export const HeaderSchema = z.strictObject({ name: z.string(), value: z.string() });
+export type Header = z.infer<typeof HeaderSchema>;
+
+/** A login for a download's server (#40), in memory only. */
+export const CredentialsSchema = z.strictObject({ userName: z.string(), password: z.string() });
+export type Credentials = z.infer<typeof CredentialsSchema>;
+
+/** A private key file for an SFTP login (#53), and its passphrase. */
+export const SshKeySchema = z.strictObject({ path: z.string().min(1), passphrase: z.string().nullable() });
+export type SshKey = z.infer<typeof SshKeySchema>;
+
+export const HashAlgorithmSchema = z.enum(['md5', 'sha1', 'sha224', 'sha256', 'sha384', 'sha512']);
+export type HashAlgorithm = z.infer<typeof HashAlgorithmSchema>;
+
+/** A whole-file hash to verify before the download completes (#46). */
+export const ChecksumSchema = z.strictObject({ algorithm: HashAlgorithmSchema, hex: z.string() });
+export type Checksum = z.infer<typeof ChecksumSchema>;
+
+/** What the Add dialog asks for (#60): the links and `.torrent` files, and the choices for each. */
+export const AddRequestSchema = z.strictObject({
+  links: z.array(z.string()),
+  torrentFiles: z.array(z.string()),
+  directory: z.string().nullable(),
+  /** For a single direct link only. */
+  fileName: z.string().nullable(),
+  categoryId: z.string().nullable(),
+  /** Create the chosen folder when it is missing: the user agreed to. */
+  createDirectory: z.boolean(),
+  onConflict: OnConflictSchema,
+  /** "Add anyway": add what was added before, except a torrent still in the list. */
+  allowDuplicate: z.boolean(),
+  startPaused: z.boolean(),
+  /** `null` for the performance profile's. */
+  connections: z.number().int().positive().nullable(),
+  /** KiB/s; 0 for no limit. */
+  speedLimitKib: z.number().int().nonnegative(),
+  headers: z.array(HeaderSchema),
+  referrer: z.string().nullable(),
+  credentials: CredentialsSchema.nullable(),
+  sshKey: SshKeySchema.nullable(),
+  checksum: ChecksumSchema.nullable(),
+  requireEncryption: z.boolean(),
+  chooseFiles: z.boolean(),
+});
+export type AddRequest = z.infer<typeof AddRequestSchema>;
+
+/** The download a new one would repeat (#60). */
+export const DuplicateSchema = z.strictObject({
+  existingId: z.string().min(1),
+  name: z.string().nullable(),
+  status: DownloadStatusSchema,
+  inList: z.boolean(),
+  /** False only for a torrent still in the list: two copies can't run. */
+  canAddAnyway: z.boolean(),
+});
+export type Duplicate = z.infer<typeof DuplicateSchema>;
+
+/** What adding one link or `.torrent` file did (#60). */
+export const AddOutcomeSchema = z.discriminatedUnion('kind', [
+  z.strictObject({ kind: z.literal('added'), id: z.string().min(1) }),
+  /** The name is taken: nothing was added. */
+  z.strictObject({ kind: z.literal('conflict'), check: DestinationCheckSchema }),
+  /** It was added before: nothing was added. */
+  z.strictObject({ kind: z.literal('duplicate'), duplicate: DuplicateSchema }),
+  z.strictObject({ kind: z.literal('failed'), code: ErrorCodeSchema }),
+  /** A `.torrent` link couldn't be fetched: the server's or the network's reason. */
+  z.strictObject({ kind: z.literal('notFetched'), error: TransferErrorSchema }),
+]);
+export type AddOutcome = z.infer<typeof AddOutcomeSchema>;
+
+export const AddResultSchema = z.strictObject({ source: z.string(), outcome: AddOutcomeSchema });
+export type AddResult = z.infer<typeof AddResultSchema>;
+
+/** The `torrents-dropped` event (#60): `.torrent` files dropped on the window, and how many other things were. */
+export const DroppedTorrentsSchema = z.strictObject({
+  paths: z.array(z.string().min(1)),
+  ignored: z.number().int().nonnegative(),
+});
+export type DroppedTorrents = z.infer<typeof DroppedTorrentsSchema>;
 
 /** The colour theme (#29): the system's, or always light or dark. */
 export const ThemeSchema = z.enum(['system', 'light', 'dark']);

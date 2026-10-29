@@ -62,7 +62,16 @@ pub fn start(app: &AppHandle, paths: &Paths) -> Result<Downloads, String> {
     };
     let manager = Manager::open(engine, Arc::new(database))
         .map_err(|e| e.to_string())?
-        .with_torrents(torrents);
+        .with_torrents(torrents)
+        // `.torrent` links are fetched into the app's own folder (#60).
+        .with_torrent_links(paths.torrent_links_dir())
+        .map_err(|code| {
+            format!(
+                "{} ({})",
+                code.user_message(),
+                paths.torrent_links_dir().display()
+            )
+        })?;
     let app = app.clone();
     let mut last: Option<DownloadsSnapshot> = None;
     Ok(Arc::new(ManagerService::start(manager, move |snapshot| {
@@ -83,18 +92,6 @@ pub(crate) async fn on_manager<R: Send + 'static>(
     tauri::async_runtime::spawn_blocking(move || service.call(f))
         .await
         .map_err(|_| ErrorCode::Internal)?
-}
-
-/// A speed limit in KiB/s as V1's command takes it: 0 for none.
-pub fn limit_from_kib(kib: u64) -> Result<Limits, ErrorCode> {
-    let limits = Limits {
-        max_download_bps: match kib {
-            0 => None,
-            kib => Some(kib.checked_mul(1024).ok_or(ErrorCode::InvalidInput)?),
-        },
-    };
-    limits.check()?;
-    Ok(limits)
 }
 
 #[tauri::command]
@@ -190,7 +187,7 @@ pub async fn set_download_speed_limit(
     id: String,
     kib: u64,
 ) -> Result<(), ErrorCode> {
-    let limits = limit_from_kib(kib)?;
+    let limits = Limits::from_kib(kib)?;
     on_manager(&downloads, move |m| m.set_download_limits(&id, limits)).await?
 }
 
@@ -265,17 +262,5 @@ mod tests {
             let expected = format!("/apps/velocity/{name}{}", std::env::consts::EXE_SUFFIX);
             assert_eq!(program_beside(app, name), PathBuf::from(expected));
         }
-    }
-
-    #[test]
-    fn a_speed_limit_is_in_kib_per_second_and_0_is_none() {
-        assert_eq!(limit_from_kib(0), Ok(Limits::default()));
-        assert_eq!(
-            limit_from_kib(64),
-            Ok(Limits {
-                max_download_bps: Some(64 * 1024)
-            })
-        );
-        assert_eq!(limit_from_kib(u64::MAX), Err(ErrorCode::InvalidInput));
     }
 }

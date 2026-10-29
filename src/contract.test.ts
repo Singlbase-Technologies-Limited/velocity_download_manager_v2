@@ -2,6 +2,8 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import {
+  AddRequestSchema,
+  AddResultSchema,
   AppInfoSchema,
   BatchResultSchema,
   CapabilitiesSchema,
@@ -99,6 +101,16 @@ describe('contract fixtures generated from Rust', () => {
   it('themes and densities: exactly the values the schemas know, in order (#29)', () => {
     expect(fixture('themes.json')).toEqual(ThemeSchema.options);
     expect(fixture('densities.json')).toEqual(DensitySchema.options);
+  });
+
+  it('the Add dialog request, with every field set (#60)', () => {
+    expect(AddRequestSchema.parse(fixture('add-request.json'))).toEqual(fixture('add-request.json'));
+  });
+
+  it('add results: one of each outcome (#60)', () => {
+    const results = fixture('add-results.json') as unknown[];
+    expect(results.map((r) => AddResultSchema.parse(r))).toEqual(results);
+    expect(results.map((r) => AddResultSchema.parse(r).outcome.kind)).toEqual(['added', 'conflict', 'duplicate', 'failed', 'notFetched']);
   });
 
   it('app info carries the same contract version as this UI', () => {

@@ -3421,3 +3421,992 @@ mod categories {
         fs::remove_dir_all(&dir).unwrap();
     }
 }
+
+mod adding {
+    //! The Add dialog's request (#60): a result for each link, conflicts, duplicates, a chosen
+    //! folder, and the options that reach the engines.
+    use super::*;
+    use crate::destination::{FolderSettings, OnConflict};
+    use crate::manager::adding::{AddOutcome, AddRequest, Duplicate, MAX_ADD};
+    use crate::torrent::bencode::{encode, Value};
+    use crate::torrent::tests::{file, multi, sha1_hex, torrent};
+    use crate::torrent_engine::fake::{FakeTorrentControl, FakeTorrentEngine};
+    use crate::torrent_engine::TorrentId;
+    use crate::transfer::{Checksum, Credentials, HashAlgorithm, Header, SshKey};
+    use std::fs;
+    use std::path::Path;
+
+    const HASH: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+
+    struct Setup {
+        m: Manager,
+        direct: FakeControl,
+        torrents: FakeTorrentControl,
+        db: Arc<Database>,
+        dir: PathBuf,
+    }
+
+    impl Drop for Setup {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.dir);
+        }
+    }
+
+    /// A manager with both engines, whose default folder is a fresh folder.
+    fn setup(test: &str) -> Setup {
+        let dir = std::env::temp_dir().join(format!("v2-adding-{test}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let db = Arc::new(Database::open_in_memory().unwrap());
+        // Downloads go in the folder itself: category subfolders are #31's tests.
+        db.save_section(
+            &FolderSettings {
+                default_directory: dir.to_string_lossy().into_owned(),
+                category_subfolders: false,
+                ..FolderSettings::default()
+            },
+            T0,
+        )
+        .unwrap();
+        let fake = FakeTransfer::with_capabilities(with_sftp());
+        let direct = fake.control();
+        let lt = FakeTorrentEngine::new();
+        let torrents = lt.control();
+        let m = Manager::open(Box::new(fake), Arc::clone(&db))
+            .unwrap()
+            .with_torrents(Box::new(lt));
+        Setup {
+            m,
+            direct,
+            torrents,
+            db,
+            dir,
+        }
+    }
+
+    /// The sample engine, which downloads over SFTP too.
+    fn with_sftp() -> Capabilities {
+        let mut caps = Capabilities::sample();
+        let mut sftp = caps.protocols[0];
+        sftp.kind = DownloadKind::Sftp;
+        caps.protocols.push(sftp);
+        caps
+    }
+
+    fn links(links: &[&str]) -> AddRequest {
+        AddRequest {
+            links: links.iter().map(|l| (*l).to_owned()).collect(),
+            ..AddRequest::default()
+        }
+    }
+
+    fn added(outcome: &AddOutcome) -> String {
+        match outcome {
+            AddOutcome::Added { id } => id.clone(),
+            other => panic!("not added: {other:?}"),
+        }
+    }
+
+    /// The album, with a video as its largest file, written as a `.torrent` in `dir`; and its v1
+    /// info hash.
+    fn album_file(dir: &Path) -> (PathBuf, String) {
+        let info = multi(
+            "album",
+            vec![file(&["clip.mp4"], 20_000), file(&["notes.txt"], 12_000)],
+            16_384,
+            2,
+        );
+        let hash = sha1_hex(&encode(&info));
+        let bytes = torrent(
+            info,
+            vec![("announce", Value::str("https://tracker.example/announce"))],
+        );
+        let path = dir.join("album.torrent");
+        fs::write(&path, bytes).unwrap();
+        (path, hash)
+    }
+
+    #[test]
+    fn each_link_gets_its_own_result_in_the_order_given() {
+        let mut s = setup("each");
+        let results =
+            s.m.add_request(
+                &links(&[
+                    "https://example.com/a.zip",
+                    "file:///etc/passwd",
+                    "ftp://example.com/b.iso",
+                ]),
+                T0,
+            )
+            .unwrap();
+        let sources: Vec<&str> = results.iter().map(|r| r.source.as_str()).collect();
+        assert_eq!(
+            sources,
+            [
+                "https://example.com/a.zip",
+                "file:///etc/passwd",
+                "ftp://example.com/b.iso"
+            ]
+        );
+        let a = added(&results[0].outcome);
+        assert_eq!(
+            results[1].outcome,
+            AddOutcome::Failed {
+                code: ErrorCode::UnsupportedScheme
+            }
+        );
+        let b = added(&results[2].outcome);
+        assert_eq!(s.m.get(&a).unwrap().kind, DownloadKind::Http);
+        assert_eq!(s.m.get(&b).unwrap().kind, DownloadKind::Ftp);
+        let folder = s.dir.to_string_lossy().into_owned();
+        assert_eq!(s.m.get(&a).unwrap().directory, folder);
+        assert_eq!(s.m.get(&a).unwrap().file_name.as_deref(), Some("a.zip"));
+        assert_eq!(s.db.downloads().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn sftp_links_are_added_with_their_key_login() {
+        let mut s = setup("sftp");
+        let key = SshKey {
+            path: s.dir.join("id_ed25519"),
+            passphrase: None,
+        };
+        let request = AddRequest {
+            credentials: Some(Credentials {
+                user_name: "me".to_owned(),
+                password: String::new(),
+            }),
+            ssh_key: Some(key.clone()),
+            ..links(&["sftp://files.example/pub/a.tar"])
+        };
+        let results = s.m.add_request(&request, T0).unwrap();
+        let id = added(&results[0].outcome);
+        assert_eq!(s.m.get(&id).unwrap().kind, DownloadKind::Sftp);
+        s.m.pump(T0);
+        assert_eq!(s.direct.spec(TransferId(1)).ssh_key, Some(key));
+    }
+
+    #[test]
+    fn a_taken_name_is_asked_about_and_then_renamed_never_replaced() {
+        let mut s = setup("taken");
+        fs::write(s.dir.join("a.zip"), b"mine").unwrap();
+        let ask = links(&["https://example.com/a.zip"]);
+        let results = s.m.add_request(&ask, T0).unwrap();
+        let AddOutcome::Conflict { check } = &results[0].outcome else {
+            panic!("{:?}", results[0].outcome);
+        };
+        assert!(check.file_exists);
+        assert_eq!(check.suggested_name.as_deref(), Some("a (1).zip"));
+        assert!(s.db.downloads().unwrap().is_empty(), "nothing added");
+        let rename = AddRequest {
+            on_conflict: OnConflict::Rename,
+            ..ask
+        };
+        let results = s.m.add_request(&rename, T0).unwrap();
+        let id = added(&results[0].outcome);
+        assert_eq!(
+            s.m.get(&id).unwrap().file_name.as_deref(),
+            Some("a (1).zip")
+        );
+        assert_eq!(fs::read(s.dir.join("a.zip")).unwrap(), b"mine");
+    }
+
+    #[test]
+    fn a_link_added_before_is_a_duplicate_that_can_be_added_anyway() {
+        let mut s = setup("dup-link");
+        let first =
+            s.m.add_request(&links(&["https://example.com/a.zip"]), T0)
+                .unwrap();
+        let first = added(&first[0].outcome);
+        let again =
+            s.m.add_request(&links(&["https://example.com/a.zip"]), T0)
+                .unwrap();
+        assert_eq!(
+            again[0].outcome,
+            AddOutcome::Duplicate {
+                duplicate: Duplicate {
+                    existing_id: first.clone(),
+                    name: Some("a.zip".to_owned()),
+                    status: DownloadStatus::Queued,
+                    in_list: true,
+                    can_add_anyway: true,
+                }
+            }
+        );
+        let anyway = AddRequest {
+            allow_duplicate: true,
+            on_conflict: OnConflict::Rename,
+            ..links(&["https://example.com/a.zip"])
+        };
+        let results = s.m.add_request(&anyway, T0).unwrap();
+        let second = added(&results[0].outcome);
+        assert_ne!(first, second);
+    }
+
+    #[test]
+    fn a_link_only_in_history_is_still_a_duplicate() {
+        let mut s = setup("dup-history");
+        let first =
+            s.m.add_request(&links(&["https://example.com/a.zip"]), T0)
+                .unwrap();
+        let first = added(&first[0].outcome);
+        s.m.pump(T0);
+        s.direct.complete(TransferId(1));
+        s.m.pump(T0);
+        s.m.remove_many(std::slice::from_ref(&first), false)
+            .unwrap();
+        let again =
+            s.m.add_request(&links(&["https://example.com/a.zip"]), T0)
+                .unwrap();
+        let AddOutcome::Duplicate { duplicate } = &again[0].outcome else {
+            panic!("{:?}", again[0].outcome);
+        };
+        assert_eq!(duplicate.existing_id, first);
+        assert!(!duplicate.in_list);
+        assert!(duplicate.can_add_anyway);
+    }
+
+    #[test]
+    fn a_torrent_still_in_the_list_is_never_added_twice() {
+        // V1's rule: two copies of one torrent can't run.
+        let mut s = setup("dup-magnet");
+        let magnet = format!("magnet:?xt=urn:btih:{HASH}&dn=album");
+        let first = s.m.add_request(&links(&[&magnet]), T0).unwrap();
+        let first = added(&first[0].outcome);
+        // The same torrent by another spelling, even when the user says "Add anyway".
+        let upper = format!("magnet:?xt=urn:btih:{}", HASH.to_uppercase());
+        let anyway = AddRequest {
+            allow_duplicate: true,
+            ..links(&[&upper])
+        };
+        let again = s.m.add_request(&anyway, T0).unwrap();
+        let AddOutcome::Duplicate { duplicate } = &again[0].outcome else {
+            panic!("{:?}", again[0].outcome);
+        };
+        assert_eq!(duplicate.existing_id, first);
+        assert!(duplicate.in_list);
+        assert!(!duplicate.can_add_anyway);
+        assert_eq!(s.torrents.log().len(), 1, "one torrent given to the helper");
+    }
+
+    #[test]
+    fn a_torrent_only_in_history_can_be_added_anyway() {
+        let mut s = setup("dup-torrent-history");
+        let magnet = format!("magnet:?xt=urn:btih:{HASH}&dn=album");
+        let first = s.m.add_request(&links(&[&magnet]), T0).unwrap();
+        let first = added(&first[0].outcome);
+        s.m.remove_many(std::slice::from_ref(&first), false)
+            .unwrap();
+        let again = s.m.add_request(&links(&[&magnet]), T0).unwrap();
+        let AddOutcome::Duplicate { duplicate } = &again[0].outcome else {
+            panic!("{:?}", again[0].outcome);
+        };
+        assert!(!duplicate.in_list);
+        assert!(duplicate.can_add_anyway);
+        let anyway = AddRequest {
+            allow_duplicate: true,
+            ..links(&[&magnet])
+        };
+        let results = s.m.add_request(&anyway, T0).unwrap();
+        assert_ne!(added(&results[0].outcome), first);
+    }
+
+    #[test]
+    fn a_torrent_file_is_found_by_its_info_hash_and_categorised_by_its_largest_file() {
+        let mut s = setup("torrent-file");
+        let source = s.dir.join("from");
+        fs::create_dir_all(&source).unwrap();
+        let (path, hash) = album_file(&source);
+        let request = AddRequest {
+            torrent_files: vec![path.to_string_lossy().into_owned()],
+            ..AddRequest::default()
+        };
+        let results = s.m.add_request(&request, T0).unwrap();
+        assert_eq!(results[0].source, path.to_string_lossy());
+        let id = added(&results[0].outcome);
+        let record = s.m.get(&id).unwrap();
+        assert_eq!(record.kind, DownloadKind::Torrent);
+        assert_eq!(record.category_id.as_deref(), Some("video"));
+        // The same torrent as a magnet link is a duplicate.
+        let magnet = format!("magnet:?xt=urn:btih:{hash}");
+        let again = s.m.add_request(&links(&[&magnet]), T0).unwrap();
+        assert!(
+            matches!(&again[0].outcome, AddOutcome::Duplicate { duplicate } if duplicate.existing_id == id),
+            "{:?}",
+            again[0].outcome
+        );
+    }
+
+    #[test]
+    fn a_torrent_whose_name_is_taken_is_asked_about_and_never_renamed() {
+        let mut s = setup("torrent-taken");
+        let source = s.dir.join("from");
+        fs::create_dir_all(&source).unwrap();
+        let (path, _) = album_file(&source);
+        let target = s.dir.join("target");
+        fs::create_dir_all(target.join("album")).unwrap();
+        let request = AddRequest {
+            torrent_files: vec![path.to_string_lossy().into_owned()],
+            directory: Some(target.to_string_lossy().into_owned()),
+            on_conflict: OnConflict::Rename,
+            ..AddRequest::default()
+        };
+        let results = s.m.add_request(&request, T0).unwrap();
+        let AddOutcome::Conflict { check } = &results[0].outcome else {
+            panic!("{:?}", results[0].outcome);
+        };
+        assert_eq!(check.file_name.as_deref(), Some("album"));
+        assert!(check.file_exists);
+        assert_eq!(
+            check.suggested_name, None,
+            "a torrent's files can't be renamed"
+        );
+        assert!(s.torrents.log().is_empty());
+    }
+
+    #[test]
+    fn a_torrent_file_must_be_a_readable_torrent_file() {
+        let mut s = setup("torrent-bad");
+        fs::write(s.dir.join("junk.torrent"), b"not bencode").unwrap();
+        let request = AddRequest {
+            torrent_files: vec![
+                "relative.torrent".to_owned(),
+                s.dir.join("missing.torrent").to_string_lossy().into_owned(),
+                s.dir.join("junk.torrent").to_string_lossy().into_owned(),
+            ],
+            ..AddRequest::default()
+        };
+        let results = s.m.add_request(&request, T0).unwrap();
+        let outcomes: Vec<&AddOutcome> = results.iter().map(|r| &r.outcome).collect();
+        assert_eq!(
+            outcomes,
+            [
+                &AddOutcome::Failed {
+                    code: ErrorCode::InvalidPath
+                },
+                &AddOutcome::Failed {
+                    code: ErrorCode::NotFound
+                },
+                &AddOutcome::Failed {
+                    code: ErrorCode::InvalidInput
+                },
+            ]
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_torrent_file_behind_a_link_is_refused() {
+        let mut s = setup("torrent-link");
+        let source = s.dir.join("from");
+        fs::create_dir_all(&source).unwrap();
+        let (path, _) = album_file(&source);
+        let link = s.dir.join("link.torrent");
+        std::os::unix::fs::symlink(&path, &link).unwrap();
+        let request = AddRequest {
+            torrent_files: vec![link.to_string_lossy().into_owned()],
+            ..AddRequest::default()
+        };
+        let results = s.m.add_request(&request, T0).unwrap();
+        assert_eq!(
+            results[0].outcome,
+            AddOutcome::Failed {
+                code: ErrorCode::InvalidPath
+            }
+        );
+    }
+
+    #[test]
+    fn a_missing_chosen_folder_is_created_only_when_the_user_agrees() {
+        let mut s = setup("create");
+        let chosen = s.dir.join("new").join("deeper");
+        let request = AddRequest {
+            directory: Some(chosen.to_string_lossy().into_owned()),
+            ..links(&["https://example.com/a.zip"])
+        };
+        let results = s.m.add_request(&request, T0).unwrap();
+        assert_eq!(
+            results[0].outcome,
+            AddOutcome::Failed {
+                code: ErrorCode::DestinationMissing
+            }
+        );
+        assert!(!chosen.exists());
+        let create = AddRequest {
+            create_directory: true,
+            ..request
+        };
+        let results = s.m.add_request(&create, T0).unwrap();
+        let id = added(&results[0].outcome);
+        assert!(chosen.is_dir());
+        assert_eq!(s.m.get(&id).unwrap().directory, chosen.to_string_lossy());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_folder_is_never_created_through_a_link() {
+        let mut s = setup("create-link");
+        let outside = s.dir.join("outside");
+        std::os::unix::fs::symlink(&outside, s.dir.join("dangling")).unwrap();
+        let request = AddRequest {
+            directory: Some(
+                s.dir
+                    .join("dangling")
+                    .join("x")
+                    .to_string_lossy()
+                    .into_owned(),
+            ),
+            create_directory: true,
+            ..links(&["https://example.com/a.zip"])
+        };
+        assert_eq!(s.m.add_request(&request, T0), Err(ErrorCode::InvalidPath));
+        assert!(!outside.exists());
+    }
+
+    #[test]
+    fn a_request_is_refused_whole_when_it_breaks_the_rules() {
+        let mut s = setup("refused");
+        assert_eq!(
+            s.m.add_request(&AddRequest::default(), T0),
+            Err(ErrorCode::InvalidInput),
+            "nothing to add"
+        );
+        let named_two = AddRequest {
+            file_name: Some("x.zip".to_owned()),
+            ..links(&["https://example.com/a.zip", "https://example.com/b.zip"])
+        };
+        assert_eq!(
+            s.m.add_request(&named_two, T0),
+            Err(ErrorCode::InvalidInput),
+            "a name is for one link"
+        );
+        let many: Vec<String> = (0..=MAX_ADD)
+            .map(|i| format!("https://example.com/{i}.zip"))
+            .collect();
+        let too_many = AddRequest {
+            links: many,
+            ..AddRequest::default()
+        };
+        assert_eq!(s.m.add_request(&too_many, T0), Err(ErrorCode::InvalidInput));
+        let bad_header = AddRequest {
+            headers: vec![Header {
+                name: "Bad\nName".to_owned(),
+                value: "x".to_owned(),
+            }],
+            ..links(&["https://example.com/a.zip"])
+        };
+        assert_eq!(
+            s.m.add_request(&bad_header, T0),
+            Err(ErrorCode::InvalidInput)
+        );
+        let bad_checksum = AddRequest {
+            checksum: Some(Checksum {
+                algorithm: HashAlgorithm::Sha256,
+                hex: "xyz".to_owned(),
+            }),
+            ..links(&["https://example.com/a.zip"])
+        };
+        assert_eq!(
+            s.m.add_request(&bad_checksum, T0),
+            Err(ErrorCode::InvalidInput)
+        );
+        let login_in_link = links(&["https://me:secret@example.com/a.zip"]);
+        let results = s.m.add_request(&login_in_link, T0).unwrap();
+        assert_eq!(
+            results[0].outcome,
+            AddOutcome::Failed {
+                code: ErrorCode::InvalidUrl
+            }
+        );
+        assert!(s.db.downloads().unwrap().is_empty());
+    }
+
+    #[test]
+    fn the_dialogs_options_reach_the_engine() {
+        let mut s = setup("options");
+        let digest = "ab".repeat(32);
+        let request = AddRequest {
+            file_name: Some("Annual report".to_owned()),
+            connections: Some(2),
+            speed_limit_kib: 64,
+            headers: vec![Header {
+                name: "Cookie".to_owned(),
+                value: "s=1".to_owned(),
+            }],
+            referrer: Some("https://example.com/page".to_owned()),
+            credentials: Some(Credentials {
+                user_name: "me".to_owned(),
+                password: "pw".to_owned(),
+            }),
+            checksum: Some(Checksum {
+                algorithm: HashAlgorithm::Sha256,
+                hex: digest.to_uppercase(),
+            }),
+            require_encryption: true,
+            ..links(&["ftp://example.com/docs/report.pdf"])
+        };
+        let results = s.m.add_request(&request, T0).unwrap();
+        let id = added(&results[0].outcome);
+        assert_eq!(
+            s.m.get(&id).unwrap().file_name.as_deref(),
+            Some("Annual report.pdf")
+        );
+        s.m.pump(T0);
+        let spec = s.direct.spec(TransferId(1));
+        assert_eq!(spec.max_connections, 2);
+        assert_eq!(spec.limits.max_download_bps, Some(64 * 1024));
+        assert_eq!(spec.headers.len(), 1);
+        assert_eq!(spec.referrer.as_deref(), Some("https://example.com/page"));
+        assert_eq!(spec.credentials.unwrap().user_name, "me");
+        assert_eq!(spec.checksum.unwrap().hex, digest, "in lowercase");
+        assert!(spec.require_encryption);
+    }
+
+    #[test]
+    fn add_paused_and_choose_files_are_kept() {
+        let mut s = setup("paused");
+        let magnet = format!("magnet:?xt=urn:btih:{HASH}");
+        let request = AddRequest {
+            start_paused: true,
+            choose_files: true,
+            ..links(&["https://example.com/a.zip", &magnet])
+        };
+        let results = s.m.add_request(&request, T0).unwrap();
+        for r in &results {
+            let id = added(&r.outcome);
+            assert_eq!(s.m.get(&id).unwrap().status, DownloadStatus::Paused);
+        }
+        assert!(s.direct.log().is_empty());
+        let magnet_id = added(&results[1].outcome);
+        s.m.resume(&magnet_id).unwrap();
+        s.m.pump(T0);
+        assert!(s.torrents.spec(TorrentId(1)).choose_files);
+    }
+
+    #[test]
+    fn a_protocol_the_engine_lacks_is_refused_with_why_before_any_folder_is_made() {
+        let s = setup("lacks");
+        let mut caps = Capabilities::sample();
+        caps.protocols.retain(|p| p.kind != DownloadKind::Sftp);
+        // Category subfolders on: placing the link would create one.
+        s.db.save_section(
+            &FolderSettings {
+                default_directory: s.dir.to_string_lossy().into_owned(),
+                ..FolderSettings::default()
+            },
+            T0,
+        )
+        .unwrap();
+        let mut m = Manager::open(
+            Box::new(FakeTransfer::with_capabilities(caps)),
+            Arc::clone(&s.db),
+        )
+        .unwrap();
+        let results = m
+            .add_request(&links(&["sftp://files.example/a.zip"]), T0)
+            .unwrap();
+        assert_eq!(
+            results[0].outcome,
+            AddOutcome::Failed {
+                code: ErrorCode::Unsupported
+            }
+        );
+        assert_eq!(
+            fs::read_dir(&s.dir).unwrap().count(),
+            0,
+            "no category subfolder was made for it"
+        );
+    }
+
+    #[test]
+    fn duplicates_in_one_request_are_caught_too() {
+        let mut s = setup("same-request");
+        let results =
+            s.m.add_request(
+                &links(&["https://example.com/a.zip", "https://example.com/a.zip"]),
+                T0,
+            )
+            .unwrap();
+        added(&results[0].outcome);
+        assert!(matches!(results[1].outcome, AddOutcome::Duplicate { .. }));
+    }
+}
+
+mod torrent_links {
+    //! `.torrent` links (PO decision on #60): fetched into the app's folder, kept without their
+    //! trackers, then added from there.
+    use super::*;
+    use crate::destination::FolderSettings;
+    use crate::manager::adding::{AddOutcome, AddRequest};
+    use crate::naming::PART_FILE_SUFFIX;
+    use crate::torrent::bencode::Value;
+    use crate::torrent::tests::{file, multi, torrent};
+    use crate::torrent::MAX_TORRENT_BYTES;
+    use crate::torrent_engine::fake::{FakeTorrentControl, FakeTorrentEngine};
+    use crate::torrent_engine::TorrentId;
+    use std::fs;
+    use std::sync::mpsc::{channel, Receiver};
+
+    const LINK: &str = "https://tracker.example/files/album.torrent";
+
+    struct Setup {
+        m: Manager,
+        direct: FakeControl,
+        torrents: FakeTorrentControl,
+        db: Arc<Database>,
+        /// The app's folder for fetched `.torrent` files.
+        links: PathBuf,
+        dir: PathBuf,
+    }
+
+    impl Drop for Setup {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.dir);
+        }
+    }
+
+    fn folder(test: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("v2-links-{test}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(dir.join("downloads")).unwrap();
+        dir
+    }
+
+    fn open(dir: &std::path::Path, db: &Arc<Database>) -> Setup {
+        let fake = FakeTransfer::new();
+        let direct = fake.control();
+        let lt = FakeTorrentEngine::new();
+        let torrents = lt.control();
+        let links = dir.join("torrent-links");
+        let m = Manager::open(Box::new(fake), Arc::clone(db))
+            .unwrap()
+            .with_torrents(Box::new(lt))
+            .with_torrent_links(links.clone())
+            .unwrap();
+        Setup {
+            m,
+            direct,
+            torrents,
+            db: Arc::clone(db),
+            links,
+            dir: dir.to_path_buf(),
+        }
+    }
+
+    fn setup(test: &str) -> Setup {
+        let dir = folder(test);
+        let db = Arc::new(Database::open_in_memory().unwrap());
+        db.save_section(
+            &FolderSettings {
+                default_directory: dir.join("downloads").to_string_lossy().into_owned(),
+                category_subfolders: false,
+                ..FolderSettings::default()
+            },
+            T0,
+        )
+        .unwrap();
+        open(&dir, &db)
+    }
+
+    fn album_bytes() -> Vec<u8> {
+        let info = multi(
+            "album",
+            vec![file(&["clip.mp4"], 20_000), file(&["notes.txt"], 12_000)],
+            16_384,
+            2,
+        );
+        torrent(
+            info,
+            vec![(
+                "announce",
+                Value::str("https://tracker.example/announce?passkey=secret-key"),
+            )],
+        )
+    }
+
+    fn fetch(s: &mut Setup, link: &str) -> Receiver<Result<PathBuf, AddOutcome>> {
+        let (reply, answer) = channel();
+        s.m.fetch_torrent_link(link, &AddRequest::default(), reply)
+            .unwrap();
+        answer
+    }
+
+    /// The engine writes the fetched file and reports it complete.
+    fn fetched(s: &mut Setup, bytes: &[u8]) {
+        let spec = s.direct.spec(TransferId(1));
+        fs::write(spec.directory.join(spec.file_name.unwrap()), bytes).unwrap();
+        s.direct
+            .progress(TransferId(1), 0, Some(bytes.len() as u64));
+        s.direct.complete(TransferId(1));
+        s.m.pump(T0);
+    }
+
+    #[test]
+    fn a_torrent_link_is_fetched_into_the_apps_folder_and_kept_without_its_trackers() {
+        let mut s = setup("fetched");
+        let answer = fetch(&mut s, LINK);
+        let spec = s.direct.spec(TransferId(1));
+        assert_eq!(spec.urls, [LINK]);
+        assert_eq!(spec.directory, s.links);
+        assert_eq!(spec.max_connections, 1);
+        assert!(
+            s.m.snapshot().downloads.is_empty(),
+            "not a download in the list"
+        );
+        fetched(&mut s, &album_bytes());
+        let kept = answer.try_recv().unwrap().unwrap();
+        assert!(kept.starts_with(&s.links), "{kept:?}");
+        let text = String::from_utf8_lossy(&fs::read(&kept).unwrap()).into_owned();
+        assert!(!text.contains("secret-key"), "no tracker is kept: {text}");
+        let names: Vec<_> = fs::read_dir(&s.links)
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .collect();
+        assert_eq!(names.len(), 1, "only the kept file: {names:?}");
+        assert!(s.direct.log().contains(&"remove 1".to_owned()));
+        // Added from there, with its trackers in memory.
+        let request = AddRequest {
+            torrent_files: vec![kept.to_string_lossy().into_owned()],
+            ..AddRequest::default()
+        };
+        let results = s.m.add_request(&request, T0).unwrap();
+        assert!(matches!(results[0].outcome, AddOutcome::Added { .. }));
+        s.m.pump(T0);
+        assert_eq!(
+            s.torrents.spec(TorrentId(1)).trackers,
+            ["https://tracker.example/announce?passkey=secret-key"]
+        );
+    }
+
+    #[test]
+    fn a_fetch_larger_than_a_torrent_can_be_is_cancelled() {
+        let mut s = setup("large");
+        let answer = fetch(&mut s, LINK);
+        s.direct
+            .progress(TransferId(1), 0, Some(MAX_TORRENT_BYTES as u64 + 1));
+        s.m.pump(T0);
+        assert_eq!(
+            answer.try_recv().unwrap(),
+            Err(AddOutcome::Failed {
+                code: ErrorCode::InvalidInput
+            })
+        );
+        assert!(s.direct.log().contains(&"cancel 1".to_owned()));
+    }
+
+    #[test]
+    fn a_failed_fetch_says_why() {
+        let mut s = setup("failed");
+        let answer = fetch(&mut s, LINK);
+        let error = TransferError::new(FailureClass::Permanent, Some(404), "Not found");
+        s.direct.fail(TransferId(1), error.clone());
+        s.m.pump(T0);
+        assert_eq!(
+            answer.try_recv().unwrap(),
+            Err(AddOutcome::NotFetched { error })
+        );
+    }
+
+    #[test]
+    fn what_was_fetched_must_be_a_torrent() {
+        let mut s = setup("junk");
+        let answer = fetch(&mut s, LINK);
+        fetched(&mut s, b"<html>sign in</html>");
+        assert_eq!(
+            answer.try_recv().unwrap(),
+            Err(AddOutcome::Failed {
+                code: ErrorCode::InvalidInput
+            })
+        );
+        assert_eq!(fs::read_dir(&s.links).unwrap().count(), 0, "nothing kept");
+    }
+
+    #[test]
+    fn a_fetch_given_up_on_is_cancelled() {
+        let mut s = setup("given-up");
+        let (reply, answer) = channel();
+        let fetch =
+            s.m.fetch_torrent_link(LINK, &AddRequest::default(), reply)
+                .unwrap();
+        s.m.cancel_torrent_link(fetch);
+        s.m.pump(T0);
+        assert!(s.direct.log().contains(&"cancel 1".to_owned()));
+        assert!(answer.try_recv().is_err(), "no answer is waited for");
+    }
+
+    #[test]
+    fn only_http_and_ftp_links_without_a_login_are_fetched() {
+        let mut s = setup("refused");
+        for (link, code) in [
+            ("sftp://host/a.torrent", ErrorCode::UnsupportedScheme),
+            ("file:///a.torrent", ErrorCode::UnsupportedScheme),
+            ("https://me:pw@host/a.torrent", ErrorCode::InvalidUrl),
+        ] {
+            let (reply, _answer) = channel();
+            assert_eq!(
+                s.m.fetch_torrent_link(link, &AddRequest::default(), reply),
+                Err(code),
+                "{link}"
+            );
+        }
+        assert!(s.direct.log().is_empty());
+    }
+
+    #[test]
+    fn leftovers_are_cleared_when_the_app_starts_and_kept_torrents_stay() {
+        let mut s = setup("leftovers");
+        let answer = fetch(&mut s, LINK);
+        fetched(&mut s, &album_bytes());
+        let kept = answer.try_recv().unwrap().unwrap();
+        let request = AddRequest {
+            torrent_files: vec![kept.to_string_lossy().into_owned()],
+            ..AddRequest::default()
+        };
+        s.m.add_request(&request, T0).unwrap();
+        // A fetch the app quit during, and a fetched torrent that was never added.
+        fs::write(
+            s.links.join(format!("fetch-9.torrent{PART_FILE_SUFFIX}")),
+            b"x",
+        )
+        .unwrap();
+        fs::write(s.links.join("ffff.torrent"), b"x").unwrap();
+        fs::create_dir(s.links.join("a folder")).unwrap();
+        let (dir, db) = (s.dir.clone(), Arc::clone(&s.db));
+        std::mem::forget(s);
+        let s = open(&dir, &db);
+        let mut names: Vec<String> = fs::read_dir(&s.links)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        names.sort();
+        let kept = kept.file_name().unwrap().to_string_lossy().into_owned();
+        assert_eq!(names, ["a folder".to_owned(), kept]);
+    }
+}
+
+mod adding_through_the_service {
+    //! What the app's `add_downloads` command runs (#60): `.torrent` links fetched first, then
+    //! everything added, with the results in the request's order.
+    use super::*;
+    use crate::destination::FolderSettings;
+    use crate::manager::adding::{is_torrent_link, AddOutcome, AddRequest};
+    use crate::manager::ManagerService;
+    use crate::torrent::bencode::Value;
+    use crate::torrent::tests::{file, multi, torrent};
+    use crate::torrent_engine::fake::FakeTorrentEngine;
+    use std::fs;
+    use std::time::{Duration, Instant};
+
+    const LINK: &str = "https://tracker.example/files/album.torrent?key=1";
+
+    fn service(test: &str) -> (ManagerService, FakeControl, PathBuf) {
+        let dir =
+            std::env::temp_dir().join(format!("v2-service-add-{test}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(dir.join("downloads")).unwrap();
+        let db = Arc::new(Database::open_in_memory().unwrap());
+        db.save_section(
+            &FolderSettings {
+                default_directory: dir.join("downloads").to_string_lossy().into_owned(),
+                category_subfolders: false,
+                ..FolderSettings::default()
+            },
+            T0,
+        )
+        .unwrap();
+        let fake = FakeTransfer::new();
+        let direct = fake.control();
+        let m = Manager::open(Box::new(fake), db)
+            .unwrap()
+            .with_torrents(Box::new(FakeTorrentEngine::new()))
+            .with_torrent_links(dir.join("torrent-links"))
+            .unwrap();
+        (ManagerService::start(m, |_| {}), direct, dir)
+    }
+
+    /// Waits until the engine was given `n` transfers.
+    fn wait_for_adds(direct: &FakeControl, n: usize) {
+        let until = Instant::now() + Duration::from_secs(10);
+        while direct.log().iter().filter(|l| *l == "add").count() < n {
+            assert!(Instant::now() < until, "{:?}", direct.log());
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    #[test]
+    fn torrent_links_are_told_apart_as_v1_did() {
+        assert!(is_torrent_link("https://e.com/a/album.TORRENT"));
+        assert!(is_torrent_link("http://e.com/album.torrent?x=1#y"));
+        assert!(!is_torrent_link(
+            "https://e.com/download.php?f=album.torrent"
+        ));
+        assert!(!is_torrent_link("ftp://e.com/album.torrent"));
+        assert!(!is_torrent_link("magnet:?xt=urn:btih:aa"));
+        assert!(!is_torrent_link("https://e.com/album.torrent.zip"));
+    }
+
+    #[test]
+    fn a_torrent_link_is_fetched_then_added_with_every_result_in_order() {
+        let (service, direct, dir) = service("ordered");
+        let request = AddRequest {
+            links: vec![
+                "https://example.com/a.zip".to_owned(),
+                LINK.to_owned(),
+                "file:///etc/passwd".to_owned(),
+            ],
+            ..AddRequest::default()
+        };
+        let adding = std::thread::spawn(move || {
+            let results = service.add(request, Duration::from_secs(10));
+            (service, results)
+        });
+        wait_for_adds(&direct, 1);
+        let spec = direct.spec(TransferId(1));
+        assert_eq!(spec.urls, [LINK], "the link is fetched first");
+        let bytes = torrent(
+            multi("album", vec![file(&["a.mp4"], 20_000)], 16_384, 2),
+            vec![("announce", Value::str("https://tracker.example/announce"))],
+        );
+        fs::write(spec.directory.join(spec.file_name.unwrap()), bytes).unwrap();
+        direct.complete(TransferId(1));
+        let (service, results) = adding.join().unwrap();
+        let results = results.unwrap();
+        let sources: Vec<&str> = results.iter().map(|r| r.source.as_str()).collect();
+        assert_eq!(
+            sources,
+            ["https://example.com/a.zip", LINK, "file:///etc/passwd"]
+        );
+        assert!(matches!(results[0].outcome, AddOutcome::Added { .. }));
+        let AddOutcome::Added { id } = &results[1].outcome else {
+            panic!("{:?}", results[1].outcome);
+        };
+        let id = id.clone();
+        let kind = service.call(move |m| m.get(&id).unwrap().kind).unwrap();
+        assert_eq!(kind, DownloadKind::Torrent);
+        assert_eq!(
+            results[2].outcome,
+            AddOutcome::Failed {
+                code: ErrorCode::UnsupportedScheme
+            }
+        );
+        drop(service);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_fetch_that_takes_too_long_is_cancelled_and_says_so() {
+        let (service, direct, dir) = service("slow");
+        let request = AddRequest {
+            links: vec![LINK.to_owned()],
+            ..AddRequest::default()
+        };
+        let results = service.add(request, Duration::from_millis(200)).unwrap();
+        let AddOutcome::NotFetched { error } = &results[0].outcome else {
+            panic!("{:?}", results[0].outcome);
+        };
+        assert!(error.retryable, "{error:?}");
+        assert!(direct.log().contains(&"cancel 1".to_owned()));
+        drop(service);
+        let _ = fs::remove_dir_all(&dir);
+    }
+}

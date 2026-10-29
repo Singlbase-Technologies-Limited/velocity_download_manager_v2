@@ -1,5 +1,6 @@
 //! Tauri desktop shell. Commands stay thin: they delegate to `velocity-core`.
 
+mod adding;
 mod categories;
 mod downloads;
 mod shell;
@@ -48,11 +49,16 @@ pub fn run() {
             }
             Ok(())
         })
-        .on_window_event(|window, event| {
-            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+        .on_window_event(|window, event| match event {
+            tauri::WindowEvent::CloseRequested { api, .. } => {
                 api.prevent_close();
                 shell::on_close_requested(window.app_handle());
             }
+            // `.torrent` files dropped on the window open the Add dialog (#60).
+            tauri::WindowEvent::DragDrop(tauri::DragDropEvent::Drop { paths, .. }) => {
+                adding::on_dropped(window.app_handle(), paths);
+            }
+            _ => {}
         })
         .invoke_handler(tauri::generate_handler![
             app_info,
@@ -74,6 +80,10 @@ pub fn run() {
             downloads::choose_torrent_files,
             downloads::set_torrent_seeding,
             downloads::restart_torrent_helper,
+            adding::add_downloads,
+            adding::get_capabilities,
+            adding::choose_torrents,
+            adding::choose_ssh_key,
             categories::list_categories,
             categories::create_category,
             categories::update_category,

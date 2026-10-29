@@ -99,6 +99,6 @@ When the server names the file, the engine reports the name once the download ha
 ## What's not here yet
 
 - **Free disk space:** `check_destination` doesn't report it yet. V1 used the `fs4` crate, and a new dependency needs the PO's approval.
-- **Creating a chosen folder:** a folder the user picks must already exist. Offering to create one is for #60's form, with #72's file system checks.
-- **Torrent categories:** a torrent gets a category only when one is given when it is added. Choosing one from its metadata is for the Add form (#60).
-- **The screens:** the Categories screen came with the sidebar (#29, [UI_ARCHITECTURE.md](UI_ARCHITECTURE.md)), and the conflict question comes with the Add form (#60) (PO decision on #31).
+- **Creating a chosen folder:** a folder the user picks must already exist, unless they agree to create it in the Add dialog (#60). It is then created inside its nearest existing parent, one level at a time, and never through a link (`INVALID_PATH`). #72 covers the rest of the file system checks.
+- **Torrent categories:** a torrent added from the Add dialog (#60) gets the category of its largest file, or of a magnet link's display name, unless one is chosen. A torrent's own name, a file or its folder, that is taken in the folder is asked about and never renamed.
+- **The screens:** the Categories screen came with the sidebar (#29), and the conflict question with the Add dialog (#60) ([UI_ARCHITECTURE.md](UI_ARCHITECTURE.md#adding-downloads)) (PO decision on #31).

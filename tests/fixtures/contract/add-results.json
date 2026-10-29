@@ -1,0 +1,58 @@
+[
+  {
+    "outcome": {
+      "id": "d-0002",
+      "kind": "added"
+    },
+    "source": "https://example.com/a.zip"
+  },
+  {
+    "outcome": {
+      "check": {
+        "automaticDirectory": true,
+        "categoryId": "documents",
+        "directory": "/home/user/Downloads/Documents",
+        "directoryExists": true,
+        "fileExists": true,
+        "fileName": "report.pdf",
+        "partialDownloadExists": false,
+        "suggestedName": "report (1).pdf"
+      },
+      "kind": "conflict"
+    },
+    "source": "https://example.com/files/archive.zip"
+  },
+  {
+    "outcome": {
+      "duplicate": {
+        "canAddAnyway": false,
+        "existingId": "d-0001",
+        "inList": true,
+        "name": "album",
+        "status": "seeding"
+      },
+      "kind": "duplicate"
+    },
+    "source": "magnet:?xt=urn:btih:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  {
+    "outcome": {
+      "code": "UNSUPPORTED_SCHEME",
+      "kind": "failed"
+    },
+    "source": "file:///etc/passwd"
+  },
+  {
+    "outcome": {
+      "error": {
+        "class": "permanent",
+        "hostKey": null,
+        "httpStatus": 404,
+        "message": "Not found",
+        "retryable": false
+      },
+      "kind": "notFetched"
+    },
+    "source": "https://example.com/album.torrent"
+  }
+]
