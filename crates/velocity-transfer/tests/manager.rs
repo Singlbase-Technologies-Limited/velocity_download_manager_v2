@@ -460,7 +460,7 @@ mod categories {
     /// The app, with `dir.files()` as its default folder.
     fn open(dir: &Dir) -> (App, Arc<Database>) {
         let (app, db) = App::open(dir, fast(5));
-        db.save_folder_settings(
+        db.save_section(
             &FolderSettings {
                 default_directory: dir.files().to_string_lossy().into_owned(),
                 ..FolderSettings::default()

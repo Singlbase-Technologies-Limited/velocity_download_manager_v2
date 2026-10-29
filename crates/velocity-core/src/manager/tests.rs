@@ -3109,7 +3109,7 @@ mod categories {
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         let db = Arc::new(Database::open_in_memory().unwrap());
-        db.save_folder_settings(
+        db.save_section(
             &FolderSettings {
                 default_directory: dir.to_string_lossy().into_owned(),
                 ..FolderSettings::default()
@@ -3255,7 +3255,7 @@ mod categories {
         );
 
         // With automatic categories off, none is set.
-        db.save_folder_settings(
+        db.save_section(
             &FolderSettings {
                 auto_categorize: false,
                 default_directory: dir.to_string_lossy().into_owned(),

@@ -1,14 +1,27 @@
-//! The settings document in the database. Its fields are defined and validated by #30; here it
-//! is one JSON object. #31's folder settings are its `downloads` section.
+//! The settings document in the database: one JSON object, whose sections are typed settings
+//! ([`Section`]). Its model as a whole and its screen are #30's. #31's folder settings are its
+//! `downloads` section, and #29's are `general`, `notifications`, `appearance` and
+//! `onboarding`.
 
 use rusqlite::OptionalExtension;
+use serde::de::DeserializeOwned;
+use serde::Serialize;
 
 use super::{to_sql_int, Database, DatabaseError};
-use crate::destination::FolderSettings;
 use crate::domain::ErrorCode;
 
-/// The settings document's section for [`FolderSettings`].
-const FOLDERS: &str = "downloads";
+/// One section of the settings document: its key, and how a value is checked before it is saved
+/// or used.
+pub trait Section: Serialize + DeserializeOwned + Default + Clone {
+    /// The section's key in the document.
+    const KEY: &'static str;
+
+    /// The value as it is saved, or why it can't be. Every value is valid unless a section says
+    /// otherwise.
+    fn checked(&self) -> Result<Self, ErrorCode> {
+        Ok(self.clone())
+    }
+}
 
 impl Database {
     /// The saved settings, or `None` before they were first saved.
@@ -47,45 +60,43 @@ impl Database {
         Ok(())
     }
 
-    /// The saved folder settings, or the defaults before any were saved. A saved section this
-    /// build can't read, or one that fails its checks, is a `Database` error, never replaced.
-    pub fn folder_settings(&self) -> Result<FolderSettings, DatabaseError> {
-        let unreadable = |detail: String| DatabaseError::new(ErrorCode::Database, detail);
+    /// The saved section, or its defaults before it was saved. A saved section this build can't
+    /// read, or one that fails its checks, is a `Database` error, never replaced.
+    pub fn section<S: Section>(&self) -> Result<S, DatabaseError> {
+        let unreadable = |detail: String| {
+            DatabaseError::new(
+                ErrorCode::Database,
+                format!("the {} settings: {detail}", S::KEY),
+            )
+        };
         let Some(section) = self
             .settings()?
-            .and_then(|mut d| d.get_mut(FOLDERS).map(|s| s.take()))
+            .and_then(|mut d| d.get_mut(S::KEY).map(|s| s.take()))
         else {
-            return Ok(FolderSettings::default());
+            return Ok(S::default());
         };
         // serde would read a struct from an array too.
         if !section.is_object() {
-            return Err(unreadable(
-                "the folder settings aren't an object".to_owned(),
-            ));
+            return Err(unreadable("not an object".to_owned()));
         }
-        let settings: FolderSettings = serde_json::from_value(section)
-            .map_err(|e| unreadable(format!("the folder settings: {e}")))?;
+        let settings: S = serde_json::from_value(section).map_err(|e| unreadable(e.to_string()))?;
         settings
             .checked()
-            .map_err(|code| unreadable(format!("the folder settings: {code:?}")))
+            .map_err(|code| unreadable(format!("{code:?}")))
     }
 
-    /// Checks and saves the folder settings, keeping the rest of the document.
-    pub fn save_folder_settings(
-        &self,
-        settings: &FolderSettings,
-        now_ms: u64,
-    ) -> Result<FolderSettings, DatabaseError> {
+    /// Checks and saves a section, keeping the rest of the document, and returns it as saved.
+    pub fn save_section<S: Section>(&self, settings: &S, now_ms: u64) -> Result<S, DatabaseError> {
         let settings = settings
             .checked()
-            .map_err(|code| DatabaseError::new(code, "the folder settings"))?;
+            .map_err(|code| DatabaseError::new(code, format!("the {} settings", S::KEY)))?;
         let mut document = self
             .settings()?
             .unwrap_or_else(|| serde_json::Value::Object(serde_json::Map::new()));
         let section = serde_json::to_value(&settings)
             .map_err(|e| DatabaseError::new(ErrorCode::Internal, e.to_string()))?;
         if let Some(object) = document.as_object_mut() {
-            object.insert(FOLDERS.to_owned(), section);
+            object.insert(S::KEY.to_owned(), section);
         }
         self.save_settings(&document, now_ms)?;
         Ok(settings)
@@ -95,6 +106,8 @@ impl Database {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::app_settings::{AppearanceSettings, GeneralSettings, LayoutSettings, Theme};
+    use crate::destination::FolderSettings;
 
     fn absolute(rest: &str) -> String {
         let root = if cfg!(windows) { "C:\\" } else { "/" };
@@ -104,10 +117,16 @@ mod tests {
     #[test]
     fn folder_settings_are_the_defaults_until_saved() {
         let db = Database::open_in_memory().unwrap();
-        assert_eq!(db.folder_settings(), Ok(FolderSettings::default()));
+        assert_eq!(
+            db.section::<FolderSettings>(),
+            Ok(FolderSettings::default())
+        );
         db.save_settings(&serde_json::json!({ "other": 1 }), 1)
             .unwrap();
-        assert_eq!(db.folder_settings(), Ok(FolderSettings::default()));
+        assert_eq!(
+            db.section::<FolderSettings>(),
+            Ok(FolderSettings::default())
+        );
     }
 
     #[test]
@@ -120,9 +139,9 @@ mod tests {
             auto_categorize: false,
             category_subfolders: false,
         };
-        let saved = db.save_folder_settings(&mine, 2).unwrap();
+        let saved = db.save_section(&mine, 2).unwrap();
         assert_eq!(saved.default_directory, absolute("Mine"), "as checked");
-        assert_eq!(db.folder_settings(), Ok(saved));
+        assert_eq!(db.section::<FolderSettings>(), Ok(saved));
         assert_eq!(db.settings().unwrap().unwrap()["other"], 1);
     }
 
@@ -134,7 +153,7 @@ mod tests {
             ..FolderSettings::default()
         };
         assert_eq!(
-            db.save_folder_settings(&bad, 1).err().map(|e| e.code),
+            db.save_section(&bad, 1).err().map(|e| e.code),
             Some(ErrorCode::InvalidPath)
         );
         assert_eq!(db.settings(), Ok(None), "nothing saved");
@@ -145,11 +164,63 @@ mod tests {
         ] {
             db.save_settings(&stored, 2).unwrap();
             assert_eq!(
-                db.folder_settings().err().map(|e| e.code),
+                db.section::<FolderSettings>().err().map(|e| e.code),
                 Some(ErrorCode::Database),
                 "{stored}"
             );
             assert_eq!(db.settings(), Ok(Some(stored)), "left as it was");
         }
+    }
+
+    #[test]
+    fn each_section_is_its_defaults_until_saved_and_is_saved_on_its_own() {
+        let db = Database::open_in_memory().unwrap();
+        assert_eq!(
+            db.section::<GeneralSettings>(),
+            Ok(GeneralSettings::default())
+        );
+        let quiet = GeneralSettings {
+            close_to_tray: false,
+            ..GeneralSettings::default()
+        };
+        db.save_section(&quiet, 1).unwrap();
+        let dark = AppearanceSettings {
+            theme: Theme::Dark,
+            ..AppearanceSettings::default()
+        };
+        db.save_section(&dark, 2).unwrap();
+        assert_eq!(db.section::<GeneralSettings>(), Ok(quiet));
+        assert_eq!(db.section::<AppearanceSettings>(), Ok(dark));
+        assert_eq!(
+            db.section::<FolderSettings>(),
+            Ok(FolderSettings::default())
+        );
+        let document = db.settings().unwrap().unwrap();
+        assert_eq!(document["general"]["closeToTray"], false);
+        assert_eq!(document["appearance"]["theme"], "dark");
+    }
+
+    #[test]
+    fn a_section_that_fails_its_checks_is_refused_not_replaced() {
+        let db = Database::open_in_memory().unwrap();
+        let wide = AppearanceSettings {
+            layout: LayoutSettings {
+                sidebar_width: Some(10_000),
+                ..LayoutSettings::default()
+            },
+            ..AppearanceSettings::default()
+        };
+        assert_eq!(
+            db.save_section(&wide, 1).err().map(|e| e.code),
+            Some(ErrorCode::InvalidInput)
+        );
+        assert_eq!(db.settings(), Ok(None), "nothing saved");
+        let stored = serde_json::json!({ "appearance": { "layout": { "sidebarWidth": 10000 } } });
+        db.save_settings(&stored, 2).unwrap();
+        assert_eq!(
+            db.section::<AppearanceSettings>().err().map(|e| e.code),
+            Some(ErrorCode::Database)
+        );
+        assert_eq!(db.settings(), Ok(Some(stored)), "left as it was");
     }
 }

@@ -14,9 +14,15 @@ pnpm dev                      # builds the Rust shell and opens the app with hot
 
 The first `pnpm dev` compiles every Rust dependency and takes several minutes (see [Build times](#build-times)). Later runs reuse the build.
 
-You should see a window titled **Velocity Download Manager (dev)** whose heading shows the name and version reported by the Rust core:
+You should see a window titled **Velocity Download Manager (dev)**. The first time, it asks where downloads should go. After that, it opens on the downloads, with the navigation and the status bar ([UI_ARCHITECTURE.md](UI_ARCHITECTURE.md)):
 
-![The development shell on Windows](images/dev-shell-windows.png)
+![The app on Windows, light theme](images/shell-windows-light.png)
+
+The same window in the dark theme:
+
+![The app on Windows, dark theme](images/shell-windows-dark.png)
+
+To try the app without touching your own development data, point it at another folder: `VELOCITY_V2_DATA_DIR=<folder> pnpm dev` ([COEXISTENCE.md](COEXISTENCE.md)).
 
 The same build on Linux (Ubuntu 24.04 under WSL2/WSLg):
 

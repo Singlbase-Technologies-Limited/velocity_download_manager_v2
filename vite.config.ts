@@ -1,13 +1,14 @@
 /// <reference types="vitest/config" />
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
+import tailwindcss from '@tailwindcss/vite';
 
 const host = process.env.TAURI_DEV_HOST;
 
 // https://v2.tauri.app/start/frontend/vite/
 // Port 1430 (not V1's 1420) so V1 and V2 dev servers can run side by side.
 export default defineConfig({
-  plugins: [react()],
+  plugins: [react(), tailwindcss()],
   clearScreen: false,
   server: {
     port: 1430,
@@ -22,7 +23,18 @@ export default defineConfig({
     sourcemap: false,
   },
   test: {
-    environment: 'node',
-    include: ['src/**/*.test.{ts,tsx}', 'scripts/**/*.test.mjs'],
+    projects: [
+      // The UI's tests run in jsdom, with Tauri's IPC mocked (src/test/setup.ts, #29).
+      {
+        extends: true,
+        test: {
+          name: 'ui',
+          environment: 'jsdom',
+          include: ['src/**/*.test.{ts,tsx}'],
+          setupFiles: ['src/test/setup.ts'],
+        },
+      },
+      { extends: true, test: { name: 'scripts', environment: 'node', include: ['scripts/**/*.test.mjs'] } },
+    ],
   },
 });

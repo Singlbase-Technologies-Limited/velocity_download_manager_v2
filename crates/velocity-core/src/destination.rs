@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use crate::category::{for_file_name, Category};
+use crate::database::settings::Section;
 use crate::domain::ErrorCode;
 use crate::naming::{free_file_name, sanitize_file_name, PART_FILE_SUFFIX};
 
@@ -55,9 +56,11 @@ impl Default for FolderSettings {
     }
 }
 
-impl FolderSettings {
+impl Section for FolderSettings {
+    const KEY: &'static str = "downloads";
+
     /// The settings as they are saved, with the folder trimmed, or `InvalidPath`.
-    pub fn checked(&self) -> Result<FolderSettings, ErrorCode> {
+    fn checked(&self) -> Result<FolderSettings, ErrorCode> {
         let default_directory = match self.default_directory.trim() {
             "" => String::new(),
             dir => check_folder(dir)?.to_string_lossy().into_owned(),

@@ -2,6 +2,8 @@
 
 mod categories;
 mod downloads;
+mod shell;
+mod tray;
 
 use tauri::Manager;
 use velocity_core::paths::Paths;
@@ -19,11 +21,12 @@ pub fn run() {
         // Registered first, as the plugin requires. It is keyed on the app identifier, so a
         // second launch of V2 focuses this window, and never interferes with V1 (ADR-0003).
         .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
-            if let Some(window) = app.get_webview_window("main") {
-                let _ = window.unminimize();
-                let _ = window.set_focus();
-            }
+            shell::show_main_window(app);
         }))
+        // Used by native code only: the web layer is granted neither (capabilities/default.json).
+        .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_notification::init())
+        .manage(shell::ShellState::default())
         .setup(|app| {
             // V2's own data directory (velocity_core::paths). Failing to create it stops the
             // app with the reason, instead of running without a place for its data.
@@ -33,7 +36,23 @@ pub fn run() {
             })?;
             // The downloads (#58): the database, the engine and the manager.
             app.manage(downloads::start(app.handle(), &paths)?);
+            // The tray (#29). Without one, closing quits and the app never starts hidden.
+            let shell = app.state::<shell::ShellState>();
+            let has_tray = tray::create(app.handle()).is_ok();
+            shell
+                .tray
+                .store(has_tray, std::sync::atomic::Ordering::Relaxed);
+            // The window starts hidden (tauri.conf.json), so starting minimised never flashes it.
+            if !(has_tray && shell.general().start_minimized) {
+                shell::show_main_window(app.handle());
+            }
             Ok(())
+        })
+        .on_window_event(|window, event| {
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                api.prevent_close();
+                shell::on_close_requested(window.app_handle());
+            }
         })
         .invoke_handler(tauri::generate_handler![
             app_info,
@@ -61,6 +80,11 @@ pub fn run() {
             categories::delete_category,
             categories::set_download_category,
             categories::check_destination,
+            shell::get_shell_settings,
+            shell::set_appearance,
+            shell::complete_onboarding,
+            shell::choose_directory,
+            shell::quit_app,
         ])
         .run(tauri::generate_context!())
         .expect("error while running the Velocity Download Manager desktop shell");
@@ -116,6 +140,23 @@ mod tests {
         for host in [&b.native_host_name, &b.release_native_host_name] {
             assert_ne!(host, V1_NATIVE_HOST, "native host name");
         }
+    }
+
+    /// The dialog and notification plugins are used by native code only (#29): the web layer is
+    /// granted V1's core defaults and nothing else.
+    #[test]
+    fn the_web_layer_gets_only_the_core_permissions() {
+        let capability: serde_json::Value =
+            serde_json::from_str(include_str!("../capabilities/default.json")).unwrap();
+        assert_eq!(
+            capability["permissions"],
+            serde_json::json!([
+                "core:app:default",
+                "core:event:default",
+                "core:window:default"
+            ])
+        );
+        assert_eq!(capability["windows"], serde_json::json!(["main"]));
     }
 
     #[test]

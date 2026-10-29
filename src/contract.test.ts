@@ -7,6 +7,7 @@ import {
   CapabilitiesSchema,
   CategoryIconSchema,
   CategorySchema,
+  DensitySchema,
   ConnectionLimitSchema,
   COMMAND_API_VERSION,
   DestinationCheckSchema,
@@ -18,6 +19,9 @@ import {
   KeptReasonSchema,
   OnConflictSchema,
   parseAppInfo,
+  QuitRequestSchema,
+  ShellSettingsSchema,
+  ThemeSchema,
   VerificationSchema,
 } from './contract';
 
@@ -88,6 +92,15 @@ describe('contract fixtures generated from Rust', () => {
     expect(fixture('on-conflict.json')).toEqual(OnConflictSchema.options);
   });
 
+  it('shell settings (#29)', () => {
+    expect(ShellSettingsSchema.parse(fixture('shell-settings.json'))).toEqual(fixture('shell-settings.json'));
+  });
+
+  it('themes and densities: exactly the values the schemas know, in order (#29)', () => {
+    expect(fixture('themes.json')).toEqual(ThemeSchema.options);
+    expect(fixture('densities.json')).toEqual(DensitySchema.options);
+  });
+
   it('app info carries the same contract version as this UI', () => {
     const info = AppInfoSchema.parse(fixture('app-info.json'));
     expect(info.commandApiVersion).toBe(COMMAND_API_VERSION);
@@ -126,6 +139,20 @@ describe('schemas reject drift', () => {
   });
 });
 
+describe('the window’s own messages (#29)', () => {
+  it('a quit request says how many downloads quitting would stop', () => {
+    expect(QuitRequestSchema.parse({ active: 2 })).toEqual({ active: 2 });
+    expect(() => QuitRequestSchema.parse({ active: -1 })).toThrow();
+    expect(() => QuitRequestSchema.parse({})).toThrow();
+  });
+
+  it('a panel width outside the bounds Rust checks is refused', () => {
+    const settings = structuredClone(fixture('shell-settings.json')) as { appearance: { layout: { sidebarWidth: number } } };
+    settings.appearance.layout.sidebarWidth = 5000;
+    expect(() => ShellSettingsSchema.parse(settings)).toThrow();
+  });
+});
+
 describe('parseAppInfo', () => {
   const ok = { name: 'Velocity Download Manager (dev)', version: '0.1.0', commandApiVersion: COMMAND_API_VERSION };
 
@@ -135,7 +162,7 @@ describe('parseAppInfo', () => {
 
   it('refuses a native side with another contract version, saying so', () => {
     expect(() => parseAppInfo({ ...ok, commandApiVersion: COMMAND_API_VERSION + 1 })).toThrow(
-      /contract version 10.*expects 9/,
+      new RegExp(`contract version ${String(COMMAND_API_VERSION + 1)}.*expects ${String(COMMAND_API_VERSION)}`),
     );
   });
 

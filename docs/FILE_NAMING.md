@@ -101,4 +101,4 @@ When the server names the file, the engine reports the name once the download ha
 - **Free disk space:** `check_destination` doesn't report it yet. V1 used the `fs4` crate, and a new dependency needs the PO's approval.
 - **Creating a chosen folder:** a folder the user picks must already exist. Offering to create one is for #60's form, with #72's file system checks.
 - **Torrent categories:** a torrent gets a category only when one is given when it is added. Choosing one from its metadata is for the Add form (#60).
-- **The screens:** the Categories screen comes with the sidebar (#29), and the conflict question with the Add form (#60) (PO decision on #31).
+- **The screens:** the Categories screen came with the sidebar (#29, [UI_ARCHITECTURE.md](UI_ARCHITECTURE.md)), and the conflict question comes with the Add form (#60) (PO decision on #31).

@@ -1,19 +1,135 @@
+/* V1's design tokens and base styles (src/index.css), ported for #29: the PO's brand colours. */
+@import 'tailwindcss';
+@import '@fontsource-variable/inter';
+
+@custom-variant dark (&:where(.dark, .dark *));
+
+/*
+ * Velocity design tokens. Neutral slate surfaces with a teal-to-cobalt accent that
+ * matches the app icon. Light and dark themes are defined as CSS variables and
+ * exposed to Tailwind through @theme so utilities like bg-surface work in both.
+ */
 :root {
-  color-scheme: light dark;
-  font-family: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
-  background: Canvas;
-  color: CanvasText;
+  --bg: #f4f6f9;
+  --surface: #ffffff;
+  --surface-2: #f8fafc;
+  --surface-3: #eef2f6;
+  --border: #e1e6ed;
+  --border-strong: #cbd3de;
+  --fg: #0f172a;
+  --fg-muted: #526077;
+  --fg-subtle: #7b879a;
+  --accent: #1d6fd8;
+  --accent-strong: #1659b3;
+  --accent-soft: #e5effc;
+  --accent-fg: #ffffff;
+  --success: #15803d;
+  --success-soft: #e3f5e9;
+  --warning: #b45309;
+  --warning-soft: #fdf1e1;
+  --danger: #c2271d;
+  --danger-soft: #fde8e6;
+  --ring: #3b82f6;
+  --sidebar: #eef1f5;
+  --row-hover: #f1f5fb;
+  --row-selected: #e2ecfb;
+  --shadow: 0 1px 2px rgb(15 23 42 / 0.06), 0 4px 12px rgb(15 23 42 / 0.05);
+  color-scheme: light;
 }
 
-body {
-  margin: 0;
+.dark {
+  --bg: #0d1117;
+  --surface: #131922;
+  --surface-2: #171e29;
+  --surface-3: #1d2532;
+  --border: #253041;
+  --border-strong: #334155;
+  --fg: #e6ebf2;
+  --fg-muted: #9aa6b8;
+  --fg-subtle: #6f7b8f;
+  --accent: #4b8ff0;
+  --accent-strong: #6aa3f5;
+  --accent-soft: #172a45;
+  --accent-fg: #06101f;
+  --success: #4ade80;
+  --success-soft: #11291b;
+  --warning: #f5a524;
+  --warning-soft: #2c210d;
+  --danger: #f87171;
+  --danger-soft: #2f1414;
+  --ring: #60a5fa;
+  --sidebar: #0f141c;
+  --row-hover: #18202c;
+  --row-selected: #1b2b44;
+  --shadow: 0 1px 2px rgb(0 0 0 / 0.4), 0 8px 24px rgb(0 0 0 / 0.35);
+  color-scheme: dark;
 }
 
-.shell {
-  padding: 2rem;
+@theme inline {
+  --font-sans: 'Inter Variable', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  --font-mono: ui-monospace, 'Cascadia Code', 'SF Mono', Menlo, Consolas, monospace;
+  --color-bg: var(--bg);
+  --color-surface: var(--surface);
+  --color-surface-2: var(--surface-2);
+  --color-surface-3: var(--surface-3);
+  --color-border: var(--border);
+  --color-border-strong: var(--border-strong);
+  --color-fg: var(--fg);
+  --color-fg-muted: var(--fg-muted);
+  --color-fg-subtle: var(--fg-subtle);
+  --color-accent: var(--accent);
+  --color-accent-strong: var(--accent-strong);
+  --color-accent-soft: var(--accent-soft);
+  --color-accent-fg: var(--accent-fg);
+  --color-success: var(--success);
+  --color-success-soft: var(--success-soft);
+  --color-warning: var(--warning);
+  --color-warning-soft: var(--warning-soft);
+  --color-danger: var(--danger);
+  --color-danger-soft: var(--danger-soft);
+  --color-ring: var(--ring);
+  --color-sidebar: var(--sidebar);
+  --color-row-hover: var(--row-hover);
+  --color-row-selected: var(--row-selected);
+  --shadow-panel: var(--shadow);
 }
 
-.shell h1 {
-  font-size: 1.5rem;
-  font-weight: 600;
+@layer base {
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+  body {
+    @apply bg-bg text-fg font-sans antialiased;
+    font-size: 13px;
+    font-feature-settings: 'cv11', 'ss01', 'tnum';
+    overflow: hidden;
+    user-select: none;
+  }
+  input,
+  textarea,
+  [data-selectable] {
+    user-select: text;
+  }
+  :focus-visible {
+    outline: 2px solid var(--ring);
+    outline-offset: 1px;
+  }
+  ::selection {
+    background: var(--accent-soft);
+  }
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: var(--border-strong) transparent;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
 }

@@ -1,0 +1,44 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1130 320" width="1130" height="320">
+  <title>Velocity Download Manager</title>
+  <!-- Wordmark uses live text (Inter). Convert text to outlines before using this file in a release. -->
+  <svg x="0" y="0" width="320" height="320" viewBox="64 64 896 896">
+  <defs>
+    <linearGradient id="d-tile" x1="160" y1="64" x2="864" y2="960" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#14B8C4"/>
+      <stop offset="0.48" stop-color="#1D6FD8"/>
+      <stop offset="1" stop-color="#2236B8"/>
+    </linearGradient>
+    <linearGradient id="d-sheen" x1="512" y1="64" x2="512" y2="560" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#FFFFFF" stop-opacity="0.22"/>
+      <stop offset="1" stop-color="#FFFFFF" stop-opacity="0"/>
+    </linearGradient>
+    <linearGradient id="d-glyph" x1="512" y1="292" x2="512" y2="886" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#FFFFFF"/>
+      <stop offset="1" stop-color="#E6F0FF"/>
+    </linearGradient>
+    <filter id="d-lift" x="-20%" y="-20%" width="140%" height="150%">
+      <feDropShadow dx="0" dy="14" stdDeviation="18" flood-color="#0A1A4A" flood-opacity="0.32"/>
+    </filter>
+    <!-- Speed cuts: two slices through the leading (left) arm of the V. -->
+    <mask id="d-cuts" maskUnits="userSpaceOnUse" x="0" y="0" width="1024" height="1024">
+      <rect width="1024" height="1024" fill="#FFFFFF"/>
+      <rect x="200" y="344" width="312" height="24" fill="#000000"/>
+      <rect x="200" y="428" width="312" height="24" fill="#000000"/>
+    </mask>
+  </defs>
+
+  <rect x="64" y="64" width="896" height="896" rx="208" fill="url(#d-tile)"/>
+  <rect x="64" y="64" width="896" height="896" rx="208" fill="url(#d-sheen)"/>
+  <rect x="65.5" y="65.5" width="893" height="893" rx="206.5" fill="none" stroke="#FFFFFF" stroke-opacity="0.14" stroke-width="3"/>
+
+  <g filter="url(#d-lift)" fill="url(#d-glyph)">
+    <!-- The V doubles as a download chevron. -->
+    <path mask="url(#d-cuts)" stroke="url(#d-glyph)" stroke-width="18" stroke-linejoin="round"
+          d="M268 292 H404 L512 504 L620 292 H756 L512 770 Z"/>
+    <!-- Landing baseline. -->
+    <rect x="340" y="826" width="344" height="60" rx="30"/>
+  </g>
+</svg>
+  <text x="372" y="196" fill="#F1F5FB" font-family="Inter Variable, Inter, 'Segoe UI', system-ui, sans-serif" font-size="150" font-weight="650" letter-spacing="-4">Velocity</text>
+  <text x="378" y="264" fill="#9FB3D1" font-family="Inter Variable, Inter, 'Segoe UI', system-ui, sans-serif" font-size="42" font-weight="550" letter-spacing="9.5">DOWNLOAD MANAGER</text>
+</svg>

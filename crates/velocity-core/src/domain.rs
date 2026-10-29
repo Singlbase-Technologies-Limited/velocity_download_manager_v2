@@ -981,6 +981,24 @@ mod tests {
         }
 
         #[test]
+        fn contract_shell_settings() {
+            check(
+                "shell-settings.json",
+                serde_json::to_value(crate::app_settings::ShellSettings::sample()).unwrap(),
+            );
+        }
+
+        #[test]
+        fn contract_themes_and_densities() {
+            use crate::app_settings::{Density, Theme};
+            check("themes.json", serde_json::to_value(Theme::ALL).unwrap());
+            check(
+                "densities.json",
+                serde_json::to_value(Density::ALL).unwrap(),
+            );
+        }
+
+        #[test]
         fn contract_app_info() {
             check(
                 "app-info.json",
