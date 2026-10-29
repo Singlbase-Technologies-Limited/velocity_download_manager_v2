@@ -102,7 +102,7 @@ fn frontier_wait(
     total: u64,
     expected: &str,
 ) -> Result<Duration, String> {
-    let part = files::create_part(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    let part = files::create_part(path, true).map_err(|e| format!("{}: {e}", path.display()))?;
     let reader = part.file.try_clone().map_err(|e| e.to_string())?;
     let frontier = HashFrontier::start(reader, algorithm).map_err(|e| e.to_string())?;
     let order: Vec<usize> = if reverse {
