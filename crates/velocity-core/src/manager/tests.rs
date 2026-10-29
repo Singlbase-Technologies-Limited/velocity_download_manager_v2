@@ -2479,6 +2479,264 @@ mod per_download {
     }
 }
 
+/// The history (#32, V1's): every finished download, cleared or pruned without touching a file.
+mod history {
+    use super::*;
+    use crate::history::{HistoryQuery, HistoryStatus, StorageSettings};
+
+    const DAY: u64 = 86_400_000;
+
+    fn named(name: &str) -> TransferSpec {
+        TransferSpec {
+            urls: vec![format!("https://example.com/files/{name}")],
+            file_name: Some(name.to_owned()),
+            ..spec()
+        }
+    }
+
+    /// Downloads finished `days_ago` days before T0 + 100 days: completed, failed or cancelled,
+    /// and taken out of the list unless `in_list`.
+    struct Fixture {
+        m: Manager,
+        db: Arc<Database>,
+        control: FakeControl,
+        next: u64,
+    }
+
+    impl Fixture {
+        fn new() -> Self {
+            let fake = FakeTransfer::new();
+            let control = fake.control();
+            let db = Arc::new(Database::open_in_memory().unwrap());
+            // Each download finishes before the next is added, so the queue never holds one back.
+            let m = Manager::open(Box::new(fake), Arc::clone(&db)).unwrap();
+            Fixture {
+                m,
+                db,
+                control,
+                next: 0,
+            }
+        }
+
+        fn finished(&mut self, name: &str, how: DownloadStatus, at: u64, in_list: bool) -> String {
+            let id = self.m.add(DownloadKind::Http, named(name), at).unwrap();
+            self.next += 1;
+            let transfer = TransferId(self.next);
+            match how {
+                DownloadStatus::Completed => self.control.complete(transfer),
+                DownloadStatus::Failed => self.control.fail(
+                    transfer,
+                    TransferError::new(FailureClass::Permanent, Some(404), "Not found"),
+                ),
+                _ => {
+                    self.m.pump(at);
+                    self.m.cancel(&id).unwrap();
+                }
+            }
+            self.m.pump(at);
+            if !in_list {
+                self.m.remove(&id, false).unwrap();
+            }
+            id
+        }
+    }
+
+    fn names(page: &crate::history::HistoryPage) -> Vec<&str> {
+        page.entries
+            .iter()
+            .map(|e| e.file_name.as_deref().unwrap_or("?"))
+            .collect()
+    }
+
+    #[test]
+    fn the_history_lists_finished_downloads_newest_first_in_the_list_or_not() {
+        let mut f = Fixture::new();
+        f.finished("old.zip", DownloadStatus::Completed, T0, false);
+        f.finished("broken.iso", DownloadStatus::Failed, T0 + 10, true);
+        f.finished("stopped.bin", DownloadStatus::Removed, T0 + 20, true);
+        f.m.add(DownloadKind::Http, named("running.zip"), T0 + 30)
+            .unwrap();
+        let page = f.m.history(&HistoryQuery::default()).unwrap();
+        assert_eq!(names(&page), ["stopped.bin", "broken.iso", "old.zip"]);
+        assert_eq!(page.total, 3);
+        assert!(!page.entries[2].in_list);
+        assert!(page.entries[1].in_list);
+        assert_eq!(page.entries[1].error_message.as_deref(), Some("Not found"));
+    }
+
+    #[test]
+    fn the_history_is_searched_filtered_and_paged() {
+        let mut f = Fixture::new();
+        f.finished("holiday.mp4", DownloadStatus::Completed, T0, false);
+        f.finished("holiday-2.mp4", DownloadStatus::Failed, T0 + 1, false);
+        f.finished("notes.txt", DownloadStatus::Completed, T0 + 2, false);
+        let search = |s: &str, status| HistoryQuery {
+            search: Some(s.to_owned()),
+            status,
+            ..HistoryQuery::default()
+        };
+        assert_eq!(
+            names(&f.m.history(&search("HOLIDAY", None)).unwrap()),
+            ["holiday-2.mp4", "holiday.mp4"]
+        );
+        assert_eq!(
+            names(
+                &f.m.history(&search("holiday", Some(HistoryStatus::Completed)))
+                    .unwrap()
+            ),
+            ["holiday.mp4"]
+        );
+        // `%` and `_` are searched for as themselves.
+        assert_eq!(f.m.history(&search("%", None)).unwrap().total, 0);
+        let page =
+            f.m.history(&HistoryQuery {
+                limit: Some(1),
+                offset: Some(1),
+                ..HistoryQuery::default()
+            })
+            .unwrap();
+        assert_eq!(names(&page), ["holiday-2.mp4"]);
+        assert_eq!(page.total, 3);
+        assert_eq!(
+            f.m.history(&search(
+                &"x".repeat(HistoryQuery::MAX_SEARCH_BYTES + 1),
+                None
+            )),
+            Err(ErrorCode::InvalidInput)
+        );
+    }
+
+    #[test]
+    fn clearing_the_history_forgets_entries_but_keeps_files_and_the_list() {
+        let dir = std::env::temp_dir().join(format!("v2-history-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut f = Fixture::new();
+        let gone = f.finished("old.zip", DownloadStatus::Completed, T0, false);
+        let listed = f.finished("kept.zip", DownloadStatus::Completed, T0 + 1, true);
+        std::fs::write(dir.join("old.zip"), b"zip").unwrap();
+        assert_eq!(f.m.clear_history(), Ok(2));
+        assert_eq!(f.m.history(&HistoryQuery::default()).unwrap().total, 0);
+        assert!(dir.join("old.zip").exists(), "files are never touched");
+        assert!(f.m.get(&listed).is_some(), "still in the list");
+        let stored: Vec<_> =
+            f.db.downloads()
+                .unwrap()
+                .into_iter()
+                .map(|d| d.id)
+                .collect();
+        assert_eq!(
+            stored,
+            std::slice::from_ref(&listed),
+            "the one out of the list is forgotten"
+        );
+        assert!(!stored.contains(&gone));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn deleting_entries_takes_only_finished_ones_out_of_the_history() {
+        let mut f = Fixture::new();
+        let a = f.finished("a.zip", DownloadStatus::Completed, T0, false);
+        let b = f.finished("b.zip", DownloadStatus::Completed, T0 + 1, true);
+        let running = f.m.add(DownloadKind::Http, named("c.zip"), T0 + 2).unwrap();
+        f.m.delete_history(&[a.clone(), b.clone(), running.clone(), "d-9999".to_owned()])
+            .unwrap();
+        assert_eq!(f.m.history(&HistoryQuery::default()).unwrap().total, 0);
+        let stored: Vec<_> =
+            f.db.downloads()
+                .unwrap()
+                .into_iter()
+                .map(|d| d.id)
+                .collect();
+        assert_eq!(stored, [b, running], "a running download is never touched");
+        assert_eq!(
+            f.m.delete_history(&vec!["x".to_owned(); crate::manager::MAX_BATCH + 1]),
+            Err(ErrorCode::InvalidInput)
+        );
+    }
+
+    #[test]
+    fn retention_forgets_old_entries_and_the_oldest_beyond_the_most_kept() {
+        let mut f = Fixture::new();
+        f.finished("ancient.zip", DownloadStatus::Completed, T0, false);
+        f.finished("listed.zip", DownloadStatus::Completed, T0 + 1, true);
+        for i in 0..150 {
+            f.finished(
+                &format!("f{i:03}.zip"),
+                DownloadStatus::Completed,
+                T0 + 90 * DAY + i,
+                false,
+            );
+        }
+        let now = T0 + 100 * DAY;
+        let settings = StorageSettings {
+            history_retention_days: 30,
+            max_history_entries: 100,
+        };
+        assert_eq!(f.m.set_storage_settings(&settings, now), Ok(settings));
+        let page =
+            f.m.history(&HistoryQuery {
+                limit: Some(1000),
+                ..HistoryQuery::default()
+            })
+            .unwrap();
+        // The entry in the list stays whatever its age; 100 others are kept, the newest.
+        assert_eq!(page.total, 101);
+        assert!(names(&page).contains(&"listed.zip"));
+        assert!(!names(&page).contains(&"ancient.zip"));
+        assert!(!names(&page).contains(&"f049.zip"));
+        assert!(names(&page).contains(&"f050.zip"));
+        assert_eq!(f.m.settings_section::<StorageSettings>(), Ok(settings));
+    }
+
+    #[test]
+    fn retention_of_zero_days_keeps_entries_forever_and_applies_when_the_app_starts() {
+        let mut f = Fixture::new();
+        f.finished("ancient.zip", DownloadStatus::Completed, T0, false);
+        f.db.save_section(
+            &StorageSettings {
+                history_retention_days: 0,
+                max_history_entries: 100,
+            },
+            T0,
+        )
+        .unwrap();
+        assert_eq!(f.m.apply_retention(T0 + 5000 * DAY), Ok(0));
+        f.db.save_section(&StorageSettings::default(), T0).unwrap();
+        let again = Manager::open(Box::new(FakeTransfer::new()), Arc::clone(&f.db)).unwrap();
+        assert_eq!(
+            again.history(&HistoryQuery::default()).unwrap().total,
+            1,
+            "opening doesn't prune: the app does, with the time"
+        );
+        let mut again = again;
+        assert_eq!(again.apply_retention(T0 + 91 * DAY), Ok(1));
+    }
+
+    #[test]
+    fn retention_outside_its_bounds_is_refused_and_nothing_is_forgotten() {
+        let mut f = Fixture::new();
+        f.finished("old.zip", DownloadStatus::Completed, T0, false);
+        for bad in [
+            StorageSettings {
+                history_retention_days: StorageSettings::MAX_RETENTION_DAYS + 1,
+                ..StorageSettings::default()
+            },
+            StorageSettings {
+                max_history_entries: StorageSettings::MIN_ENTRIES - 1,
+                ..StorageSettings::default()
+            },
+        ] {
+            assert_eq!(
+                f.m.set_storage_settings(&bad, T0 + 999 * DAY),
+                Err(ErrorCode::InvalidInput)
+            );
+        }
+        assert_eq!(f.m.history(&HistoryQuery::default()).unwrap().total, 1);
+    }
+}
+
 /// The engine's health as the app shows it, and "Restart transfer engine" (#39, #58).
 mod engine_health {
     use super::*;

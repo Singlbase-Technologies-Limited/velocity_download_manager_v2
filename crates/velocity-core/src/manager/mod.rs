@@ -1046,6 +1046,7 @@ mod adding;
 mod batch;
 mod categories;
 mod finished;
+mod history;
 mod options;
 mod persist;
 mod recovery;
