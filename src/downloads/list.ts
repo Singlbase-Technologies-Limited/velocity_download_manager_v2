@@ -176,7 +176,9 @@ export const STATUS_LABEL: Record<DownloadStatus, string> = {
 export function statusLabel(d: DownloadRecord, now: number, opts: { needsLogin?: boolean } = {}): string {
   if (opts.needsLogin) return 'Needs its login';
   if (d.status === 'retrying' && d.retryAtMs !== null) {
-    const left = Math.round((d.retryAtMs - now) / 1000);
+    // Down, never up: the window's clock ticks in whole seconds (`useNow`), so `now` can be up to a second behind and
+    // rounding would show 31s with 30.5s left.
+    const left = Math.floor((d.retryAtMs - now) / 1000);
     return left > 0 ? `Retrying in ${formatDuration(left)}` : 'Retrying now';
   }
   // Completed, and waiting for a free seeding slot (#63).

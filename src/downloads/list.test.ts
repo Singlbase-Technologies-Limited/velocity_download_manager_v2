@@ -99,6 +99,8 @@ describe('what the list shows (#59)', () => {
   it('counts down to the engine’s next attempt, and never invents one', () => {
     const retrying = (retryAtMs: number | null) => makeRecord({ status: 'retrying', retryAtMs });
     expect(statusLabel(retrying(now + 28_000), now)).toBe('Retrying in 28s');
+    // The window's `now` is whole seconds, so up to a second over is still the whole second (#59's flaky row test).
+    expect(statusLabel(retrying(now + 30_999), now)).toBe('Retrying in 30s');
     expect(statusLabel(retrying(now + 90_000), now)).toBe('Retrying in 1m 30s');
     expect(statusLabel(retrying(now - 500), now)).toBe('Retrying now');
     expect(statusLabel(retrying(null), now)).toBe('Waiting to retry');
