@@ -1155,7 +1155,11 @@ fn a_link_from_the_browser_to_this_computer_waits_until_the_user_allows_it() {
             "{mode}"
         );
         assert!(!dest.exists(), "{mode}");
-        assert_eq!(server.counters().gets, before, "{mode}: nothing was requested");
+        assert_eq!(
+            server.counters().gets,
+            before,
+            "{mode}: nothing was requested"
+        );
 
         let dest = dir.0.join("allowed.bin");
         let id = engine

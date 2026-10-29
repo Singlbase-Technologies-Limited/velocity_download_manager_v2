@@ -5641,7 +5641,10 @@ mod confirmations {
         let again = control.spec(TransferId(2));
         assert!(again.trust.from_browser && again.trust.local_address_confirmed);
         assert!(!again.trust.confirms_local_addresses());
-        assert!(!again.trust.insecure_redirect_confirmed, "only what was asked");
+        assert!(
+            !again.trust.insecure_redirect_confirmed,
+            "only what was asked"
+        );
         assert_eq!(m.get(&id).unwrap().error, None);
     }
 
@@ -5655,7 +5658,8 @@ mod confirmations {
         );
         control.fail(TransferId(1), error);
         m.pump(T0 + 1);
-        m.allow_download(&id, ConfirmKind::InsecureRedirect).unwrap();
+        m.allow_download(&id, ConfirmKind::InsecureRedirect)
+            .unwrap();
         let again = control.spec(TransferId(2));
         assert!(again.trust.insecure_redirect_confirmed);
         assert!(!again.trust.local_address_confirmed);
