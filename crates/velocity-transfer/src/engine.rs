@@ -276,6 +276,13 @@ fn finished(status: DownloadStatus) -> bool {
     )
 }
 
+/// A value behind a mutex; a worker's panic leaves it whole, as every update replaces it at once.
+fn lock_value<T>(value: &Mutex<T>) -> MutexGuard<'_, T> {
+    value
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
 fn lock(state: &Mutex<State>) -> MutexGuard<'_, State> {
     // The state stays consistent between whole updates, so a worker's panic doesn't corrupt it.
     state
@@ -1170,11 +1177,4 @@ mod tests {
             (2, None)
         );
     }
-}
-
-/// A value behind a mutex; a worker's panic leaves it whole, as every update replaces it at once.
-fn lock_value<T>(value: &Mutex<T>) -> MutexGuard<'_, T> {
-    value
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
