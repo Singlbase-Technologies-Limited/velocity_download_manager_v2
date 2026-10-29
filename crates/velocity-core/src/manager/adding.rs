@@ -501,7 +501,7 @@ impl Manager {
                 .filter(|_| kind == DownloadKind::Sftp),
             headers: request.headers.clone(),
             referrer: request.referrer.clone(),
-            user_agent: None,
+            user_agent: self.user_agent.clone(),
             checksum: shared.checksum.clone(),
             pieces: None,
             limits: shared.limits,
@@ -576,6 +576,7 @@ impl Manager {
         self.add_new_torrent(torrent, request, shared, known, now_ms)
     }
 
+    /// `ProtocolDisabled` while BitTorrent is off (#30).
     fn add_new_torrent(
         &mut self,
         torrent: NewTorrent,
@@ -584,6 +585,9 @@ impl Manager {
         known: &mut Known,
         now_ms: u64,
     ) -> Result<AddOutcome, ErrorCode> {
+        if !self.torrents_enabled {
+            return Err(ErrorCode::ProtocolDisabled);
+        }
         if let Some(duplicate) =
             Known::blocking(&known.hashes, &torrent.keys, request.allow_duplicate)
         {

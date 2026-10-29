@@ -1,4 +1,4 @@
-import { AlertCircle, ArrowDownToLine, ArrowUpFromLine, CheckCircle2, Clock3, FolderCog, History, Layers, PanelLeftClose, PanelLeftOpen, Plus, type LucideIcon } from 'lucide-react';
+import { AlertCircle, ArrowDownToLine, ArrowUpFromLine, CheckCircle2, Clock3, FolderCog, History, Layers, PanelLeftClose, PanelLeftOpen, Plus, Settings, type LucideIcon } from 'lucide-react';
 import { useMemo, type ReactNode } from 'react';
 import { BrandIcon } from '../components/BrandIcon';
 import { CategoryGlyph } from '../components/CategoryGlyph';
@@ -61,7 +61,7 @@ const groupLabel = 'px-2.5 pb-1 text-[10px] font-semibold uppercase tracking-wid
 
 /**
  * The navigation (V1's Sidebar). Its width comes from the shell (`--sidebar-w`); `compact` shows icons
- * only, because the user collapsed it or the window is too narrow. Settings come with #30.
+ * only, because the user collapsed it or the window is too narrow.
  */
 export function Sidebar({ app, compact, autoCompact }: { app: AppInfo; compact: boolean; autoCompact: boolean }) {
   const view = useUiStore((s) => s.view);
@@ -126,6 +126,7 @@ export function Sidebar({ app, compact, autoCompact }: { app: AppInfo; compact: 
           <p className={compact ? 'sr-only' : groupLabel}>Library</p>
           <NavButton compact={compact} active={view === 'history'} icon={History} label="History" onClick={() => { setView('history'); }} />
           <NavButton compact={compact} active={view === 'categories'} icon={FolderCog} label="Categories" onClick={() => { setView('categories'); }} />
+          <NavButton compact={compact} active={view === 'settings'} icon={Settings} label="Settings" onClick={() => { setView('settings'); }} />
         </div>
       </div>
       <div className={cn('flex shrink-0 items-center gap-2 border-t border-border py-1.5 text-[10px] text-fg-subtle', compact ? 'justify-center' : 'pl-4 pr-1.5')}>

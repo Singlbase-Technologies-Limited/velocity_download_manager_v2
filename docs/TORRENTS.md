@@ -182,7 +182,7 @@ The helper never deletes files. Deleting is the manager's decision, through `vel
 
 ## Settings and identity
 
-The settings screen is #30. A new helper starts with every kind of peer discovery off and listens nowhere in particular, and the supervisor sends the settings right after the handshake. The defaults are V1's (PO decisions on #62), apart from the port:
+The Settings screen's BitTorrent section edits them ([SETTINGS.md](SETTINGS.md#advanced-and-new-torrents), #30). A new helper starts with every kind of peer discovery off and listens nowhere in particular, and the supervisor sends the settings right after the handshake. The defaults are V1's (PO decisions on #62), apart from the port:
 
 | Setting | Default | Limits | What it does |
 |---|---|---|---|
@@ -232,7 +232,6 @@ The manager runs torrents beside direct downloads, through the `TorrentEngine` c
 
 ## Not yet
 
-- **The BitTorrent settings:** the default seeding policy and upload limit, how many torrents seed at once, and the network settings (#30).
 - **Keeping trackers across a restart** (#70).
 
 ## Tests

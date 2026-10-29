@@ -12,7 +12,8 @@ use velocity_test_http::{
     seeded_bytes, Change, Counters, FileHeaders, RangeMode, ServerOptions, TestServer,
 };
 use velocity_transfer::download::{
-    download, download_resumable, Cadence, Control, DownloadError, DownloadOptions, Expected, Mode,
+    download, download_resumable, Cadence, Control, DiskOptions, DownloadError, DownloadOptions,
+    Expected, Mode,
 };
 use velocity_transfer::retry::RetryPolicy;
 use velocity_transfer::scheduler::Sizes;
@@ -59,6 +60,7 @@ fn part_of(dest: &Path) -> PathBuf {
 
 /// One connection, so the requests come in a known order.
 const OPTIONS: DownloadOptions = DownloadOptions {
+    disk: DiskOptions::DEFAULT,
     connections: 1,
     probe_bytes: 64 * 1024,
     leases: Sizes::DEFAULT,

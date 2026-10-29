@@ -32,7 +32,7 @@ use velocity_core::naming::{
     PART_FILE_SUFFIX,
 };
 use velocity_core::transfer::{
-    Checkpoint, Checksum, HashAlgorithm, PieceHashes, Resume, CHECKPOINT_FORMAT,
+    Checkpoint, Checksum, HashAlgorithm, PieceHashes, Preallocation, Resume, CHECKPOINT_FORMAT,
 };
 use velocity_curl::{
     Fetch, FetchError, FetchEvent, FetchLimit, FetchRequest, Gate, RateLimit, RequestOptions,
@@ -63,9 +63,6 @@ use crate::validator::Representation;
 
 /// How often a waiting download checks whether it was cancelled.
 const CANCEL_CHECK: Duration = Duration::from_millis(100);
-/// How many fetch events each segment may have waiting for the writer. Each holds at most the
-/// libcurl layer's per-fetch buffer (1 MiB by default), so this bounds the queue's memory.
-const QUEUED_PER_SEGMENT: usize = 2;
 /// Anomalous answers a download tolerates before ranges stop for it, and the rest comes as one
 /// stream (report section 5.1, step 7: "two consecutive anomalies").
 const MAX_ANOMALIES: u32 = 2;
@@ -348,6 +345,27 @@ pub struct DownloadOptions {
     /// Adaptive connections (#47): start with one and add while each helps, up to `connections`.
     /// `None` uses `connections` from the start, as the CLI does to compare fixed counts.
     pub adaptive: Option<AdaptivePolicy>,
+    /// How room is made for the file, and how much each connection may queue (#30);
+    /// [`DiskOptions::DEFAULT`] unless the user set them.
+    pub disk: DiskOptions,
+}
+
+/// How a download makes room for its file and buffers its writes (#30; V1's `file_allocation`
+/// and `disk_cache_mib`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DiskOptions {
+    pub preallocation: Preallocation,
+    /// How many fetch events each segment may have waiting for the writer; each holds at most the
+    /// libcurl layer's per-fetch buffer (1 MiB by default), so this bounds the queue's memory.
+    pub queued_per_segment: usize,
+}
+
+impl DiskOptions {
+    /// The engine's choices before #30: sparse part files, and two waiting events a segment.
+    pub const DEFAULT: DiskOptions = DiskOptions {
+        preallocation: Preallocation::Sparse,
+        queued_per_segment: 2,
+    };
 }
 
 impl DownloadOptions {
@@ -592,6 +610,8 @@ pub fn download_from(
     let checksum = expected.checksum.as_ref();
     let mut part = None;
     let mut from = None;
+    // A part file is sparse unless the user chose no preallocation (#30).
+    let sparse = options.disk.preallocation != Preallocation::None;
     match target {
         Target::File(destination) => {
             // symlink_metadata doesn't follow a link: a dangling link at the destination counts.
@@ -615,10 +635,10 @@ pub fn download_from(
                 if resume.is_some() {
                     discard(&path)?;
                 }
-                part = Some(PartFile::create(path)?);
+                part = Some(PartFile::create(path, sparse)?);
             }
         }
-        Target::Folder(directory) => part = Some(PartFile::pending(directory.to_owned())),
+        Target::Folder(directory) => part = Some(PartFile::pending(directory.to_owned(), sparse)),
     }
     let mut part = part.expect("a part file for every target");
     if let Some(checksum) = checksum {
@@ -1744,6 +1764,10 @@ fn fetch_ranges(
     let mut last_source_error: Option<TransferError> = None;
     // The most connections a throttling server leaves this download (#48).
     let mut throttled_to = u32::MAX;
+    // Full preallocation reserves the whole file now that its size is known (#30).
+    if options.disk.preallocation == Preallocation::Full {
+        part.reserve(total)?;
+    }
     let mut sched = Scheduler::new(total, &part.coverage, options.leases);
     if ck.resumed {
         // What a resumed download starts with came from a checkpoint: it is on disk already.
@@ -1752,7 +1776,9 @@ fn fetch_ranges(
     // Bounded, so a slow writer stops the forwarders, which stops libcurl: an unbounded channel
     // here once queued a whole file in memory (#38). It is sized for the starting connections;
     // connections added later share it, which only holds them back sooner (#47).
-    let (tx, rx) = mpsc::sync_channel(QUEUED_PER_SEGMENT * options.connections.max(1) as usize);
+    let (tx, rx) = mpsc::sync_channel(
+        options.disk.queued_per_segment.max(1) * options.connections.max(1) as usize,
+    );
     let mut active: HashMap<LeaseId, Active> = HashMap::new();
     // Connections waiting out a retry wait, by when each may be used again.
     let mut waiting: Vec<Instant> = Vec::new();
@@ -2533,9 +2559,9 @@ fn io_error(what: &str, path: &Path, e: &io::Error) -> DownloadError {
 }
 
 /// The part file this download owns: removed on drop unless it was finished.
-/// Creates the part file at `path`, which must not exist yet.
-fn new_part(path: &Path) -> Result<files::NewPart, DownloadError> {
-    files::create_part(path).map_err(|e| match e.kind() {
+/// Creates the part file at `path`, which must not exist yet; sparse with `sparse`.
+fn new_part(path: &Path, sparse: bool) -> Result<files::NewPart, DownloadError> {
+    files::create_part(path, sparse).map_err(|e| match e.kind() {
         io::ErrorKind::AlreadyExists => DownloadError::Io(format!(
             "{} already exists; it may belong to another download",
             path.display()
@@ -2553,6 +2579,8 @@ struct PartFile {
     keep: bool,
     /// This run created it sparse (`files::create_part`).
     sparse: bool,
+    /// The part file it creates is to be sparse: the user's preallocation (#30).
+    make_sparse: bool,
     /// Hashes the covered prefix when the download has a checksum (#46).
     frontier: Option<(HashAlgorithm, HashFrontier)>,
     /// Checks each piece once it is covered, when the download has piece hashes (#46).
@@ -2623,9 +2651,10 @@ fn is_taken(directory: &Path, name: &str) -> bool {
 impl PartFile {
     /// A new part file at `path`, sparse on Windows. From here on it is the download's own:
     /// removed on a failure, renamed on success.
-    fn create(path: PathBuf) -> Result<Self, DownloadError> {
-        let new = new_part(&path)?;
+    fn create(path: PathBuf, sparse: bool) -> Result<Self, DownloadError> {
+        let new = new_part(&path, sparse)?;
         let mut part = PartFile::empty();
+        part.make_sparse = sparse;
         part.path = path;
         part.file = Some(new.file);
         part.sparse = new.sparse;
@@ -2644,8 +2673,9 @@ impl PartFile {
 
     /// A part file for a download into `directory`, created once the server names the file
     /// ([`PartFile::name_from`]). Until then nothing is on disk.
-    fn pending(directory: PathBuf) -> Self {
+    fn pending(directory: PathBuf, sparse: bool) -> Self {
         let mut part = PartFile::empty();
+        part.make_sparse = sparse;
         part.pending = Some(Pending {
             directory,
             hash: None,
@@ -2663,6 +2693,7 @@ impl PartFile {
             wasted: 0,
             keep: false,
             sparse: false,
+            make_sparse: true,
             frontier: None,
             pieces: None,
             earlier: Coverage::default(),
@@ -2673,6 +2704,23 @@ impl PartFile {
 
     fn is_pending(&self) -> bool {
         self.pending.is_some()
+    }
+
+    /// Reserves `total` bytes for the file (full preallocation, #30): a disk that is too small
+    /// fails now, not halfway. A file already that long is left as it is.
+    fn reserve(&mut self, total: u64) -> Result<(), DownloadError> {
+        let Some(file) = self.file.as_ref() else {
+            return Ok(());
+        };
+        let len = file
+            .metadata()
+            .map_err(|e| io_error("read the part file's size", &self.path, &e))?
+            .len();
+        if len < total {
+            file.set_len(total)
+                .map_err(|e| io_error("reserve room for", &self.path, &e))?;
+        }
+        Ok(())
     }
 
     /// Names a pending part file from `source` and creates it: the server's name, sanitised, or
@@ -2691,7 +2739,7 @@ impl PartFile {
             .ok_or(DownloadError::FileExists)?;
             let destination = pending.directory.join(&name);
             let path = part_path(&destination);
-            match files::create_part(&path) {
+            match files::create_part(&path, self.make_sparse) {
                 Ok(new) => {
                     self.path = path;
                     self.file = Some(new.file);
@@ -2824,7 +2872,7 @@ impl PartFile {
         let algorithm = self.frontier.take().map(|(algorithm, _)| algorithm);
         drop(self.file.take());
         discard(&self.path)?;
-        let new = new_part(&self.path)?;
+        let new = new_part(&self.path, self.make_sparse)?;
         self.file = Some(new.file);
         self.coverage = Coverage::default();
         self.earlier = Coverage::default();

@@ -9,7 +9,9 @@ use velocity_core::domain::FailureClass;
 use velocity_curl::{CurlLoop, Libcurl, LoopOptions};
 use velocity_test_http::tls::{Alpn, Leaf, TlsFront};
 use velocity_test_http::{seeded_bytes, Http2Options, Http2Server, ServerOptions, TestServer};
-use velocity_transfer::download::{download, Cadence, DownloadError, DownloadOptions, Mode};
+use velocity_transfer::download::{
+    download, Cadence, DiskOptions, DownloadError, DownloadOptions, Mode,
+};
 use velocity_transfer::retry::RetryPolicy;
 use velocity_transfer::scheduler::Sizes;
 
@@ -52,6 +54,7 @@ fn trusting(ca_file: &Path) -> CurlLoop {
 }
 
 const OPTIONS: DownloadOptions = DownloadOptions {
+    disk: DiskOptions::DEFAULT,
     connections: 4,
     probe_bytes: 256 * 1024,
     leases: Sizes::DEFAULT,

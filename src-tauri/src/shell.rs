@@ -16,6 +16,8 @@ use velocity_core::destination::check_folder;
 use velocity_core::domain::{DownloadsSnapshot, ErrorCode};
 use velocity_core::manager::now_ms;
 use velocity_core::notices::{active_downloads, notices};
+use velocity_core::settings::Settings;
+use velocity_core::torrent_engine::NetworkStatus;
 
 use crate::downloads::{on_manager, Downloads};
 use crate::tray;
@@ -35,7 +37,7 @@ pub struct QuitRequest {
 /// What the shell keeps between snapshots and window events.
 #[derive(Default)]
 pub struct ShellState {
-    /// Read when the app starts; #30's Settings screen will change them.
+    /// Read when the app starts, and changed by the Settings screen (#30).
     pub general: Mutex<GeneralSettings>,
     pub notifications: Mutex<NotificationSettings>,
     /// Downloads moving data now, from the last snapshot.
@@ -140,6 +142,54 @@ pub async fn set_appearance(
     appearance: AppearanceSettings,
 ) -> Result<AppearanceSettings, ErrorCode> {
     on_manager(&downloads, move |m| m.set_appearance(&appearance, now_ms())).await?
+}
+
+/// Every setting the Settings screen edits (#30).
+#[tauri::command]
+pub async fn get_settings(downloads: State<'_, Downloads>) -> Result<Settings, ErrorCode> {
+    on_manager(&downloads, |m| m.settings()).await?
+}
+
+/// Checks, saves and applies the settings (#30); closing and notifications follow at once.
+#[tauri::command]
+pub async fn set_settings(
+    app: AppHandle,
+    downloads: State<'_, Downloads>,
+    settings: Settings,
+) -> Result<Settings, ErrorCode> {
+    let saved = on_manager(&downloads, move |m| m.set_settings(&settings, now_ms())).await??;
+    follow(&app, &saved);
+    Ok(saved)
+}
+
+/// Back to the defaults, keeping the download folder (#30, V1's `reset_settings`).
+#[tauri::command]
+pub async fn reset_settings(
+    app: AppHandle,
+    downloads: State<'_, Downloads>,
+) -> Result<Settings, ErrorCode> {
+    let saved = on_manager(&downloads, |m| m.reset_settings(now_ms())).await??;
+    follow(&app, &saved);
+    Ok(saved)
+}
+
+/// The torrent helper's listening port and port mapping (#30).
+#[tauri::command]
+pub async fn get_torrent_network(
+    downloads: State<'_, Downloads>,
+) -> Result<NetworkStatus, ErrorCode> {
+    on_manager(&downloads, |m| m.torrent_network()).await?
+}
+
+/// What closing and notifications do, from the settings just saved.
+fn follow(app: &AppHandle, settings: &Settings) {
+    let shell = app.state::<ShellState>();
+    if let Ok(mut general) = shell.general.lock() {
+        *general = settings.general.clone();
+    }
+    if let Ok(mut notifications) = shell.notifications.lock() {
+        *notifications = settings.notifications.clone();
+    };
 }
 
 /// Finishes the first-run setup with the folder the user chose for downloads.

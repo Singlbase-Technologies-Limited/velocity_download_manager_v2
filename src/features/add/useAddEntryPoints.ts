@@ -11,6 +11,12 @@ import { useUiStore } from '../../stores/ui';
 export function useAddEntryPoints() {
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
+      // Ctrl+, (⌘, on macOS) opens Settings, as in V1 (#30).
+      if ((e.ctrlKey || e.metaKey) && !e.altKey && !e.shiftKey && e.key === ',') {
+        e.preventDefault();
+        useUiStore.getState().setView('settings');
+        return;
+      }
       if ((e.ctrlKey || e.metaKey) && !e.altKey && !e.shiftKey && e.key.toLowerCase() === 'n') {
         e.preventDefault();
         // An open dialog keeps what the user typed.

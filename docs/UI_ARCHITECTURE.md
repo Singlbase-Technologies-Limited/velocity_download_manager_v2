@@ -57,7 +57,7 @@ How the window (`src/`) is built: where its state lives, how it talks to the nat
   - The colours are V1's design tokens, the PO's brand colours, in `src/index.css`. Tailwind reads them through `@theme`.
 - **The views:**
   - The six lists show their counts in the navigation, and the download list below.
-  - History (#32) is in the navigation's Library; Settings come with #30.
+  - History (#32) and Settings (#30) are in the navigation's Library. Ctrl+, (⌘, on macOS) opens Settings, as in V1.
 - **Quitting:**
   - When quitting would stop active downloads and the setting asks for it, Rust shows the window and sends `quit-requested`.
   - The window asks "Quit Velocity?". Only "Quit" calls `quit_app`, and "Keep downloading" changes nothing.
@@ -118,6 +118,15 @@ The history (#32, V1's `HistoryView`) is `src/features/history/HistoryView.tsx`.
 - **Removing:** "Remove selected" and "Clear history" (which asks first) take entries out of the history. Files are never touched, and a download still in the list stays there.
 - **Again:** opens the Add dialog with the entry's link, so adding it goes through the usual questions (#60).
 
+## Settings
+
+The Settings screen (#30) is `src/features/settings/`: what each section holds and when it applies is in [SETTINGS.md](SETTINGS.md#the-settings-screen).
+
+- **One query** (`useSettings`) holds what is saved. A change sends every section through `set_settings` and shows the answer; a refusal shows why, and the saved values again.
+- **Numbers** are saved when the field is left or Enter is pressed, brought within their bounds (V1's).
+- **Appearance** saves through `set_appearance`, like the panel widths.
+- **About and diagnostics** is #28's `DiagnosticsPanel`.
+
 ## The native side of the window
 
 These are in [`src-tauri/src/shell.rs`](../src-tauri/src/shell.rs) and [`tray.rs`](../src-tauri/src/tray.rs):
@@ -153,7 +162,6 @@ These are in [`src-tauri/src/shell.rs`](../src-tauri/src/shell.rs) and [`tray.rs
 
 - **Owned by later issues:**
   - The file checks for opening, hardened further (#72).
-  - Settings, including the theme, density, tray and notification switches (#30).
   - The browser extension's steps (#64).
-- **Keyboard shortcuts:** V1's Ctrl+, comes with Settings (#30). Ctrl+N opens the Add dialog (#60).
+- **Keyboard shortcuts:** Ctrl+, opens Settings (#30), and Ctrl+N the Add dialog (#60).
 - **The accessibility audit** is #66.

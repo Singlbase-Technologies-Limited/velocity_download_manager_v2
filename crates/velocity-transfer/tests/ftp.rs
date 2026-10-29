@@ -15,8 +15,8 @@ use velocity_curl::{CurlLoop, Libcurl, LoopOptions};
 use velocity_test_http::ftp::{FtpOptions, FtpServer};
 use velocity_test_http::seeded_bytes;
 use velocity_transfer::download::{
-    download_resumable, download_with, Cadence, Control, DownloadError, DownloadOptions, Expected,
-    Mode,
+    download_resumable, download_with, Cadence, Control, DiskOptions, DownloadError,
+    DownloadOptions, Expected, Mode,
 };
 use velocity_transfer::retry::RetryPolicy;
 use velocity_transfer::scheduler::Sizes;
@@ -71,6 +71,7 @@ const FAST_RETRY: RetryPolicy = RetryPolicy {
 /// What the engine uses for FTP, from options that ask for more.
 fn options() -> DownloadOptions {
     DownloadOptions {
+        disk: DiskOptions::DEFAULT,
         connections: 8,
         probe_bytes: 64 * 1024,
         leases: Sizes::DEFAULT,

@@ -16,6 +16,8 @@ import {
   HistoryPageSchema,
   KeptFileSchema,
   PeerStatusSchema,
+  NetworkStatusSchema,
+  SettingsSchema,
   ShellSettingsSchema,
   StorageSettingsSchema,
   TorrentDetailsSchema,
@@ -25,6 +27,7 @@ import {
   type AppearanceSettings,
   type Category,
   type DownloadLogin,
+  type Settings,
   type HistoryQuery,
   type StorageSettings,
   type MoveDirection,
@@ -70,6 +73,12 @@ export const api = {
   },
   shellSettings: () => call('get_shell_settings', undefined, ShellSettingsSchema),
   setAppearance: (appearance: AppearanceSettings) => call('set_appearance', { appearance }, AppearanceSettingsSchema),
+  // The Settings screen (#30).
+  settings: () => call('get_settings', undefined, SettingsSchema),
+  /** Checks, saves and applies every section; the settings as saved. */
+  setSettings: (settings: Settings) => call('set_settings', { settings }, SettingsSchema),
+  resetSettings: () => call('reset_settings', undefined, SettingsSchema),
+  torrentNetwork: () => call('get_torrent_network', undefined, NetworkStatusSchema),
   completeOnboarding: (directory: string) => call('complete_onboarding', { directory }, ShellSettingsSchema),
   /** The system's folder chooser; `null` when the user cancels. */
   chooseDirectory: (initial: string | null) => call('choose_directory', { initial }, z.string().min(1).nullable()),
@@ -106,6 +115,20 @@ export const api = {
   moveDownload: (id: string, direction: MoveDirection) => call('move_download', { id, direction }, nothing),
   /** Stops a torrent seeding: its seeding policy becomes "never". */
   stopSeeding: (id: string) => call('set_torrent_seeding', { id, seeding: { mode: 'never' } }, nothing),
+  // Diagnostics (#28).
+  diagnostics: () => call('get_diagnostics', undefined, DiagnosticReportSchema),
+  /** Saves the diagnostics to a file the user chooses; where, or `null` when they cancel. */
+  exportDiagnostics: () => call('export_diagnostics', undefined, z.string().min(1).nullable()),
+  /** "Restart transfer engine" and "Restart torrent helper": the health after asking. */
+  restartEngine: () => call('restart_engine', undefined, EngineHealthSchema),
+  restartTorrentHelper: () => call('restart_torrent_helper', undefined, EngineHealthSchema),
+  // The history (#32).
+  history: (query: HistoryQuery) => call('get_history', { query }, HistoryPageSchema),
+  /** How many entries left the history. */
+  clearHistory: () => call('clear_history', undefined, z.number().int().nonnegative()),
+  deleteHistoryEntries: (ids: string[]) => call('delete_history_entries', { ids }, nothing),
+  storageSettings: () => call('get_storage_settings', undefined, StorageSettingsSchema),
+  setStorageSettings: (settings: StorageSettings) => call('set_storage_settings', { settings }, StorageSettingsSchema),
   // The details panel's (#61).
   /** Sets a download's own speed limit in KiB/s; 0 for none. */
   setSpeedLimit: (id: string, kib: number) => call('set_download_speed_limit', { id, kib }, nothing),
@@ -127,20 +150,6 @@ export const api = {
   setUploadLimit: (id: string, kib: number) => call('set_torrent_upload_limit', { id, kib }, nothing),
   /** Downloads exactly `files`; with `deleteDropped`, deletes the torrent's own files no longer chosen. Answers the files kept. */
   chooseTorrentFiles: (id: string, files: number[], deleteDropped: boolean) => call('choose_torrent_files', { id, files, deleteDropped }, z.array(KeptFileSchema)),
-  // The history (#32).
-  history: (query: HistoryQuery) => call('get_history', { query }, HistoryPageSchema),
-  /** How many entries left the history. */
-  clearHistory: () => call('clear_history', undefined, z.number().int().nonnegative()),
-  deleteHistoryEntries: (ids: string[]) => call('delete_history_entries', { ids }, nothing),
-  storageSettings: () => call('get_storage_settings', undefined, StorageSettingsSchema),
-  setStorageSettings: (settings: StorageSettings) => call('set_storage_settings', { settings }, StorageSettingsSchema),
-  // Diagnostics (#28).
-  diagnostics: () => call('get_diagnostics', undefined, DiagnosticReportSchema),
-  /** Saves the diagnostics to a file the user chooses; where, or `null` when they cancel. */
-  exportDiagnostics: () => call('export_diagnostics', undefined, z.string().min(1).nullable()),
-  /** "Restart transfer engine" and "Restart torrent helper": the health after asking. */
-  restartEngine: () => call('restart_engine', undefined, EngineHealthSchema),
-  restartTorrentHelper: () => call('restart_torrent_helper', undefined, EngineHealthSchema),
   /** Gives a download that came back without its login, headers or SSH key those again; then resume or retry it. */
   setDownloadLogin: (id: string, login: DownloadLogin) => call('set_download_login', { id, login }, nothing),
 };

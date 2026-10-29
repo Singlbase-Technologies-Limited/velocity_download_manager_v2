@@ -14,8 +14,8 @@ use velocity_core::transfer::{
 use velocity_curl::{CurlLoop, Libcurl, LoopOptions};
 use velocity_test_http::{seeded_bytes, FileHeaders, RangeMode, ServerOptions, TestServer};
 use velocity_transfer::download::{
-    download_resumable, Cadence, Control, DownloadError, DownloadOptions, DownloadReport, Expected,
-    Mode,
+    download_resumable, Cadence, Control, DiskOptions, DownloadError, DownloadOptions,
+    DownloadReport, Expected, Mode,
 };
 use velocity_transfer::retry::RetryPolicy;
 use velocity_transfer::scheduler::Sizes;
@@ -70,6 +70,7 @@ fn wrong() -> Checksum {
 /// Two connections and small leases; the first range after the probe is slowed, so the
 /// segments after it complete first and the prefix from byte 0 is covered only at the end.
 const OPTIONS: DownloadOptions = DownloadOptions {
+    disk: DiskOptions::DEFAULT,
     connections: 2,
     probe_bytes: 64 * 1024,
     leases: Sizes {

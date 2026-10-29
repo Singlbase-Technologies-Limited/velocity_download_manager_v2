@@ -150,6 +150,10 @@ pub struct Manager {
     window_open: bool,
     /// Metalink is turned on (#54).
     metalink_enabled: bool,
+    /// Torrents and magnet links can be added (#30; V1's `enable_bittorrent`).
+    torrents_enabled: bool,
+    /// The `User-Agent` new downloads send; `None` for the engine's own (#30).
+    user_agent: Option<String>,
     /// Downloads that completed in the events being applied, to follow when they are Metalink
     /// files.
     just_completed: Vec<String>,
@@ -277,6 +281,8 @@ impl Manager {
             local: None,
             window_open: false,
             metalink_enabled: false,
+            torrents_enabled: true,
+            user_agent: None,
             just_completed: Vec::new(),
             links: torrent_links::TorrentLinks::default(),
         }
@@ -406,6 +412,11 @@ impl Manager {
 
     pub fn torrent_engine_log(&self) -> Vec<String> {
         self.torrents.recent_log()
+    }
+
+    /// The torrent helper's listening port and port mapping (#30; V1's libtorrent session).
+    pub fn torrent_network(&self) -> Result<crate::torrent_engine::NetworkStatus, ErrorCode> {
+        self.torrents.network()
     }
 
     /// The libtorrent the torrent helper runs; `None` while it can't say.
@@ -655,6 +666,11 @@ impl Manager {
         }
         self.fill();
         Ok(())
+    }
+
+    /// The queue settings in force.
+    pub fn queue_settings_now(&self) -> QueueSettings {
+        self.settings.clone()
     }
 
     /// Applies new queue settings at once: a higher limit starts more downloads now, and a lower
@@ -1080,8 +1096,8 @@ mod adding;
 mod batch;
 mod categories;
 mod finished;
-mod opening;
 mod history;
+mod opening;
 mod options;
 mod persist;
 mod recovery;

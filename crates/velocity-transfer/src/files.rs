@@ -17,13 +17,14 @@ pub struct NewPart {
 }
 
 /// Creates a part file that doesn't exist yet: never over an existing file, never through a link.
-/// On Windows it is marked sparse before any byte is written.
-pub fn create_part(path: &Path) -> io::Result<NewPart> {
+/// With `sparse`, on Windows it is marked sparse before any byte is written (the user's
+/// preallocation setting, #30).
+pub fn create_part(path: &Path, sparse: bool) -> io::Result<NewPart> {
     let mut options = OpenOptions::new();
     // `create_new` fails on any existing name, a link included, so nothing is ever followed.
     options.read(true).write(true).create_new(true);
     let file = options.open(path)?;
-    let sparse = mark_sparse(&file);
+    let sparse = sparse && mark_sparse(&file);
     Ok(NewPart { file, sparse })
 }
 
@@ -233,16 +234,25 @@ mod tests {
     fn a_part_file_is_created_only_where_none_exists() {
         let dir = Dir::new("create");
         let path = dir.0.join("a.vdmpart");
-        let mut part = create_part(&path).expect("created");
+        let mut part = create_part(&path, true).expect("created");
         part.file.write_all(b"x").unwrap();
         drop(part);
-        let e = create_part(&path).err().expect("refused");
+        let e = create_part(&path, true).err().expect("refused");
         assert_eq!(e.kind(), io::ErrorKind::AlreadyExists);
         assert_eq!(
             std::fs::read(&path).unwrap(),
             b"x",
             "the first one is untouched"
         );
+    }
+
+    /// On every platform: Unix never marks part files sparse, and Windows doesn't when asked not to.
+    #[test]
+    fn a_part_file_isnt_sparse_when_the_user_chose_no_preallocation() {
+        let dir = Dir::new("not-sparse");
+        let path = dir.0.join("a.vdmpart");
+        let part = create_part(&path, false).expect("created");
+        assert!(!part.sparse);
     }
 
     #[cfg(windows)]
@@ -252,7 +262,7 @@ mod tests {
         const FILE_ATTRIBUTE_SPARSE_FILE: u32 = 0x200;
         let dir = Dir::new("sparse");
         let path = dir.0.join("a.vdmpart");
-        let part = create_part(&path).expect("created");
+        let part = create_part(&path, true).expect("created");
         assert!(part.sparse);
         drop(part);
         let attributes = std::fs::metadata(&path).unwrap().file_attributes();
@@ -288,7 +298,7 @@ mod tests {
         std::os::unix::fs::symlink(&target, &path).unwrap();
         assert!(open_part(&path).is_err());
         assert!(remove_part(&path).is_err());
-        assert!(create_part(&path).is_err());
+        assert!(create_part(&path, true).is_err());
         assert_eq!(std::fs::read(&target).unwrap(), b"theirs", "untouched");
     }
 }

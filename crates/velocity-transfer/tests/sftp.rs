@@ -16,7 +16,7 @@ use velocity_sftp::{SftpOptions, SftpTransport};
 use velocity_test_http::seeded_bytes;
 use velocity_test_http::ssh::{HostKey, SshServer};
 use velocity_transfer::download::{
-    download_with, Cadence, Control, DownloadError, DownloadOptions,
+    download_with, Cadence, Control, DiskOptions, DownloadError, DownloadOptions,
 };
 use velocity_transfer::retry::RetryPolicy;
 use velocity_transfer::scheduler::Sizes;
@@ -46,6 +46,7 @@ impl Drop for Dir {
 
 fn options() -> DownloadOptions {
     DownloadOptions {
+        disk: DiskOptions::DEFAULT,
         connections: 4,
         probe_bytes: 64 * 1024,
         leases: Sizes::DEFAULT,

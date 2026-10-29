@@ -9,7 +9,9 @@ use velocity_core::domain::FailureClass;
 use velocity_curl::{CurlLoop, Libcurl, LoopOptions};
 use velocity_test_http::{seeded_bytes, Http2Options, Http2Server, RangeMode};
 use velocity_transfer::adaptive::AdaptivePolicy;
-use velocity_transfer::download::{download, Cadence, DownloadError, DownloadOptions, Mode};
+use velocity_transfer::download::{
+    download, Cadence, DiskOptions, DownloadError, DownloadOptions, Mode,
+};
 use velocity_transfer::retry::RetryPolicy;
 use velocity_transfer::scheduler::Sizes;
 
@@ -47,6 +49,7 @@ fn h2c_loop() -> CurlLoop {
 }
 
 const FIXED: DownloadOptions = DownloadOptions {
+    disk: DiskOptions::DEFAULT,
     connections: 4,
     probe_bytes: 64 * 1024,
     leases: Sizes::DEFAULT,

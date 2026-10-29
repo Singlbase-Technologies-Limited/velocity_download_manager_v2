@@ -10,7 +10,7 @@ use velocity_curl::{CurlLoop, Libcurl, LoopOptions};
 use velocity_test_http::{seeded_bytes, ServerOptions, TestServer};
 use velocity_transfer::adaptive::{AdaptivePolicy, Tuning};
 use velocity_transfer::download::{
-    download_with, Cadence, Control, DownloadOptions, DownloadReport,
+    download_with, Cadence, Control, DiskOptions, DownloadOptions, DownloadReport,
 };
 use velocity_transfer::retry::RetryPolicy;
 use velocity_transfer::scheduler::Sizes;
@@ -79,6 +79,7 @@ fn the_connection_count_follows_live_changes_without_a_restart() {
     let dir = Dir::new("live");
     let dest = dir.0.join("f.bin");
     let options = DownloadOptions {
+        disk: DiskOptions::DEFAULT,
         connections: 1,
         probe_bytes: 64 * 1024,
         leases: Sizes::DEFAULT,
@@ -169,6 +170,7 @@ fn start_throttled(
 }
 
 const EIGHT: DownloadOptions = DownloadOptions {
+    disk: DiskOptions::DEFAULT,
     connections: 8,
     probe_bytes: 64 * 1024,
     leases: Sizes::DEFAULT,

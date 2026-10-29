@@ -2764,6 +2764,182 @@ mod history {
     }
 }
 
+/// The Settings screen's settings (#30): checked whole, saved in one write, applied at once.
+mod settings_screen {
+    use super::*;
+    use crate::manager::adding::{AddOutcome, AddRequest};
+    use crate::settings::Settings;
+    use crate::torrent_engine::fake::{FakeTorrentControl, FakeTorrentEngine};
+    use crate::transfer::{EngineSettings, Preallocation};
+
+    struct Setup {
+        m: Manager,
+        direct: FakeControl,
+        torrents: FakeTorrentControl,
+        db: Arc<Database>,
+    }
+
+    fn setup() -> Setup {
+        let fake = FakeTransfer::new();
+        let direct = fake.control();
+        let lt = FakeTorrentEngine::new();
+        let torrents = lt.control();
+        let db = Arc::new(Database::open_in_memory().unwrap());
+        let m = Manager::open(Box::new(fake), Arc::clone(&db))
+            .unwrap()
+            .with_torrents(Box::new(lt));
+        Setup {
+            m,
+            direct,
+            torrents,
+            db,
+        }
+    }
+
+    fn changed() -> Settings {
+        let mut s = Settings::default();
+        s.queue.max_concurrent_downloads = 5;
+        s.engine = EngineSettings {
+            failures_in_a_row: 9,
+            preallocation: Preallocation::Full,
+            connection_budget: 20,
+            ..EngineSettings::DEFAULT
+        };
+        s.advanced.global_download_limit_kib = 512;
+        s.advanced.enable_metalink = true;
+        s.advanced.user_agent = Some("Velocity-Test/1".to_owned());
+        s.torrent.max_active_seeds = 2;
+        s.storage.history_retention_days = 30;
+        s
+    }
+
+    #[test]
+    fn the_settings_are_the_defaults_until_saved_then_as_saved() {
+        let mut s = setup();
+        assert_eq!(s.m.settings(), Ok(Settings::default()));
+        let saved = s.m.set_settings(&changed(), T0).unwrap();
+        assert_eq!(saved, changed());
+        assert_eq!(s.m.settings(), Ok(changed()));
+        // Saved in the document: a new manager reads them.
+        let again = Manager::open(Box::new(FakeTransfer::new()), Arc::clone(&s.db)).unwrap();
+        assert_eq!(again.settings(), Ok(changed()));
+    }
+
+    #[test]
+    fn saving_applies_them_at_once() {
+        // A folder of its own: the system's Downloads folder isn't there on every machine.
+        let dir = std::env::temp_dir().join(format!("v2-settings-apply-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut s = setup();
+        let mut settings = changed();
+        settings.downloads.default_directory = dir.to_string_lossy().into_owned();
+        settings.downloads.category_subfolders = false;
+        s.m.set_settings(&settings, T0).unwrap();
+        assert_eq!(s.direct.engine_settings(), changed().engine);
+        assert_eq!(s.direct.global_limits().max_download_bps, Some(512 * 1024));
+        assert!(s.torrents.log().contains(&"set_settings".to_owned()));
+        assert_eq!(s.m.queue_settings_now().max_concurrent_downloads, 5);
+        let request = AddRequest {
+            links: vec!["https://example.com/files/b.zip".to_owned()],
+            ..AddRequest::default()
+        };
+        let results = s.m.add_request(&request, T0).unwrap();
+        assert!(
+            matches!(results[0].outcome, AddOutcome::Added { .. }),
+            "{:?}",
+            results[0].outcome
+        );
+        // The engine was given exactly this one download, after the settings.
+        assert_eq!(
+            s.direct.log(),
+            [
+                "set_engine_limits",
+                "set_engine_settings",
+                "set_global_limits",
+                "add"
+            ]
+        );
+        assert_eq!(
+            s.direct.spec(TransferId(1)).user_agent.as_deref(),
+            Some("Velocity-Test/1"),
+            "new downloads send the user's user agent"
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn settings_out_of_bounds_are_refused_whole_even_from_outside_the_window() {
+        let mut s = setup();
+        let mut bad = changed();
+        bad.engine.connection_budget = 0;
+        assert_eq!(s.m.set_settings(&bad, T0), Err(ErrorCode::InvalidInput));
+        assert_eq!(s.m.settings(), Ok(Settings::default()), "nothing saved");
+        assert_eq!(
+            s.direct.engine_settings(),
+            EngineSettings::DEFAULT,
+            "nothing applied"
+        );
+        let mut bad = changed();
+        bad.queue.max_concurrent_downloads = 0;
+        assert_eq!(s.m.set_settings(&bad, T0), Err(ErrorCode::InvalidInput));
+        assert_eq!(s.m.settings(), Ok(Settings::default()));
+    }
+
+    #[test]
+    fn with_bittorrent_off_torrents_and_magnets_are_refused() {
+        let mut s = setup();
+        let mut off = Settings::default();
+        off.advanced.enable_bittorrent = false;
+        s.m.set_settings(&off, T0).unwrap();
+        let request = AddRequest {
+            links: vec!["magnet:?xt=urn:btih:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_owned()],
+            ..AddRequest::default()
+        };
+        let results = s.m.add_request(&request, T0).unwrap();
+        assert!(
+            matches!(
+                results[0].outcome,
+                AddOutcome::Failed {
+                    code: ErrorCode::ProtocolDisabled
+                }
+            ),
+            "{:?}",
+            results[0].outcome
+        );
+        assert!(s.torrents.log().iter().all(|l| l != "add"));
+    }
+
+    #[test]
+    fn a_reset_keeps_the_download_folder() {
+        let mut s = setup();
+        let mut mine = changed();
+        mine.downloads.default_directory = if cfg!(windows) {
+            "C:\\Mine".to_owned()
+        } else {
+            "/mine".to_owned()
+        };
+        s.m.set_settings(&mine, T0).unwrap();
+        let reset = s.m.reset_settings(T0).unwrap();
+        let mut expected = Settings::default();
+        expected.downloads.default_directory = mine.downloads.default_directory.clone();
+        assert_eq!(reset, expected);
+        assert_eq!(s.direct.engine_settings(), EngineSettings::DEFAULT);
+    }
+
+    #[test]
+    fn the_saved_settings_apply_when_the_app_starts() {
+        let s = setup();
+        s.db.save_sections(changed().sections().unwrap(), T0)
+            .unwrap();
+        let fake = FakeTransfer::new();
+        let direct = fake.control();
+        let mut m = Manager::open(Box::new(fake), Arc::clone(&s.db)).unwrap();
+        m.apply_saved_settings(T0).unwrap();
+        assert_eq!(direct.engine_settings(), changed().engine);
+    }
+}
+
 /// Opening a finished download's file, and showing it in its folder (#61).
 mod opening {
     use super::*;

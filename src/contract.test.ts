@@ -30,14 +30,15 @@ import {
   ShellSettingsSchema,
   ThemeSchema,
   VerificationSchema,
+  DiagnosticReportSchema,
+  HistoryPageSchema,
+  HistoryQuerySchema,
+  StorageSettingsSchema,
   PeerStatusSchema,
   TorrentDetailsSchema,
   TorrentPreviewSchema,
   TrackerStatusSchema,
-  HistoryPageSchema,
-  HistoryQuerySchema,
-  StorageSettingsSchema,
-  DiagnosticReportSchema,
+  SettingsSchema,
 } from './contract';
 import { z } from 'zod';
 
@@ -116,8 +117,20 @@ describe('contract fixtures generated from Rust', () => {
     expect(DownloadLoginSchema.parse(fixture('download-login.json'))).toEqual(fixture('download-login.json'));
   });
 
+  // The acceptance criterion of #30: the default settings, made in Rust, read by Zod.
+  it('reads the default settings (#30)', () => {
+    expect(SettingsSchema.parse(fixture('settings.json'))).toEqual(fixture('settings.json'));
+  });
+
   it('reads the diagnostics (#28)', () => {
     expect(DiagnosticReportSchema.parse(fixture('diagnostics.json'))).toEqual(fixture('diagnostics.json'));
+  });
+
+  it('reads the history’s page and query, and the retention’s defaults (#32)', () => {
+    const f = fixture('history.json') as Record<string, unknown>;
+    expect(HistoryPageSchema.parse(f.page)).toEqual(f.page);
+    expect(HistoryQuerySchema.parse(f.query)).toEqual(f.query);
+    expect(StorageSettingsSchema.parse(f.storage)).toEqual({ historyRetentionDays: 90, maxHistoryEntries: 10_000 });
   });
 
   it('reads a torrent’s details, a .torrent preview, its trackers and its peers (#63)', () => {
@@ -126,13 +139,6 @@ describe('contract fixtures generated from Rust', () => {
     expect(TorrentPreviewSchema.parse(f.preview)).toEqual(f.preview);
     expect(z.array(TrackerStatusSchema).parse(f.trackers)).toEqual(f.trackers);
     expect(z.array(PeerStatusSchema).parse(f.peers)).toEqual(f.peers);
-  });
-
-  it('reads the history’s page and query, and the retention’s defaults (#32)', () => {
-    const f = fixture('history.json') as Record<string, unknown>;
-    expect(HistoryPageSchema.parse(f.page)).toEqual(f.page);
-    expect(HistoryQuerySchema.parse(f.query)).toEqual(f.query);
-    expect(StorageSettingsSchema.parse(f.storage)).toEqual({ historyRetentionDays: 90, maxHistoryEntries: 10_000 });
   });
 
   it('the list columns: exactly the ids the schema knows, in order, the defaults and the width bounds (#59)', () => {

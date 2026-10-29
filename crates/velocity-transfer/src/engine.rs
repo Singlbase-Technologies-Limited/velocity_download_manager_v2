@@ -18,6 +18,7 @@ use std::path::PathBuf;
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::thread;
+use std::time::Duration;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use velocity_core::domain::{
@@ -27,8 +28,8 @@ use velocity_core::domain::{
 use velocity_core::paths::Paths;
 use velocity_core::request::default_user_agent;
 use velocity_core::transfer::{
-    Checkpoint, Checksum, DirectTransfer, EngineLimits, Limits, PieceHashes, Resume, TransferEvent,
-    TransferId, TransferSnapshot, TransferSpec,
+    Checkpoint, Checksum, DirectTransfer, EngineLimits, EngineSettings, Limits, PieceHashes,
+    Resume, TransferEvent, TransferId, TransferSnapshot, TransferSpec,
 };
 use velocity_curl::{
     CurlLoop, Fetch, FetchRequest, GateFn, Libcurl, LoopOptions, RateLimit, RequestOptions,
@@ -39,6 +40,7 @@ use velocity_sftp::{SftpOptions, SftpTransport, TrustError};
 
 use crate::adaptive::{AdaptivePolicy, Tuning};
 use crate::budget::{self, Demand, Share};
+use crate::download::DiskOptions;
 use crate::download::{
     download_from, part_path, wait_out, Cadence, ConnectionsNow, Control, DownloadError,
     DownloadOptions, Expected, Target,
@@ -83,8 +85,11 @@ impl Transport for Transports {
 struct Shared {
     transports: Transports,
     state: Mutex<State>,
-    /// When downloads retry and wait (#48); the user's settings once #30 passes them.
-    retry: RetryPolicy,
+    /// When downloads retry and wait (#48), with the user's settings over it (#30). A download
+    /// reads it when it starts or retries.
+    retry: Mutex<RetryPolicy>,
+    /// How room is made for files and how much each connection may queue for the writer (#30).
+    disk: Mutex<DiskOptions>,
     /// The limit all transfers share (#49).
     global: RateLimit,
     /// The libcurl the engine runs on, as it reports itself, for diagnostics (#28).
@@ -99,6 +104,8 @@ struct State {
     /// The performance profile's limits (#57): the per-host cap the budget shares, and the
     /// smallest piece a starting transfer is split into.
     limits: EngineLimits,
+    /// The connections all transfers share (#47); the user's setting since #30.
+    budget: u32,
 }
 
 struct Entry {
@@ -186,11 +193,7 @@ impl State {
                 wants: *wants,
             })
             .collect();
-        let shares = budget::share(
-            &demands,
-            self.limits.max_connections_per_host,
-            CONNECTION_BUDGET,
-        );
+        let shares = budget::share(&demands, self.limits.max_connections_per_host, self.budget);
         let mut changed = Vec::new();
         for ((id, _, _), share) in running.iter().zip(shares) {
             let entry = self.transfers.get_mut(id).expect("running");
@@ -273,6 +276,13 @@ fn finished(status: DownloadStatus) -> bool {
     )
 }
 
+/// A value behind a mutex; a worker's panic leaves it whole, as every update replaces it at once.
+fn lock_value<T>(value: &Mutex<T>) -> MutexGuard<'_, T> {
+    value
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
 fn lock(state: &Mutex<State>) -> MutexGuard<'_, State> {
     // The state stays consistent between whole updates, so a worker's panic doesn't corrupt it.
     state
@@ -334,9 +344,11 @@ impl InProcessEngine {
                 transports: Transports { curl, sftp },
                 state: Mutex::new(State {
                     next_id: first.0.saturating_sub(1),
+                    budget: CONNECTION_BUDGET,
                     ..State::default()
                 }),
-                retry,
+                retry: Mutex::new(retry),
+                disk: Mutex::new(DiskOptions::DEFAULT),
                 global: RateLimit::new(None),
                 libcurl: linked,
             }),
@@ -688,6 +700,32 @@ impl DirectTransfer for InProcessEngine {
         Ok(())
     }
 
+    fn set_engine_settings(&mut self, settings: EngineSettings) -> Result<(), ErrorCode> {
+        settings.check()?;
+        let secs = |s: u32| Duration::from_secs(u64::from(s));
+        {
+            let mut retry = lock_value(&self.shared.retry);
+            retry.failures_in_a_row = settings.failures_in_a_row;
+            retry.max_wait = secs(settings.max_retry_wait_secs);
+            retry.stalled_after = secs(settings.stalled_after_secs);
+            retry.reset_after = secs(settings.reset_after_secs);
+            retry.download_retries = settings.download_retries;
+        }
+        *lock_value(&self.shared.disk) = DiskOptions {
+            preallocation: settings.preallocation,
+            queued_per_segment: settings.write_buffer_mib as usize,
+        };
+        self.shared
+            .transports
+            .curl
+            .set_connect_timeout(secs(settings.connect_timeout_secs));
+        // The budget applies at once: the running transfers are shared out again.
+        let mut state = lock(&self.shared.state);
+        state.budget = settings.connection_budget;
+        state.rebalance();
+        Ok(())
+    }
+
     fn set_engine_limits(&mut self, limits: EngineLimits) -> Result<(), ErrorCode> {
         limits.check()?;
         // libcurl first: if it refuses, nothing changed.
@@ -828,7 +866,8 @@ fn run(shared: &Shared, id: TransferId, job: &Job, resume: Option<&Resume>, cont
         probe_bytes: PROBE_BYTES,
         leases: sizes_for(lock(&shared.state).limits),
         checkpoints: Cadence::DEFAULT,
-        retry: shared.retry,
+        retry: *lock_value(&shared.retry),
+        disk: *lock_value(&shared.disk),
         // The asked-for count is a ceiling, not a must (PO decision on #47).
         adaptive: Some(AdaptivePolicy::DEFAULT),
     };
@@ -859,13 +898,14 @@ fn run(shared: &Shared, id: TransferId, job: &Job, resume: Option<&Resume>, cont
             break result;
         };
         restarts += 1;
-        let Some(wait) = shared.retry.download_wait(e.class, restarts) else {
+        let policy = *lock_value(&shared.retry);
+        let Some(wait) = policy.download_wait(e.class, restarts) else {
             break result;
         };
         let mut waiting = e.clone();
         waiting.message = format!(
             "{} Retrying automatically ({restarts} of {}).",
-            e.message, shared.retry.download_retries
+            e.message, policy.download_retries
         );
         update(shared, id, |s| {
             s.status = DownloadStatus::Retrying;

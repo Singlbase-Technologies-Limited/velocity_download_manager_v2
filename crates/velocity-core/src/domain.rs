@@ -941,6 +941,15 @@ mod tests {
         }
 
         /// The Add dialog's request and its results (#60).
+        /// Every setting the Settings screen edits, at its defaults (#30): read by Zod.
+        #[test]
+        fn contract_settings() {
+            check(
+                "settings.json",
+                serde_json::to_value(crate::settings::Settings::sample()).unwrap(),
+            );
+        }
+
         /// What the diagnostics show (#28).
         #[test]
         fn contract_diagnostics() {

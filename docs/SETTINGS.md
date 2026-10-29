@@ -1,6 +1,55 @@
 # Settings
 
-The settings V2 has so far, what each one does, and its bounds. They are sections of one settings document in the database, each read and saved through `Database::section` and `Database::save_section`, and checked first (the `Section` trait). The settings model as a whole, how it is saved and the Settings screen are #30; this page grows with it. Each setting is checked in Rust before it applies, whatever the screen allows.
+Every V2 setting, what it does, and its bounds. They are sections of one settings document in the database, each read and saved through `Database::section` and `Database::save_section`, and checked first (the `Section` trait). Each setting is checked in Rust before it applies, whatever the screen allows.
+
+## The Settings screen
+
+The screen (#30, `src/features/settings/SettingsView.tsx`) edits every section below except the window's look, which keeps saving through `set_appearance` so it never overwrites a panel width ([the window](#the-window)).
+
+- **Saved whole:** `set_settings` checks every section first and saves none when one is refused (`INVALID_INPUT`); then it writes them all in one go, and applies them at once (`velocity_core::settings::Settings`, `Manager::set_settings`). The screen says "Saving…", then "Saved", or why it wasn't, and shows what is saved.
+- **When each applies:** at once, all of them. The engine's retries, timeouts, preallocation and write buffer apply to downloads that start or retry after the change; the connection budget, the queue, the limits and the torrent helper's settings apply to running ones too. None needs a restart.
+- **Read with defaults:** a section is read merged over its defaults, so settings an older V2 saved get the newer fields' defaults (V1's `migrate_settings_json`). A field this build doesn't know is refused, never dropped.
+- **When the app starts:** the saved settings are applied (`Manager::apply_saved_settings`), and the torrent helper starts with its own. A failure is logged, and the defaults hold for what couldn't be read.
+- **Reset to defaults** asks first, and keeps the download folder (V1's).
+- **What the build can't do** is disabled with the reason ([below](#what-a-build-can-do)): Metalink, today.
+
+## Engine
+
+`EngineSettings` in [`crates/velocity-core/src/transfer.rs`](../crates/velocity-core/src/transfer.rs) (#30), the `engine` section: V1's retry, timeout, connection-budget and disk settings, as ADR-0005 mapped them. The engine gets them through `set_engine_settings` (transfer contract version 14); its supervisor gives them to a new engine after a restart.
+
+| Setting | Default | Bounds | V1's |
+|---|---|---|---|
+| `failuresInARow` | 5 | 1 to 100 | `max_tries` |
+| `maxRetryWaitSecs` | 60 | 1 to 600 | `retry_wait_secs` |
+| `stalledAfterSecs` | 15 | 5 to 600 | `lowest_speed_limit_kib`, on time without data rather than speed |
+| `resetAfterSecs` | 30 | 5 to 3600, never below `stalledAfterSecs` | `timeout_secs` |
+| `connectTimeoutSecs` | 30 | 1 to 300 | `connect_timeout_secs` (HTTP, HTTPS and FTP; SFTP keeps its own) |
+| `downloadRetries` | 2 | 0 to 10 | `app_retries` |
+| `connectionBudget` | 48 | 1 to 256 | `connection_budget` |
+| `preallocation` | `sparse` | `none`, `sparse` or `full` | `file_allocation` |
+| `writeBufferMib` | 2 | 1 to 64, per connection | `disk_cache_mib` |
+
+- **Preallocation:** `sparse` marks the part file sparse on Windows (#42's measurement), `none` doesn't, and `full` sets the file's length as soon as its size is known, so a disk too small fails at once.
+- **Write buffer:** how many fetch events, of at most 1 MiB each, a connection may have waiting for the writer.
+
+## Advanced and new torrents
+
+`AdvancedSettings` (the `advanced` section) and `NewTorrentSettings` (`newTorrents`) in [`crates/velocity-core/src/settings.rs`](../crates/velocity-core/src/settings.rs) (#30).
+
+| Section | Setting | Default | Bounds |
+|---|---|---|---|
+| `advanced` | `globalDownloadLimitKib` | 0: none | 0, or at least 1 KiB/s (#49) |
+| | `enableBittorrent` | on (V1's) | Off refuses torrents and magnet links with `PROTOCOL_DISABLED` |
+| | `enableMetalink` | off (V1's) | Only when the engine reads Metalink (#54) |
+| | `userAgent` | `null`: `VelocityDownloadManager/<version>` | At most 256 bytes, no control characters; for downloads added after it |
+| `newTorrents` | `chooseFilesForMagnets` | off | The Add dialog's "Choose files before downloading" |
+| | `seeding` | never | As a torrent's seeding policy ([TORRENTS.md](TORRENTS.md)) |
+| | `uploadLimitKib` | 0: none | The Add dialog's upload limit |
+
+The torrent helper's own settings are the `torrent` section, `TorrentSettings` ([TORRENTS.md](TORRENTS.md#settings-and-identity)); the screen shows them with the helper's port and port mapping (`get_torrent_network`).
+
+## The window
+
 
 ## Performance
 
@@ -61,7 +110,7 @@ How the queue applies them is in [ENGINE_CONTRACT.md](ENGINE_CONTRACT.md#the-man
 
 ## The window
 
-V1's `general`, `notifications` and `appearance` settings and its first-run flag, in [`crates/velocity-core/src/app_settings.rs`](../crates/velocity-core/src/app_settings.rs) (#29). Each is a section of the settings document. #30 puts them on the Settings screen. What the window does with them is in [UI_ARCHITECTURE.md](UI_ARCHITECTURE.md).
+V1's `general`, `notifications` and `appearance` settings and its first-run flag, in [`crates/velocity-core/src/app_settings.rs`](../crates/velocity-core/src/app_settings.rs) (#29). Each is a section of the settings document, on the Settings screen (#30). What the window does with them is in [UI_ARCHITECTURE.md](UI_ARCHITECTURE.md).
 
 | Section | Setting | Default | Bounds |
 |---|---|---|---|
@@ -83,8 +132,8 @@ V1's `general`, `notifications` and `appearance` settings and its first-run flag
 | `onboarding` | `completed` | off | Set by finishing the first-run setup, which also saves its folder as `downloads.defaultDirectory` |
 
 - **Saved and read like the folder settings:** a panel or column width outside its bounds, and a column list without `name` or with a column twice, are refused with `INVALID_INPUT`. An unknown column id doesn't parse, so `set_appearance` refuses it before it reaches the core, and a saved section that can't be read is a `DATABASE` error for the window, left as it was.
-- **Read when the app starts:** `general` and `notifications` are read when the app starts. A section that can't be read is left as it was, and its defaults apply until it is fixed, so closing and notifications keep working. The Settings screen (#30) will change them while the app runs.
+- **Read when the app starts:** `general` and `notifications` are read when the app starts. A section that can't be read is left as it was, and its defaults apply until it is fixed, so closing and notifications keep working. The Settings screen (#30) changes them while the app runs, and closing and notifications follow at once.
 
 ## What a build can do
 
-Settings and details never offer what the build can't do. The engine reports its capabilities per protocol (`ProtocolCapabilities`, [CONTRACTS.md](CONTRACTS.md)): whether it downloads the protocol at all, and whether it segments, resumes, checks validators, uses HTTP/2 and can encrypt it. In the UI, `availability` ([`src/capabilities.ts`](../src/capabilities.ts)) turns that into "available" or a reason, and `CapabilityOption` shows a control that is disabled, with the reason beside it, when the build lacks something. #30 and the download details (R8) place it.
+Settings and details never offer what the build can't do. The engine reports its capabilities per protocol (`ProtocolCapabilities`, [CONTRACTS.md](CONTRACTS.md)): whether it downloads the protocol at all, and whether it segments, resumes, checks validators, uses HTTP/2 and can encrypt it. In the UI, `availability` ([`src/capabilities.ts`](../src/capabilities.ts)) turns that into "available" or a reason, and `CapabilityOption` shows a control that is disabled, with the reason beside it, when the build lacks something; the Settings screen's Metalink switch is one (#30).

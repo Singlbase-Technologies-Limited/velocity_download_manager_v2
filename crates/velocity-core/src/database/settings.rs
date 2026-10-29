@@ -79,10 +79,33 @@ impl Database {
         if !section.is_object() {
             return Err(unreadable("not an object".to_owned()));
         }
-        let settings: S = serde_json::from_value(section).map_err(|e| unreadable(e.to_string()))?;
+        // Over its defaults: a section an older V2 saved gets the fields added since (V1's
+        // `migrate_settings_json`, #30). A field this build doesn't know is still refused.
+        let mut merged = serde_json::to_value(S::default())
+            .map_err(|e| DatabaseError::new(ErrorCode::Internal, e.to_string()))?;
+        merge(&mut merged, section);
+        let settings: S = serde_json::from_value(merged).map_err(|e| unreadable(e.to_string()))?;
         settings
             .checked()
             .map_err(|code| unreadable(format!("{code:?}")))
+    }
+
+    /// Saves several sections in one write, keeping the rest of the document (#30). Each must
+    /// have been checked.
+    pub fn save_sections(
+        &self,
+        sections: Vec<(&'static str, serde_json::Value)>,
+        now_ms: u64,
+    ) -> Result<(), DatabaseError> {
+        let mut document = self
+            .settings()?
+            .unwrap_or_else(|| serde_json::Value::Object(serde_json::Map::new()));
+        if let Some(object) = document.as_object_mut() {
+            for (key, value) in sections {
+                object.insert(key.to_owned(), value);
+            }
+        }
+        self.save_settings(&document, now_ms)
     }
 
     /// Checks and saves a section, keeping the rest of the document, and returns it as saved.
@@ -103,6 +126,23 @@ impl Database {
     }
 }
 
+/// Puts `saved` over `base`: objects field by field, anything else whole.
+fn merge(base: &mut serde_json::Value, saved: serde_json::Value) {
+    match (base, saved) {
+        (serde_json::Value::Object(base), serde_json::Value::Object(saved)) => {
+            for (key, value) in saved {
+                match base.get_mut(&key) {
+                    Some(slot) => merge(slot, value),
+                    None => {
+                        base.insert(key, value);
+                    }
+                }
+            }
+        }
+        (slot, value) => *slot = value,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -112,6 +152,33 @@ mod tests {
     fn absolute(rest: &str) -> String {
         let root = if cfg!(windows) { "C:\\" } else { "/" };
         format!("{root}{rest}")
+    }
+
+    /// #30: settings an older V2 saved get the fields added since, at their defaults.
+    #[test]
+    fn a_section_saved_without_newer_fields_reads_with_their_defaults() {
+        use crate::queue::QueueSettings;
+        let db = Database::open_in_memory().unwrap();
+        db.save_settings(
+            &serde_json::json!({"queue": {"maxConcurrentDownloads": 5, "schedule": {"enabled": true}}}),
+            1,
+        )
+        .unwrap();
+        let queue: QueueSettings = db.section().unwrap();
+        assert_eq!(queue.max_concurrent_downloads, 5);
+        assert!(queue.schedule.enabled);
+        assert_eq!(queue.schedule.days, QueueSettings::default().schedule.days);
+        assert_eq!(
+            queue.start_immediately,
+            QueueSettings::default().start_immediately
+        );
+        // A field this build doesn't know is still refused, never dropped.
+        db.save_settings(&serde_json::json!({"queue": {"later": 1}}), 2)
+            .unwrap();
+        assert_eq!(
+            db.section::<QueueSettings>().unwrap_err().code,
+            ErrorCode::Database
+        );
     }
 
     #[test]

@@ -6,7 +6,8 @@ use std::path::{Path, PathBuf};
 use std::sync::mpsc::{channel, Receiver, Sender};
 
 use super::{
-    DirectTransfer, EngineLimits, Limits, TransferEvent, TransferId, TransferSnapshot, TransferSpec,
+    DirectTransfer, EngineLimits, EngineSettings, Limits, TransferEvent, TransferId,
+    TransferSnapshot, TransferSpec,
 };
 use crate::domain::{Capabilities, EngineHealth, ErrorCode};
 
@@ -69,6 +70,9 @@ impl DirectTransfer for MissingEngine {
         Err(UNAVAILABLE)
     }
     fn set_engine_limits(&mut self, _limits: EngineLimits) -> Result<(), ErrorCode> {
+        Err(UNAVAILABLE)
+    }
+    fn set_engine_settings(&mut self, _settings: EngineSettings) -> Result<(), ErrorCode> {
         Err(UNAVAILABLE)
     }
     fn set_connections(&mut self, _id: TransferId, _connections: u32) -> Result<u32, ErrorCode> {

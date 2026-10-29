@@ -59,11 +59,13 @@ pub fn start(app: &AppHandle, paths: &Paths) -> Result<Downloads, String> {
                 Box::new(MissingEngine::new(code, program))
             }
         };
-    // The torrent settings are #30's; until then the defaults, which are V1's.
+    // The torrent helper starts with the saved settings (#30); a section that can't be read
+    // leaves its defaults, which are V1's, and the Settings screen says why.
+    let torrent_settings: TorrentSettings = database.section().unwrap_or_default();
     let torrents: Box<dyn TorrentEngine> = match SupervisedTorrentEngine::start(
         program_beside(&exe, "velocity-torrent"),
         SupervisorOptions::default(),
-        TorrentSettings::default(),
+        torrent_settings,
     ) {
         Ok(torrents) => Box::new(torrents),
         Err(code) => {
@@ -86,6 +88,10 @@ pub fn start(app: &AppHandle, paths: &Paths) -> Result<Downloads, String> {
     // The history's retention (#32, V1's), when the app starts. A failure is the snapshot's
     // storage error, which the window shows; the app runs on.
     let _ = manager.apply_retention(velocity_core::manager::now_ms());
+    // The saved settings (#30): the queue, the engine, the limits and the switches.
+    if let Err(code) = manager.apply_saved_settings(velocity_core::manager::now_ms()) {
+        tracing::warn!("the saved settings couldn't be applied: {code:?}");
+    }
     let app = app.clone();
     let mut last: Option<DownloadsSnapshot> = None;
     Ok(Arc::new(ManagerService::start(manager, move |snapshot| {
