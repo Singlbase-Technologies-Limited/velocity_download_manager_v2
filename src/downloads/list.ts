@@ -102,7 +102,7 @@ export function visibleDownloads(
   return sortDownloads(filtered, opts.sort, categoryName);
 }
 
-/** What the user may do to a download in its status. Opening its file is `canOpenFile`; choosing a torrent's files (#63) comes later. */
+/** What the user may do to a download in its status. Opening its file is `canOpenFile`; a torrent in Choose files chooses them (#63). */
 export interface ActionAvailability {
   pause: boolean;
   resume: boolean;
@@ -128,7 +128,8 @@ export function actionsFor(d: DownloadRecord): ActionAvailability {
     move: s === 'queued' || s === 'paused',
     remove: true,
     deleteFiles: s !== 'unknown',
-    stopSeeding: s === 'seeding',
+    // Leaving the seeding queue is stopping seeding too (#63).
+    stopSeeding: s === 'seeding' || d.torrent?.seedQueued === true,
   };
 }
 
