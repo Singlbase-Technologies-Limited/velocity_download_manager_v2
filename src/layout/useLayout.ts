@@ -1,12 +1,12 @@
 import { useQueryClient } from '@tanstack/react-query';
-import { useEffect, useLayoutEffect, useSyncExternalStore } from 'react';
+import { createContext, useContext, useEffect, useLayoutEffect, useSyncExternalStore } from 'react';
 import { toast } from 'sonner';
 import type { AppearanceSettings, ShellSettings } from '../contract';
 import { api } from '../lib/api';
 import { toApiError } from '../lib/errors';
 import { keys } from '../lib/queries';
 import { useUiStore } from '../stores/ui';
-import { sanitizeLayout, type LayoutPrefs } from './layoutLogic';
+import { sanitizeLayout, type LayoutPrefs, type ResolvedLayout } from './layoutLogic';
 
 /** Coalesces bursts (key repeats, several toggles) into one save (V1's delay). */
 const SAVE_DELAY_MS = 250;
@@ -66,4 +66,16 @@ const subscribeResize = (cb: () => void) => {
 /** The window's width in CSS pixels; browsers send resize events at most once a frame. */
 export function useViewportWidth(): number {
   return useSyncExternalStore(subscribeResize, () => window.innerWidth);
+}
+
+/** What the shell tells the views about its panels (V1's): the widths it resolved, and a way to preview the details panel's during a drag. */
+export interface ShellLayout {
+  resolved: ResolvedLayout;
+  previewDetails: (width: number) => void;
+}
+
+export const ShellLayoutContext = createContext<ShellLayout | null>(null);
+
+export function useShellLayout(): ShellLayout | null {
+  return useContext(ShellLayoutContext);
 }

@@ -43,6 +43,8 @@ export interface FakeState {
   hold: Partial<Record<string, Promise<void>>>;
   /** Commands that fail, with the code they fail with. */
   failures: Partial<Record<string, ErrorCode>>;
+  /** Downloads whose file is a program: opening one needs `allowProgram` (#61). */
+  programs: string[];
   calls: { cmd: string; args: Record<string, unknown> }[];
 }
 
@@ -95,6 +97,7 @@ export function installFakeBackend(over: Partial<FakeState> = {}): FakeState {
     batch: (_cmd, ids) => ({ done: ids, failed: [], kept: [] }),
     hold: {},
     failures: {},
+    programs: [],
     calls: [],
     ...over,
   };
@@ -165,6 +168,15 @@ export function installFakeBackend(over: Partial<FakeState> = {}): FakeState {
         case 'move_download':
         case 'set_torrent_seeding':
         case 'set_download_login':
+        case 'set_download_speed_limit':
+        case 'set_download_category':
+        case 'open_download_folder':
+          return null;
+        case 'set_download_connections':
+          return args.connections;
+        case 'open_download_file':
+          // eslint-disable-next-line @typescript-eslint/only-throw-error
+          if (state.programs.includes(args.id as string) && args.allowProgram !== true) throw 'CONFIRMATION_REQUIRED';
           return null;
         case 'clear_completed':
           return 0;

@@ -102,7 +102,7 @@ export function visibleDownloads(
   return sortDownloads(filtered, opts.sort, categoryName);
 }
 
-/** What the user may do to a download in its status. Opening files (#61) and choosing a torrent's files (#63) come later. */
+/** What the user may do to a download in its status. Opening its file is `canOpenFile`; choosing a torrent's files (#63) comes later. */
 export interface ActionAvailability {
   pause: boolean;
   resume: boolean;
@@ -130,6 +130,9 @@ export function actionsFor(d: DownloadRecord): ActionAvailability {
     stopSeeding: s === 'seeding',
   };
 }
+
+/** Only a finished download has a file to open (#61); its folder can always be shown. */
+export const canOpenFile = (d: DownloadRecord) => d.status === 'completed' || d.status === 'seeding';
 
 const NONE: ActionAvailability = { pause: false, resume: false, cancel: false, retry: false, move: false, remove: false, deleteFiles: false, stopSeeding: false };
 
