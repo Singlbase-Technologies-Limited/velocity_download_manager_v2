@@ -10,7 +10,7 @@ document.addEventListener(
   'click',
   (e) => {
     if (e.defaultPrevented || e.button !== 0 || e.ctrlKey || e.metaKey || e.shiftKey || e.altKey) return;
-    const a = (e.target as Element | null)?.closest?.('a[href]');
+    const a = (e.target as Element | null)?.closest('a[href]');
     const href = a?.getAttribute('href') ?? '';
     if (!/^magnet:\?/i.test(href) || href.length > 8192) return;
     e.preventDefault();
