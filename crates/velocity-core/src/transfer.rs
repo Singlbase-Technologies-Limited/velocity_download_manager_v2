@@ -44,7 +44,8 @@ use std::sync::mpsc::Receiver;
 /// Version 11 (#54) added [`TransferSnapshot::content_type`], and engines may report
 /// [`crate::domain::Capabilities::metalink`].
 /// Version 12 (#59) added [`TransferSnapshot::retry_at_ms`].
-pub const TRANSFER_CONTRACT_VERSION: u32 = 12;
+/// Version 13 (#28) added [`crate::domain::Capabilities::libcurl`], for diagnostics.
+pub const TRANSFER_CONTRACT_VERSION: u32 = 13;
 
 /// An engine's id for one transfer. Assigned by the engine, never reused, and never shown as the
 /// app's download id.
@@ -551,6 +552,11 @@ pub trait DirectTransfer: Send {
     /// was running are reported lost (#39, #58). `Unsupported` for an engine in the app's process.
     fn restart(&mut self) -> Result<(), ErrorCode> {
         Err(ErrorCode::Unsupported)
+    }
+    /// The engine's last stderr lines, redacted, for diagnostics (#28). Empty for an engine in the
+    /// app's process, which logs through the app.
+    fn recent_log(&self) -> Vec<String> {
+        Vec::new()
     }
 }
 

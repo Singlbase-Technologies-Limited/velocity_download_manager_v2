@@ -23,6 +23,9 @@ tauri-plugin-dialog = "=2.8.3"
 tauri-plugin-notification = "=2.7.0"
 serde.workspace = true
 serde_json.workspace = true
+# The app's log and crash logs (#28): events are kept in memory, redacted, by velocity-core's layer.
+tracing.workspace = true
+tracing-subscriber.workspace = true
 velocity-core = { path = "../crates/velocity-core" }
 # The engine's client and supervisor (ADR-0012): the engine itself runs as its own process.
 velocity-transfer = { path = "../crates/velocity-transfer" }

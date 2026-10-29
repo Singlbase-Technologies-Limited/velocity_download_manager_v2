@@ -13,6 +13,7 @@ import {
   type Capabilities,
   type Category,
   type DestinationCheck,
+  type DiagnosticReport,
   type DownloadsSnapshot,
   type ErrorCode,
   type ShellSettings,
@@ -41,6 +42,9 @@ export interface FakeState {
   batch: (cmd: string, ids: string[]) => BatchResult;
   /** Commands that wait for this promise before they answer, to see the window while one is sent. */
   hold: Partial<Record<string, Promise<void>>>;
+  /** What `get_diagnostics` answers, and where `export_diagnostics` saved (`null`: the user cancelled) (#28). */
+  diagnostics: () => DiagnosticReport;
+  exportedTo: string | null;
   /** Commands that fail, with the code they fail with. */
   failures: Partial<Record<string, ErrorCode>>;
   calls: { cmd: string; args: Record<string, unknown> }[];
@@ -94,6 +98,8 @@ export function installFakeBackend(over: Partial<FakeState> = {}): FakeState {
       [...request.links, ...request.torrentFiles].map((source, i) => ({ source, outcome: { kind: 'added', id: `d-${String(100 + i)}` } })),
     batch: (_cmd, ids) => ({ done: ids, failed: [], kept: [] }),
     hold: {},
+    diagnostics: () => fixture('diagnostics.json') as DiagnosticReport,
+    exportedTo: null,
     failures: {},
     calls: [],
     ...over,
@@ -168,6 +174,13 @@ export function installFakeBackend(over: Partial<FakeState> = {}): FakeState {
           return null;
         case 'clear_completed':
           return 0;
+        case 'get_diagnostics':
+          return state.diagnostics();
+        case 'export_diagnostics':
+          return state.exportedTo;
+        case 'restart_engine':
+        case 'restart_torrent_helper':
+          return { state: 'running' };
         default:
           throw new Error(`the fake backend has no command ${cmd}`);
       }

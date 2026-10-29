@@ -480,6 +480,10 @@ impl TorrentEngine for SupervisedTorrentEngine {
         self.supervisor.restart();
         Ok(())
     }
+
+    fn recent_log(&self) -> Vec<String> {
+        self.log()
+    }
 }
 
 #[cfg(test)]

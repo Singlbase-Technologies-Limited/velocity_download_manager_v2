@@ -145,6 +145,16 @@ fn reports_its_capabilities_honestly() {
         // files with their sources, checksums and piece hashes.
         assert!(c.metalink, "{mode}");
         assert!(c.max_connections_per_host >= 1, "{mode}");
+        // The libcurl it runs on, for diagnostics (#28): the version the capability check passed,
+        // and the platform's TLS backend.
+        let libcurl = c
+            .libcurl
+            .unwrap_or_else(|| panic!("{mode}: no libcurl reported"));
+        assert!(libcurl.version.starts_with("8."), "{mode}: {libcurl:?}");
+        assert!(
+            libcurl.tls.starts_with(velocity_curl::EXPECTED_TLS),
+            "{mode}: {libcurl:?}"
+        );
     }
 }
 

@@ -30,6 +30,7 @@ import {
   ShellSettingsSchema,
   ThemeSchema,
   VerificationSchema,
+  DiagnosticReportSchema,
 } from './contract';
 
 // Fixtures are generated from the Rust types (crates/velocity-core/src/domain.rs):
@@ -105,6 +106,10 @@ describe('contract fixtures generated from Rust', () => {
 
   it('a login given again (#59), with every part set', () => {
     expect(DownloadLoginSchema.parse(fixture('download-login.json'))).toEqual(fixture('download-login.json'));
+  });
+
+  it('reads the diagnostics (#28)', () => {
+    expect(DiagnosticReportSchema.parse(fixture('diagnostics.json'))).toEqual(fixture('diagnostics.json'));
   });
 
   it('the list columns: exactly the ids the schema knows, in order, the defaults and the width bounds (#59)', () => {

@@ -1,0 +1,68 @@
+{
+  "app": {
+    "commandApiVersion": 13,
+    "name": "Velocity Download Manager (dev)",
+    "version": "0.1.0"
+  },
+  "appLog": [
+    {
+      "atMs": 1792599999000,
+      "level": "warn",
+      "message": "the torrent helper couldn't start: EngineMissing",
+      "target": "velocity_desktop_lib::downloads"
+    }
+  ],
+  "arch": "x86_64",
+  "capabilities": {
+    "libcurl": {
+      "tls": "OpenSSL/3.5.9",
+      "version": "8.23.0"
+    },
+    "liveConnectionChanges": true,
+    "maxConnectionsPerHost": 8,
+    "metalink": false,
+    "protocols": [
+      {
+        "encryption": true,
+        "http2": true,
+        "kind": "http",
+        "resume": true,
+        "segmented": true,
+        "validatorResume": true
+      },
+      {
+        "encryption": true,
+        "http2": false,
+        "kind": "ftp",
+        "resume": true,
+        "segmented": false,
+        "validatorResume": true
+      }
+    ]
+  },
+  "downloads": [
+    {
+      "count": 2,
+      "status": "downloading"
+    },
+    {
+      "count": 5,
+      "status": "completed"
+    }
+  ],
+  "generatedAtMs": 1792600000000,
+  "libtorrent": "2.0.11.0",
+  "os": "linux",
+  "storageError": null,
+  "torrentEngine": {
+    "code": "ENGINE_MISSING",
+    "state": "unavailable"
+  },
+  "torrentEngineLog": [],
+  "transferEngine": {
+    "state": "running"
+  },
+  "transferEngineLog": [
+    "engine ready"
+  ]
+}

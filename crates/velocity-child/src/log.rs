@@ -1,12 +1,13 @@
-//! A child process's stderr, kept in memory for diagnostics (#39, #62; #28 replaces the redaction
-//! with the shared redaction layer). Only the last [`LOG_LINES`] lines are kept, each cut at
-//! [`MAX_LINE_CHARS`] characters, and nothing is written to disk. A login inside a URL
-//! (`https://user:password@host/`) is hidden before a line is stored.
+//! A child process's stderr, kept in memory for diagnostics (#39, #62). Only the last [`LOG_LINES`]
+//! lines are kept, each cut at [`MAX_LINE_CHARS`] characters, and nothing is written to disk. Every
+//! line passes through the shared redaction (`velocity_core::redact`, #28) before it is stored.
 
 use std::collections::VecDeque;
 use std::io::{BufRead, BufReader, Read};
 use std::sync::{Arc, Mutex};
 use std::thread;
+
+use velocity_core::redact::redact;
 
 /// How many lines are kept: V1's engine log size.
 pub const LOG_LINES: usize = 500;
@@ -27,9 +28,9 @@ impl ChildLog {
         Self::default()
     }
 
-    /// Stores one line, with URL logins hidden, cut to [`MAX_LINE_CHARS`].
+    /// Stores one line, redacted, cut to [`MAX_LINE_CHARS`].
     pub fn push(&self, line: &str) {
-        let mut line = redact_url_logins(line);
+        let mut line = redact(line);
         if let Some((cut, _)) = line.char_indices().nth(MAX_LINE_CHARS) {
             line.truncate(cut);
         }
@@ -81,68 +82,10 @@ impl ChildLog {
     }
 }
 
-/// Hides the login part of every URL in `text`: `scheme://user:password@host` becomes
-/// `scheme://<redacted>@host`.
-pub fn redact_url_logins(text: &str) -> String {
-    let mut out = String::with_capacity(text.len());
-    let mut rest = text;
-    while let Some(at) = rest.find("://") {
-        let (before, after) = rest.split_at(at + 3);
-        out.push_str(before);
-        // The host part ends where the path, query or fragment starts, or at the end of the word.
-        let end = after
-            .find(|c: char| {
-                matches!(c, '/' | '?' | '#' | '"' | '\'' | '<' | '>') || c.is_whitespace()
-            })
-            .unwrap_or(after.len());
-        let authority = &after[..end];
-        match authority.rfind('@') {
-            Some(login_end) if login_end > 0 => {
-                out.push_str("<redacted>");
-                out.push_str(&authority[login_end..]);
-            }
-            _ => out.push_str(authority),
-        }
-        rest = &after[end..];
-    }
-    out.push_str(rest);
-    out
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::time::{Duration, Instant};
-
-    #[test]
-    fn hides_the_login_in_every_url() {
-        assert_eq!(
-            redact_url_logins("GET https://user:pa55@example.com/a.zip failed"),
-            "GET https://<redacted>@example.com/a.zip failed"
-        );
-        assert_eq!(
-            redact_url_logins("ftp://anon@ftp.example.org and sftp://me:x@h:22/p"),
-            "ftp://<redacted>@ftp.example.org and sftp://<redacted>@h:22/p"
-        );
-        // A password may contain an @ itself; everything up to the last @ of the host part goes.
-        assert_eq!(
-            redact_url_logins("http://u:p@ss@host/"),
-            "http://<redacted>@host/"
-        );
-    }
-
-    #[test]
-    fn leaves_text_without_a_login_alone() {
-        for text in [
-            "no url here",
-            "https://example.com/path@not-a-login?q=a@b#c@d",
-            "mail me@example.com",
-            "://@",
-            "",
-        ] {
-            assert_eq!(redact_url_logins(text), text);
-        }
-    }
 
     #[test]
     fn keeps_only_the_last_lines() {
@@ -163,7 +106,7 @@ mod tests {
         log.push("retrying https://user:secret@example.com/");
         let lines = log.lines();
         assert_eq!(lines[0].chars().count(), MAX_LINE_CHARS);
-        assert_eq!(lines[1], "retrying https://<redacted>@example.com/");
+        assert_eq!(lines[1], "retrying https://[redacted]@example.com/");
     }
 
     #[test]
@@ -180,7 +123,7 @@ mod tests {
         }
         let lines = log.lines();
         assert_eq!(lines[0], "first");
-        assert_eq!(lines[1], "https://<redacted>@h/ second");
+        assert_eq!(lines[1], "https://[redacted]@h/ second");
         assert!(lines.iter().all(|l| l.chars().count() <= MAX_LINE_CHARS));
         assert!(
             lines.len() > 4,

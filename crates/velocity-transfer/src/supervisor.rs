@@ -62,6 +62,7 @@ impl TransferBook {
                 live_connection_changes: false,
                 metalink: false,
                 max_connections_per_host: 1,
+                libcurl: None,
             },
             transfers: Ledger::default(),
             global_limits: Limits::default(),
@@ -267,6 +268,10 @@ impl DirectTransfer for SupervisedEngine {
     fn restart(&mut self) -> Result<(), ErrorCode> {
         self.supervisor.restart();
         Ok(())
+    }
+
+    fn recent_log(&self) -> Vec<String> {
+        self.log()
     }
 
     fn trust_host_key(

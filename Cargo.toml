@@ -76,6 +76,13 @@ rcgen = { version = "=0.14.10", default-features = false, features = ["crypto", 
 # version V1's bridge used. cxx-build compiles the shim against the vcpkg-built libtorrent.
 cxx = "=1.0.205"
 cxx-build = "=1.0.205"
+# Logging, redaction and diagnostics (PO-approved on #28, 2026-10-29). tracing and regex are the
+# versions the build already brought through other crates; tracing-subscriber is new. Only its
+# registry: the app's own layer keeps the lines in memory, redacted, and nothing is written to a
+# terminal or a file. regex with its defaults (Unicode classes and the faster engines).
+tracing = { version = "=0.1.44", default-features = false, features = ["std"] }
+tracing-subscriber = { version = "=0.3.23", default-features = false, features = ["std", "registry"] }
+regex = "=1.13.1"
 
 # Development builds: optimise dependencies once so the app runs at a usable
 # speed, while workspace crates stay unoptimised for fast incremental rebuilds.

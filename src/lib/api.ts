@@ -11,6 +11,8 @@ import {
   DestinationCheckSchema,
   DownloadsSnapshotSchema,
   parseAppInfo,
+  DiagnosticReportSchema,
+  EngineHealthSchema,
   ShellSettingsSchema,
   type AddRequest,
   type AppearanceSettings,
@@ -95,6 +97,13 @@ export const api = {
   moveDownload: (id: string, direction: MoveDirection) => call('move_download', { id, direction }, nothing),
   /** Stops a torrent seeding: its seeding policy becomes "never". */
   stopSeeding: (id: string) => call('set_torrent_seeding', { id, seeding: { mode: 'never' } }, nothing),
+  // Diagnostics (#28).
+  diagnostics: () => call('get_diagnostics', undefined, DiagnosticReportSchema),
+  /** Saves the diagnostics to a file the user chooses; where, or `null` when they cancel. */
+  exportDiagnostics: () => call('export_diagnostics', undefined, z.string().min(1).nullable()),
+  /** "Restart transfer engine" and "Restart torrent helper": the health after asking. */
+  restartEngine: () => call('restart_engine', undefined, EngineHealthSchema),
+  restartTorrentHelper: () => call('restart_torrent_helper', undefined, EngineHealthSchema),
   /** Gives a download that came back without its login, headers or SSH key those again; then resume or retry it. */
   setDownloadLogin: (id: string, login: DownloadLogin) => call('set_download_login', { id, login }, nothing),
 };
