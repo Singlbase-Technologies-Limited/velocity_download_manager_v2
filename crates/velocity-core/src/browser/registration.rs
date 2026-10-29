@@ -77,6 +77,58 @@ pub struct Registration {
     pub host_matches: bool,
 }
 
+/// What the Settings screen's Browser section shows (#65): the host, V2's names, and where the
+/// host is registered.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct BrowserIntegration {
+    /// The native host beside the app, or `None` when it isn't there, which leaves nothing to
+    /// register.
+    pub host_path: Option<String>,
+    pub native_host_name: String,
+    pub chrome_extension_ids: Vec<String>,
+    pub firefox_extension_id: String,
+    pub registrations: Vec<Registration>,
+}
+
+impl BrowserIntegration {
+    /// The integration as `locations` show it, with the host at `host`.
+    pub fn of(locations: &Locations, host: Option<&Path>) -> Self {
+        let b = branding();
+        Self {
+            host_path: host.map(|h| h.to_string_lossy().into_owned()),
+            native_host_name: b.native_host_name.clone(),
+            chrome_extension_ids: b.chrome_extension_ids.clone(),
+            firefox_extension_id: b.firefox_extension_id.clone(),
+            registrations: locations.status(host),
+        }
+    }
+
+    /// A fixed example for the contract fixtures: registered with Chrome only.
+    pub fn sample() -> Self {
+        let b = branding();
+        Self {
+            host_path: Some("/opt/velocity/velocity-native-host-v2".to_owned()),
+            native_host_name: b.native_host_name.clone(),
+            chrome_extension_ids: b.chrome_extension_ids.clone(),
+            firefox_extension_id: b.firefox_extension_id.clone(),
+            registrations: Browser::ALL
+                .iter()
+                .map(|&browser| Registration {
+                    browser,
+                    registered: browser == Browser::Chrome,
+                    manifest_path: format!(
+                        "/home/user/.config/{}/NativeMessagingHosts/{}.json",
+                        browser.key(),
+                        b.native_host_name
+                    ),
+                    host_matches: browser == Browser::Chrome,
+                })
+                .collect(),
+        }
+    }
+}
+
 /// The manifest that lets `browser` start the host at `host`.
 pub fn manifest(browser: Browser, host: &Path) -> Value {
     let b = branding();

@@ -11,7 +11,7 @@
     "check:prereqs": "node scripts/doctor.mjs",
     "dev": "tauri dev",
     "dev:web": "vite",
-    "dev:engine": "cargo build -p velocity-transfer --bin velocity-transfer && cargo build -p velocity-torrent --bin velocity-torrent",
+    "dev:engine": "cargo build -p velocity-transfer --bin velocity-transfer && cargo build -p velocity-torrent --bin velocity-torrent && cargo build -p velocity-native-host --bin velocity-native-host-v2",
     "build:web": "tsc --noEmit && vite build",
     "build:extension": "node scripts/build-extension.mjs",
     "tauri": "tauri",

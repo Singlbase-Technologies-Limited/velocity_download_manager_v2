@@ -93,6 +93,18 @@ pub struct BrowserPrompt {
 }
 
 impl BrowserPrompt {
+    /// A fixed example for the contract fixtures.
+    pub fn sample() -> Self {
+        Self {
+            url: "https://example.com/files/archive.zip".to_owned(),
+            file_name: Some("archive.zip".to_owned()),
+            referrer: Some("https://example.com/page".to_owned()),
+            file_size: Some(1_048_576),
+            mime: Some("application/zip".to_owned()),
+            source: RequestSource::Intercept,
+        }
+    }
+
     fn of(add: &AddFromBrowser) -> Self {
         Self {
             url: add.url.clone(),
