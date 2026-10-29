@@ -2,6 +2,7 @@ import { useVirtualizer } from '@tanstack/react-virtual';
 import { ArrowDown, ArrowUp } from 'lucide-react';
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react';
 import { ContextMenu } from '../../components/Menu';
+import { SelectBox } from '../../components/SelectBox';
 import { COLUMN_MAX_WIDTH, COLUMN_MIN_WIDTH, type Category, type ColumnId, type Density, type DownloadRecord } from '../../contract';
 import { displayName, type SortKey, type SortState } from '../../downloads/list';
 import { cn } from '../../lib/cn';
@@ -21,19 +22,6 @@ const RESIZE_STEP = 16;
 type Widths = Partial<Record<ColumnId, number>>;
 
 /** A checkbox without a visible label; `mixed` shows the indeterminate state of a partial selection. */
-function SelectBox({ checked, label, onChange }: { checked: boolean | 'mixed'; label: string; onChange: () => void }) {
-  return (
-    <input
-      type="checkbox"
-      aria-label={label}
-      className="size-3.5 accent-[var(--accent)]"
-      checked={checked === true}
-      ref={(el) => { if (el) el.indeterminate = checked === 'mixed'; }}
-      onChange={onChange}
-    />
-  );
-}
-
 /**
  * A column edge's handle (V1's). A drag previews the width and saves it once, when it ends, so nothing is written per
  * pointer event; arrow keys change it by a step, and Home or a double-click restores its default.

@@ -13,11 +13,15 @@ import {
   parseAppInfo,
   DiagnosticReportSchema,
   EngineHealthSchema,
+  HistoryPageSchema,
   ShellSettingsSchema,
+  StorageSettingsSchema,
   type AddRequest,
   type AppearanceSettings,
   type Category,
   type DownloadLogin,
+  type HistoryQuery,
+  type StorageSettings,
   type MoveDirection,
 } from '../contract';
 import { ApiError, ERROR_MESSAGES, toApiError } from './errors';
@@ -104,6 +108,13 @@ export const api = {
   /** "Restart transfer engine" and "Restart torrent helper": the health after asking. */
   restartEngine: () => call('restart_engine', undefined, EngineHealthSchema),
   restartTorrentHelper: () => call('restart_torrent_helper', undefined, EngineHealthSchema),
+  // The history (#32).
+  history: (query: HistoryQuery) => call('get_history', { query }, HistoryPageSchema),
+  /** How many entries left the history. */
+  clearHistory: () => call('clear_history', undefined, z.number().int().nonnegative()),
+  deleteHistoryEntries: (ids: string[]) => call('delete_history_entries', { ids }, nothing),
+  storageSettings: () => call('get_storage_settings', undefined, StorageSettingsSchema),
+  setStorageSettings: (settings: StorageSettings) => call('set_storage_settings', { settings }, StorageSettingsSchema),
   /** Gives a download that came back without its login, headers or SSH key those again; then resume or retry it. */
   setDownloadLogin: (id: string, login: DownloadLogin) => call('set_download_login', { id, login }, nothing),
 };

@@ -7,6 +7,7 @@ import { AddDownloadDialog } from '../features/add/AddDownloadDialog';
 import { HostKeyPrompt } from '../features/add/HostKeyPrompt';
 import { useAddEntryPoints } from '../features/add/useAddEntryPoints';
 import { DownloadsView } from '../features/downloads/DownloadsView';
+import { HistoryView } from '../features/history/HistoryView';
 import { commitSidebarWidth, LAYOUT, resolveLayout } from '../layout/layoutLogic';
 import { useLayoutPersistence, useViewportWidth } from '../layout/useLayout';
 import { api } from '../lib/api';
@@ -56,7 +57,7 @@ export function Shell({ app, appearance }: { app: AppInfo; appearance: Appearanc
     writeWidth(resolved.sidebar.width);
   });
 
-  const content = useMemo(() => (view === 'categories' ? <CategoriesView /> : <DownloadsView view={view} />), [view]);
+  const content = useMemo(() => (view === 'categories' ? <CategoriesView /> : view === 'history' ? <HistoryView /> : <DownloadsView view={view} />), [view]);
   const sidebar = resolved.sidebar;
   const rail = sidebar.mode === 'rail';
 

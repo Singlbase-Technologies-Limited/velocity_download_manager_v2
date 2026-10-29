@@ -57,7 +57,7 @@ How the window (`src/`) is built: where its state lives, how it talks to the nat
   - The colours are V1's design tokens, the PO's brand colours, in `src/index.css`. Tailwind reads them through `@theme`.
 - **The views:**
   - The six lists show their counts in the navigation, and the download list below.
-  - History and Settings come with #32 and #30.
+  - History (#32) is in the navigation's Library; Settings come with #30.
 - **Quitting:**
   - When quitting would stop active downloads and the setting asks for it, Rust shows the window and sends `quit-requested`.
   - The window asks "Quit Velocity?". Only "Quit" calls `quit_app`, and "Keep downloading" changes nothing.
@@ -83,6 +83,15 @@ The list (#59, V1's) is in `src/features/downloads/`. It shows the snapshot as i
 - **Statuses** (`statusLabel`): Retrying counts down to the engine's `retryAtMs`, and says "Waiting to retry" without one; a stalled direct download says "No data received"; one that came back without its login says "Needs its login". Speed and time left show only while bytes come, and the time left is the engine's speed over the bytes left. A notice says when the transfer engine isn't running, and when saved downloads are from a newer Velocity.
 - **Entering a login again** (`LoginDialog`): resuming or retrying a download in the snapshot's `needsLogin` asks for its login, custom headers or SSH key, sends them with `set_download_login`, then resumes or retries it.
 - **Show download:** the Add dialog's "Show download", for a duplicate already in the list, shows the whole list with that download selected (`showDownload`).
+
+## The history
+
+The history (#32, V1's `HistoryView`) is `src/features/history/HistoryView.tsx`.
+
+- **What it shows:** every finished download, newest first, 100 a page, with how it ended, why it failed, and whether it is still in the list.
+- **Search and filter:** the search waits 250 ms after typing and goes back to the first page; the status filter is completed, failed or cancelled.
+- **Removing:** "Remove selected" and "Clear history" (which asks first) take entries out of the history. Files are never touched, and a download still in the list stays there.
+- **Again:** opens the Add dialog with the entry's link, so adding it goes through the usual questions (#60).
 
 ## The native side of the window
 
@@ -121,7 +130,6 @@ These are in [`src-tauri/src/shell.rs`](../src-tauri/src/shell.rs) and [`tray.rs
   - The details panel, and opening a finished file or its folder (#61, #72).
   - Choosing a torrent's files, and its trackers and peers (#63).
   - Settings, including the theme, density, tray and notification switches (#30).
-  - History (#32).
   - The browser extension's steps (#64).
 - **Keyboard shortcuts:** V1's Ctrl+, comes with Settings (#30). Ctrl+N opens the Add dialog (#60).
 - **The accessibility audit** is #66.

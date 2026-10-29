@@ -11,6 +11,7 @@ pub mod database;
 pub mod destination;
 pub mod diagnostics;
 pub mod domain;
+pub mod history;
 mod links;
 pub mod logs;
 pub mod manager;

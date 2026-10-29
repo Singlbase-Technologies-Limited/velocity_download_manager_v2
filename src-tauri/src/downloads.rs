@@ -7,6 +7,7 @@ use std::sync::Arc;
 use tauri::{AppHandle, Emitter, Manager as _, State};
 use velocity_core::database::Database;
 use velocity_core::domain::{BatchResult, DownloadsSnapshot, EngineHealth, ErrorCode};
+use velocity_core::history::{HistoryPage, HistoryQuery, StorageSettings};
 use velocity_core::manager::{Manager, ManagerService, MoveDirection, SensitiveOptions};
 use velocity_core::paths::Paths;
 use velocity_core::seeding::SeedPolicy;
@@ -66,7 +67,7 @@ pub fn start(app: &AppHandle, paths: &Paths) -> Result<Downloads, String> {
             Box::new(MissingTorrentEngine::new(code))
         }
     };
-    let manager = Manager::open(engine, Arc::new(database))
+    let mut manager = Manager::open(engine, Arc::new(database))
         .map_err(|e| e.to_string())?
         .with_torrents(torrents)
         // `.torrent` links are fetched into the app's own folder (#60).
@@ -78,6 +79,9 @@ pub fn start(app: &AppHandle, paths: &Paths) -> Result<Downloads, String> {
                 paths.torrent_links_dir().display()
             )
         })?;
+    // The history's retention (#32, V1's), when the app starts. A failure is the snapshot's
+    // storage error, which the window shows; the app runs on.
+    let _ = manager.apply_retention(velocity_core::manager::now_ms());
     let app = app.clone();
     let mut last: Option<DownloadsSnapshot> = None;
     Ok(Arc::new(ManagerService::start(manager, move |snapshot| {
@@ -262,6 +266,50 @@ pub async fn restart_torrent_helper(
     on_manager(&downloads, |m| {
         m.restart_torrent_helper()?;
         Ok(m.torrent_helper_health())
+    })
+    .await?
+}
+
+/// A page of the history, newest first (V1's `get_history`, #32).
+#[tauri::command]
+pub async fn get_history(
+    downloads: State<'_, Downloads>,
+    query: HistoryQuery,
+) -> Result<HistoryPage, ErrorCode> {
+    on_manager(&downloads, move |m| m.history(&query)).await?
+}
+
+/// Clears the history; returns how many entries left it. Files are never touched (#32).
+#[tauri::command]
+pub async fn clear_history(downloads: State<'_, Downloads>) -> Result<usize, ErrorCode> {
+    on_manager(&downloads, |m| m.clear_history()).await?
+}
+
+/// Takes finished downloads out of the history (V1's `delete_history_entries`, #32).
+#[tauri::command]
+pub async fn delete_history_entries(
+    downloads: State<'_, Downloads>,
+    ids: Vec<String>,
+) -> Result<(), ErrorCode> {
+    on_manager(&downloads, move |m| m.delete_history(&ids)).await?
+}
+
+/// How long the history keeps entries (#32); #30's Settings screen shows them.
+#[tauri::command]
+pub async fn get_storage_settings(
+    downloads: State<'_, Downloads>,
+) -> Result<StorageSettings, ErrorCode> {
+    on_manager(&downloads, |m| m.settings_section::<StorageSettings>()).await?
+}
+
+/// Saves the history's retention, as checked, and applies it at once (#32).
+#[tauri::command]
+pub async fn set_storage_settings(
+    downloads: State<'_, Downloads>,
+    settings: StorageSettings,
+) -> Result<StorageSettings, ErrorCode> {
+    on_manager(&downloads, move |m| {
+        m.set_storage_settings(&settings, velocity_core::manager::now_ms())
     })
     .await?
 }

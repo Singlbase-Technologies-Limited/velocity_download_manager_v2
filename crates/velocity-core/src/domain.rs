@@ -893,6 +893,25 @@ mod tests {
             );
         }
 
+        /// The history's page and query, and the retention's defaults (#32).
+        #[test]
+        fn contract_history() {
+            use crate::history::{HistoryPage, HistoryQuery, HistoryStatus, StorageSettings};
+            check(
+                "history.json",
+                serde_json::json!({
+                    "page": HistoryPage::sample(),
+                    "query": HistoryQuery {
+                        search: Some("album".to_owned()),
+                        status: Some(HistoryStatus::Cancelled),
+                        limit: Some(200),
+                        offset: Some(0),
+                    },
+                    "storage": StorageSettings::default(),
+                }),
+            );
+        }
+
         #[test]
         fn contract_add() {
             use crate::manager::{AddRequest, AddResult};

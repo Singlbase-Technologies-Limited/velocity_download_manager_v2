@@ -463,3 +463,47 @@ export const DiagnosticReportSchema = z.strictObject({
   torrentEngineLog: z.array(z.string()),
 });
 export type DiagnosticReport = z.infer<typeof DiagnosticReportSchema>;
+
+// The history (#32): finished downloads, in the list or not, and how long they are kept.
+
+export const HistoryStatusSchema = z.enum(['completed', 'failed', 'cancelled']);
+export type HistoryStatus = z.infer<typeof HistoryStatusSchema>;
+
+export const HistoryQuerySchema = z.strictObject({
+  search: z.string().nullable(),
+  status: HistoryStatusSchema.nullable(),
+  limit: z.number().int().positive().nullable(),
+  offset: z.number().int().nonnegative().nullable(),
+});
+export type HistoryQuery = z.infer<typeof HistoryQuerySchema>;
+
+export const HistoryEntrySchema = z.strictObject({
+  id: z.string().min(1),
+  /** `null` for a kind a later V2 stored, which this build doesn't know. */
+  kind: DownloadKindSchema.nullable(),
+  fileName: z.string().nullable(),
+  sourceUrl: z.string(),
+  directory: z.string(),
+  categoryId: z.string().nullable(),
+  status: DownloadStatusSchema,
+  totalBytes: bytes.nullable(),
+  createdAtMs: bytes,
+  completedAtMs: bytes.nullable(),
+  errorMessage: z.string().nullable(),
+  /** It is still in the download list. */
+  inList: z.boolean(),
+});
+export type HistoryEntry = z.infer<typeof HistoryEntrySchema>;
+
+export const HistoryPageSchema = z.strictObject({
+  entries: z.array(HistoryEntrySchema),
+  total: bytes,
+});
+export type HistoryPage = z.infer<typeof HistoryPageSchema>;
+
+/** How long the history keeps entries (V1's `storage` settings): days, 0 for ever, and the most kept. */
+export const StorageSettingsSchema = z.strictObject({
+  historyRetentionDays: z.number().int().min(0).max(3650),
+  maxHistoryEntries: z.number().int().min(100).max(1_000_000),
+});
+export type StorageSettings = z.infer<typeof StorageSettingsSchema>;
