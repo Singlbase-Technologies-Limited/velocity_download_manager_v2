@@ -111,6 +111,47 @@ fn cancel_ends_the_download_as_removed() {
     assert_eq!(r.completed_at_ms, None);
 }
 
+/// The user's action wins (#59): a running status the engine sent before it stopped the
+/// transfer doesn't show a paused or cancelled download running again.
+#[test]
+fn a_late_running_status_does_not_undo_a_pause() {
+    let (mut m, control, id) = setup();
+    control.progress(TransferId(1), 1024, Some(4096));
+    m.pump(T0);
+    m.pause(&id).unwrap();
+    // The worker reports bytes once more on its way out.
+    control.emit(late_progress(&control, 2048));
+    m.pump(T0);
+    assert_eq!(status(&m, &id), DownloadStatus::Paused);
+    // The bytes are true, so they still count.
+    assert_eq!(m.get(&id).unwrap().progress.completed_bytes, 2048);
+    // Once resumed, the engine's running status shows again.
+    m.resume(&id).unwrap();
+    control.progress(TransferId(1), 3072, Some(4096));
+    m.pump(T0);
+    assert_eq!(status(&m, &id), DownloadStatus::Downloading);
+}
+
+#[test]
+fn a_late_running_status_does_not_undo_a_cancel() {
+    let (mut m, control, id) = setup();
+    control.progress(TransferId(1), 1024, Some(4096));
+    m.pump(T0);
+    m.cancel(&id).unwrap();
+    control.emit(late_progress(&control, 2048));
+    m.pump(T0);
+    assert_eq!(status(&m, &id), DownloadStatus::Removed);
+}
+
+/// A Downloading snapshot of transfer 1 with `completed_bytes`, sent late: the fake engine's own
+/// state stays as it is.
+fn late_progress(control: &FakeControl, completed_bytes: u64) -> TransferEvent {
+    let mut snapshot = control.snapshot(TransferId(1));
+    snapshot.status = DownloadStatus::Downloading;
+    snapshot.progress.completed_bytes = completed_bytes;
+    TransferEvent::Changed { snapshot }
+}
+
 #[test]
 fn a_failure_records_the_engine_neutral_error() {
     let (mut m, control, id) = setup();

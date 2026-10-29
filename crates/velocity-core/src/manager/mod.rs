@@ -164,6 +164,18 @@ fn is_direct_status(status: DownloadStatus) -> bool {
     )
 }
 
+/// A status the engine shows only while it runs the transfer.
+fn is_running_status(status: DownloadStatus) -> bool {
+    matches!(
+        status,
+        DownloadStatus::Connecting
+            | DownloadStatus::Downloading
+            | DownloadStatus::Verifying
+            | DownloadStatus::Retrying
+            | DownloadStatus::Stalled
+    )
+}
+
 impl Download {
     fn direct(&self) -> Option<&DirectJob> {
         match &self.job {
@@ -927,9 +939,15 @@ impl Manager {
                 } else {
                     DownloadStatus::Unknown
                 };
-                // The engine pauses the downloads the queue holds back; they show as waiting.
-                let shown = if status == DownloadStatus::Paused && !download.running {
+                // The engine pauses the downloads the queue holds back; they show as waiting. A
+                // running status sent before the engine stopped one the user paused or cancelled
+                // doesn't undo that (#59).
+                let shown = if download.running {
+                    status
+                } else if status == DownloadStatus::Paused {
                     download.waiting_status()
+                } else if is_running_status(status) {
+                    download.record.status
                 } else {
                     status
                 };
