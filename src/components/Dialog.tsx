@@ -4,6 +4,7 @@ import type { ReactNode } from 'react';
 import { cn } from '../lib/cn';
 import { Button } from './Button';
 import { contentClass, overlayClass } from './dialogStyles';
+import { useReturnFocus } from './returnFocus';
 
 /** A modal dialog with a title, a close button and an optional footer (V1's Dialog). */
 export function Dialog({
@@ -23,11 +24,12 @@ export function Dialog({
   footer?: ReactNode;
   className?: string;
 }) {
+  const returnFocus = useReturnFocus();
   return (
     <DialogPrimitive.Root open={open} onOpenChange={onOpenChange}>
       <DialogPrimitive.Portal>
         <DialogPrimitive.Overlay className={overlayClass} />
-        <DialogPrimitive.Content className={cn(contentClass, 'max-w-lg', className)} aria-describedby={undefined}>
+        <DialogPrimitive.Content className={cn(contentClass, 'max-w-lg', className)} aria-describedby={undefined} {...returnFocus}>
           <div className="flex items-start justify-between gap-4 border-b border-border px-5 py-4">
             <div>
               <DialogPrimitive.Title className="text-[15px] font-semibold">{title}</DialogPrimitive.Title>

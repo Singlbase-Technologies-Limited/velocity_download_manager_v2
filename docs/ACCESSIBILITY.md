@@ -46,6 +46,7 @@ Each behaviour has a test, run with the frontend's Vitest suite (`pnpm test:focu
 ## What the audit found
 
 - **Contrast below AA (fixed):** hint text measured 3.05:1 at worst in the light theme and 3.32:1 in the dark one, and the selected navigation item, success, warning and accent text fell just short on some backgrounds (4.08 to 4.49). Six colours were nudged to the smallest change that reaches 4.5:1 (PO decision on #66): light hint `#7b879a`→`#606b7d`, accent `#1d6fd8`→`#1b68cb`, success `#15803d`→`#14793a`, warning `#b45309`→`#aa4f09`; dark hint `#6f7b8f`→`#8993a3`, accent `#4b8ff0`→`#5092f0`.
+- **Focus was lost when a dialog closed (fixed):** the dialogs open from the app's state rather than from a trigger button, so when one closed, focus fell to the page and the next Tab started from the top. A dialog or confirmation now gives focus back to whatever had it when it opened.
 - **The row menu needs a pointer (as in V1):** each row has its own right-click menu, and the list takes focus as a whole, so Shift+F10 or the menu key doesn't open a row's menu. Its actions are reachable otherwise: Space, Delete and Enter on the list, the toolbar's buttons for the selection, and the details panel (open, show in folder, copy the link, the options). Raised with the PO as a possible follow-up rather than built here, since the issue keeps to V1's behaviour.
 
 ## The manual screen-reader check

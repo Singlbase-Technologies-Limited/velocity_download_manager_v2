@@ -3,6 +3,7 @@ import type { ReactNode } from 'react';
 import { cn } from '../lib/cn';
 import { Button } from './Button';
 import { contentClass, overlayClass } from './dialogStyles';
+import { useReturnFocus } from './returnFocus';
 
 export interface ConfirmOptions {
   title: string;
@@ -25,13 +26,14 @@ export function ConfirmDialog({
   onConfirm: () => void;
   onCancel: () => void;
 }) {
+  const returnFocus = useReturnFocus();
   return (
     <AlertDialogPrimitive.Root open={open} onOpenChange={(o) => {
         if (!o) onCancel();
       }}>
       <AlertDialogPrimitive.Portal>
         <AlertDialogPrimitive.Overlay className={overlayClass} />
-        <AlertDialogPrimitive.Content className={cn(contentClass, 'max-w-md p-5')}>
+        <AlertDialogPrimitive.Content className={cn(contentClass, 'max-w-md p-5')} {...returnFocus}>
           <AlertDialogPrimitive.Title className="text-[15px] font-semibold">{options?.title}</AlertDialogPrimitive.Title>
           <AlertDialogPrimitive.Description asChild>
             <div className="mt-2 text-[13px] leading-relaxed text-fg-muted">{options?.description}</div>

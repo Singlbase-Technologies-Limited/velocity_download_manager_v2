@@ -80,19 +80,21 @@ describe('the download list from the keyboard (V1’s keys)', () => {
     (await grid()).focus();
     await user.keyboard('{Home}{Enter}');
     const panel = await screen.findByRole('complementary', { name: 'Download details' });
-    expect(within(panel).getByText('done.iso')).toBeTruthy();
+    expect(within(panel).getByRole('heading', { name: 'done.iso' })).toBeTruthy();
   });
 
   it('Delete asks before removing the selection, and Escape keeps it', async () => {
     const user = userEvent.setup();
     renderApp();
-    (await grid()).focus();
+    const list = await grid();
+    list.focus();
     await user.keyboard('{End}{Delete}');
     const confirm = await screen.findByRole('alertdialog');
     expect(confirm.contains(document.activeElement)).toBe(true);
     await user.keyboard('{Escape}');
     await waitFor(() => { expect(screen.queryByRole('alertdialog')).toBeNull(); });
     expect(callsOf(state, 'remove_downloads')).toEqual([]);
+    expect(document.activeElement).toBe(list);
   });
 });
 

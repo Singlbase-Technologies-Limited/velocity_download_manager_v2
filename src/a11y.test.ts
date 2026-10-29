@@ -1,10 +1,11 @@
 import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 // The accessibility audit's checks on the design tokens (#66, docs/ACCESSIBILITY.md): contrast in both themes,
 // the focus ring, and reduced motion. Read from src/index.css itself, so a changed colour is checked as it ships.
 
-const css = readFileSync(new URL('./index.css', import.meta.url), 'utf8');
+const css = readFileSync(join(__dirname, 'index.css'), 'utf8');
 
 function tokens(selector: string): Record<string, string> {
   const start = css.indexOf(`${selector} {`);
