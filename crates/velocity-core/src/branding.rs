@@ -20,8 +20,18 @@ pub struct Branding {
     pub release_identifier: String,
     pub native_host_name: String,
     pub release_native_host_name: String,
+    /// The browser extension's name in development builds and in release builds (#64): it says
+    /// "V2", so that V1's and V2's extensions can be told apart when both are installed.
+    pub extension_name: String,
+    pub release_extension_name: String,
+    /// The short name the extension uses in menus and badges ("Download with …").
+    pub extension_short_name: String,
     pub firefox_extension_id: String,
-    /// Derived from the extension key generated in #64; empty until then.
+    /// The public half of V2's Chrome extension key (base64 DER), generated in #64. It pins the
+    /// extension ID; the private half is never committed.
+    pub chrome_extension_key: String,
+    /// The extension IDs the native host allows: the one derived from `chrome_extension_key`
+    /// (checked by `scripts/extension-lib.test.mjs`).
     pub chrome_extension_ids: Vec<String>,
 }
 
@@ -43,6 +53,9 @@ mod tests {
     const V1_NATIVE_HOST: &str = "com.velocity.download_manager";
     const V1_FIREFOX_ID: &str = "velocity-download-manager@velocity.local";
     const V1_CHROME_ID: &str = "eecopkgfiffjgmngfmjmdaejbkbbippo";
+    /// V1's extension name and Chrome key (V1 `branding.json`, `chromeExtensionKey`).
+    const V1_EXTENSION_NAME: &str = "Velocity Download Manager";
+    const V1_CHROME_KEY: &str = "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAo15wOoNApvSfuGVevsk7fqI3qo1KYF24IG1NWijAmrFWo0FtL1fVRXq5LZsVyQN1bkuobZufFxPArf0B+CmXOfqkOzAeBAp/ZZPTRjFoIT5kOMtx/0MH63N1/+r5kpAYkmFqWTtukdjCiD3mKZGrinSpjbg2bOYV3RbvyIlH94MsQt8ANDWOx7ffQ+h8eGLYUNhrIWjtPT+tOnKnRPXxyQJjb+j3IiNINZ6PfSKpOiWTILdLdmOyg5QQdgXTFwPQ+YPMAsQ8Bf+TlvlaDgzGnEsvwKek0O2m2VdZ9dtBo/tP+t6VBGO4CkU+zi0SHGO2ZjM8yrPkGe81jbmFQ1/EnwIDAQAB";
 
     fn is_reverse_dns(s: &str) -> bool {
         let parts: Vec<_> = s.split('.').collect();
@@ -108,6 +121,20 @@ mod tests {
         }
         assert_ne!(b.firefox_extension_id, V1_FIREFOX_ID);
         assert!(!b.chrome_extension_ids.iter().any(|i| i == V1_CHROME_ID));
+        assert_ne!(b.chrome_extension_key, V1_CHROME_KEY);
+        for name in [&b.extension_name, &b.release_extension_name] {
+            assert_ne!(name, V1_EXTENSION_NAME);
+            assert!(name.contains("V2"), "{name}");
+        }
+        assert!(b.extension_short_name.contains("V2"));
+    }
+
+    #[test]
+    fn the_extension_has_a_chrome_id_and_key() {
+        let b = branding();
+        assert_eq!(b.chrome_extension_ids.len(), 1);
+        assert!(b.chrome_extension_key.starts_with("MII"), "a base64 DER key");
+        assert_ne!(b.extension_name, b.release_extension_name);
     }
 
     #[test]

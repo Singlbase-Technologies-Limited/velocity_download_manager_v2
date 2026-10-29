@@ -12,7 +12,8 @@ V2 and the original Velocity Download Manager (V1) can be installed and run at t
 | Identifier: data folder, single-instance key, pipe name | `dev.velocity.downloadmanager.v2` | `com.velocity.downloadmanager.v2` | `com.velocity.downloadmanager` |
 | Native-messaging host (#65) | `dev.velocity.download_manager_v2` | `com.velocity.download_manager_v2` | `com.velocity.download_manager` |
 | Firefox extension ID (#64) | `velocity-download-manager-v2@velocity.local` | the same | `velocity-download-manager@velocity.local` |
-| Chrome extension IDs (#64) | none yet (a new key is generated in #64) | the same | `eecopkg…` |
+| Chrome extension IDs (#64) | `adhefdmekgeafmopfbiappajaolcbhkc`, pinned by V2's own key ([BROWSER_EXTENSION.md](BROWSER_EXTENSION.md#identity)) | the same | `eecopkg…` |
+| Browser extension name (#64) | Velocity Download Manager V2 (dev) | Velocity Download Manager V2 | Velocity Download Manager |
 
 ## What derives from the identifier
 

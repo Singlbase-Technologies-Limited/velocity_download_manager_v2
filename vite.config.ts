@@ -15,7 +15,7 @@ export default defineConfig({
     strictPort: true,
     host: host || false,
     hmr: host ? { protocol: 'ws', host, port: 1431 } : undefined,
-    watch: { ignored: ['**/src-tauri/**', '**/crates/**', '**/target/**'] },
+    watch: { ignored: ['**/src-tauri/**', '**/crates/**', '**/target/**', '**/browser-extension/**'] },
   },
   envPrefix: ['VITE_', 'TAURI_ENV_*'],
   build: {
@@ -35,6 +35,8 @@ export default defineConfig({
         },
       },
       { extends: true, test: { name: 'scripts', environment: 'node', include: ['scripts/**/*.test.mjs'] } },
+      // The browser extension's logic runs against fakes of the WebExtension APIs (#64).
+      { extends: true, test: { name: 'extension', environment: 'node', include: ['browser-extension/tests/**/*.test.ts'] } },
     ],
   },
 });

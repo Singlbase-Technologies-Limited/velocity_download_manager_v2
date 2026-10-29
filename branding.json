@@ -5,6 +5,10 @@
   "releaseIdentifier": "com.velocity.downloadmanager.v2",
   "nativeHostName": "dev.velocity.download_manager_v2",
   "releaseNativeHostName": "com.velocity.download_manager_v2",
+  "extensionName": "Velocity Download Manager V2 (dev)",
+  "releaseExtensionName": "Velocity Download Manager V2",
+  "extensionShortName": "Velocity V2",
   "firefoxExtensionId": "velocity-download-manager-v2@velocity.local",
-  "chromeExtensionIds": []
+  "chromeExtensionKey": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAoh+WdRNamGY6N3MWHk0fbGbysiAYBMl8oZf2GI76j5Z/di3+pI4+9n4eu0o5Ta4rk4ssVMZdKkieIgXUrn3uXGIZU69ia0JcibwH+Gdv2/YZ2iw1eTUTby43OgtT+ECFVmgPNzWf/fMsKftrjmQMFvZagvZPmbNXmJpUlRzp17CXeNlBbaL9mHtVDRXl0R2YeKxsKuM4MolvGZuF1qP0nzavcguI1epssLWGDtPMpuEdVLV4E3W8M2ZrhSOtxqy0USH5pmweUVQRuBaJXhT2Z//4uUvr4DowUwe8AblaGOi9I8UTkp5JcpfUCz32KN3H7g2xJtp/Ueub1kXDiYDKkQIDAQAB",
+  "chromeExtensionIds": ["adhefdmekgeafmopfbiappajaolcbhkc"]
 }
