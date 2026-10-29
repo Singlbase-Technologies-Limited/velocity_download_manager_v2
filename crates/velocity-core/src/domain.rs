@@ -237,6 +237,29 @@ pub struct DownloadRecord {
     pub started_at_ms: Option<u64>,
     /// The bytes per second it received while it ran, once it ran for a second (#59).
     pub average_speed_bps: Option<u64>,
+    /// The download's own speed limit, in bytes per second; `None` for none (#61). The global
+    /// limit holds alongside it.
+    pub speed_limit_bps: Option<u64>,
+    /// The connections a direct download asks for (#61); `None` for a torrent, whose peers
+    /// libtorrent chooses.
+    pub requested_connections: Option<u32>,
+    /// What the torrent helper last reported about a torrent's peers and seeding (#61); `None`
+    /// for a direct download, and until the helper reports.
+    pub torrent: Option<TorrentActivity>,
+}
+
+/// A torrent's peers and seeding, as the torrent helper reports them (#61).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct TorrentActivity {
+    /// Peers connected now, and how many of them have the whole torrent.
+    pub peers: u32,
+    pub seeds: u32,
+    /// Bytes uploaded and seconds spent seeding over the torrent's life.
+    pub uploaded_bytes: u64,
+    pub seeding_secs: u64,
+    /// Completed and allowed to seed, but waiting for a seeding slot (#63).
+    pub seed_queued: bool,
 }
 
 /// What the UI is sent about the downloads (#58, V1's `get_snapshot`), whenever something in it
@@ -527,6 +550,9 @@ impl DownloadRecord {
             retry_at_ms: Some(1_792_600_030_000),
             started_at_ms: Some(1_792_600_001_000),
             average_speed_bps: Some(262_144),
+            speed_limit_bps: Some(524_288),
+            requested_connections: Some(8),
+            torrent: None,
         }
     }
 }
@@ -534,8 +560,39 @@ impl DownloadRecord {
 impl DownloadsSnapshot {
     /// A fixed example for the contract fixtures and UI tests.
     pub fn sample() -> Self {
+        // A seeding torrent beside the direct sample, so the fixture has its peers and seeding.
+        let torrent = DownloadRecord {
+            id: "d-0003".to_owned(),
+            kind: DownloadKind::Magnet,
+            source_url: "magnet:?xt=urn:btih:0123456789abcdef0123456789abcdef01234567".to_owned(),
+            file_name: Some("album".to_owned()),
+            category_id: None,
+            status: DownloadStatus::Seeding,
+            progress: Progress {
+                completed_bytes: 4_194_304,
+                total_bytes: Some(4_194_304),
+                download_speed_bps: 0,
+                upload_speed_bps: 65_536,
+                connections: 7,
+                connection_detail: None,
+            },
+            error: None,
+            verification: None,
+            retry_at_ms: None,
+            completed_at_ms: Some(1_792_600_060_000),
+            requested_connections: None,
+            speed_limit_bps: None,
+            torrent: Some(TorrentActivity {
+                peers: 7,
+                seeds: 2,
+                uploaded_bytes: 8_388_608,
+                seeding_secs: 600,
+                seed_queued: false,
+            }),
+            ..DownloadRecord::sample()
+        };
         Self {
-            downloads: vec![DownloadRecord::sample()],
+            downloads: vec![DownloadRecord::sample(), torrent],
             unavailable: vec![UnavailableDownload {
                 id: "d-0002".to_owned(),
                 source_url: "https://example.com/files/later.iso".to_owned(),
@@ -883,6 +940,34 @@ mod tests {
                         offset: Some(0),
                     },
                     "storage": StorageSettings::default(),
+                }),
+            );
+        }
+
+        /// A torrent's details, a `.torrent` file's preview, its trackers and its peers (#63).
+        #[test]
+        fn contract_torrent() {
+            use crate::manager::{
+                sample_swarm, Duplicate, TorrentContents, TorrentDetails, TorrentPreview,
+            };
+            let (trackers, peers) = sample_swarm();
+            let preview = TorrentPreview {
+                contents: TorrentContents::sample(),
+                duplicate: Some(Duplicate {
+                    existing_id: "d-0003".to_owned(),
+                    name: Some("album".to_owned()),
+                    status: DownloadStatus::Seeding,
+                    in_list: true,
+                    can_add_anyway: false,
+                }),
+            };
+            check(
+                "torrent.json",
+                serde_json::json!({
+                    "details": TorrentDetails::sample(),
+                    "preview": preview,
+                    "trackers": trackers,
+                    "peers": peers,
                 }),
             );
         }

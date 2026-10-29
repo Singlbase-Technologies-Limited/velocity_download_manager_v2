@@ -21,6 +21,7 @@ impl Manager {
         }
         let d = self.downloads.get_mut(id).expect("known");
         d.direct_mut().expect("a direct download").request.limits = limits;
+        d.show_settings();
         self.store_options(id);
         Ok(())
     }
@@ -49,6 +50,7 @@ impl Manager {
             .expect("a direct download")
             .request
             .max_connections = applied;
+        d.show_settings();
         self.store_options(id);
         Ok(applied)
     }

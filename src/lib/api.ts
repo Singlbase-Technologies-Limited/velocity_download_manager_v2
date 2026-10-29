@@ -12,8 +12,13 @@ import {
   DownloadsSnapshotSchema,
   parseAppInfo,
   HistoryPageSchema,
+  KeptFileSchema,
+  PeerStatusSchema,
   ShellSettingsSchema,
   StorageSettingsSchema,
+  TorrentDetailsSchema,
+  TorrentPreviewSchema,
+  TrackerStatusSchema,
   type AddRequest,
   type AppearanceSettings,
   type Category,
@@ -99,6 +104,27 @@ export const api = {
   moveDownload: (id: string, direction: MoveDirection) => call('move_download', { id, direction }, nothing),
   /** Stops a torrent seeding: its seeding policy becomes "never". */
   stopSeeding: (id: string) => call('set_torrent_seeding', { id, seeding: { mode: 'never' } }, nothing),
+  // The details panel's (#61).
+  /** Sets a download's own speed limit in KiB/s; 0 for none. */
+  setSpeedLimit: (id: string, kib: number) => call('set_download_speed_limit', { id, kib }, nothing),
+  /** Asks for `connections`; answers how many apply. */
+  setConnections: (id: string, connections: number) => call('set_download_connections', { id, connections }, z.number().int().positive()),
+  setCategory: (id: string, categoryId: string | null) => call('set_download_category', { id, categoryId }, nothing),
+  /** Opens the finished file; `CONFIRMATION_REQUIRED` for a program until `allowProgram`. */
+  openFile: (id: string, allowProgram: boolean) => call('open_download_file', { id, allowProgram }, nothing),
+  /** Shows the file in its folder, or the folder when the file is gone. */
+  openFolder: (id: string) => call('open_download_folder', { id }, nothing),
+  // Torrents (#63).
+  /** What adding the `.torrent` file at `path` would add. */
+  previewTorrent: (path: string) => call('preview_torrent_file', { path }, TorrentPreviewSchema),
+  torrentDetails: (id: string) => call('get_torrent_details', { id }, TorrentDetailsSchema),
+  trackers: (id: string) => call('get_torrent_trackers', { id }, z.array(TrackerStatusSchema)),
+  peers: (id: string) => call('get_torrent_peers', { id }, z.array(PeerStatusSchema)),
+  reannounce: (id: string) => call('reannounce_torrent', { id }, nothing),
+  /** KiB/s; 0 for no limit. */
+  setUploadLimit: (id: string, kib: number) => call('set_torrent_upload_limit', { id, kib }, nothing),
+  /** Downloads exactly `files`; with `deleteDropped`, deletes the torrent's own files no longer chosen. Answers the files kept. */
+  chooseTorrentFiles: (id: string, files: number[], deleteDropped: boolean) => call('choose_torrent_files', { id, files, deleteDropped }, z.array(KeptFileSchema)),
   // The history (#32).
   history: (query: HistoryQuery) => call('get_history', { query }, HistoryPageSchema),
   /** How many entries left the history. */

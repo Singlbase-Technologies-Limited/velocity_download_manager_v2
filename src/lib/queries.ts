@@ -7,7 +7,13 @@ export const keys = {
   shellSettings: ['shell-settings'] as const,
   categories: ['categories'] as const,
   capabilities: ['capabilities'] as const,
+  torrent: (id: string) => ['torrent', id] as const,
+  trackers: (id: string) => ['torrent', id, 'trackers'] as const,
+  peers: (id: string) => ['torrent', id, 'peers'] as const,
 };
+
+/** How often a shown torrent's swarm is asked for (PO decision on #63): only while it is shown. */
+export const SWARM_EVERY_MS = 1000;
 
 /** V1's query defaults: no refetching on focus, one retry for queries, none for commands. */
 export function createQueryClient(): QueryClient {
@@ -27,4 +33,17 @@ export function useCategories() {
 /** What the transfer engine can do (#57): the Add dialog offers only that. */
 export function useCapabilities() {
   return useQuery({ queryKey: keys.capabilities, queryFn: api.capabilities });
+}
+
+/** A torrent's seeding, upload limit and files (#63); fetched for the torrent shown, and again after a change. */
+export function useTorrentDetails(id: string, enabled = true) {
+  return useQuery({ queryKey: keys.torrent(id), queryFn: () => api.torrentDetails(id), retry: false, enabled });
+}
+
+/** A shown torrent's trackers and peers, asked for every second while `live` (PO decision on #63). */
+export function useSwarm(id: string, live: boolean) {
+  const options = { retry: false, enabled: live, refetchInterval: live ? SWARM_EVERY_MS : false } as const;
+  const trackers = useQuery({ queryKey: keys.trackers(id), queryFn: () => api.trackers(id), ...options });
+  const peers = useQuery({ queryKey: keys.peers(id), queryFn: () => api.peers(id), ...options });
+  return { trackers, peers };
 }

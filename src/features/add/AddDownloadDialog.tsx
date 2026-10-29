@@ -10,7 +10,7 @@ import { Field } from '../../components/Field';
 import { Input } from '../../components/Input';
 import { Select } from '../../components/Select';
 import { Textarea } from '../../components/Textarea';
-import type { AddRequest, AddResult } from '../../contract';
+import type { AddRequest, AddResult, SeedPolicy } from '../../contract';
 import { api } from '../../lib/api';
 import { toApiError } from '../../lib/errors';
 import { formatBytes } from '../../lib/format';
@@ -18,6 +18,9 @@ import { useCapabilities, useCategories } from '../../lib/queries';
 import { nameForDownload } from '../../naming';
 import { useUiStore, type AddPrefill } from '../../stores/ui';
 import { showDownload } from '../downloads/showDownload';
+import { FileTree } from '../torrents/FileTree';
+import { SeedingFields } from '../torrents/SeedingFields';
+import { fileChoice, selectedSize, VERSION_LABEL } from '../torrents/torrentLogic';
 import { AddOutcomeFooter, AddOutcomeView } from './AddOutcomeView';
 import { plural, sortOutcome, type Outcome } from './outcome';
 import { linkKind, linkProblem, MAX_ADD, parseChecksum, parseHeaders, splitLinks } from './addLogic';
@@ -55,6 +58,10 @@ function AddForm({ prefill, onClose }: { prefill: AddPrefill | null; onClose: ()
   const [createDirectory, setCreateDirectory] = useState(false);
   const [requireEncryption, setRequireEncryption] = useState(false);
   const [chooseFiles, setChooseFiles] = useState(false);
+  // A torrent's seeding, upload limit and, for a single `.torrent` file, its files (#63).
+  const [seeding, setSeeding] = useState<SeedPolicy>({ mode: 'never' });
+  const [uploadLimit, setUploadLimit] = useState('');
+  const [chosenFiles, setChosenFiles] = useState<Set<number> | null>(null);
   const [advanced, setAdvanced] = useState(false);
   const [connections, setConnections] = useState('');
   const [speedLimit, setSpeedLimit] = useState('');
@@ -100,6 +107,18 @@ function AddForm({ prefill, onClose }: { prefill: AddPrefill | null; onClose: ()
   // A missing folder the user chose needs their consent; an automatic one is the settings' or the category's.
   const missingChosen = directory.trim() !== '' && dest !== undefined && !dest.directoryExists && !dest.automaticDirectory;
   const autoCategory = categoryId === AUTOMATIC && dest?.categoryId ? categories?.find((c) => c.id === dest.categoryId) : undefined;
+
+  // One `.torrent` file is previewed, so its files can be chosen (V1's `inspect_torrent_file`).
+  const previewed = torrentFiles.length === 1 ? torrentFiles[0] : undefined;
+  const preview = useQuery({
+    queryKey: ['torrent-preview', previewed ?? ''] as const,
+    queryFn: () => api.previewTorrent(previewed ?? ''),
+    enabled: previewed !== undefined,
+    retry: false,
+  });
+  const torrentFilesOf = preview.data?.contents.files ?? [];
+  const chosen = chosenFiles ?? new Set(torrentFilesOf.map((f) => f.index));
+  const choice = fileChoice(torrentFilesOf, chosen);
 
   const nothing = links.length === 0 && torrentFiles.length === 0;
   const blocked = nothing || invalid.length > 0 || tooMany || headers.error !== null || checksum.error !== null || (missingChosen && !createDirectory);
@@ -148,6 +167,9 @@ function AddForm({ prefill, onClose }: { prefill: AddPrefill | null; onClose: ()
     checksum: checksum.checksum,
     requireEncryption: plainFtp !== undefined && requireEncryption,
     chooseFiles: torrentMode && chooseFiles,
+    fileChoices: previewed !== undefined && preview.data && choice.files !== null ? [{ torrentFile: previewed, files: choice.files }] : [],
+    seeding: torrentMode ? seeding : null,
+    uploadLimitKib: torrentMode && Number(uploadLimit) > 0 ? Math.floor(Number(uploadLimit)) : 0,
     ...over,
   });
 
@@ -173,6 +195,10 @@ function AddForm({ prefill, onClose }: { prefill: AddPrefill | null; onClose: ()
 
   const submit = (startPaused: boolean) => {
     if (blocked) return;
+    if (preview.data && choice.error !== null) {
+      setFormError(choice.error);
+      return;
+    }
     void run(request({ startPaused }), 0);
   };
 
@@ -237,7 +263,7 @@ function AddForm({ prefill, onClose }: { prefill: AddPrefill | null; onClose: ()
           {torrentFiles.length > 0 ? (
             <div className="space-y-2 rounded-lg border border-border p-3">
               <div className="flex items-center justify-between gap-2">
-                <p className="text-xs text-fg-muted">{torrentFiles.length === 1 ? 'One .torrent file. It is added with all its files.' : `${String(torrentFiles.length)} .torrent files. Each is added with all its files.`}</p>
+                <p className="text-xs text-fg-muted">{torrentFiles.length === 1 ? 'One .torrent file. Choose its files below.' : `${String(torrentFiles.length)} .torrent files. Each is added with all its files.`}</p>
                 <Button size="sm" variant="ghost" onClick={() => { setTorrentFiles([]); }}>
                   Use links instead
                 </Button>
@@ -249,6 +275,29 @@ function AddForm({ prefill, onClose }: { prefill: AddPrefill | null; onClose: ()
                   </li>
                 ))}
               </ul>
+              {preview.isError ? (
+                <p role="alert" className="text-xs text-danger">
+                  {toApiError(preview.error).message}
+                </p>
+              ) : preview.data ? (
+                <div className="space-y-2">
+                  <p className="text-xs">
+                    <span className="font-medium">{preview.data.contents.name}</span>
+                    <span className="text-fg-muted"> · </span>
+                    <span className="text-fg-muted">{VERSION_LABEL[preview.data.contents.version]}</span>
+                    {preview.data.contents.private ? <span className="text-fg-muted"> · private: no DHT or peer exchange</span> : null}
+                  </p>
+                  {preview.data.contents.infoHashV1 ? <p className="break-all font-mono text-[11px] text-fg-muted">{preview.data.contents.infoHashV1}</p> : null}
+                  {preview.data.duplicate ? (
+                    <p className="flex items-center gap-2 rounded-md bg-warning-soft px-3 py-2 text-xs text-warning">
+                      <TriangleAlert className="size-4 shrink-0" aria-hidden />
+                      This torrent is already in your downloads or history. You’ll be asked what to do when you start.
+                    </p>
+                  ) : null}
+                  <FileTree files={torrentFilesOf} selected={chosen} onChange={setChosenFiles} />
+                  <p className="text-xs tabular-nums text-fg-muted">{`${String(chosen.size)} of ${String(torrentFilesOf.length)} files · ${formatBytes(selectedSize(torrentFilesOf, chosen))}`}</p>
+                </div>
+              ) : null}
             </div>
           ) : (
             <>
@@ -361,9 +410,19 @@ function AddForm({ prefill, onClose }: { prefill: AddPrefill | null; onClose: ()
           ) : null}
 
           {torrentMode ? (
-            <Checkbox checked={chooseFiles} onChange={setChooseFiles}>
-              Choose files before downloading
-            </Checkbox>
+            <div className="space-y-3">
+              {preview.data ? null : (
+                <Checkbox checked={chooseFiles} onChange={setChooseFiles}>
+                  Choose files before downloading
+                </Checkbox>
+              )}
+              <div className="flex flex-wrap items-start gap-3">
+                <SeedingFields value={seeding} onChange={setSeeding} />
+                <Field label="Upload limit (KiB/s)" hint="Empty or 0 means no limit.">
+                  {(p) => <Input {...p} type="number" min={0} className="w-28" value={uploadLimit} onChange={(e) => { setUploadLimit(e.target.value); }} />}
+                </Field>
+              </div>
+            </div>
           ) : null}
 
           <button

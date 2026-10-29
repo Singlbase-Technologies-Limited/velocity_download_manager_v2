@@ -1,11 +1,12 @@
 import { useEffect } from 'react';
 import { toast } from 'sonner';
 import { onTorrentsDropped } from '../../lib/events';
+import { torrentLinksInPaste } from '../torrents/torrentLogic';
 import { useUiStore } from '../../stores/ui';
 
 /**
- * Where the Add dialog opens from besides the navigation (#60): Ctrl+N (⌘N on macOS), as in V1, and
- * `.torrent` files dropped on the window. The browser's prefill (#64, #65) calls `openAdd` too.
+ * Where the Add dialog opens from besides the navigation (#60): Ctrl+N (⌘N on macOS), as in V1, `.torrent` files
+ * dropped on the window, and magnet or `.torrent` links pasted outside a text field (#63). The browser's prefill (#64, #65) calls `openAdd` too.
  */
 export function useAddEntryPoints() {
   useEffect(() => {
@@ -18,6 +19,20 @@ export function useAddEntryPoints() {
     };
     window.addEventListener('keydown', onKey);
     return () => { window.removeEventListener('keydown', onKey); };
+  }, []);
+
+  // Magnet and `.torrent` links pasted outside a text field open the dialog with them (V1's, #63).
+  useEffect(() => {
+    const onPaste = (e: ClipboardEvent) => {
+      const target = e.target as HTMLElement | null;
+      if (target?.closest('input, textarea, [contenteditable="true"]') || useUiStore.getState().addDialog.open) return;
+      const links = torrentLinksInPaste(e.clipboardData?.getData('text/plain') ?? '');
+      if (links.length === 0) return;
+      e.preventDefault();
+      useUiStore.getState().openAdd({ links: links.join('\n') });
+    };
+    document.addEventListener('paste', onPaste);
+    return () => { document.removeEventListener('paste', onPaste); };
   }, []);
 
   useEffect(() => {

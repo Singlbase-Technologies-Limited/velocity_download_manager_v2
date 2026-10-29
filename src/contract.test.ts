@@ -30,10 +30,15 @@ import {
   ShellSettingsSchema,
   ThemeSchema,
   VerificationSchema,
+  PeerStatusSchema,
+  TorrentDetailsSchema,
+  TorrentPreviewSchema,
+  TrackerStatusSchema,
   HistoryPageSchema,
   HistoryQuerySchema,
   StorageSettingsSchema,
 } from './contract';
+import { z } from 'zod';
 
 // Fixtures are generated from the Rust types (crates/velocity-core/src/domain.rs):
 // VELOCITY_UPDATE_FIXTURES=1 cargo test -p velocity-core contract
@@ -110,6 +115,12 @@ describe('contract fixtures generated from Rust', () => {
     expect(DownloadLoginSchema.parse(fixture('download-login.json'))).toEqual(fixture('download-login.json'));
   });
 
+  it('reads a torrent’s details, a .torrent preview, its trackers and its peers (#63)', () => {
+    const f = fixture('torrent.json') as Record<string, unknown>;
+    expect(TorrentDetailsSchema.parse(f.details)).toEqual(f.details);
+    expect(TorrentPreviewSchema.parse(f.preview)).toEqual(f.preview);
+    expect(z.array(TrackerStatusSchema).parse(f.trackers)).toEqual(f.trackers);
+    expect(z.array(PeerStatusSchema).parse(f.peers)).toEqual(f.peers);
   it('reads the history’s page and query, and the retention’s defaults (#32)', () => {
     const f = fixture('history.json') as Record<string, unknown>;
     expect(HistoryPageSchema.parse(f.page)).toEqual(f.page);
