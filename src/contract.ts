@@ -5,7 +5,7 @@
 import { z } from 'zod';
 
 /** Must equal `velocity_core::COMMAND_API_VERSION`; the app refuses to start on a mismatch. */
-export const COMMAND_API_VERSION = 13;
+export const COMMAND_API_VERSION = 16;
 
 const bytes = z.number().int().nonnegative();
 
@@ -81,6 +81,17 @@ export const ProgressSchema = z.strictObject({
 });
 export type Progress = z.infer<typeof ProgressSchema>;
 
+/** A torrent's peers and seeding, as the torrent helper reports them (#61). */
+export const TorrentActivitySchema = z.strictObject({
+  peers: z.number().int().nonnegative(),
+  seeds: z.number().int().nonnegative(),
+  uploadedBytes: bytes,
+  seedingSecs: bytes,
+  /** Completed and allowed to seed, but waiting for a seeding slot (#63). */
+  seedQueued: z.boolean(),
+});
+export type TorrentActivity = z.infer<typeof TorrentActivitySchema>;
+
 export const DownloadRecordSchema = z.strictObject({
   id: z.string().min(1),
   kind: DownloadKindSchema,
@@ -100,6 +111,12 @@ export const DownloadRecordSchema = z.strictObject({
   startedAtMs: bytes.nullable(),
   /** Bytes per second while it ran, once it ran for a second (#59). */
   averageSpeedBps: bytes.nullable(),
+  /** Its own speed limit, in bytes per second; `null` for none (#61). */
+  speedLimitBps: bytes.nullable(),
+  /** The connections a direct download asks for; `null` for a torrent (#61). */
+  requestedConnections: z.number().int().positive().nullable(),
+  /** What the torrent helper last reported about a torrent's peers and seeding; `null` for a direct download, and until it reports (#61). */
+  torrent: TorrentActivitySchema.nullable(),
 });
 export type DownloadRecord = z.infer<typeof DownloadRecordSchema>;
 
@@ -193,11 +210,15 @@ export type DownloadsSnapshot = z.infer<typeof DownloadsSnapshotSchema>;
 export const KeptReasonSchema = z.enum(['notPlain', 'tooLarge', 'behindLink', 'notEmpty', 'failed']);
 export type KeptReason = z.infer<typeof KeptReasonSchema>;
 
+/** A file left in place, with why (#58): by a removal with files, or a torrent's dropped files (#63). */
+export const KeptFileSchema = z.strictObject({ path: z.string(), reason: KeptReasonSchema, code: ErrorCodeSchema.nullable() });
+export type KeptFile = z.infer<typeof KeptFileSchema>;
+
 /** What a command over several downloads did (#58). */
 export const BatchResultSchema = z.strictObject({
   done: z.array(z.string().min(1)),
   failed: z.array(z.strictObject({ id: z.string().min(1), code: ErrorCodeSchema })),
-  kept: z.array(z.strictObject({ path: z.string(), reason: KeptReasonSchema, code: ErrorCodeSchema.nullable() })),
+  kept: z.array(KeptFileSchema),
 });
 export type BatchResult = z.infer<typeof BatchResultSchema>;
 
@@ -284,6 +305,23 @@ export const ChecksumSchema = z.strictObject({ algorithm: HashAlgorithmSchema, h
 export type Checksum = z.infer<typeof ChecksumSchema>;
 
 /** What the Add dialog asks for (#60): the links and `.torrent` files, and the choices for each. */
+/** When a completed torrent stops seeding (#58, #63): `crates/velocity-core/src/seeding.rs`. */
+export const SeedPolicySchema = z.discriminatedUnion('mode', [
+  z.strictObject({ mode: z.literal('never') }),
+  z.strictObject({ mode: z.literal('time'), minutes: z.number().int().positive() }),
+  z.strictObject({ mode: z.literal('ratio'), ratio: z.number().positive() }),
+  z.strictObject({ mode: z.literal('timeOrRatio'), minutes: z.number().int().positive(), ratio: z.number().positive() }),
+  z.strictObject({ mode: z.literal('unlimited') }),
+]);
+export type SeedPolicy = z.infer<typeof SeedPolicySchema>;
+
+/** The files chosen for one `.torrent` file of an Add request (#63). */
+export const FileChoiceSchema = z.strictObject({
+  torrentFile: z.string().min(1),
+  files: z.array(z.number().int().positive()).min(1),
+});
+export type FileChoice = z.infer<typeof FileChoiceSchema>;
+
 export const AddRequestSchema = z.strictObject({
   links: z.array(z.string()),
   torrentFiles: z.array(z.string()),
@@ -308,6 +346,12 @@ export const AddRequestSchema = z.strictObject({
   checksum: ChecksumSchema.nullable(),
   requireEncryption: z.boolean(),
   chooseFiles: z.boolean(),
+  /** The files chosen for some of the `.torrent` files (#63); the others get every file. */
+  fileChoices: z.array(FileChoiceSchema),
+  /** `null` for the default: no seeding. */
+  seeding: SeedPolicySchema.nullable(),
+  /** KiB/s each torrent uploads at most; 0 for no limit. */
+  uploadLimitKib: z.number().int().nonnegative(),
 });
 export type AddRequest = z.infer<typeof AddRequestSchema>;
 
@@ -434,6 +478,120 @@ export function parseAppInfo(value: unknown): AppInfo {
   }
   return parsed.data;
 }
+
+// A torrent's details beyond the snapshot (#63), asked for while they are shown.
+
+export const TorrentVersionSchema = z.enum(['v1', 'v2', 'hybrid']);
+export type TorrentVersion = z.infer<typeof TorrentVersionSchema>;
+
+/** One file of a torrent: `index` is what choosing files takes; `path` has `/` between its parts. */
+export const ContentFileSchema = z.strictObject({
+  index: z.number().int().positive(),
+  path: z.string().min(1),
+  length: bytes,
+});
+export type ContentFile = z.infer<typeof ContentFileSchema>;
+
+export const TorrentContentsSchema = z.strictObject({
+  name: z.string(),
+  infoHashV1: z.string().nullable(),
+  infoHashV2: z.string().nullable(),
+  version: TorrentVersionSchema,
+  private: z.boolean(),
+  totalBytes: bytes,
+  /** Padding files left out. */
+  files: z.array(ContentFileSchema),
+});
+export type TorrentContents = z.infer<typeof TorrentContentsSchema>;
+
+export const TorrentDetailsSchema = z.strictObject({
+  seeding: SeedPolicySchema,
+  /** 0 for no limit. */
+  uploadLimitBps: bytes,
+  /** `null` until its metadata is known. */
+  contents: TorrentContentsSchema.nullable(),
+  /** `null` for every file. */
+  chosen: z.array(z.number().int().positive()).nullable(),
+});
+export type TorrentDetails = z.infer<typeof TorrentDetailsSchema>;
+
+export const TorrentPreviewSchema = z.strictObject({
+  contents: TorrentContentsSchema,
+  duplicate: DuplicateSchema.nullable(),
+});
+export type TorrentPreview = z.infer<typeof TorrentPreviewSchema>;
+
+export const TrackerStateSchema = z.enum(['working', 'updating', 'error', 'notContacted']);
+export type TrackerState = z.infer<typeof TrackerStateSchema>;
+
+/** One tracker, its passkey redacted by the helper; `message` is untrusted text. */
+export const TrackerStatusSchema = z.strictObject({
+  url: z.string(),
+  tier: z.number().int().nonnegative(),
+  state: TrackerStateSchema,
+  message: z.string().nullable(),
+  fails: z.number().int().nonnegative(),
+  nextAnnounceSecs: bytes.nullable(),
+  seeds: z.number().int().nonnegative().nullable(),
+  peers: z.number().int().nonnegative().nullable(),
+});
+export type TrackerStatus = z.infer<typeof TrackerStatusSchema>;
+
+/** One connected peer; `client` is untrusted text. */
+export const PeerStatusSchema = z.strictObject({
+  ip: z.string(),
+  port: z.number().int().nonnegative(),
+  downloadSpeedBps: bytes,
+  uploadSpeedBps: bytes,
+  seed: z.boolean(),
+  progressPermille: z.number().int().min(0).max(1000),
+  client: z.string(),
+});
+export type PeerStatus = z.infer<typeof PeerStatusSchema>;
+
+// The history (#32): finished downloads, in the list or not, and how long they are kept.
+
+export const HistoryStatusSchema = z.enum(['completed', 'failed', 'cancelled']);
+export type HistoryStatus = z.infer<typeof HistoryStatusSchema>;
+
+export const HistoryQuerySchema = z.strictObject({
+  search: z.string().nullable(),
+  status: HistoryStatusSchema.nullable(),
+  limit: z.number().int().positive().nullable(),
+  offset: z.number().int().nonnegative().nullable(),
+});
+export type HistoryQuery = z.infer<typeof HistoryQuerySchema>;
+
+export const HistoryEntrySchema = z.strictObject({
+  id: z.string().min(1),
+  /** `null` for a kind a later V2 stored, which this build doesn't know. */
+  kind: DownloadKindSchema.nullable(),
+  fileName: z.string().nullable(),
+  sourceUrl: z.string(),
+  directory: z.string(),
+  categoryId: z.string().nullable(),
+  status: DownloadStatusSchema,
+  totalBytes: bytes.nullable(),
+  createdAtMs: bytes,
+  completedAtMs: bytes.nullable(),
+  errorMessage: z.string().nullable(),
+  /** It is still in the download list. */
+  inList: z.boolean(),
+});
+export type HistoryEntry = z.infer<typeof HistoryEntrySchema>;
+
+export const HistoryPageSchema = z.strictObject({
+  entries: z.array(HistoryEntrySchema),
+  total: bytes,
+});
+export type HistoryPage = z.infer<typeof HistoryPageSchema>;
+
+/** How long the history keeps entries (V1's `storage` settings): days, 0 for ever, and the most kept. */
+export const StorageSettingsSchema = z.strictObject({
+  historyRetentionDays: z.number().int().min(0).max(3650),
+  maxHistoryEntries: z.number().int().min(100).max(1_000_000),
+});
+export type StorageSettings = z.infer<typeof StorageSettingsSchema>;
 
 // Diagnostics (#28): what the app and its engines say, safe to share. Every log line in it is redacted.
 

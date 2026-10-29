@@ -4,6 +4,7 @@ mod adding;
 mod categories;
 mod diagnostics;
 mod downloads;
+mod opening;
 mod shell;
 mod tray;
 
@@ -89,6 +90,19 @@ pub fn run() {
             downloads::choose_torrent_files,
             downloads::set_torrent_seeding,
             downloads::restart_torrent_helper,
+            downloads::get_torrent_details,
+            downloads::preview_torrent_file,
+            downloads::get_torrent_trackers,
+            downloads::get_torrent_peers,
+            downloads::reannounce_torrent,
+            downloads::set_torrent_upload_limit,
+            opening::open_download_file,
+            opening::open_download_folder,
+            downloads::get_history,
+            downloads::clear_history,
+            downloads::delete_history_entries,
+            downloads::get_storage_settings,
+            downloads::set_storage_settings,
             diagnostics::get_diagnostics,
             diagnostics::export_diagnostics,
             adding::add_downloads,

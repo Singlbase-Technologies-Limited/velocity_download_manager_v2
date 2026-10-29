@@ -57,7 +57,7 @@ How the window (`src/`) is built: where its state lives, how it talks to the nat
   - The colours are V1's design tokens, the PO's brand colours, in `src/index.css`. Tailwind reads them through `@theme`.
 - **The views:**
   - The six lists show their counts in the navigation, and the download list below.
-  - History and Settings come with #32 and #30.
+  - History (#32) is in the navigation's Library; Settings come with #30.
 - **Quitting:**
   - When quitting would stop active downloads and the setting asks for it, Rust shows the window and sends `quit-requested`.
   - The window asks "Quit Velocity?". Only "Quit" calls `quit_app`, and "Keep downloading" changes nothing.
@@ -83,6 +83,40 @@ The list (#59, V1's) is in `src/features/downloads/`. It shows the snapshot as i
 - **Statuses** (`statusLabel`): Retrying counts down to the engine's `retryAtMs`, and says "Waiting to retry" without one; a stalled direct download says "No data received"; one that came back without its login says "Needs its login". Speed and time left show only while bytes come, and the time left is the engine's speed over the bytes left. A notice says when the transfer engine isn't running, and when saved downloads are from a newer Velocity.
 - **Entering a login again** (`LoginDialog`): resuming or retrying a download in the snapshot's `needsLogin` asks for its login, custom headers or SSH key, sends them with `set_download_login`, then resumes or retries it.
 - **Show download:** the Add dialog's "Show download", for a duplicate already in the list, shows the whole list with that download selected (`showDownload`).
+- **Opening:** a double-click on a finished download opens its file, and on any other shows its details. "Open file" and "Open folder" are in the right-click menu and the details panel. Opening a program asks first: the native side answers `CONFIRMATION_REQUIRED` until the user confirms (PO decision on #61).
+
+## Torrents
+
+The torrent screens (#63, V1's `src/features/torrents/`) are in `src/features/torrents/`.
+
+- **The Add dialog** previews a single `.torrent` file (`preview_torrent_file`): its name, version, hash, a warning when it repeats a download, and its files as a tree (`FileTree`), each chosen by default. Several files are each added whole. For any torrent it offers the seeding policy (`SeedingFields`) and an upload limit.
+- **Choose files** (`ChooseFilesDialog`) opens for a torrent waiting in Choose files: double-click it, or use its menu or its details.
+- **Pasting** magnet or `.torrent` links outside a text field opens the Add dialog with them (`useAddEntryPoints`).
+- **The rules** (`torrentLogic.ts`): the file tree, folder selection, the file choice to send (none when every file is chosen), the seeding policy in words, and a tracker's line.
+
+## The details panel
+
+The panel (#61, V1's `DetailsPanel`) is `src/features/downloads/DetailsPanel.tsx`.
+
+- **What it shows:** everything comes from the live snapshot, so switching rows shows the new download at once, and no late answer can show another (PO decision on #61). There is no details command.
+- **Which download:** while open, the panel follows the focused row (a click or the arrow keys). Without one it shows the download it was opened for, even while the search or a filter hides it, and says so. When its download leaves the list, it says that instead.
+- **Opening it:** double-click a row, press Enter, use "Details" in the right-click menu, or the toolbar's panel button. Whether it is open, and its width, are saved with the layout (`appearance.layout.detailsVisible` and `detailsWidth`, [SETTINGS.md](SETTINGS.md#the-window)). The shell fits it into the window (`resolveLayout`) and passes the result through `ShellLayoutContext`.
+- **Sections:**
+  - **Transfer:** the speed, the average speed and the time left; a direct download's connections in use, how many it may use and what holds it back (`ConnectionLine`, #47); the next try while retrying; the verification state.
+  - **Torrent** (`src/features/torrents/TorrentSection.tsx`, #61, #63): the peers and seeds connected, the bytes uploaded, the upload speed and the time seeding, as the torrent helper reports them ("Not reported yet" until it does); the info hashes, version and seeding policy (`get_torrent_details`); the trackers and the connected peers, asked for every second only while shown; re-announce, the upload limit, "Stop seeding", "Leave seeding queue", and changing its files, which keeps the files dropped unless the user asks to delete them.
+  - **Source and destination**, and **Timeline**.
+  - **Options for this download:** its category, its own speed limit, and a direct download's connections, which change while it runs (#47), so there is no restart to confirm.
+- **Errors** show the engine's message, the HTTP status when there is one, whether retrying can help, and Retry when the download allows it.
+- **Only what the engines report:** there are no per-connection or per-segment figures, because the engine doesn't report them.
+
+## The history
+
+The history (#32, V1's `HistoryView`) is `src/features/history/HistoryView.tsx`.
+
+- **What it shows:** every finished download, newest first, 100 a page, with how it ended, why it failed, and whether it is still in the list.
+- **Search and filter:** the search waits 250 ms after typing and goes back to the first page; the status filter is completed, failed or cancelled.
+- **Removing:** "Remove selected" and "Clear history" (which asks first) take entries out of the history. Files are never touched, and a download still in the list stays there.
+- **Again:** opens the Add dialog with the entry's link, so adding it goes through the usual questions (#60).
 
 ## The native side of the window
 
@@ -118,10 +152,8 @@ These are in [`src-tauri/src/shell.rs`](../src-tauri/src/shell.rs) and [`tray.rs
 ## Not here yet
 
 - **Owned by later issues:**
-  - The details panel, and opening a finished file or its folder (#61, #72).
-  - Choosing a torrent's files, and its trackers and peers (#63).
+  - The file checks for opening, hardened further (#72).
   - Settings, including the theme, density, tray and notification switches (#30).
-  - History (#32).
   - The browser extension's steps (#64).
 - **Keyboard shortcuts:** V1's Ctrl+, comes with Settings (#30). Ctrl+N opens the Add dialog (#60).
 - **The accessibility audit** is #66.

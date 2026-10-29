@@ -102,7 +102,7 @@ export function visibleDownloads(
   return sortDownloads(filtered, opts.sort, categoryName);
 }
 
-/** What the user may do to a download in its status. Opening files (#61) and choosing a torrent's files (#63) come later. */
+/** What the user may do to a download in its status. Opening its file is `canOpenFile`; a torrent in Choose files chooses them (#63). */
 export interface ActionAvailability {
   pause: boolean;
   resume: boolean;
@@ -114,7 +114,8 @@ export interface ActionAvailability {
   stopSeeding: boolean;
 }
 
-const RUNNING: readonly DownloadStatus[] = ['connecting', 'downloading', 'verifying', 'fetchingMetadata', 'stalled'];
+/** The statuses in which an engine is working on a download now. */
+export const RUNNING: readonly DownloadStatus[] = ['connecting', 'downloading', 'verifying', 'fetchingMetadata', 'stalled'];
 
 export function actionsFor(d: DownloadRecord): ActionAvailability {
   const s = d.status;
@@ -127,9 +128,13 @@ export function actionsFor(d: DownloadRecord): ActionAvailability {
     move: s === 'queued' || s === 'paused',
     remove: true,
     deleteFiles: s !== 'unknown',
-    stopSeeding: s === 'seeding',
+    // Leaving the seeding queue is stopping seeding too (#63).
+    stopSeeding: s === 'seeding' || d.torrent?.seedQueued === true,
   };
 }
+
+/** Only a finished download has a file to open (#61); its folder can always be shown. */
+export const canOpenFile = (d: DownloadRecord) => d.status === 'completed' || d.status === 'seeding';
 
 const NONE: ActionAvailability = { pause: false, resume: false, cancel: false, retry: false, move: false, remove: false, deleteFiles: false, stopSeeding: false };
 
@@ -171,9 +176,13 @@ export const STATUS_LABEL: Record<DownloadStatus, string> = {
 export function statusLabel(d: DownloadRecord, now: number, opts: { needsLogin?: boolean } = {}): string {
   if (opts.needsLogin) return 'Needs its login';
   if (d.status === 'retrying' && d.retryAtMs !== null) {
-    const left = Math.round((d.retryAtMs - now) / 1000);
+    // Down, never up: the window's clock ticks in whole seconds (`useNow`), so `now` can be up to a second behind and
+    // rounding would show 31s with 30.5s left.
+    const left = Math.floor((d.retryAtMs - now) / 1000);
     return left > 0 ? `Retrying in ${formatDuration(left)}` : 'Retrying now';
   }
+  // Completed, and waiting for a free seeding slot (#63).
+  if (d.status === 'completed' && d.torrent?.seedQueued) return 'Waiting to seed';
   // Only torrents have peers; a direct download that stalls is waiting on its server.
   if (d.status === 'stalled' && d.kind !== 'torrent' && d.kind !== 'magnet') return 'No data received';
   return STATUS_LABEL[d.status];

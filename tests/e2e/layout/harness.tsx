@@ -48,7 +48,7 @@ const downloads: DownloadRecord[] = [
     directory: '/home/user/Downloads/Operating Systems/Linux/Ubuntu/Releases/24.04/with/a/very/long/folder/path',
     status: 'downloading',
     createdAtMs: at(5),
-    progress: { ...progress, completedBytes: 1_200_000_000, totalBytes: 6_100_000_000, downloadSpeedBps: 12_500_000, connections: 8 },
+    progress: { ...progress, completedBytes: 1_200_000_000, totalBytes: 6_100_000_000, downloadSpeedBps: 12_500_000, connections: 4 },
   }),
   make({ id: 'zip', fileName: 'archive.zip', status: 'paused', createdAtMs: at(4) }),
   make({ id: 'retry', fileName: 'flaky-server-file.bin', status: 'retrying', retryAtMs: Date.now() + 90_000, createdAtMs: at(4) - 1 }),

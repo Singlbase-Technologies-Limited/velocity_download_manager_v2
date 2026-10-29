@@ -6,11 +6,16 @@ use std::sync::Arc;
 
 use tauri::{AppHandle, Emitter, Manager as _, State};
 use velocity_core::database::Database;
-use velocity_core::domain::{BatchResult, DownloadsSnapshot, EngineHealth, ErrorCode};
-use velocity_core::manager::{Manager, ManagerService, MoveDirection, SensitiveOptions};
+use velocity_core::domain::{BatchResult, DownloadsSnapshot, EngineHealth, ErrorCode, KeptFile};
+use velocity_core::history::{HistoryPage, HistoryQuery, StorageSettings};
+use velocity_core::manager::{
+    Manager, ManagerService, MoveDirection, SensitiveOptions, TorrentDetails, TorrentPreview,
+};
 use velocity_core::paths::Paths;
 use velocity_core::seeding::SeedPolicy;
-use velocity_core::torrent_engine::{MissingTorrentEngine, TorrentEngine, TorrentSettings};
+use velocity_core::torrent_engine::{
+    MissingTorrentEngine, PeerStatus, TorrentEngine, TorrentSettings, TrackerStatus,
+};
 use velocity_core::transfer::{DirectTransfer, Limits, MissingEngine};
 use velocity_torrent::supervisor::SupervisedTorrentEngine;
 use velocity_transfer::supervisor::{SupervisedEngine, SupervisorOptions};
@@ -66,7 +71,7 @@ pub fn start(app: &AppHandle, paths: &Paths) -> Result<Downloads, String> {
             Box::new(MissingTorrentEngine::new(code))
         }
     };
-    let manager = Manager::open(engine, Arc::new(database))
+    let mut manager = Manager::open(engine, Arc::new(database))
         .map_err(|e| e.to_string())?
         .with_torrents(torrents)
         // `.torrent` links are fetched into the app's own folder (#60).
@@ -78,6 +83,9 @@ pub fn start(app: &AppHandle, paths: &Paths) -> Result<Downloads, String> {
                 paths.torrent_links_dir().display()
             )
         })?;
+    // The history's retention (#32, V1's), when the app starts. A failure is the snapshot's
+    // storage error, which the window shows; the app runs on.
+    let _ = manager.apply_retention(velocity_core::manager::now_ms());
     let app = app.clone();
     let mut last: Option<DownloadsSnapshot> = None;
     Ok(Arc::new(ManagerService::start(manager, move |snapshot| {
@@ -231,17 +239,78 @@ pub async fn restart_engine(downloads: State<'_, Downloads>) -> Result<EngineHea
 }
 
 /// Downloads exactly `files` of a torrent, by index (V1's `start_torrent_files` and
-/// `change_torrent_files`).
+/// `change_torrent_files`); with `delete_dropped`, deletes the torrent's own files no longer
+/// chosen (#63). Returns the files kept, with why.
 #[tauri::command]
 pub async fn choose_torrent_files(
     downloads: State<'_, Downloads>,
     id: String,
     files: Vec<u32>,
-) -> Result<(), ErrorCode> {
+    delete_dropped: bool,
+) -> Result<Vec<KeptFile>, ErrorCode> {
     if files.len() > velocity_core::manager::MAX_BATCH {
         return Err(ErrorCode::InvalidInput);
     }
-    on_manager(&downloads, move |m| m.choose_files(&id, files)).await?
+    on_manager(&downloads, move |m| {
+        m.change_files(&id, files, delete_dropped)
+    })
+    .await?
+}
+
+/// A torrent's seeding policy, upload limit, files and the files chosen (#63).
+#[tauri::command]
+pub async fn get_torrent_details(
+    downloads: State<'_, Downloads>,
+    id: String,
+) -> Result<TorrentDetails, ErrorCode> {
+    on_manager(&downloads, move |m| m.torrent_details(&id)).await?
+}
+
+/// What adding the `.torrent` file at `path` would add (V1's `inspect_torrent_file`, #63).
+#[tauri::command]
+pub async fn preview_torrent_file(
+    downloads: State<'_, Downloads>,
+    path: String,
+) -> Result<TorrentPreview, ErrorCode> {
+    on_manager(&downloads, move |m| m.preview_torrent(Path::new(&path))).await?
+}
+
+/// A torrent's trackers, with passkeys redacted (#63).
+#[tauri::command]
+pub async fn get_torrent_trackers(
+    downloads: State<'_, Downloads>,
+    id: String,
+) -> Result<Vec<TrackerStatus>, ErrorCode> {
+    on_manager(&downloads, move |m| m.torrent_trackers(&id)).await?
+}
+
+/// A torrent's connected peers (#63).
+#[tauri::command]
+pub async fn get_torrent_peers(
+    downloads: State<'_, Downloads>,
+    id: String,
+) -> Result<Vec<PeerStatus>, ErrorCode> {
+    on_manager(&downloads, move |m| m.torrent_peers(&id)).await?
+}
+
+/// Announces a torrent to its trackers now (V1's `reannounce`, #63).
+#[tauri::command]
+pub async fn reannounce_torrent(
+    downloads: State<'_, Downloads>,
+    id: String,
+) -> Result<(), ErrorCode> {
+    on_manager(&downloads, move |m| m.reannounce(&id)).await?
+}
+
+/// Sets a torrent's upload limit in KiB/s; 0 for none (V1's `set_upload_limit`, #63).
+#[tauri::command]
+pub async fn set_torrent_upload_limit(
+    downloads: State<'_, Downloads>,
+    id: String,
+    kib: u64,
+) -> Result<(), ErrorCode> {
+    let bps = kib.checked_mul(1024).ok_or(ErrorCode::InvalidInput)?;
+    on_manager(&downloads, move |m| m.set_upload_limit(&id, bps)).await?
 }
 
 /// Sets when a torrent stops seeding; `{"mode":"never"}` stops it now (V1's `stop_seeding`).
@@ -262,6 +331,50 @@ pub async fn restart_torrent_helper(
     on_manager(&downloads, |m| {
         m.restart_torrent_helper()?;
         Ok(m.torrent_helper_health())
+    })
+    .await?
+}
+
+/// A page of the history, newest first (V1's `get_history`, #32).
+#[tauri::command]
+pub async fn get_history(
+    downloads: State<'_, Downloads>,
+    query: HistoryQuery,
+) -> Result<HistoryPage, ErrorCode> {
+    on_manager(&downloads, move |m| m.history(&query)).await?
+}
+
+/// Clears the history; returns how many entries left it. Files are never touched (#32).
+#[tauri::command]
+pub async fn clear_history(downloads: State<'_, Downloads>) -> Result<usize, ErrorCode> {
+    on_manager(&downloads, |m| m.clear_history()).await?
+}
+
+/// Takes finished downloads out of the history (V1's `delete_history_entries`, #32).
+#[tauri::command]
+pub async fn delete_history_entries(
+    downloads: State<'_, Downloads>,
+    ids: Vec<String>,
+) -> Result<(), ErrorCode> {
+    on_manager(&downloads, move |m| m.delete_history(&ids)).await?
+}
+
+/// How long the history keeps entries (#32); #30's Settings screen shows them.
+#[tauri::command]
+pub async fn get_storage_settings(
+    downloads: State<'_, Downloads>,
+) -> Result<StorageSettings, ErrorCode> {
+    on_manager(&downloads, |m| m.settings_section::<StorageSettings>()).await?
+}
+
+/// Saves the history's retention, as checked, and applies it at once (#32).
+#[tauri::command]
+pub async fn set_storage_settings(
+    downloads: State<'_, Downloads>,
+    settings: StorageSettings,
+) -> Result<StorageSettings, ErrorCode> {
+    on_manager(&downloads, move |m| {
+        m.set_storage_settings(&settings, velocity_core::manager::now_ms())
     })
     .await?
 }

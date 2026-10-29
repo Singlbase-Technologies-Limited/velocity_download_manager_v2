@@ -11,6 +11,7 @@ pub mod database;
 pub mod destination;
 pub mod diagnostics;
 pub mod domain;
+pub mod history;
 mod links;
 pub mod logs;
 pub mod manager;
@@ -52,7 +53,7 @@ use serde::Serialize;
 /// `choose_torrents`, `choose_ssh_key`), their types ([`manager::AddRequest`],
 /// [`manager::AddResult`]) and the `torrents-dropped` event.
 /// Version 12 (#59) added [`domain::DownloadRecord::retry_at_ms`].
-pub const COMMAND_API_VERSION: u32 = 13;
+pub const COMMAND_API_VERSION: u32 = 16;
 
 /// Name, version and contract version of the running application.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]

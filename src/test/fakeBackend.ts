@@ -15,8 +15,14 @@ import {
   type DestinationCheck,
   type DiagnosticReport,
   type DownloadsSnapshot,
+  type HistoryPage,
+  type HistoryQuery,
   type ErrorCode,
+  type PeerStatus,
   type ShellSettings,
+  type TorrentDetails,
+  type TorrentPreview,
+  type TrackerStatus,
 } from '../contract';
 
 export const fixture = (name: string): unknown =>
@@ -42,11 +48,21 @@ export interface FakeState {
   batch: (cmd: string, ids: string[]) => BatchResult;
   /** Commands that wait for this promise before they answer, to see the window while one is sent. */
   hold: Partial<Record<string, Promise<void>>>;
+  /** What `get_history` answers for a query (#32). */
+  history: (query: HistoryQuery) => HistoryPage;
   /** What `get_diagnostics` answers, and where `export_diagnostics` saved (`null`: the user cancelled) (#28). */
   diagnostics: () => DiagnosticReport;
   exportedTo: string | null;
   /** Commands that fail, with the code they fail with. */
   failures: Partial<Record<string, ErrorCode>>;
+  /** Downloads whose file is a program: opening one needs `allowProgram` (#61). */
+  programs: string[];
+  /** What `preview_torrent_file` answers for a path (#63). */
+  preview: (path: string) => TorrentPreview;
+  /** What `get_torrent_details`, `get_torrent_trackers` and `get_torrent_peers` answer for an id (#63). */
+  torrentDetails: (id: string) => TorrentDetails;
+  trackers: (id: string) => TrackerStatus[];
+  peers: (id: string) => PeerStatus[];
   calls: { cmd: string; args: Record<string, unknown> }[];
 }
 
@@ -98,9 +114,18 @@ export function installFakeBackend(over: Partial<FakeState> = {}): FakeState {
       [...request.links, ...request.torrentFiles].map((source, i) => ({ source, outcome: { kind: 'added', id: `d-${String(100 + i)}` } })),
     batch: (_cmd, ids) => ({ done: ids, failed: [], kept: [] }),
     hold: {},
+    history: () => ({ entries: [], total: 0 }),
     diagnostics: () => fixture('diagnostics.json') as DiagnosticReport,
     exportedTo: null,
     failures: {},
+    programs: [],
+    preview: () => {
+      const sample = fixture('torrent.json') as { preview: TorrentPreview };
+      return { ...sample.preview, duplicate: null };
+    },
+    torrentDetails: () => (fixture('torrent.json') as { details: TorrentDetails }).details,
+    trackers: () => [],
+    peers: () => [],
     calls: [],
     ...over,
   };
@@ -171,9 +196,37 @@ export function installFakeBackend(over: Partial<FakeState> = {}): FakeState {
         case 'move_download':
         case 'set_torrent_seeding':
         case 'set_download_login':
+        case 'set_download_speed_limit':
+        case 'set_download_category':
+        case 'open_download_folder':
+          return null;
+        case 'set_download_connections':
+          return args.connections;
+        case 'preview_torrent_file':
+          return state.preview(args.path as string);
+        case 'get_torrent_details':
+          return state.torrentDetails(args.id as string);
+        case 'get_torrent_trackers':
+          return state.trackers(args.id as string);
+        case 'get_torrent_peers':
+          return state.peers(args.id as string);
+        case 'choose_torrent_files':
+          return [];
+        case 'reannounce_torrent':
+        case 'set_torrent_upload_limit':
+          return null;
+        case 'open_download_file':
+          // eslint-disable-next-line @typescript-eslint/only-throw-error
+          if (state.programs.includes(args.id as string) && args.allowProgram !== true) throw 'CONFIRMATION_REQUIRED';
           return null;
         case 'clear_completed':
           return 0;
+        case 'get_history':
+          return state.history(args.query as HistoryQuery);
+        case 'clear_history':
+          return 2;
+        case 'delete_history_entries':
+          return null;
         case 'get_diagnostics':
           return state.diagnostics();
         case 'export_diagnostics':

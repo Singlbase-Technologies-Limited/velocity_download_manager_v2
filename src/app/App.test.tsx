@@ -50,7 +50,7 @@ const main = () => within(screen.getByRole('main', { name: 'Main content' }));
 
 beforeEach(() => {
   // The stores are module singletons: each test starts as a fresh process would.
-  useUiStore.setState({ view: 'all', categoryFilter: null, layout: { ...DEFAULT_LAYOUT } });
+  useUiStore.setState({ view: 'all', categoryFilter: null, layout: { ...DEFAULT_LAYOUT }, detailsId: null });
   useDownloadsStore.setState({ snapshot: null, error: null });
   document.documentElement.classList.remove('dark');
   osScheme(false);
@@ -205,6 +205,85 @@ describe('the panels', () => {
     renderApp();
     const nav = await screen.findByRole('navigation', { name: 'Primary' });
     expect(nav.getAttribute('data-mode')).toBe('rail');
+  });
+
+  // V1's details-panel layout tests (tests/unit/layout.test.tsx), with the panel (#61).
+  const withLayout = (layout: Partial<typeof DEFAULT_LAYOUT>) =>
+    installFakeBackend({
+      settings: { ...setUp(), appearance: { ...setUp().appearance, layout: { ...DEFAULT_LAYOUT, ...layout } } },
+      snapshot: { ...emptySnapshot(), downloads: [record({ id: 'a', fileName: 'archive.zip', status: 'paused' })] },
+    });
+  const detailsSeparator = () => screen.findByRole('separator', { name: 'Resize details panel' });
+  const valueOf = (el: HTMLElement) => Number(el.getAttribute('aria-valuenow'));
+
+  it('keeps the details panel closed at first, and opens it at the responsive default', async () => {
+    const user = userEvent.setup();
+    withLayout({});
+    renderApp();
+    await within(await screen.findByRole('grid', { name: 'Downloads' })).findByText('archive.zip');
+    expect(screen.queryByRole('complementary', { name: 'Download details' })).toBeNull();
+    expect(screen.queryByRole('separator', { name: 'Resize details panel' })).toBeNull();
+    await user.click(screen.getByRole('button', { name: 'Toggle details panel' }));
+    expect(valueOf(await detailsSeparator())).toBe(300);
+  });
+
+  it('scales the details panel with a wide window', async () => {
+    setViewport(1920);
+    withLayout({ detailsVisible: true });
+    renderApp();
+    expect(valueOf(await detailsSeparator())).toBe(340);
+  });
+
+  it('keeps the details panel between its minimum and maximum, and moves it 16 px a key', async () => {
+    withLayout({ detailsVisible: true });
+    renderApp();
+    const sep = await detailsSeparator();
+    expect(sep.getAttribute('aria-valuemin')).toBe(String(LAYOUT.DETAILS_MIN));
+    expect(sep.getAttribute('aria-valuemax')).toBe(String(LAYOUT.DETAILS_MAX));
+    // The panel is on the right, so moving the separator left widens it.
+    fireEvent.keyDown(sep, { key: 'ArrowLeft' });
+    expect(valueOf(sep)).toBe(316);
+    fireEvent.keyDown(sep, { key: 'Home' });
+    expect(valueOf(sep)).toBe(LAYOUT.DETAILS_MIN);
+    fireEvent.keyDown(sep, { key: 'End' });
+    expect(valueOf(sep)).toBe(LAYOUT.DETAILS_MAX);
+  });
+
+  it('saves the details panel’s width and restores it, open, after a restart', async () => {
+    const backend = withLayout({ detailsVisible: true });
+    const first = renderApp();
+    fireEvent.keyDown(await detailsSeparator(), { key: 'ArrowLeft', shiftKey: true });
+    await waitFor(() => { expect(callsOf(backend, 'set_appearance').at(-1)?.args).toMatchObject({ appearance: { layout: { detailsWidth: 364, detailsVisible: true } } }); });
+    first.unmount();
+    useUiStore.setState({ layout: { ...DEFAULT_LAYOUT }, detailsId: null });
+    useDownloadsStore.setState({ snapshot: null, error: null });
+    renderApp();
+    expect(valueOf(await detailsSeparator())).toBe(364);
+    expect(await screen.findByRole('complementary', { name: 'Download details' })).toBeTruthy();
+  });
+
+  it('has no details panel on the Categories screen, and gives it back on the list', async () => {
+    const user = userEvent.setup();
+    withLayout({ detailsVisible: true });
+    renderApp();
+    await screen.findByRole('complementary', { name: 'Download details' });
+    await user.click(within(screen.getByRole('navigation', { name: 'Primary' })).getByRole('button', { name: /Categories/ }));
+    await waitFor(() => { expect(screen.queryByRole('complementary', { name: 'Download details' })).toBeNull(); });
+    await user.click(within(screen.getByRole('navigation', { name: 'Primary' })).getByRole('button', { name: /All Downloads/ }));
+    expect(await screen.findByRole('complementary', { name: 'Download details' })).toBeTruthy();
+  });
+
+  it('keeps a layout change made while the last one is being saved', async () => {
+    let release: () => void = () => undefined;
+    const backend = installFakeBackend({ hold: { set_appearance: new Promise<void>((r) => { release = r; }) } });
+    renderApp();
+    fireEvent.click(await screen.findByRole('button', { name: 'Collapse navigation' }));
+    await waitFor(() => { expect(callsOf(backend, 'set_appearance')).toHaveLength(1); });
+    // The collapse is being saved; the user expands the navigation again before it is.
+    fireEvent.click(screen.getByRole('button', { name: 'Expand navigation' }));
+    await act(async () => { release(); await new Promise((r) => setTimeout(r, 50)); });
+    expect(screen.getByRole('navigation', { name: 'Primary' }).getAttribute('data-mode')).toBe('full');
+    await waitFor(() => { expect(callsOf(backend, 'set_appearance').at(-1)?.args).toMatchObject({ appearance: { layout: { sidebarCollapsed: false } } }); });
   });
 
   it('says so when the layout can’t be saved', async () => {

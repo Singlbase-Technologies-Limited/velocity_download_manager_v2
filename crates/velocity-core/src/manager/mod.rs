@@ -224,6 +224,22 @@ impl Download {
         !self.paused && !self.record.status.is_terminal() && (!self.scheduled || window_open)
     }
 
+    /// Shows its own speed limit and connections on its record (#61): whenever they are set.
+    fn show_settings(&mut self) {
+        let (limit, connections) = match &self.job {
+            Job::Direct(job) => (
+                job.request.limits.max_download_bps,
+                Some(job.request.max_connections),
+            ),
+            Job::Torrent(job) => {
+                let limit = job.options.download_limit;
+                ((limit > 0).then_some(limit), None)
+            }
+        };
+        self.record.speed_limit_bps = limit;
+        self.record.requested_connections = connections;
+    }
+
     /// The status of a download the engine isn't running.
     fn waiting_status(&self) -> DownloadStatus {
         if self.paused {
@@ -343,6 +359,9 @@ impl Manager {
                 retry_at_ms: None,
                 started_at_ms: None,
                 average_speed_bps: None,
+                speed_limit_bps: None,
+                requested_connections: None,
+                torrent: None,
             },
             job: Job::Direct(Box::new(DirectJob::new(spec, None))),
             running: false,
@@ -353,6 +372,7 @@ impl Manager {
             activity: activity::Tracker::default(),
         };
         download.record.status = download.waiting_status();
+        download.show_settings();
         let request = &download.direct().expect("a direct download").request;
         let mut new = NewDownload::from_transfer(&id, kind, request, now_ms);
         new.status = download.record.status;
@@ -1060,11 +1080,14 @@ mod adding;
 mod batch;
 mod categories;
 mod finished;
+mod opening;
+mod history;
 mod options;
 mod persist;
 mod recovery;
 mod service;
 mod settings;
+mod torrent_details;
 mod torrent_links;
 mod torrents;
 
@@ -1079,3 +1102,8 @@ pub use torrents::TorrentRequest;
 
 #[cfg(test)]
 mod tests;
+
+pub use opening::FolderView;
+pub use torrent_details::{
+    sample_swarm, ContentFile, TorrentContents, TorrentDetails, TorrentPreview,
+};

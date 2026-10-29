@@ -1,12 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import { makeRecord } from '../test/records';
 import { STATUS_LABEL, actionsFor, actionsForSelection, displayName, etaSeconds, matchesSearch, percentOf, sortDownloads, statusLabel, visibleDownloads } from './list';
-import { countByView } from './views';
+import { countByView, matchesView } from './views';
 
 const progress = makeRecord().progress;
 
-// V1's tests/unit/logic.test.ts, on V2's records. Not ported: the seeding queue (V2's snapshot doesn't carry it), opening
-// files and the connection summary (the details panel, #61), and choosing a torrent's files (#63).
+// V1's tests/unit/logic.test.ts, on V2's records. Opening files and the connection summary are the details panel's
+// (#61), and choosing a torrent's files is `Torrents.test.tsx`'s (#63).
 describe('download list logic', () => {
   const a = makeRecord({ id: 'a', fileName: 'Alpha.zip', status: 'downloading', createdAtMs: 1, progress: { ...progress, totalBytes: 10, downloadSpeedBps: 5 } });
   const b = makeRecord({ id: 'b', fileName: 'beta.iso', status: 'paused', categoryId: 'video', createdAtMs: 2, progress: { ...progress, totalBytes: 30, downloadSpeedBps: 0 } });
@@ -99,6 +99,8 @@ describe('what the list shows (#59)', () => {
   it('counts down to the engine’s next attempt, and never invents one', () => {
     const retrying = (retryAtMs: number | null) => makeRecord({ status: 'retrying', retryAtMs });
     expect(statusLabel(retrying(now + 28_000), now)).toBe('Retrying in 28s');
+    // The window's `now` is whole seconds, so up to a second over is still the whole second (#59's flaky row test).
+    expect(statusLabel(retrying(now + 30_999), now)).toBe('Retrying in 30s');
     expect(statusLabel(retrying(now + 90_000), now)).toBe('Retrying in 1m 30s');
     expect(statusLabel(retrying(now - 500), now)).toBe('Retrying now');
     expect(statusLabel(retrying(null), now)).toBe('Waiting to retry');
@@ -127,5 +129,18 @@ describe('what the list shows (#59)', () => {
   it('names a download by its file, or by its link until the server names it', () => {
     expect(displayName(makeRecord({ fileName: 'a.zip' }))).toBe('a.zip');
     expect(displayName(makeRecord({ fileName: null, sourceUrl: 'https://example.com/get?id=3' }))).toBe('https://example.com/get?id=3');
+  });
+
+  it('shows a finished torrent waiting for a seeding slot as waiting to seed (#63)', () => {
+    const activity = { peers: 0, seeds: 0, uploadedBytes: 0, seedingSecs: 0 };
+    const queued = makeRecord({ kind: 'torrent', status: 'completed', torrent: { ...activity, seedQueued: true } });
+    const done = makeRecord({ kind: 'torrent', status: 'completed', torrent: { ...activity, seedQueued: false } });
+    expect(statusLabel(queued, 0)).toBe('Waiting to seed');
+    expect(statusLabel(done, 0)).toBe('Completed');
+    expect(matchesView(queued, 'seeding')).toBe(true);
+    expect(matchesView(done, 'seeding')).toBe(false);
+    // Leaving the queue uses the same action as stopping seeding.
+    expect(actionsFor(queued).stopSeeding).toBe(true);
+    expect(actionsFor(done).stopSeeding).toBe(false);
   });
 });

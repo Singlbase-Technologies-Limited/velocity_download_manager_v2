@@ -1,6 +1,6 @@
 import * as DropdownPrimitive from '@radix-ui/react-dropdown-menu';
 import { useQueryClient } from '@tanstack/react-query';
-import { AlertTriangle, Check, Columns3, Download as DownloadIcon, Inbox, MoreHorizontal, Pause, Play, RotateCcw, Search, Square, Trash2, X } from 'lucide-react';
+import { AlertTriangle, Check, Columns3, Download as DownloadIcon, Inbox, MoreHorizontal, PanelRight, Pause, Play, RotateCcw, Search, Square, Trash2, X } from 'lucide-react';
 import { useEffect, useMemo, useRef, useSyncExternalStore } from 'react';
 import { toast } from 'sonner';
 import { Button } from '../../components/Button';
@@ -8,15 +8,18 @@ import { EmptyState } from '../../components/EmptyState';
 import { DropdownMenu, menuContent, menuItem } from '../../components/Menu';
 import { Input } from '../../components/Input';
 import { Spinner } from '../../components/Spinner';
+import { Splitter } from '../../components/Splitter';
 import { ColumnIdSchema, DEFAULT_COLUMNS, type AppearanceSettings, type ColumnId, type ShellSettings } from '../../contract';
 import { actionsForSelection, visibleDownloads } from '../../downloads/list';
 import type { ListView } from '../../downloads/views';
+import { useShellLayout } from '../../layout/useLayout';
 import { api } from '../../lib/api';
 import { toApiError } from '../../lib/errors';
 import { keys, useCategories, useShellSettings } from '../../lib/queries';
 import { useDownloadsStore } from '../../stores/downloads';
 import { useUiStore } from '../../stores/ui';
 import { ALL_COLUMNS, columnsFor } from './columns';
+import { DetailsPanel } from './DetailsPanel';
 import { DownloadTable } from './DownloadTable';
 import { LoginDialog } from './LoginDialog';
 import { useDownloadActions } from './useDownloadActions';
@@ -65,7 +68,31 @@ function useSaveColumns() {
   };
 }
 
-/** V1's downloads view (src/features/downloads/DownloadsView.tsx): the toolbar, the list and its empty states. */
+/** The details panel's splitter (V1's): a drag previews the width, and its end saves it. */
+function DetailsSplitter() {
+  const shell = useShellLayout();
+  const setLayout = useUiStore((s) => s.setLayout);
+  if (!shell) return null;
+  const d = shell.resolved.details;
+  return (
+    <Splitter
+      label="Resize details panel"
+      controls="details-panel"
+      side="end"
+      value={d.width}
+      min={d.min}
+      max={d.max}
+      onPreview={shell.previewDetails}
+      onCommit={(w) => {
+        shell.previewDetails(d.width);
+        setLayout({ detailsWidth: w });
+      }}
+      onReset={() => { setLayout({ detailsWidth: null }); }}
+    />
+  );
+}
+
+/** V1's downloads view (src/features/downloads/DownloadsView.tsx): the toolbar, the list, its empty states and the details panel. */
 export function DownloadsView({ view }: { view: ListView }) {
   const snapshot = useDownloadsStore((s) => s.snapshot);
   const search = useDownloadsStore((s) => s.search);
@@ -74,7 +101,11 @@ export function DownloadsView({ view }: { view: ListView }) {
   const toggleSort = useDownloadsStore((s) => s.toggleSort);
   const selection = useDownloadsStore((s) => s.selection);
   const clearSelection = useDownloadsStore((s) => s.clearSelection);
+  const focus = useDownloadsStore((s) => s.focus);
   const categoryFilter = useUiStore((s) => s.categoryFilter);
+  const detailsId = useUiStore((s) => s.detailsId);
+  const detailsVisible = useUiStore((s) => s.layout.detailsVisible);
+  const showDetails = useUiStore((s) => s.showDetails);
   const { data: categories } = useCategories();
   const { data: settings } = useShellSettings();
   const { actions, busy } = useDownloadActions();
@@ -99,6 +130,10 @@ export function DownloadsView({ view }: { view: ListView }) {
   const now = useNow(rows.some((r) => r.status === 'retrying' && r.retryAtMs !== null));
   const title = categoryFilter ? (categories?.find((c) => c.id === categoryFilter)?.name ?? 'Category') : TITLES[view];
   const engine = snapshot?.engine;
+  // An open panel follows the focused row (click or arrow keys); without one it shows the download it was opened for,
+  // even while the search hides it, else the first row (V1's).
+  const focusedRow = focus && rows.some((r) => r.id === focus) ? focus : null;
+  const detailsTarget = detailsVisible ? (focusedRow ?? detailsId ?? rows[0]?.id ?? null) : null;
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -204,6 +239,17 @@ export function DownloadsView({ view }: { view: ListView }) {
             </DropdownPrimitive.Content>
           </DropdownPrimitive.Portal>
         </DropdownPrimitive.Root>
+        <Button
+          variant="ghost"
+          size="icon"
+          aria-label="Toggle details panel"
+          title={detailsTarget ? 'Hide details' : 'Show details for the focused download'}
+          aria-pressed={detailsTarget !== null}
+          aria-controls={detailsTarget ? 'details-panel' : undefined}
+          onClick={() => { showDetails(detailsTarget ? null : (selected[0]?.id ?? rows[0]?.id ?? null)); }}
+        >
+          <PanelRight />
+        </Button>
       </div>
 
       <div className="flex h-9 shrink-0 items-center gap-3 border-b border-border px-4">
@@ -233,6 +279,7 @@ export function DownloadsView({ view }: { view: ListView }) {
         </p>
       ) : null}
 
+      <div className="flex min-h-0 min-w-0 flex-1">
       <div className="flex min-h-0 min-w-0 flex-1 flex-col bg-surface">
         {!snapshot ? (
           <div className="flex flex-1 items-center justify-center gap-2 text-fg-muted">
@@ -260,6 +307,21 @@ export function DownloadsView({ view }: { view: ListView }) {
             now={now}
           />
         )}
+      </div>
+        {detailsTarget ? (
+          <>
+            <DetailsSplitter />
+            <DetailsPanel
+              id={detailsTarget}
+              hidden={!rows.some((r) => r.id === detailsTarget)}
+              actions={actions}
+              busy={busy}
+              needsLogin={needsLogin.has(detailsTarget)}
+              now={now}
+              onClose={() => { showDetails(null); }}
+            />
+          </>
+        ) : null}
       </div>
       <LoginDialog />
     </div>

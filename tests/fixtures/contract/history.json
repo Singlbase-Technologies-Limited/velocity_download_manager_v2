@@ -1,0 +1,45 @@
+{
+  "page": {
+    "entries": [
+      {
+        "categoryId": "compressed",
+        "completedAtMs": 1792600060000,
+        "createdAtMs": 1792600000000,
+        "directory": "/home/user/Downloads",
+        "errorMessage": null,
+        "fileName": "archive.zip",
+        "id": "d-0007",
+        "inList": false,
+        "kind": "http",
+        "sourceUrl": "https://example.com/files/archive.zip",
+        "status": "completed",
+        "totalBytes": 4194304
+      },
+      {
+        "categoryId": null,
+        "completedAtMs": null,
+        "createdAtMs": 1792500000000,
+        "directory": "/home/user/Downloads",
+        "errorMessage": "The file was not found on the server (HTTP 404).",
+        "fileName": null,
+        "id": "d-0006",
+        "inList": true,
+        "kind": null,
+        "sourceUrl": "https://example.com/files/missing.iso",
+        "status": "failed",
+        "totalBytes": null
+      }
+    ],
+    "total": 2
+  },
+  "query": {
+    "limit": 200,
+    "offset": 0,
+    "search": "album",
+    "status": "cancelled"
+  },
+  "storage": {
+    "historyRetentionDays": 90,
+    "maxHistoryEntries": 10000
+  }
+}

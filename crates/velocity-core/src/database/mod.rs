@@ -13,6 +13,7 @@
 mod categories;
 mod checkpoints;
 mod downloads;
+mod history;
 mod queue;
 pub mod settings;
 mod torrents;
