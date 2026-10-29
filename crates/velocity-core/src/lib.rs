@@ -55,7 +55,7 @@ use serde::Serialize;
 /// `choose_torrents`, `choose_ssh_key`), their types ([`manager::AddRequest`],
 /// [`manager::AddResult`]) and the `torrents-dropped` event.
 /// Version 12 (#59) added [`domain::DownloadRecord::retry_at_ms`].
-pub const COMMAND_API_VERSION: u32 = 18;
+pub const COMMAND_API_VERSION: u32 = 19;
 
 /// Name, version and contract version of the running application.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]

@@ -46,6 +46,15 @@ The screen (#30, `src/features/settings/SettingsView.tsx`) edits every section b
 | | `seeding` | never | As a torrent's seeding policy ([TORRENTS.md](TORRENTS.md)) |
 | | `uploadLimitKib` | 0: none | The Add dialog's upload limit |
 
+## Browser
+
+`BrowserSettings` (the `browser` section) in [`crates/velocity-core/src/browser/mod.rs`](../crates/velocity-core/src/browser/mod.rs) (#65), V1's. The screen's Browser section also registers the native host with each browser ([BROWSER_EXTENSION.md](BROWSER_EXTENSION.md#registering-with-each-browser)).
+
+| Setting | Default | What it does |
+|---|---|---|
+| `acceptRequests` | on | Off refuses links from the extension (`DISABLED`); the browser then downloads them |
+| `confirmBeforeAdding` | on | A link opens the Add dialog. Off adds it at once, unless it is a torrent, a magnet link, a taken name or a link added before |
+
 The torrent helper's own settings are the `torrent` section, `TorrentSettings` ([TORRENTS.md](TORRENTS.md#settings-and-identity)); the screen shows them with the helper's port and port mapping (`get_torrent_network`).
 
 ## The window

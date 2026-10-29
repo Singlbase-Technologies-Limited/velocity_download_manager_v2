@@ -66,7 +66,7 @@ How the window (`src/`) is built: where its state lives, how it talks to the nat
 
 The Add dialog (#60, V1's) is in `src/features/add/`. Its state is in the `ui` store (`addDialog`), so anything can open it with `openAdd(prefill)`.
 
-- **It opens from** the "Add download" button at the top of the navigation, Ctrl+N (⌘N on macOS), `.torrent` files dropped on the window (`useAddEntryPoints`), and the browser's prefill once #64 and #65 send one.
+- **It opens from** the "Add download" button at the top of the navigation, Ctrl+N (⌘N on macOS), `.torrent` files dropped on the window (`useAddEntryPoints`), and a link the browser sends for the user to check (the `browser-request` event, #65).
 - **What it checks as the user types** (`addLogic.ts`, V1's): each link's scheme and form, a login typed into a link, and a protocol the engine can't download (`get_capabilities`, with `availability`'s reason). Headers and the checksum are checked too. The native side checks everything again.
 - **What it shows before adding:** the name the file gets (`naming.ts`), the automatic category and folder, a name already taken, and a missing chosen folder, which it offers to create (`check_destination`, 300 ms after the last change). A plain `ftp://` link gets the cleartext warning and "Require encryption (FTPS)".
 - **What it shows after:** `add_downloads` answers for each link. All added closes the dialog with a toast. Otherwise it lists taken names ("Keep both (rename)"; a torrent's are only explained), duplicates ("Add anyway"; a torrent still in the list is only explained), and the links that failed with why (`outcome.ts`).

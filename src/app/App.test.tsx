@@ -88,6 +88,13 @@ describe('the first-run setup', () => {
     expect(callsOf(backend, 'complete_onboarding').map((c) => c.args)).toEqual([{ directory: '/data/Velocity' }]);
   });
 
+  it('points to the Browser settings for the extension, as an optional step (#65)', async () => {
+    installFakeBackend({ settings: firstRun() });
+    renderApp();
+    expect(await screen.findByRole('heading', { name: '3. Optional: the browser extension' })).toBeTruthy();
+    expect(screen.getByText(/register Chrome, Edge, Brave or Firefox in Settings, Browser/)).toBeTruthy();
+  });
+
   it('shows why the folder was refused and stays open', async () => {
     const user = userEvent.setup();
     installFakeBackend({ settings: firstRun(), failures: { complete_onboarding: 'DESTINATION_MISSING' } });

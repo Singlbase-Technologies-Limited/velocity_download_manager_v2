@@ -173,8 +173,8 @@ function AddForm({ prefill, defaults, onClose }: { prefill: AddPrefill | null; d
     fileChoices: previewed !== undefined && preview.data && choice.files !== null ? [{ torrentFile: previewed, files: choice.files }] : [],
     seeding: torrentMode ? seeding : null,
     uploadLimitKib: torrentMode && Number(uploadLimit) > 0 ? Math.floor(Number(uploadLimit)) : 0,
-    // Typed or pasted here: no confirmation for a local address (#67, ADR-0006).
-    fromBrowser: false,
+    // The browser's link, unchanged, waits for the user at a local address; one typed or pasted here doesn't (#67, ADR-0006).
+    fromBrowser: prefill?.fromBrowser !== undefined && text.trim() === (prefill.links ?? '').trim(),
     ...over,
   });
 

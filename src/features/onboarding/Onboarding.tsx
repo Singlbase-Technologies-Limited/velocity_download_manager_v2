@@ -31,8 +31,8 @@ function EngineStatus({ health }: { health: EngineHealth | undefined }) {
 
 /**
  * The first-run setup (V1's Onboarding): the engine's state and the folder for downloads. Unlike V1 it
- * doesn't wait for the engine: V2's window works without one and says why (#58). The browser extension
- * step comes with #64.
+ * doesn't wait for the engine: V2's window works without one and says why (#58). The browser step, optional, points
+ * to Settings, Browser (#65), as V1's did.
  */
 export function Onboarding({ app, defaultDirectory }: { app: AppInfo; defaultDirectory: string }) {
   const qc = useQueryClient();
@@ -87,6 +87,12 @@ export function Onboarding({ app, defaultDirectory }: { app: AppInfo; defaultDir
               </Button>
             </div>
             <p className="mt-1.5 text-xs text-fg-subtle">Choose a folder that exists. You can change it later in Settings.</p>
+          </li>
+          <li>
+            <h2 className="text-[13px] font-semibold">3. Optional: the browser extension</h2>
+            <p className="mt-1 text-xs text-fg-muted">
+              After setup, register Chrome, Edge, Brave or Firefox in Settings, Browser, then install the Velocity Download Manager V2 extension.
+            </p>
           </li>
         </ol>
 

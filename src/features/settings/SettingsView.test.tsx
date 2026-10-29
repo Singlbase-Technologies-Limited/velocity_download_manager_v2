@@ -189,3 +189,37 @@ describe('the Settings screen (#30)', () => {
     expect(screen.getByRole<HTMLInputElement>('checkbox', { name: 'Choose files before downloading' }).checked).toBe(true);
   });
 });
+
+describe('the Browser section (#65)', () => {
+  it('saves what happens to links from the browser', async () => {
+    const state = installFakeBackend();
+    const user = await openSettings('Browser');
+    const ask = await screen.findByRole<HTMLInputElement>('checkbox', { name: 'Ask before adding' });
+    expect(ask.checked).toBe(true);
+    await user.click(ask);
+    await waitFor(() => { expect(saved(state)).toHaveLength(1); });
+    expect(state.appSettings.browser).toEqual({ acceptRequests: true, confirmBeforeAdding: false });
+    await user.click(screen.getByRole('checkbox', { name: 'Take links from the browser' }));
+    await waitFor(() => { expect(state.appSettings.browser.acceptRequests).toBe(false); });
+    expect(screen.getByRole<HTMLInputElement>('checkbox', { name: 'Ask before adding' }).disabled).toBe(true);
+  });
+
+  it('registers and unregisters each browser', async () => {
+    const state = installFakeBackend();
+    const user = await openSettings('Browser');
+    await user.click(await screen.findByRole('button', { name: 'Register with Mozilla Firefox' }));
+    await waitFor(() => { expect(callsOf(state, 'register_browser')).toEqual([{ cmd: 'register_browser', args: { browser: 'firefox' } }]); });
+    expect(await screen.findByRole('button', { name: 'Unregister from Mozilla Firefox' })).toBeTruthy();
+    await user.click(screen.getByRole('button', { name: 'Unregister from Google Chrome' }));
+    await waitFor(() => { expect(callsOf(state, 'unregister_browser')).toEqual([{ cmd: 'unregister_browser', args: { browser: 'chrome' } }]); });
+    expect(await screen.findByRole('button', { name: 'Register with Google Chrome' })).toBeTruthy();
+  });
+
+  it('says so when the native host isn’t installed, and offers nothing to register', async () => {
+    const state = installFakeBackend();
+    state.browser = { ...state.browser, hostPath: null };
+    await openSettings('Browser');
+    expect(await screen.findByText(/isn’t installed beside Velocity V2/)).toBeTruthy();
+    expect(screen.getByRole<HTMLButtonElement>('button', { name: 'Register with Mozilla Firefox' }).disabled).toBe(true);
+  });
+});

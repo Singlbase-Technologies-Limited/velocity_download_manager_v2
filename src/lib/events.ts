@@ -1,8 +1,10 @@
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import {
+  BrowserRequestSchema,
   DownloadsSnapshotSchema,
   DroppedTorrentsSchema,
   QuitRequestSchema,
+  type BrowserRequest,
   type DownloadsSnapshot,
   type DroppedTorrents,
   type QuitRequest,
@@ -22,6 +24,14 @@ export function onSnapshot(handler: (snapshot: DownloadsSnapshot) => void): Prom
 export function onQuitRequested(handler: (request: QuitRequest) => void): Promise<UnlistenFn> {
   return listen('quit-requested', (e) => {
     const parsed = QuitRequestSchema.safeParse(e.payload);
+    if (parsed.success) handler(parsed.data);
+  });
+}
+
+/** The browser sent a link for the user to check: the window opens the Add dialog with it (#65). */
+export function onBrowserRequest(handler: (request: BrowserRequest) => void): Promise<UnlistenFn> {
+  return listen('browser-request', (e) => {
+    const parsed = BrowserRequestSchema.safeParse(e.payload);
     if (parsed.success) handler(parsed.data);
   });
 }

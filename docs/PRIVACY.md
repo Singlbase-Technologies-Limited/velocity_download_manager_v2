@@ -7,7 +7,7 @@ What Velocity Download Manager V2 keeps, and what it sends. AGENTS.md's rule is 
 - **Only the downloads.** V2 connects to the servers, mirrors, trackers and peers of the downloads you add, and to nothing else.
 - **No telemetry or analytics.** V2 has none. Adding any needs a PO decision first.
 - **No crash reports.** A crash is recorded on this computer only ([DIAGNOSTICS.md](DIAGNOSTICS.md#crash-logs)).
-- **Not yet:** the browser extension (#64, #65) talks only to the app on this computer.
+- **The browser extension** (#64, #65) talks only to the app on this computer, through the native host and a local connection that refuses remote clients. It sends the link, and the referrer, file name, size and type when the browser knows them; never cookies, logins or page content.
 
 ## What V2 keeps on this computer
 
