@@ -225,11 +225,14 @@ The manager runs torrents beside direct downloads, through the `TorrentEngine` c
 - **Starting again:** a torrent comes back from its stored resume data (uploaded in chunks, then added with `{"kind":"resume"}`), and otherwise from where it came from. A completed torrent isn't added again; a seeding one is.
 - **A helper that stops:** its supervisor adds the torrents back under the same ids. A torrent it reports lost (`torrent_engine::lost_by_helper`) shows as waiting, with the reason, and keeps its slot; the manager doesn't add it again too.
 - **Commands:** pause, resume, cancel (the helper forgets it and its files are kept, as in V1), retry, remove with or without its files, the download limit, `choose_files` and `set_seeding`. A torrent's connections are libtorrent's, so `set_download_connections` is `UNSUPPORTED` for one.
+- **What the window asks for while it shows a torrent** (#63, [CONTRACTS.md](CONTRACTS.md#the-downloads-commands)): its details from the stored metadata (`Manager::torrent_details`); its trackers and peers from the helper, every second, only while shown (PO decision on #63); re-announcing; the upload limit; and changing its files, which deletes the files dropped only when the user asks, and only the torrent's own (`delete_owned`).
+- **Adding with choices** (#63): a `.torrent` file is previewed first (`Manager::preview_torrent`), with the download it would repeat. The Add request carries the files chosen for it, the seeding policy and the upload limit. A choice made before adding replaces "Choose files before downloading".
+- **A late status:** a running status the helper sent before it paused a torrent the user paused doesn't undo the pause (#63, V1 #40), as for direct downloads (#59).
 - **Without a helper:** when the program can't start, the app runs with `MissingTorrentEngine`: torrents wait, and the snapshot's `torrentEngine` says why.
 
 ## Not yet
 
-- **The file tree in the Add dialog, the details panel's trackers and peers, and the seeding, limit and network settings and controls** (#63, #30). The Add dialog (#60) adds torrents with the default seeding policy and no upload limit until #63 adds those choices (PO decision on #60).
+- **The BitTorrent settings:** the default seeding policy and upload limit, how many torrents seed at once, and the network settings (#30).
 - **Keeping trackers across a restart** (#70).
 
 ## Tests

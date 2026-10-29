@@ -63,6 +63,7 @@
       "status": "seeding",
       "torrent": {
         "peers": 7,
+        "seedQueued": false,
         "seedingSecs": 600,
         "seeds": 2,
         "uploadedBytes": 8388608

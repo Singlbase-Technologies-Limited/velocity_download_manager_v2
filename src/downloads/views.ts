@@ -14,6 +14,8 @@ const VIEW_STATUSES: Record<Exclude<ListView, 'all'>, readonly DownloadStatus[]>
 };
 
 export function matchesView(d: DownloadRecord, view: ListView): boolean {
+  // A torrent waiting for a seeding slot is listed with the seeding ones too (V1's, #63).
+  if (view === 'seeding' && d.torrent?.seedQueued) return true;
   return view === 'all' || VIEW_STATUSES[view].includes(d.status);
 }
 

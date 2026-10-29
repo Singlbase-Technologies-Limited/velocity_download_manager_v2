@@ -1072,6 +1072,7 @@ mod persist;
 mod recovery;
 mod service;
 mod settings;
+mod torrent_details;
 mod torrent_links;
 mod torrents;
 
@@ -1088,3 +1089,6 @@ pub use torrents::TorrentRequest;
 mod tests;
 
 pub use opening::FolderView;
+pub use torrent_details::{
+    sample_swarm, ContentFile, TorrentContents, TorrentDetails, TorrentPreview,
+};

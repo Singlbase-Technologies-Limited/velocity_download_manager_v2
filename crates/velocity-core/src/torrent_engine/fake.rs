@@ -19,6 +19,8 @@ struct Torrent {
     spec: TorrentSpec,
     snapshot: TorrentSnapshot,
     metadata: Option<Vec<u8>>,
+    trackers: Vec<TrackerStatus>,
+    peers: Vec<PeerStatus>,
 }
 
 #[derive(Default)]
@@ -167,6 +169,22 @@ impl FakeTorrentControl {
         s.changed(id);
     }
 
+    /// What [`TorrentEngine::trackers`] and [`TorrentEngine::peers`] answer for the torrent.
+    pub fn set_swarm(&self, id: TorrentId, trackers: Vec<TrackerStatus>, peers: Vec<PeerStatus>) {
+        let mut s = lock(&self.state);
+        let t = s.torrents.get_mut(&id).expect("known torrent");
+        t.trackers = trackers;
+        t.peers = peers;
+    }
+
+    /// Completed and waiting for a seeding slot, or not.
+    pub fn seed_queued(&self, id: TorrentId, queued: bool) {
+        let mut s = lock(&self.state);
+        let t = s.torrents.get_mut(&id).expect("known torrent");
+        t.snapshot.seed_queued = queued;
+        s.changed(id);
+    }
+
     pub fn fail(&self, id: TorrentId, error: TransferError) {
         let mut s = lock(&self.state);
         let t = s.torrents.get_mut(&id).expect("known torrent");
@@ -244,6 +262,8 @@ impl TorrentEngine for FakeTorrentEngine {
                 spec,
                 snapshot,
                 metadata: None,
+                trackers: Vec::new(),
+                peers: Vec::new(),
             },
         );
         s.changed(id);
@@ -339,8 +359,11 @@ impl TorrentEngine for FakeTorrentEngine {
 
     fn trackers(&self, id: TorrentId) -> Result<Vec<TrackerStatus>, ErrorCode> {
         let s = lock(&self.state);
-        s.torrents.get(&id).ok_or(ErrorCode::NotFound)?;
-        Ok(Vec::new())
+        Ok(s.torrents
+            .get(&id)
+            .ok_or(ErrorCode::NotFound)?
+            .trackers
+            .clone())
     }
 
     fn reannounce(&mut self, id: TorrentId) -> Result<(), ErrorCode> {
@@ -352,8 +375,11 @@ impl TorrentEngine for FakeTorrentEngine {
 
     fn peers(&self, id: TorrentId) -> Result<Vec<PeerStatus>, ErrorCode> {
         let s = lock(&self.state);
-        s.torrents.get(&id).ok_or(ErrorCode::NotFound)?;
-        Ok(Vec::new())
+        Ok(s.torrents
+            .get(&id)
+            .ok_or(ErrorCode::NotFound)?
+            .peers
+            .clone())
     }
 
     fn network(&self) -> Result<NetworkStatus, ErrorCode> {

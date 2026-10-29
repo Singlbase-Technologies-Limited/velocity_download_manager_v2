@@ -7,6 +7,7 @@ import { AddDownloadDialog } from '../features/add/AddDownloadDialog';
 import { HostKeyPrompt } from '../features/add/HostKeyPrompt';
 import { useAddEntryPoints } from '../features/add/useAddEntryPoints';
 import { DownloadsView } from '../features/downloads/DownloadsView';
+import { ChooseFilesDialog } from '../features/torrents/ChooseFilesDialog';
 import { commitSidebarWidth, LAYOUT, resolveLayout } from '../layout/layoutLogic';
 import { ShellLayoutContext, useLayoutPersistence, useViewportWidth, type ShellLayout } from '../layout/useLayout';
 import { api } from '../lib/api';
@@ -93,6 +94,7 @@ export function Shell({ app, appearance }: { app: AppInfo; appearance: Appearanc
       </div>
       <StatusBar />
       <AddDownloadDialog />
+      <ChooseFilesDialog />
       <HostKeyPrompt />
     </div>
   );

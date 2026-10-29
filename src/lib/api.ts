@@ -11,7 +11,12 @@ import {
   DestinationCheckSchema,
   DownloadsSnapshotSchema,
   parseAppInfo,
+  KeptFileSchema,
+  PeerStatusSchema,
   ShellSettingsSchema,
+  TorrentDetailsSchema,
+  TorrentPreviewSchema,
+  TrackerStatusSchema,
   type AddRequest,
   type AppearanceSettings,
   type Category,
@@ -105,6 +110,17 @@ export const api = {
   openFile: (id: string, allowProgram: boolean) => call('open_download_file', { id, allowProgram }, nothing),
   /** Shows the file in its folder, or the folder when the file is gone. */
   openFolder: (id: string) => call('open_download_folder', { id }, nothing),
+  // Torrents (#63).
+  /** What adding the `.torrent` file at `path` would add. */
+  previewTorrent: (path: string) => call('preview_torrent_file', { path }, TorrentPreviewSchema),
+  torrentDetails: (id: string) => call('get_torrent_details', { id }, TorrentDetailsSchema),
+  trackers: (id: string) => call('get_torrent_trackers', { id }, z.array(TrackerStatusSchema)),
+  peers: (id: string) => call('get_torrent_peers', { id }, z.array(PeerStatusSchema)),
+  reannounce: (id: string) => call('reannounce_torrent', { id }, nothing),
+  /** KiB/s; 0 for no limit. */
+  setUploadLimit: (id: string, kib: number) => call('set_torrent_upload_limit', { id, kib }, nothing),
+  /** Downloads exactly `files`; with `deleteDropped`, deletes the torrent's own files no longer chosen. Answers the files kept. */
+  chooseTorrentFiles: (id: string, files: number[], deleteDropped: boolean) => call('choose_torrent_files', { id, files, deleteDropped }, z.array(KeptFileSchema)),
   /** Gives a download that came back without its login, headers or SSH key those again; then resume or retry it. */
   setDownloadLogin: (id: string, login: DownloadLogin) => call('set_download_login', { id, login }, nothing),
 };

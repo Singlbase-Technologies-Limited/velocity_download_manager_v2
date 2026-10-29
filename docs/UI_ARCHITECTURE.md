@@ -85,6 +85,15 @@ The list (#59, V1's) is in `src/features/downloads/`. It shows the snapshot as i
 - **Show download:** the Add dialog's "Show download", for a duplicate already in the list, shows the whole list with that download selected (`showDownload`).
 - **Opening:** a double-click on a finished download opens its file, and on any other shows its details. "Open file" and "Open folder" are in the right-click menu and the details panel. Opening a program asks first: the native side answers `CONFIRMATION_REQUIRED` until the user confirms (PO decision on #61).
 
+## Torrents
+
+The torrent screens (#63, V1's `src/features/torrents/`) are in `src/features/torrents/`.
+
+- **The Add dialog** previews a single `.torrent` file (`preview_torrent_file`): its name, version, hash, a warning when it repeats a download, and its files as a tree (`FileTree`), each chosen by default. Several files are each added whole. For any torrent it offers the seeding policy (`SeedingFields`) and an upload limit.
+- **Choose files** (`ChooseFilesDialog`) opens for a torrent waiting in Choose files: double-click it, or use its menu or its details.
+- **Pasting** magnet or `.torrent` links outside a text field opens the Add dialog with them (`useAddEntryPoints`).
+- **The rules** (`torrentLogic.ts`): the file tree, folder selection, the file choice to send (none when every file is chosen), the seeding policy in words, and a tracker's line.
+
 ## The details panel
 
 The panel (#61, V1's `DetailsPanel`) is `src/features/downloads/DetailsPanel.tsx`.
@@ -94,7 +103,7 @@ The panel (#61, V1's `DetailsPanel`) is `src/features/downloads/DetailsPanel.tsx
 - **Opening it:** double-click a row, press Enter, use "Details" in the right-click menu, or the toolbar's panel button. Whether it is open, and its width, are saved with the layout (`appearance.layout.detailsVisible` and `detailsWidth`, [SETTINGS.md](SETTINGS.md#the-window)). The shell fits it into the window (`resolveLayout`) and passes the result through `ShellLayoutContext`.
 - **Sections:**
   - **Transfer:** the speed, the average speed and the time left; a direct download's connections in use, how many it may use and what holds it back (`ConnectionLine`, #47); the next try while retrying; the verification state.
-  - **Torrent:** the peers and seeds connected, the bytes uploaded, the upload speed and the time seeding, as the torrent helper reports them. They say "Not reported yet" until it does. Trackers, the peer list and re-announce are #63's.
+  - **Torrent** (`src/features/torrents/TorrentSection.tsx`, #61, #63): the peers and seeds connected, the bytes uploaded, the upload speed and the time seeding, as the torrent helper reports them ("Not reported yet" until it does); the info hashes, version and seeding policy (`get_torrent_details`); the trackers and the connected peers, asked for every second only while shown; re-announce, the upload limit, "Stop seeding", "Leave seeding queue", and changing its files, which keeps the files dropped unless the user asks to delete them.
   - **Source and destination**, and **Timeline**.
   - **Options for this download:** its category, its own speed limit, and a direct download's connections, which change while it runs (#47), so there is no restart to confirm.
 - **Errors** show the engine's message, the HTTP status when there is one, whether retrying can help, and Retry when the download allows it.
@@ -135,7 +144,6 @@ These are in [`src-tauri/src/shell.rs`](../src-tauri/src/shell.rs) and [`tray.rs
 
 - **Owned by later issues:**
   - The file checks for opening, hardened further (#72).
-  - Choosing a torrent's files, and its trackers and peers (#63).
   - Settings, including the theme, density, tray and notification switches (#30).
   - History (#32).
   - The browser extension's steps (#64).

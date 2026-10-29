@@ -2,6 +2,7 @@ import { useVirtualizer } from '@tanstack/react-virtual';
 import { ArrowDown, ArrowUp } from 'lucide-react';
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react';
 import { ContextMenu } from '../../components/Menu';
+import { SelectBox } from '../../components/SelectBox';
 import { COLUMN_MAX_WIDTH, COLUMN_MIN_WIDTH, type Category, type ColumnId, type Density, type DownloadRecord } from '../../contract';
 import { canOpenFile, displayName, type SortKey, type SortState } from '../../downloads/list';
 import { cn } from '../../lib/cn';
@@ -22,19 +23,6 @@ const RESIZE_STEP = 16;
 type Widths = Partial<Record<ColumnId, number>>;
 
 /** A checkbox without a visible label; `mixed` shows the indeterminate state of a partial selection. */
-function SelectBox({ checked, label, onChange }: { checked: boolean | 'mixed'; label: string; onChange: () => void }) {
-  return (
-    <input
-      type="checkbox"
-      aria-label={label}
-      className="size-3.5 accent-[var(--accent)]"
-      checked={checked === true}
-      ref={(el) => { if (el) el.indeterminate = checked === 'mixed'; }}
-      onChange={onChange}
-    />
-  );
-}
-
 /**
  * A column edge's handle (V1's). A drag previews the width and saves it once, when it ends, so nothing is written per
  * pointer event; arrow keys change it by a step, and Home or a double-click restores its default.
@@ -126,6 +114,7 @@ export function DownloadTable({ rows, columns, widths: saved, onResize, sort, on
   const selectAll = useDownloadsStore((s) => s.selectAll);
   const clearSelection = useDownloadsStore((s) => s.clearSelection);
   const showDetails = useUiStore((s) => s.showDetails);
+  const openChooseFiles = useUiStore((s) => s.openChooseFiles);
   const byId = useMemo(() => new Map(categories.map((c) => [c.id, c])), [categories]);
   const rowHeight = density === 'compact' ? 32 : 40;
   const template = [`${String(CHECK_WIDTH)}px`, ...columns.map((c) => { const w = widths[c.id]; return w ? `${String(w)}px` : c.width; })].join(' ');
@@ -271,7 +260,7 @@ export function DownloadTable({ rows, columns, widths: saved, onResize, sort, on
             return (
               <ContextMenu
                 key={d.id}
-                items={() => buildMenu(selection.has(d.id) ? selectedRows() : [d], actions, busy, showDetails)}
+                items={() => buildMenu(selection.has(d.id) ? selectedRows() : [d], actions, busy, { showDetails, chooseFiles: openChooseFiles })}
                 onOpenChange={(open) => {
                   if (open && !selection.has(d.id)) select(d.id, 'single', ids);
                 }}
@@ -283,8 +272,12 @@ export function DownloadTable({ rows, columns, widths: saved, onResize, sort, on
                   aria-rowindex={vi.index + 1}
                   data-status={d.status}
                   onClick={(e) => { select(d.id, e.shiftKey ? 'range' : e.ctrlKey || e.metaKey ? 'toggle' : 'single', ids); }}
-                  // V1's: a finished download opens its file; any other shows its details. Choosing a torrent's files is #63's.
-                  onDoubleClick={() => { if (canOpenFile(d)) void actions.openFile(d); else showDetails(d.id); }}
+                  // V1's: a finished download opens its file, a torrent in Choose files chooses them, any other shows its details.
+                  onDoubleClick={() => {
+                    if (canOpenFile(d)) void actions.openFile(d);
+                    else if (d.status === 'choosingFiles') openChooseFiles(d.id);
+                    else showDetails(d.id);
+                  }}
                   className={cn(
                     'absolute left-0 top-0 grid w-full cursor-default items-center gap-3 border-b border-border/60 px-4 text-[12.5px] text-fg-muted',
                     selected ? 'bg-row-selected' : 'hover:bg-row-hover',

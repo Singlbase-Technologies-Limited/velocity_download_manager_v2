@@ -8,9 +8,10 @@ import { Select } from '../../components/Select';
 import { ConnectionLine } from '../../ConnectionLine';
 import type { Verification } from '../../contract';
 import { actionsFor, canOpenFile, displayName, etaSeconds, percentOf, RUNNING, STATUS_TONE, statusLabel } from '../../downloads/list';
-import { formatBytes, formatDuration, formatPercent, formatShortDate, formatSpeed, formatTransferred, relativeFromNow } from '../../lib/format';
+import { formatDuration, formatPercent, formatShortDate, formatSpeed, formatTransferred, relativeFromNow } from '../../lib/format';
 import { useCategories } from '../../lib/queries';
 import { useDownloadsStore } from '../../stores/downloads';
+import { TorrentSection } from '../torrents/TorrentSection';
 import type { DownloadActions } from './useDownloadActions';
 
 const NO_CATEGORY = '__none';
@@ -152,20 +153,7 @@ export function DetailsPanel({ id, hidden, actions, busy, needsLogin, now, onClo
           {d.verification ? <Row label="Verification">{VERIFICATION[d.verification]}</Row> : null}
         </DetailsGroup>
 
-        {torrent ? (
-          <DetailsGroup title="Torrent">
-            {d.torrent ? (
-              <>
-                <Row label="Peers">{`${String(d.torrent.peers)} connected, ${String(d.torrent.seeds)} with the whole torrent`}</Row>
-                <Row label="Uploaded">{formatBytes(d.torrent.uploadedBytes)}</Row>
-                <Row label="Upload speed">{formatSpeed(d.progress.uploadSpeedBps)}</Row>
-                <Row label="Time seeding">{formatDuration(d.torrent.seedingSecs)}</Row>
-              </>
-            ) : (
-              <Row label="Peers">Not reported yet: the torrent helper hasn’t sent them since Velocity started.</Row>
-            )}
-          </DetailsGroup>
-        ) : null}
+        {torrent ? <TorrentSection d={d} actions={actions} busy={busy} /> : null}
 
         <DetailsGroup title="Source and destination">
           <Row label="Link">{d.sourceUrl}</Row>

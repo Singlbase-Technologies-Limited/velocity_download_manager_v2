@@ -1,0 +1,105 @@
+{
+  "details": {
+    "chosen": [
+      1,
+      3
+    ],
+    "contents": {
+      "files": [
+        {
+          "index": 1,
+          "length": 3000000,
+          "path": "album/a.bin"
+        },
+        {
+          "index": 2,
+          "length": 200000,
+          "path": "album/sub/b.bin"
+        },
+        {
+          "index": 3,
+          "length": 100000,
+          "path": "album/c.txt"
+        }
+      ],
+      "infoHashV1": "0123456789abcdef0123456789abcdef01234567",
+      "infoHashV2": "abababababababababababababababababababababababababababababababab",
+      "name": "album",
+      "private": false,
+      "totalBytes": 3300000,
+      "version": "hybrid"
+    },
+    "seeding": {
+      "mode": "ratio",
+      "ratio": 2.0
+    },
+    "uploadLimitBps": 65536
+  },
+  "peers": [
+    {
+      "client": "Transmission 4.0",
+      "downloadSpeedBps": 131072,
+      "ip": "203.0.113.7",
+      "port": 51413,
+      "progressPermille": 1000,
+      "seed": true,
+      "uploadSpeedBps": 4096
+    }
+  ],
+  "preview": {
+    "contents": {
+      "files": [
+        {
+          "index": 1,
+          "length": 3000000,
+          "path": "album/a.bin"
+        },
+        {
+          "index": 2,
+          "length": 200000,
+          "path": "album/sub/b.bin"
+        },
+        {
+          "index": 3,
+          "length": 100000,
+          "path": "album/c.txt"
+        }
+      ],
+      "infoHashV1": "0123456789abcdef0123456789abcdef01234567",
+      "infoHashV2": "abababababababababababababababababababababababababababababababab",
+      "name": "album",
+      "private": false,
+      "totalBytes": 3300000,
+      "version": "hybrid"
+    },
+    "duplicate": {
+      "canAddAnyway": false,
+      "existingId": "d-0003",
+      "inList": true,
+      "name": "album",
+      "status": "seeding"
+    }
+  },
+  "trackers": [
+    {
+      "fails": 0,
+      "message": null,
+      "nextAnnounceSecs": 1800,
+      "peers": 9,
+      "seeds": 4,
+      "state": "working",
+      "tier": 0,
+      "url": "https://tracker.example/announce?passkey=REDACTED"
+    },
+    {
+      "fails": 2,
+      "message": "timed out",
+      "nextAnnounceSecs": 1800,
+      "peers": null,
+      "seeds": null,
+      "state": "error",
+      "tier": 1,
+      "url": "udp://backup.example:80/announce"
+    }
+  ]
+}

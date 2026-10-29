@@ -258,6 +258,8 @@ pub struct TorrentActivity {
     /// Bytes uploaded and seconds spent seeding over the torrent's life.
     pub uploaded_bytes: u64,
     pub seeding_secs: u64,
+    /// Completed and allowed to seed, but waiting for a seeding slot (#63).
+    pub seed_queued: bool,
 }
 
 /// What the UI is sent about the downloads (#58, V1's `get_snapshot`), whenever something in it
@@ -585,6 +587,7 @@ impl DownloadsSnapshot {
                 seeds: 2,
                 uploaded_bytes: 8_388_608,
                 seeding_secs: 600,
+                seed_queued: false,
             }),
             ..DownloadRecord::sample()
         };
@@ -922,6 +925,34 @@ mod tests {
         }
 
         /// The Add dialog's request and its results (#60).
+        /// A torrent's details, a `.torrent` file's preview, its trackers and its peers (#63).
+        #[test]
+        fn contract_torrent() {
+            use crate::manager::{
+                sample_swarm, Duplicate, TorrentContents, TorrentDetails, TorrentPreview,
+            };
+            let (trackers, peers) = sample_swarm();
+            let preview = TorrentPreview {
+                contents: TorrentContents::sample(),
+                duplicate: Some(Duplicate {
+                    existing_id: "d-0003".to_owned(),
+                    name: Some("album".to_owned()),
+                    status: DownloadStatus::Seeding,
+                    in_list: true,
+                    can_add_anyway: false,
+                }),
+            };
+            check(
+                "torrent.json",
+                serde_json::json!({
+                    "details": TorrentDetails::sample(),
+                    "preview": preview,
+                    "trackers": trackers,
+                    "peers": peers,
+                }),
+            );
+        }
+
         #[test]
         fn contract_add() {
             use crate::manager::{AddRequest, AddResult};
