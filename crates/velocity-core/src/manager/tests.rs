@@ -1190,11 +1190,11 @@ mod persistence {
         ];
         s.credentials = Some(Credentials {
             user_name: "user-secret".to_owned(),
-            password: "password-secret".to_owned(),
+            password: "password-secret".into(),
         });
         s.headers = vec![Header {
             name: "Cookie".to_owned(),
-            value: "cookie-secret".to_owned(),
+            value: "cookie-secret".into(),
         }];
         s.referrer = Some("https://example.com/page?session=referrer-secret#top".to_owned());
         s.user_agent = Some("Agent/1".to_owned());
@@ -1679,7 +1679,7 @@ mod recovery {
         let db = Arc::new(Database::open_in_memory().unwrap());
         let login = Credentials {
             user_name: "user".to_owned(),
-            password: "secret".to_owned(),
+            password: "secret".into(),
         };
         let id = {
             let (mut m, _control) = restart(&db, 1);
@@ -1729,7 +1729,7 @@ mod recovery {
             let s = TransferSpec {
                 credentials: Some(Credentials {
                     user_name: "user".to_owned(),
-                    password: "secret".to_owned(),
+                    password: "secret".into(),
                 }),
                 ..spec()
             };
@@ -1738,7 +1738,7 @@ mod recovery {
         let (mut m, _control) = restart(&db, 1);
         let header = |name: &str| Header {
             name: name.to_owned(),
-            value: "v".to_owned(),
+            value: "v".into(),
         };
         let refused = [
             SensitiveOptions {
@@ -1757,7 +1757,7 @@ mod recovery {
                 }),
                 credentials: Some(Credentials {
                     user_name: "user".to_owned(),
-                    password: String::new(),
+                    password: Default::default(),
                 }),
                 ..SensitiveOptions::default()
             },
@@ -1955,7 +1955,7 @@ mod retry {
         let db = Arc::new(Database::open_in_memory().unwrap());
         let login = Credentials {
             user_name: "user".to_owned(),
-            password: "secret".to_owned(),
+            password: "secret".into(),
         };
         let id = {
             let fake = FakeTransfer::new();
@@ -3172,7 +3172,7 @@ mod snapshot {
             let s = TransferSpec {
                 credentials: Some(Credentials {
                     user_name: "u".to_owned(),
-                    password: "p".to_owned(),
+                    password: "p".into(),
                 }),
                 ..spec()
             };
@@ -4655,7 +4655,7 @@ mod adding {
         let request = AddRequest {
             credentials: Some(Credentials {
                 user_name: "me".to_owned(),
-                password: String::new(),
+                password: Default::default(),
             }),
             ssh_key: Some(key.clone()),
             ..links(&["sftp://files.example/pub/a.tar"])
@@ -5077,7 +5077,7 @@ mod adding {
         let bad_header = AddRequest {
             headers: vec![Header {
                 name: "Bad\nName".to_owned(),
-                value: "x".to_owned(),
+                value: "x".into(),
             }],
             ..links(&["https://example.com/a.zip"])
         };
@@ -5117,12 +5117,12 @@ mod adding {
             speed_limit_kib: 64,
             headers: vec![Header {
                 name: "Cookie".to_owned(),
-                value: "s=1".to_owned(),
+                value: "s=1".into(),
             }],
             referrer: Some("https://example.com/page".to_owned()),
             credentials: Some(Credentials {
                 user_name: "me".to_owned(),
-                password: "pw".to_owned(),
+                password: "pw".into(),
             }),
             checksum: Some(Checksum {
                 algorithm: HashAlgorithm::Sha256,
@@ -5594,5 +5594,127 @@ mod adding_through_the_service {
         assert!(direct.log().contains(&"cancel 1".to_owned()));
         drop(service);
         let _ = fs::remove_dir_all(&dir);
+    }
+}
+
+/// Logins remembered in the system keychain, with the user's consent (#70, ADR-0015).
+mod remembered_logins {
+    use super::*;
+    use crate::keychain::MemoryKeychain;
+    use crate::transfer::{Credentials, Header};
+
+    fn login() -> Credentials {
+        Credentials {
+            user_name: "alice".to_owned(),
+            password: "REMEMBERED-70".into(),
+        }
+    }
+
+    fn with_login() -> TransferSpec {
+        TransferSpec {
+            credentials: Some(login()),
+            headers: vec![Header {
+                name: "Cookie".to_owned(),
+                value: "session=REMEMBERED-COOKIE".into(),
+            }],
+            ..spec()
+        }
+    }
+
+    fn open(db: &Arc<Database>, keychain: &MemoryKeychain) -> (Manager, FakeControl) {
+        let fake = FakeTransfer::new();
+        let control = fake.control();
+        let m =
+            Manager::open_with_keychain(Box::new(fake), Arc::clone(db), Box::new(keychain.clone()))
+                .unwrap();
+        (m, control)
+    }
+
+    #[test]
+    fn a_remembered_login_comes_back_after_a_restart_and_the_download_goes_on() {
+        let db = Arc::new(Database::open_in_memory().unwrap());
+        let keychain = MemoryKeychain::default();
+        let id = {
+            let (mut m, _) = open(&db, &keychain);
+            let id = m.add(DownloadKind::Http, with_login(), T0).unwrap();
+            m.remember_login(&id).unwrap();
+            id
+        };
+        assert_eq!(keychain.ids(), std::slice::from_ref(&id));
+        let (mut m, control) = open(&db, &keychain);
+        assert!(!m.needs_login(&id));
+        assert_eq!(m.get(&id).unwrap().error, None);
+        assert_eq!(
+            status(&m, &id),
+            DownloadStatus::Queued,
+            "not held for a login"
+        );
+        m.pump(T0 + 1);
+        let again = control.spec(TransferId(1));
+        assert_eq!(again.credentials, Some(login()));
+        assert_eq!(again.headers, with_login().headers);
+    }
+
+    #[test]
+    fn a_login_not_remembered_is_asked_for_again_as_before() {
+        let db = Arc::new(Database::open_in_memory().unwrap());
+        let keychain = MemoryKeychain::default();
+        let id = {
+            let (mut m, _) = open(&db, &keychain);
+            m.add(DownloadKind::Http, with_login(), T0).unwrap()
+        };
+        assert!(keychain.ids().is_empty(), "nothing saved without consent");
+        let (m, _) = open(&db, &keychain);
+        assert!(m.needs_login(&id));
+    }
+
+    #[test]
+    fn removing_the_download_forgets_its_login() {
+        let db = Arc::new(Database::open_in_memory().unwrap());
+        let keychain = MemoryKeychain::default();
+        let (mut m, _) = open(&db, &keychain);
+        let id = m.add(DownloadKind::Http, with_login(), T0).unwrap();
+        m.remember_login(&id).unwrap();
+        m.remove(&id, false).unwrap();
+        assert!(keychain.ids().is_empty());
+    }
+
+    #[test]
+    fn an_unavailable_keychain_saves_nothing_and_says_so() {
+        let db = Arc::new(Database::open_in_memory().unwrap());
+        let keychain = MemoryKeychain::refusing();
+        let id = {
+            let (mut m, _) = open(&db, &keychain);
+            let id = m.add(DownloadKind::Http, with_login(), T0).unwrap();
+            assert_eq!(m.remember_login(&id), Err(ErrorCode::KeychainUnavailable));
+            id
+        };
+        let (m, _) = open(&db, &MemoryKeychain::default());
+        assert!(m.needs_login(&id), "not marked as saved");
+    }
+
+    #[test]
+    fn a_saved_login_missing_from_the_keychain_is_asked_for_again() {
+        let db = Arc::new(Database::open_in_memory().unwrap());
+        let keychain = MemoryKeychain::default();
+        let id = {
+            let (mut m, _) = open(&db, &keychain);
+            let id = m.add(DownloadKind::Http, with_login(), T0).unwrap();
+            m.remember_login(&id).unwrap();
+            id
+        };
+        // The user removed it from the keychain while V2 was closed.
+        keychain.delete(&id).unwrap();
+        let (m, _) = open(&db, &keychain);
+        assert!(m.needs_login(&id));
+    }
+
+    #[test]
+    fn only_a_download_with_a_login_can_have_it_remembered() {
+        let db = Arc::new(Database::open_in_memory().unwrap());
+        let (mut m, _) = open(&db, &MemoryKeychain::default());
+        let id = m.add(DownloadKind::Http, spec(), T0).unwrap();
+        assert_eq!(m.remember_login(&id), Err(ErrorCode::InvalidState));
+        assert_eq!(m.remember_login("d-missing"), Err(ErrorCode::NotFound));
     }
 }

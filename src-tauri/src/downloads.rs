@@ -73,7 +73,9 @@ pub fn start(app: &AppHandle, paths: &Paths) -> Result<Downloads, String> {
             Box::new(MissingTorrentEngine::new(code))
         }
     };
-    let mut manager = Manager::open(engine, Arc::new(database))
+    // Logins the user asked to remember are kept in the system keychain (#70).
+    let keychain = Box::new(velocity_core::keychain::SystemKeychain::new());
+    let mut manager = Manager::open_with_keychain(engine, Arc::new(database), keychain)
         .map_err(|e| e.to_string())?
         .with_torrents(torrents)
         // `.torrent` links are fetched into the app's own folder (#60).
@@ -383,6 +385,13 @@ pub async fn set_storage_settings(
         m.set_storage_settings(&settings, velocity_core::manager::now_ms())
     })
     .await?
+}
+
+/// Saves a download's login, custom headers and SSH key in the system keychain, at the user's
+/// request (#70): after a restart they come back from there instead of being asked for again.
+#[tauri::command]
+pub async fn remember_login(downloads: State<'_, Downloads>, id: String) -> Result<(), ErrorCode> {
+    on_manager(&downloads, move |m| m.remember_login(&id)).await?
 }
 
 /// Trusts the SFTP host key the user confirmed (#53); the UI then retries the download.

@@ -84,6 +84,10 @@
     "message": "This action needs your confirmation first."
   },
   {
+    "code": "KEYCHAIN_UNAVAILABLE",
+    "message": "The system keychain isn't available, so the login wasn't saved."
+  },
+  {
     "code": "UNSUPPORTED",
     "message": "This isn't supported on this system yet."
   },

@@ -101,6 +101,8 @@ export const api = {
   chooseSshKey: () => call('choose_ssh_key', undefined, z.string().min(1).nullable()),
   /** Trusts the SFTP host key the user confirmed (#53); the download is then retried. */
   trustHostKey: (host: string, port: number, fingerprint: string) => call('trust_host_key', { host, port, fingerprint }, nothing),
+  /** Saves a download's login in the system keychain, at the user's request (#70). */
+  rememberLogin: (id: string) => call('remember_login', { id }, nothing),
   retryDownloads: (ids: string[]) => call('retry_downloads', { ids }, BatchResultSchema),
   // The list's commands (#58, #59). Those over several downloads say what each did.
   pauseDownloads: (ids: string[]) => call('pause_downloads', { ids }, BatchResultSchema),

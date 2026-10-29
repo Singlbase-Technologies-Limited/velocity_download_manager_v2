@@ -140,6 +140,8 @@ struct Job {
 
 /// What every request of `spec` carries (#40): its user agent, or Velocity's own; its referrer;
 /// and its custom headers and login, which the libcurl layer sends only to the first URL's origin.
+/// The libcurl and SFTP layers take them as plain strings, held in memory for the transfer's life
+/// only: this is where a [`velocity_core::secret::Secret`] is copied out (#70).
 fn request_options(spec: &TransferSpec) -> RequestOptions {
     RequestOptions {
         user_agent: Some(spec.user_agent.clone().unwrap_or_else(default_user_agent)),
@@ -147,16 +149,16 @@ fn request_options(spec: &TransferSpec) -> RequestOptions {
         headers: spec
             .headers
             .iter()
-            .map(|h| (h.name.clone(), h.value.clone()))
+            .map(|h| (h.name.clone(), h.value.expose().to_owned()))
             .collect(),
         login: spec
             .credentials
             .as_ref()
-            .map(|c| (c.user_name.clone(), c.password.clone())),
+            .map(|c| (c.user_name.clone(), c.password.expose().to_owned())),
         require_encryption: spec.require_encryption,
         ssh_key: spec.ssh_key.as_ref().map(|key| SshKeyFile {
             path: key.path.clone(),
-            passphrase: key.passphrase.clone(),
+            passphrase: key.passphrase.as_ref().map(|p| p.expose().to_owned()),
         }),
     }
 }

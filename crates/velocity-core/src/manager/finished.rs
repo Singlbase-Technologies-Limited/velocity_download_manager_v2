@@ -95,6 +95,12 @@ impl Manager {
         if !finished {
             d.record.status = DownloadStatus::Removed;
         }
+        // A login the user asked to remember goes with the download (PO decision on #70).
+        if d.direct().is_some_and(|job| job.login_saved) {
+            if let Err(code) = self.keychain.delete(id) {
+                tracing::warn!("the saved login of {id} couldn't be deleted: {code:?}");
+            }
+        }
         let saved = self
             .database
             .update_download(&d.record, &d.activity.totals)

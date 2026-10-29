@@ -1,6 +1,6 @@
 # Security
 
-How V2 protects downloads and the people who use it. The rules every contributor follows are in [AGENTS.md](../AGENTS.md#security-and-data) and `.claude/rules/security.md`. This document records what V2 does and what was measured. It covers TLS, FTP and SFTP host keys for now; the URL and redirect policy (#67) and secret handling (#70) add their sections when they are built.
+How V2 protects downloads and the people who use it. The rules every contributor follows are in [AGENTS.md](../AGENTS.md#security-and-data) and `.claude/rules/security.md`. This document records what V2 does and what was measured. It covers TLS, FTP, SFTP host keys and secrets for now; the URL and redirect policy (#67) adds its section when it is built.
 
 ## TLS verification (#69)
 
@@ -113,6 +113,15 @@ SSH has no certificate authority to vouch for a server, so a host key is trusted
 - **Changed keys are always refused,** and are never offered for trust. A pinned key is never replaced by trusting another.
 - **V2's own file,** `<data folder>/known_hosts`, unhashed and readable. `~/.ssh/known_hosts` is neither read nor written.
 - **Host certificates are refused:** V2 trusts no SSH certificate authority.
-- **Logins:** a password, or a private key file with an optional passphrase. Both travel like other credentials: in memory, and through the engine's pipe, never its arguments, environment, database, checkpoints or logs ([ENGINE_CONTRACT.md](ENGINE_CONTRACT.md)). `Debug` never prints a passphrase (tested). The keychain is #70's.
+- **Logins:** a password, or a private key file with an optional passphrase. Both travel like other credentials: in memory, and through the engine's pipe, never its arguments, environment, database, checkpoints or logs ([ENGINE_CONTRACT.md](ENGINE_CONTRACT.md)). `Debug` never prints a passphrase (tested). A login can be remembered in the keychain ([below](#secrets-70)).
 - **Tested** against the installed OpenSSH server on Windows and Linux, as an unprivileged `sshd` with throwaway host keys (Ed25519, ECDSA and RSA): an unknown key refused until trusted, a changed key refused, key logins with and without a passphrase, a refused login. Password logins are tested on CI's Linux runner, against an `sshd` run as root; on Windows they are NOT RUN.
 - **An accepted advisory:** `rsa` (used for RSA keys) has RUSTSEC-2023-0071 ("Marvin"), a timing side channel in private-key operations, with no fix. The PO accepted it on #53: an SFTP client signs once per login with the user's own RSA key, and host-key checks use only public keys ([DEPENDENCIES.md](DEPENDENCIES.md)).
+
+## Secrets (#70)
+
+Logins, custom header values (cookies, tokens) and SSH key passphrases are secrets. What V2 does with them:
+
+- **Held as `Secret`s** (`crates/velocity-core/src/secret.rs`): overwritten in memory when dropped (`zeroize`, PO decision on #70), and never shown by `Debug` (tested). The contract's JSON doesn't change: a secret crosses the window's commands and the engine's pipe as its plain string, in memory. The engine copies the login out as plain strings for the libcurl and SFTP layers, for the transfer's life only.
+- **Never written** to the database, a checkpoint, the app's log, or a child process's arguments or environment. The leak test (`crates/velocity-transfer/tests/secret_leaks.rs`) adds downloads with an HTTP login and cookie and an FTP login through the real child engine, and SFTP key and password logins, pauses one so a checkpoint is stored, then scans every file the database wrote (WAL included, open and after closing) and every log line for the secrets; it checks the child's arguments are only `serve` and its environment holds only the few kept variables. The SFTP password part runs where a password server is provisioned (CI's Linux runner); elsewhere it says NOT RUN, as the SFTP engine tests do.
+- **The system keychain, on consent only** ([ADR-0015](decisions/0015-keychain-with-consent.md)): "Remember this login in the system keychain", unticked by default, saves that download's login, headers and key passphrase as one entry under V2's own service name (`<identifier>.logins`), through the `keyring` crate: Windows Credential Manager, or the Secret Service on Linux. After a restart the download gets them back from there; removing it deletes the entry. A keychain that is missing or refuses is said (`KEYCHAIN_UNAVAILABLE`), and nothing is saved. A saved login is checked again, as when it was added, before it is used.
+- **After a restart, without a remembered login,** a download that had one waits for it again, with a note (V1's behaviour, #58).

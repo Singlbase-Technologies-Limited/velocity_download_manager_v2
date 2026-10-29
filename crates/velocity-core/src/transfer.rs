@@ -19,6 +19,7 @@ use crate::naming::check_file_name;
 use crate::request::{
     check_credentials, check_headers, check_referrer, check_user_agent, split_login,
 };
+use crate::secret::Secret;
 use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::path::PathBuf;
@@ -54,13 +55,12 @@ pub const TRANSFER_CONTRACT_VERSION: u32 = 14;
 #[serde(transparent)]
 pub struct TransferId(pub u64);
 
-/// A custom request header. Its value may be a secret (a cookie, a token), so `Debug` never
-/// prints it.
+/// A custom request header. Its value may be a secret (a cookie, a token): a [`Secret`] (#70).
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Header {
     pub name: String,
-    pub value: String,
+    pub value: Secret,
 }
 
 impl fmt::Debug for Header {
@@ -80,7 +80,8 @@ impl fmt::Debug for Header {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Credentials {
     pub user_name: String,
-    pub password: String,
+    /// Wiped from memory when dropped (#70).
+    pub password: Secret,
 }
 
 /// A private key file for an SFTP login, and its passphrase if the key is encrypted (#53). The
@@ -90,7 +91,8 @@ pub struct Credentials {
 pub struct SshKey {
     /// An absolute path. The engine reads the key when it connects.
     pub path: PathBuf,
-    pub passphrase: Option<String>,
+    /// Wiped from memory when dropped (#70).
+    pub passphrase: Option<Secret>,
 }
 
 impl fmt::Debug for SshKey {
@@ -458,10 +460,10 @@ impl TransferSpec {
                 url.split_once("://")
                     .is_some_and(|(scheme, _)| scheme.eq_ignore_ascii_case("sftp"))
             };
-            let passphrase_ok = key.passphrase.as_deref().is_none_or(|p| {
+            let passphrase_ok = key.passphrase.as_ref().is_none_or(|p| {
                 check_credentials(&Credentials {
                     user_name: "key".to_owned(),
-                    password: p.to_owned(),
+                    password: p.clone(),
                 })
                 .is_ok()
             });
@@ -789,11 +791,11 @@ mod tests {
             file_name: Some("a.zip".to_owned()),
             credentials: Some(Credentials {
                 user_name: "alice".to_owned(),
-                password: "hunter2".to_owned(),
+                password: "hunter2".into(),
             }),
             headers: vec![Header {
                 name: "Cookie".to_owned(),
-                value: "session=secret-value".to_owned(),
+                value: "session=secret-value".into(),
             }],
             referrer: Some("https://example.com/page".to_owned()),
             user_agent: None,
@@ -1214,10 +1216,7 @@ mod tests {
             s.check_request()
         };
         let invalid = Err(ErrorCode::InvalidInput);
-        assert_eq!(
-            with(|s| s.headers[0].value = "a\r\nX: 1".to_owned()),
-            invalid
-        );
+        assert_eq!(with(|s| s.headers[0].value = "a\r\nX: 1".into()), invalid);
         assert_eq!(with(|s| s.user_agent = Some("a\nb".to_owned())), invalid);
         assert_eq!(
             with(|s| s.credentials.as_mut().unwrap().user_name = "a:b".to_owned()),
@@ -1248,11 +1247,11 @@ mod tests {
                 urls: vec![url.to_owned()],
                 ssh_key: Some(SshKey {
                     path,
-                    passphrase: passphrase.map(str::to_owned),
+                    passphrase: passphrase.map(Into::into),
                 }),
                 credentials: user.then(|| Credentials {
                     user_name: "alice".to_owned(),
-                    password: String::new(),
+                    password: Default::default(),
                 }),
                 ..spec()
             }
@@ -1282,7 +1281,7 @@ mod tests {
     fn debug_output_never_shows_a_key_passphrase() {
         let key = SshKey {
             path: PathBuf::from("/home/alice/.ssh/id_ed25519"),
-            passphrase: Some("SECRET-PHRASE".to_owned()),
+            passphrase: Some("SECRET-PHRASE".into()),
         };
         let shown = format!("{key:?}");
         assert!(!shown.contains("SECRET-PHRASE"), "{shown}");

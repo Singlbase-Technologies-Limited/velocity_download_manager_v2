@@ -93,6 +93,10 @@ pub struct StoredOptions {
     pub checksum: Option<Checksum>,
     #[serde(default)]
     pub pieces: Option<PieceHashes>,
+    /// The user asked to remember the download's login in the system keychain (#70): after a
+    /// restart it is read from there instead of asked for again.
+    #[serde(default)]
+    pub login_saved: bool,
 }
 
 impl StoredOptions {
@@ -107,6 +111,7 @@ impl StoredOptions {
             referrer: spec.referrer.as_deref().map(Checkpoint::source_of),
             checksum: spec.checksum.clone(),
             pieces: spec.pieces.clone(),
+            login_saved: false,
         }
     }
 }

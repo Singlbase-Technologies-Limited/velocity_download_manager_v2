@@ -722,7 +722,7 @@ Run it with `cargo run --release -p velocity-transfer --example high_offset_writ
 ## Not yet
 
 - **https→http after confirmation:** such a redirect is refused; #67 adds the confirmation. `redirect.rs`'s unit tests cover the rule; an end-to-end test on the TLS fixture (#69) comes with #67.
-- **Credentials beyond memory:** the keychain, zeroisation and the secret-leak scan are #70 and #71.
+- **Credentials beyond memory:** the keychain and zeroisation are #70's ([SECURITY.md](SECURITY.md#secrets-70)); the engine takes the login as plain strings for the transfer's life, copied out of its `Secret`s in `request_options`. The full secret-leak scan of every file is #71.
 - **Requiring encryption from the add form:** `TransferSpec::require_encryption` and the cleartext warning are ready; the add form that sets one and shows the other is R8's. Until then, the app's FTP downloads are plain unless the link is `ftps://`.
 - **FTP over several connections:** one connection until #77 measures whether more help.
 - **Connection values:** the per-host cap and the smallest piece come from the performance profile (#57), and the budget from the user's engine settings ([SETTINGS.md](SETTINGS.md#engine), #30). The ramp's values are engine defaults, to tune by measurement (#77).

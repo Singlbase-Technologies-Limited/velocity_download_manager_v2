@@ -60,7 +60,11 @@ pub fn check_headers(headers: &[Header]) -> Result<(), ErrorCode> {
             && h.name.chars().all(token)
             && !MANAGED_HEADERS.contains(&h.name.to_ascii_lowercase().as_str())
             && h.value.len() <= MAX_HEADER_VALUE_BYTES
-            && !h.value.chars().any(|c| c.is_control() && c != '\t')
+            && !h
+                .value
+                .expose()
+                .chars()
+                .any(|c| c.is_control() && c != '\t')
     };
     if headers.iter().all(valid) {
         Ok(())
@@ -109,7 +113,11 @@ pub fn check_credentials(credentials: &Credentials) -> Result<(), ErrorCode> {
         password,
     } = credentials;
     let part = |s: &str| s.len() <= MAX_LOGIN_PART_BYTES && !s.chars().any(char::is_control);
-    if !user_name.is_empty() && !user_name.contains(':') && part(user_name) && part(password) {
+    if !user_name.is_empty()
+        && !user_name.contains(':')
+        && part(user_name)
+        && part(password.expose())
+    {
         Ok(())
     } else {
         Err(ErrorCode::InvalidInput)
@@ -132,7 +140,7 @@ pub fn split_login(url: &str) -> (String, Option<Credentials>) {
     let (user_name, password) = login.split_once(':').unwrap_or((login, ""));
     let credentials = Credentials {
         user_name: percent_decode(user_name),
-        password: percent_decode(password),
+        password: percent_decode(password).into(),
     };
     (
         format!("{scheme}{}", &rest[login_end + 1..]),
@@ -147,7 +155,7 @@ mod tests {
     fn header(name: &str, value: &str) -> Header {
         Header {
             name: name.to_owned(),
-            value: value.to_owned(),
+            value: value.into(),
         }
     }
 
@@ -288,7 +296,7 @@ mod tests {
     fn login(user_name: &str, password: &str) -> Credentials {
         Credentials {
             user_name: user_name.to_owned(),
-            password: password.to_owned(),
+            password: password.into(),
         }
     }
 

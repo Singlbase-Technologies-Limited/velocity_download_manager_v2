@@ -155,16 +155,16 @@ impl AddRequest {
             speed_limit_kib: 512,
             headers: vec![Header {
                 name: "Cookie".to_owned(),
-                value: "session=1".to_owned(),
+                value: "session=1".into(),
             }],
             referrer: Some("https://example.com/page".to_owned()),
             credentials: Some(Credentials {
                 user_name: "me".to_owned(),
-                password: "secret".to_owned(),
+                password: "secret".into(),
             }),
             ssh_key: Some(SshKey {
                 path: PathBuf::from("/home/user/.ssh/id_ed25519"),
-                passphrase: Some("phrase".to_owned()),
+                passphrase: Some("phrase".into()),
             }),
             checksum: Some(Checksum {
                 algorithm: crate::transfer::HashAlgorithm::Sha256,

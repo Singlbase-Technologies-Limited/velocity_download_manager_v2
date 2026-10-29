@@ -22,6 +22,7 @@ use crate::domain::{
     DownloadKind, DownloadRecord, DownloadStatus, DownloadsSnapshot, EngineHealth, ErrorCode,
     FailureClass, Progress, TransferError, UnavailableDownload,
 };
+use crate::keychain::{Keychain, NoKeychain};
 use crate::metalink::{self, Metalink};
 use crate::performance::PerformanceSettings;
 use crate::queue::QueueSettings;
@@ -75,6 +76,8 @@ struct DirectJob {
     transfer: Option<TransferId>,
     /// The file's media type, as the engine reported it (#54).
     content_type: Option<String>,
+    /// Its login is saved in the system keychain, at the user's request (#70).
+    login_saved: bool,
 }
 
 impl DirectJob {
@@ -84,6 +87,7 @@ impl DirectJob {
             resume,
             transfer: None,
             content_type: None,
+            login_saved: false,
         }
     }
 }
@@ -129,6 +133,8 @@ pub struct Manager {
     unsaved: BTreeSet<String>,
     /// The last failure to save a record.
     storage_error: Option<DatabaseError>,
+    /// Where logins the user asked to remember are saved (#70); none unless the app gives one.
+    keychain: Box<dyn Keychain>,
     /// The queue as it was last saved.
     saved_queue: Vec<QueueEntry>,
     /// Stored records this build can't read, or whose engine it doesn't run yet.
@@ -269,6 +275,7 @@ impl Manager {
             database,
             unsaved: BTreeSet::new(),
             storage_error: None,
+            keychain: Box::new(NoKeychain),
             saved_queue: Vec::new(),
             unavailable: Vec::new(),
             events,

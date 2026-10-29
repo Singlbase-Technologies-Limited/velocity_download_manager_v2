@@ -463,13 +463,15 @@ pub enum ErrorCode {
     InsufficientDiskSpace,
     ProtocolDisabled,
     ConfirmationRequired,
+    /// The system keychain is missing or refused (#70): nothing was saved in it.
+    KeychainUnavailable,
     Unsupported,
     Internal,
 }
 
 impl ErrorCode {
     /// Every code. V1's codes without the four aria2 JSON-RPC ones (`RPC_*`).
-    pub const ALL: [Self; 23] = [
+    pub const ALL: [Self; 24] = [
         Self::InvalidInput,
         Self::InvalidUrl,
         Self::UnsupportedScheme,
@@ -491,6 +493,7 @@ impl ErrorCode {
         Self::InsufficientDiskSpace,
         Self::ProtocolDisabled,
         Self::ConfirmationRequired,
+        Self::KeychainUnavailable,
         Self::Unsupported,
         Self::Internal,
     ];
@@ -521,6 +524,9 @@ impl ErrorCode {
             Self::InsufficientDiskSpace => "There isn't enough free disk space.",
             Self::ProtocolDisabled => "This kind of download is turned off in Settings.",
             Self::ConfirmationRequired => "This action needs your confirmation first.",
+            Self::KeychainUnavailable => {
+                "The system keychain isn't available, so the login wasn't saved."
+            }
             Self::Unsupported => "This isn't supported on this system yet.",
             Self::Internal => "Something went wrong inside Velocity.",
         }
@@ -1168,7 +1174,7 @@ mod tests {
             let login = SensitiveOptions {
                 credentials: Some(Credentials {
                     user_name: "user".to_owned(),
-                    password: "not-a-real-password".to_owned(),
+                    password: "not-a-real-password".into(),
                 }),
                 ssh_key: Some(SshKey {
                     path: std::path::PathBuf::from("/home/user/.ssh/id_ed25519"),
@@ -1176,7 +1182,7 @@ mod tests {
                 }),
                 headers: vec![Header {
                     name: "X-Example".to_owned(),
-                    value: "example".to_owned(),
+                    value: "example".into(),
                 }],
             };
             check("download-login.json", serde_json::to_value(login).unwrap());

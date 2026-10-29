@@ -3,6 +3,7 @@
 //! has, and to the next start of one it doesn't; either way it is stored, so a restart keeps it.
 
 use super::Manager;
+use super::SensitiveOptions;
 use crate::database::StoredOptions;
 use crate::domain::ErrorCode;
 use crate::transfer::{Limits, TransferId};
@@ -55,6 +56,29 @@ impl Manager {
         Ok(applied)
     }
 
+    /// Saves the download's login, custom headers and SSH key in the system keychain, at the
+    /// user's request (#70), so that after a restart they are read from there instead of asked
+    /// for again. `InvalidState` for a download without any; `Unsupported` for a torrent;
+    /// `KeychainUnavailable`, with nothing saved, when the keychain is missing or refuses.
+    pub fn remember_login(&mut self, id: &str) -> Result<(), ErrorCode> {
+        let d = self.downloads.get(id).ok_or(ErrorCode::NotFound)?;
+        let job = d.direct().ok_or(ErrorCode::Unsupported)?;
+        let login = SensitiveOptions {
+            credentials: job.request.credentials.clone(),
+            ssh_key: job.request.ssh_key.clone(),
+            headers: job.request.headers.clone(),
+        };
+        if login == SensitiveOptions::default() {
+            return Err(ErrorCode::InvalidState);
+        }
+        self.keychain.save(id, &login)?;
+        if let Some(job) = self.downloads.get_mut(id).and_then(|d| d.direct_mut()) {
+            job.login_saved = true;
+        }
+        self.store_options(id);
+        Ok(())
+    }
+
     /// The transfer of an unfinished download, if the engine has it.
     fn unfinished_transfer(&self, id: &str) -> Result<Option<TransferId>, ErrorCode> {
         let d = self.downloads.get(id).ok_or(ErrorCode::NotFound)?;
@@ -68,7 +92,10 @@ impl Manager {
         let Some(job) = self.downloads[id].direct() else {
             return;
         };
-        let options = StoredOptions::of(&job.request);
+        let options = StoredOptions {
+            login_saved: job.login_saved,
+            ..StoredOptions::of(&job.request)
+        };
         if let Err(e) = self.database.update_options(id, &options) {
             self.storage_error = Some(e);
         }
