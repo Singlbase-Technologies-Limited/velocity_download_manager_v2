@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 // The agent guard (#98): a Claude Code PreToolUse hook for the Bash and PowerShell tools,
 // registered in .claude/settings.json. It refuses a command that pushes to `main`, force-pushes or
-// runs `git reset --hard`, in any spelling (the rules are in agent-guard-lib.mjs, unit tested).
+// runs `git reset --hard`, in any spelling, and a `gh pr create` or `gh pr edit` whose description doesn't follow
+// .github/PULL_REQUEST_TEMPLATE.md (PO decision on #59). The rules are in agent-guard-lib.mjs, unit tested.
 // The deny rules in .claude/settings.json stay as the first layer.
 //
 // Hook protocol (https://code.claude.com/docs/en/hooks#pretooluse-decision-control): the tool call
@@ -51,6 +52,24 @@ function currentBranch(cwd, dirs) {
   return fromHead !== undefined ? fromHead : git(cwd, dirs, ['symbolic-ref', '--quiet', '--short', 'HEAD']) || null;
 }
 
+/** A text file, from the command's folder; null when it can't be read. */
+function readText(cwd, dirs, path) {
+  try {
+    return readFileSync(resolve(directory(cwd, dirs), nativePath(path)), 'utf8');
+  } catch {
+    return null;
+  }
+}
+
+/** The PR template of the repository the command runs in, from the nearest folder that has one; null when none does. */
+function prTemplate(cwd, dirs) {
+  for (let dir = directory(cwd, dirs); ; dir = dirname(dir)) {
+    const path = join(dir, '.github', 'PULL_REQUEST_TEMPLATE.md');
+    if (existsSync(path)) return readText(dir, [], path);
+    if (dirname(dir) === dir) return null;
+  }
+}
+
 function readStdin() {
   return new Promise((done, fail) => {
     let data = '';
@@ -73,6 +92,8 @@ async function main() {
     // A detached HEAD or a folder outside a repository gives null, which the guard treats as unsure.
     currentBranch: (dirs) => currentBranch(cwd, dirs),
     alias: (name, dirs) => git(cwd, dirs, ['config', '--get', `alias.${name}`]) || null,
+    readFile: (path, dirs) => readText(cwd, dirs, path),
+    template: (dirs) => prTemplate(cwd, dirs),
   });
   if (result.deny) {
     process.stdout.write(

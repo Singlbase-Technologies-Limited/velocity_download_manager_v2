@@ -33,13 +33,15 @@ Check every item. Report anything that fails, and fix it or ask; don't skip it. 
 - **Conventional Commit title.** A single-commit PR keeps that commit's message on `main`, so it must follow the convention too ([docs/DEVELOPMENT_WORKFLOW.md](../../../docs/DEVELOPMENT_WORKFLOW.md)).
 - **Commit trailer:** the commit message ends with the model's `Co-Authored-By:` line.
 - **Closing keywords:** the first line is `Closes #$ARGUMENTS.` only if merging completes every acceptance criterion; otherwise `Part of #$ARGUMENTS.` Search the whole description for "close", "fix" and "resolve" followed by `#N`: GitHub acts on those even inside a sentence.
-- **Description sections:**
-  - What changed: files and why.
-  - PO decisions applied.
-  - Things to check during review.
-  - An acceptance criteria table with evidence.
-  - Other checks, with NOT RUN items and their reasons.
-  - It ends with the Claude Code attribution line.
+- **The description is the PR template, filled in** (PO decision on #59). Copy [`.github/PULL_REQUEST_TEMPLATE.md`](../../../.github/PULL_REQUEST_TEMPLATE.md) to a file in the scratch directory and fill it in. Never copy an earlier PR's shape: several drifted from the template.
+  - Keep every section, in its order, and add none.
+  - Keep each checklist item in the template's words, ticked or not; add detail after it.
+  - Fill every table: each result is PASS, FAIL, BLOCKED or NOT RUN.
+  - Fill "**Not included:**", the commands block and the verification level.
+  - Remove every comment.
+  - Keep the reviewer's footer, then end with the Claude Code attribution line.
+- **Title:** `<type>(<scope>): <description> (#N)`, for example `feat(engine): add bounded range probe (#41)`.
+- **Check it:** `pnpm check:pr-body <file> --title "<title>"` must pass. The agent guard runs the same check, and refuses `gh pr create` or `gh pr edit` without `--body-file <literal path>`, or with a description that fails it.
 
 ## 5. Identity, then stop
 

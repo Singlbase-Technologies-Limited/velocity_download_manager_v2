@@ -7,6 +7,7 @@ This is what a reviewer (the Product Owner today, future maintainers later) chec
 - [ ] The PR is linked to an issue and stays within that issue's scope. Anything else is split out or has its own issue.
 - [ ] The base is `main` and the branch name is `<type>/<issue>-<slug>`.
 - [ ] The title is a Conventional Commit (`type(scope): description`). When merging, check that the proposed squash commit message follows the convention too, because a PR with a single commit keeps that commit's message.
+- [ ] The description is the PR template filled in, and passes `pnpm check:pr-body <file> --title "…"` (PO decision on #59).
 - [ ] Closing keywords (`closes #N`, `fixes #N`) appear only where merging should really close that issue.
 
 ## Evidence
