@@ -11,8 +11,8 @@ use velocity_core::transfer::{Checkpoint, Resume, CHECKPOINT_FORMAT};
 use velocity_curl::{CurlLoop, Libcurl, LoopOptions};
 use velocity_test_http::{seeded_bytes, RangeMode, ServerOptions, TestServer};
 use velocity_transfer::download::{
-    download, download_resumable, download_with, Cadence, Control, DownloadError, DownloadOptions,
-    Expected, Mode,
+    download, download_resumable, download_with, Cadence, Control, DiskOptions, DownloadError,
+    DownloadOptions, Expected, Mode,
 };
 use velocity_transfer::retry::RetryPolicy;
 use velocity_transfer::scheduler::Sizes;
@@ -66,6 +66,7 @@ fn part_of(dest: &Path) -> PathBuf {
 }
 
 const OPTIONS: DownloadOptions = DownloadOptions {
+    disk: DiskOptions::DEFAULT,
     connections: 4,
     probe_bytes: 64 * 1024,
     leases: Sizes::DEFAULT,
@@ -438,6 +439,7 @@ fn a_split_stops_the_old_request_at_the_new_boundary() {
     let dir = Dir::new("split");
     let dest = dir.file("out.bin");
     let options = DownloadOptions {
+        disk: DiskOptions::DEFAULT,
         connections: 2,
         probe_bytes: 64 * 1024,
         leases: Sizes {

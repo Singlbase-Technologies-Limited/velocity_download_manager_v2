@@ -1,0 +1,84 @@
+{
+  "advanced": {
+    "enableBittorrent": true,
+    "enableMetalink": false,
+    "globalDownloadLimitKib": 0,
+    "userAgent": null
+  },
+  "downloads": {
+    "autoCategorize": true,
+    "categorySubfolders": true,
+    "defaultDirectory": ""
+  },
+  "engine": {
+    "connectTimeoutSecs": 30,
+    "connectionBudget": 48,
+    "downloadRetries": 2,
+    "failuresInARow": 5,
+    "maxRetryWaitSecs": 60,
+    "preallocation": "sparse",
+    "resetAfterSecs": 30,
+    "stalledAfterSecs": 15,
+    "writeBufferMib": 2
+  },
+  "general": {
+    "closeToTray": true,
+    "confirmExitWithActive": true,
+    "startMinimized": false
+  },
+  "newTorrents": {
+    "chooseFilesForMagnets": false,
+    "seeding": {
+      "mode": "never"
+    },
+    "uploadLimitKib": 0
+  },
+  "notifications": {
+    "onComplete": true,
+    "onEngineFailure": true,
+    "onFailure": true,
+    "onStart": false
+  },
+  "performance": {
+    "custom": {
+      "maxConnectionsPerServer": 8,
+      "minSegmentMib": 1
+    },
+    "profile": "balanced"
+  },
+  "queue": {
+    "maxConcurrentDownloads": 3,
+    "schedule": {
+      "days": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6
+      ],
+      "enabled": false,
+      "startTime": "02:00",
+      "stopTime": "07:00"
+    },
+    "startImmediately": true
+  },
+  "storage": {
+    "historyRetentionDays": 90,
+    "maxHistoryEntries": 10000
+  },
+  "torrent": {
+    "dht": true,
+    "dhtBootstrapNodes": [],
+    "downloadLimit": 0,
+    "extraTrackers": [],
+    "listenPort": 6890,
+    "localPeerDiscovery": false,
+    "maxActiveSeeds": 0,
+    "maxPeersPerTorrent": 55,
+    "peerExchange": true,
+    "portMapping": false,
+    "uploadLimit": 0
+  }
+}

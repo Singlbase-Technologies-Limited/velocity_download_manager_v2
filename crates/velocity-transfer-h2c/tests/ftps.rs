@@ -12,7 +12,7 @@ use velocity_test_http::ftp::{FtpOptions, FtpServer, FtpTls};
 use velocity_test_http::seeded_bytes;
 use velocity_test_http::tls::Leaf;
 use velocity_transfer::download::{
-    download_with, Cadence, Control, DownloadError, DownloadOptions,
+    download_with, Cadence, Control, DiskOptions, DownloadError, DownloadOptions,
 };
 use velocity_transfer::retry::RetryPolicy;
 use velocity_transfer::scheduler::Sizes;
@@ -57,6 +57,7 @@ fn trusting(ca_file: Option<&Path>) -> CurlLoop {
 
 fn options() -> DownloadOptions {
     DownloadOptions {
+        disk: DiskOptions::DEFAULT,
         connections: 4,
         probe_bytes: 256 * 1024,
         leases: Sizes::DEFAULT,

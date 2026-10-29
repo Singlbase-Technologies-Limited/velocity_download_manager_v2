@@ -541,7 +541,7 @@ mod tests {
 
     /// A part file as the engine opens it: for reading and writing.
     fn part(path: &std::path::Path) -> File {
-        crate::files::create_part(path)
+        crate::files::create_part(path, true)
             .expect("a new part file")
             .file
     }

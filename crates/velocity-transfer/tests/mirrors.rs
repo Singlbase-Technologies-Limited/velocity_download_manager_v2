@@ -11,8 +11,8 @@ use velocity_core::transfer::{HashAlgorithm, PieceHashes};
 use velocity_curl::{CurlLoop, Libcurl, LoopOptions, RequestOptions};
 use velocity_test_http::{seeded_bytes, FileHeaders, ServerOptions, TestServer};
 use velocity_transfer::download::{
-    download_from, Cadence, Control, DownloadError, DownloadOptions, DownloadReport, Expected,
-    Target,
+    download_from, Cadence, Control, DiskOptions, DownloadError, DownloadOptions, DownloadReport,
+    Expected, Target,
 };
 use velocity_transfer::retry::RetryPolicy;
 use velocity_transfer::scheduler::Sizes;
@@ -70,6 +70,7 @@ fn pieces(data: &[u8]) -> Expected {
 
 /// Four connections and leases of at most 256 KiB, so every source gets ranges; quick retries.
 const OPTIONS: DownloadOptions = DownloadOptions {
+    disk: DiskOptions::DEFAULT,
     connections: 4,
     probe_bytes: 64 * 1024,
     leases: Sizes {

@@ -21,7 +21,7 @@
 
 use std::collections::HashMap;
 use std::ffi::CString;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::Arc;
 use std::thread::{self, JoinHandle};
@@ -423,6 +423,9 @@ pub struct CurlLoop {
     waker: MultiWaker,
     next_token: AtomicUsize,
     options: LoopOptions,
+    /// The connect timeout for requests that start from now, in milliseconds (#30); starts as
+    /// `options.connect_timeout`.
+    connect_timeout_ms: AtomicU64,
     thread: Option<JoinHandle<()>>,
 }
 
@@ -446,6 +449,9 @@ impl CurlLoop {
             commands,
             waker,
             next_token: AtomicUsize::new(1),
+            connect_timeout_ms: AtomicU64::new(
+                u64::try_from(options.connect_timeout.as_millis()).unwrap_or(u64::MAX),
+            ),
             options,
             thread: Some(thread),
         })
@@ -493,7 +499,11 @@ impl CurlLoop {
             waker: self.waker.clone(),
         };
         let fetch = Fetch::new(events, flow, cap, Arc::new(control));
-        match configure(collector, &self.options) {
+        let options = LoopOptions {
+            connect_timeout: Duration::from_millis(self.connect_timeout_ms.load(Ordering::Relaxed)),
+            ..self.options.clone()
+        };
+        match configure(collector, &options) {
             Ok(easy) => self.send(Command::Start(token, Box::new(easy))),
             Err(e) => {
                 let _ = events_tx.send(FetchEvent::Done(Err(curl_error(&e))));
@@ -504,6 +514,12 @@ impl CurlLoop {
 
     /// Changes `CURLMOPT_MAX_HOST_CONNECTIONS` while the loop runs (#57): the performance
     /// profile's per-host cap. Fetches past it wait for a connection.
+    /// The longest a connection may take to open, for requests that start from now (#30).
+    pub fn set_connect_timeout(&self, timeout: Duration) {
+        let ms = u64::try_from(timeout.as_millis()).unwrap_or(u64::MAX);
+        self.connect_timeout_ms.store(ms, Ordering::Relaxed);
+    }
+
     pub fn set_max_connections_per_host(&self, connections: usize) -> Result<(), LoopError> {
         let (reply, answer) = mpsc::channel();
         self.send(Command::MaxHostConnections(connections, reply));

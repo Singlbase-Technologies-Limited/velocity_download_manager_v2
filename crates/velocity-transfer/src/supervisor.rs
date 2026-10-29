@@ -31,7 +31,8 @@ use velocity_child::supervisor::{Book, Retired, Supervisor};
 pub use velocity_child::supervisor::{EngineHealth, SupervisorOptions};
 use velocity_core::domain::{Capabilities, DownloadStatus, ErrorCode};
 use velocity_core::transfer::{
-    DirectTransfer, EngineLimits, Limits, TransferEvent, TransferId, TransferSnapshot, TransferSpec,
+    DirectTransfer, EngineLimits, EngineSettings, Limits, TransferEvent, TransferId,
+    TransferSnapshot, TransferSpec,
 };
 
 use crate::stdio::ChildProcessEngine;
@@ -52,6 +53,8 @@ pub struct TransferBook {
     global_limits: Limits,
     /// The engine limits last set, given to every new engine (#57).
     engine_limits: EngineLimits,
+    /// The engine settings last set, given to every new engine (#30).
+    engine_settings: EngineSettings,
 }
 
 impl TransferBook {
@@ -67,6 +70,7 @@ impl TransferBook {
             transfers: Ledger::default(),
             global_limits: Limits::default(),
             engine_limits: EngineLimits::DEFAULT,
+            engine_settings: EngineSettings::DEFAULT,
         }
     }
 
@@ -101,15 +105,15 @@ impl TransferBook {
 }
 
 impl Book<ChildProcessEngine> for TransferBook {
-    type Setup = (Limits, EngineLimits);
+    type Setup = (Limits, EngineLimits, EngineSettings);
 
-    fn setup(&self) -> (Limits, EngineLimits) {
-        (self.global_limits, self.engine_limits)
+    fn setup(&self) -> (Limits, EngineLimits, EngineSettings) {
+        (self.global_limits, self.engine_limits, self.engine_settings)
     }
 
     fn prepare(
         engine: &ChildProcessEngine,
-        (global, limits): (Limits, EngineLimits),
+        (global, limits, settings): (Limits, EngineLimits, EngineSettings),
     ) -> Result<(), ErrorCode> {
         // A new engine starts unlimited: it gets the global limit its predecessor had.
         if global != Limits::default() {
@@ -118,6 +122,10 @@ impl Book<ChildProcessEngine> for TransferBook {
         // And the profile's engine limits (#57).
         if limits != EngineLimits::DEFAULT {
             engine.set_engine_limits(limits)?;
+        }
+        // And the user's engine settings (#30).
+        if settings != EngineSettings::DEFAULT {
+            engine.set_engine_settings(settings)?;
         }
         Ok(())
     }
@@ -287,6 +295,17 @@ impl DirectTransfer for SupervisedEngine {
         self.engine()?.set_global_limits(limits)?;
         self.supervisor.update(|book, _| {
             book.global_limits = limits;
+            ((), Vec::new())
+        });
+        Ok(())
+    }
+
+    fn set_engine_settings(&mut self, settings: EngineSettings) -> Result<(), ErrorCode> {
+        settings.check()?;
+        let engine = self.engine()?;
+        engine.set_engine_settings(settings)?;
+        self.supervisor.update(|book, _| {
+            book.engine_settings = settings;
             ((), Vec::new())
         });
         Ok(())

@@ -13,7 +13,7 @@ use std::time::{Duration, Instant};
 use velocity_curl::{CurlLoop, Libcurl, LoopOptions, RateLimit};
 use velocity_test_http::{seeded_bytes, ServerOptions, TestServer};
 use velocity_transfer::download::{
-    download_with, Cadence, Control, DownloadError, DownloadOptions,
+    download_with, Cadence, Control, DiskOptions, DownloadError, DownloadOptions,
 };
 use velocity_transfer::retry::RetryPolicy;
 use velocity_transfer::scheduler::Sizes;
@@ -70,6 +70,7 @@ fn curl_loop() -> Arc<CurlLoop> {
 }
 
 const OPTIONS: DownloadOptions = DownloadOptions {
+    disk: DiskOptions::DEFAULT,
     connections: 4,
     probe_bytes: 1 << 20,
     leases: Sizes::DEFAULT,

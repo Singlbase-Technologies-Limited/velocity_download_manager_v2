@@ -22,8 +22,8 @@ pub use velocity_child::client::SpawnOptions;
 use velocity_child::serve::Server;
 use velocity_core::domain::{Capabilities, ErrorCode};
 use velocity_core::transfer::{
-    dispatch, DirectTransfer, EngineLimits, Limits, TransferCommand, TransferEvent, TransferId,
-    TransferReply, TransferSnapshot, TransferSpec,
+    dispatch, DirectTransfer, EngineLimits, EngineSettings, Limits, TransferCommand, TransferEvent,
+    TransferId, TransferReply, TransferSnapshot, TransferSpec,
 };
 
 use crate::engine::InProcessEngine;
@@ -171,6 +171,11 @@ impl ChildProcessEngine {
         self.refresh_capabilities()
     }
 
+    /// Sets how the engine retries, times out, shares connections and writes (#30).
+    pub fn set_engine_settings(&self, settings: EngineSettings) -> Result<(), ErrorCode> {
+        self.done(TransferCommand::SetEngineSettings { settings })
+    }
+
     pub fn set_connections(&self, id: TransferId, connections: u32) -> Result<u32, ErrorCode> {
         match self
             .process
@@ -275,6 +280,10 @@ impl DirectTransfer for ChildProcessEngine {
 
     fn set_engine_limits(&mut self, limits: EngineLimits) -> Result<(), ErrorCode> {
         ChildProcessEngine::set_engine_limits(self, limits)
+    }
+
+    fn set_engine_settings(&mut self, settings: EngineSettings) -> Result<(), ErrorCode> {
+        ChildProcessEngine::set_engine_settings(self, settings)
     }
 
     fn set_connections(&mut self, id: TransferId, connections: u32) -> Result<u32, ErrorCode> {

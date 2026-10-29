@@ -3,7 +3,8 @@
 //! (progress, failures, completion) through a [`FakeControl`]. Compiled for tests only.
 
 use super::{
-    DirectTransfer, EngineLimits, Limits, TransferEvent, TransferId, TransferSnapshot, TransferSpec,
+    DirectTransfer, EngineLimits, EngineSettings, Limits, TransferEvent, TransferId,
+    TransferSnapshot, TransferSpec,
 };
 use crate::domain::{
     Capabilities, DownloadStatus, EngineHealth, ErrorCode, Progress, TransferError, Verification,
@@ -24,6 +25,7 @@ struct State {
     global_limits: Limits,
     /// The limits from the last `set_engine_limits`.
     engine_limits: EngineLimits,
+    engine_settings: EngineSettings,
     /// Makes every command fail with this code, like an engine that stopped responding.
     unavailable: Option<ErrorCode>,
     /// Makes `add` refuse a transfer with this file name, as an engine refuses a name taken.
@@ -148,6 +150,10 @@ impl FakeControl {
 
     pub fn engine_limits(&self) -> EngineLimits {
         lock(&self.state).engine_limits
+    }
+
+    pub fn engine_settings(&self) -> EngineSettings {
+        lock(&self.state).engine_settings
     }
 
     /// Reports bytes arriving: the transfer is Downloading with this progress.
@@ -341,6 +347,14 @@ impl DirectTransfer for FakeTransfer {
         s.command("set_engine_limits".to_owned())?;
         limits.check()?;
         s.engine_limits = limits;
+        Ok(())
+    }
+
+    fn set_engine_settings(&mut self, settings: EngineSettings) -> Result<(), ErrorCode> {
+        let mut s = lock(&self.state);
+        s.command("set_engine_settings".to_owned())?;
+        settings.check()?;
+        s.engine_settings = settings;
         Ok(())
     }
 

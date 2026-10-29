@@ -109,6 +109,10 @@ pub fn run() {
             shell::get_shell_settings,
             shell::set_appearance,
             shell::complete_onboarding,
+            shell::get_settings,
+            shell::set_settings,
+            shell::reset_settings,
+            shell::get_torrent_network,
             shell::choose_directory,
             shell::quit_app,
         ])

@@ -9,7 +9,8 @@ use velocity_core::domain::{DownloadStatus, FailureClass};
 use velocity_curl::{CurlLoop, Libcurl, LoopOptions};
 use velocity_test_http::{seeded_bytes, FirstStatuses, Freeze, ServerOptions, TestServer};
 use velocity_transfer::download::{
-    download_with, Cadence, Control, DownloadError, DownloadOptions, DownloadReport, Mode,
+    download_with, Cadence, Control, DiskOptions, DownloadError, DownloadOptions, DownloadReport,
+    Mode,
 };
 use velocity_transfer::retry::RetryPolicy;
 use velocity_transfer::scheduler::Sizes;
@@ -61,6 +62,7 @@ const FAST: RetryPolicy = RetryPolicy {
 };
 
 const OPTIONS: DownloadOptions = DownloadOptions {
+    disk: DiskOptions::DEFAULT,
     connections: 4,
     probe_bytes: 64 * 1024,
     leases: Sizes::DEFAULT,

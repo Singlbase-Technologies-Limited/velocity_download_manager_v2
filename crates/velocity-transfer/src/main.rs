@@ -12,7 +12,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
 
 use velocity_curl::{CurlLoop, Libcurl, LoopOptions};
-use velocity_transfer::download::{download_with, Cadence, Control, DownloadOptions};
+use velocity_transfer::download::{download_with, Cadence, Control, DiskOptions, DownloadOptions};
 use velocity_transfer::engine::{MAX_CONNECTIONS, PROBE_BYTES};
 use velocity_transfer::retry::RetryPolicy;
 use velocity_transfer::scheduler::Sizes;
@@ -43,6 +43,7 @@ fn main() -> ExitCode {
 fn parse_get(args: &[String]) -> Result<(String, PathBuf, DownloadOptions), String> {
     let mut positional = Vec::new();
     let mut options = DownloadOptions {
+        disk: DiskOptions::DEFAULT,
         connections: 4,
         probe_bytes: PROBE_BYTES,
         leases: Sizes::DEFAULT,

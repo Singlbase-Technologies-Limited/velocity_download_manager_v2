@@ -45,7 +45,8 @@ use std::sync::mpsc::Receiver;
 /// [`crate::domain::Capabilities::metalink`].
 /// Version 12 (#59) added [`TransferSnapshot::retry_at_ms`].
 /// Version 13 (#28) added [`crate::domain::Capabilities::libcurl`], for diagnostics.
-pub const TRANSFER_CONTRACT_VERSION: u32 = 13;
+/// Version 14 (#30) added [`DirectTransfer::set_engine_settings`].
+pub const TRANSFER_CONTRACT_VERSION: u32 = 14;
 
 /// An engine's id for one transfer. Assigned by the engine, never reused, and never shown as the
 /// app's download id.
@@ -293,6 +294,93 @@ impl Default for EngineLimits {
     }
 }
 
+/// How the engine makes room for a file before writing it (#30; V1's `file_allocation`,
+/// ADR-0005).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum Preallocation {
+    /// Nothing: the file grows as bytes arrive. On Windows, a write far into it first zero-fills
+    /// the gap (ENGINE_INTERNALS.md, "Disk writes").
+    None,
+    /// The part file is sparse: a gap takes no space and is never zero-filled. The engine's
+    /// behaviour since #42's measurement.
+    #[default]
+    Sparse,
+    /// The whole size is reserved as soon as it is known, so the disk can't run out halfway.
+    Full,
+}
+
+/// How the engine retries, times out, shares connections and writes (#30; V1's performance and
+/// advanced settings, mapped by ADR-0005). It applies to downloads that start, or retry, after
+/// it is set; the connection budget applies at once.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct EngineSettings {
+    /// Failures in a row, with no new byte in between, before a download fails (V1's
+    /// `max_tries`).
+    pub failures_in_a_row: u32,
+    /// The longest wait before retrying a failed request (V1's `retry_wait_secs`).
+    pub max_retry_wait_secs: u32,
+    /// No byte for this long: the download shows Stalled (V1's `lowest_speed_limit_kib`, on time
+    /// rather than speed).
+    pub stalled_after_secs: u32,
+    /// No byte on a request for this long: it is reset and retried (V1's `timeout_secs`).
+    pub reset_after_secs: u32,
+    /// The longest a connection may take to open (V1's `connect_timeout_secs`).
+    pub connect_timeout_secs: u32,
+    /// How many times a failed download is started again (V1's `app_retries`).
+    pub download_retries: u32,
+    /// The most connections all downloads use together (V1's `connection_budget`).
+    pub connection_budget: u32,
+    /// How room is made for a file (V1's `file_allocation`).
+    pub preallocation: Preallocation,
+    /// MiB of received data each connection may have waiting to be written (V1's
+    /// `disk_cache_mib`, as the writer's buffer).
+    pub write_buffer_mib: u32,
+}
+
+impl EngineSettings {
+    /// The engine's values before #30 made them settings (PO decisions on #47, #48 and #49).
+    pub const DEFAULT: EngineSettings = EngineSettings {
+        failures_in_a_row: 5,
+        max_retry_wait_secs: 60,
+        stalled_after_secs: 15,
+        reset_after_secs: 30,
+        connect_timeout_secs: 30,
+        download_retries: 2,
+        connection_budget: 48,
+        preallocation: Preallocation::Sparse,
+        write_buffer_mib: 2,
+    };
+
+    /// `InvalidInput` outside the bounds (V1's where it had them): 1 to 100 failures, a wait of
+    /// 1 to 600 s, stalled after 5 to 600 s, reset after 5 to 3600 s and never before stalled, a
+    /// connect timeout of 1 to 300 s, 0 to 10 retries, a budget of 1 to 256 connections, and 1 to
+    /// 64 MiB per connection.
+    pub fn check(&self) -> Result<(), ErrorCode> {
+        let ok = (1..=100).contains(&self.failures_in_a_row)
+            && (1..=600).contains(&self.max_retry_wait_secs)
+            && (5..=600).contains(&self.stalled_after_secs)
+            && (5..=3600).contains(&self.reset_after_secs)
+            && self.reset_after_secs >= self.stalled_after_secs
+            && (1..=300).contains(&self.connect_timeout_secs)
+            && self.download_retries <= 10
+            && (1..=256).contains(&self.connection_budget)
+            && (1..=64).contains(&self.write_buffer_mib);
+        if ok {
+            Ok(())
+        } else {
+            Err(ErrorCode::InvalidInput)
+        }
+    }
+}
+
+impl Default for EngineSettings {
+    fn default() -> Self {
+        Self::DEFAULT
+    }
+}
+
 /// Everything an engine needs to start one direct transfer. The manager builds it from a
 /// validated download record; the engine still treats it as untrusted input.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -528,6 +616,10 @@ pub trait DirectTransfer: Send {
     /// the smallest piece. A lower cap applies to running transfers at once; a new smallest piece
     /// applies to transfers that start after it. `InvalidInput` for limits out of bounds.
     fn set_engine_limits(&mut self, limits: EngineLimits) -> Result<(), ErrorCode>;
+    /// Sets how the engine retries, times out, shares connections and writes (#30). It applies
+    /// to downloads that start or retry after it, and the connection budget at once.
+    /// `InvalidInput` for settings out of bounds.
+    fn set_engine_settings(&mut self, settings: EngineSettings) -> Result<(), ErrorCode>;
     /// Requests a connection count and returns the count the engine applied, which is at least 1
     /// and at most `capabilities().max_connections_per_host`.
     fn set_connections(&mut self, id: TransferId, connections: u32) -> Result<u32, ErrorCode>;
@@ -599,6 +691,9 @@ pub enum TransferCommand {
     SetEngineLimits {
         limits: EngineLimits,
     },
+    SetEngineSettings {
+        settings: EngineSettings,
+    },
     TrustHostKey {
         host: String,
         port: u16,
@@ -660,6 +755,10 @@ pub fn dispatch(
         }
         TransferCommand::SetEngineLimits { limits } => {
             engine.set_engine_limits(limits)?;
+            TransferReply::Done {}
+        }
+        TransferCommand::SetEngineSettings { settings } => {
+            engine.set_engine_settings(settings)?;
             TransferReply::Done {}
         }
         TransferCommand::TrustHostKey {
@@ -798,6 +897,32 @@ mod tests {
         ] {
             assert_eq!(bad.normalized(), Err(ErrorCode::InvalidInput), "{why}");
         }
+    }
+
+    /// #30: V1's performance and advanced settings, with their bounds.
+    #[test]
+    fn engine_settings_are_bounded() {
+        assert_eq!(EngineSettings::DEFAULT.check(), Ok(()));
+        let out = |change: fn(&mut EngineSettings)| {
+            let mut s = EngineSettings::DEFAULT;
+            change(&mut s);
+            s.check()
+        };
+        for change in [
+            (|s: &mut EngineSettings| s.failures_in_a_row = 0) as fn(&mut EngineSettings),
+            |s| s.max_retry_wait_secs = 601,
+            |s| s.stalled_after_secs = 4,
+            |s| s.reset_after_secs = 10,
+            |s| s.connect_timeout_secs = 0,
+            |s| s.download_retries = 11,
+            |s| s.connection_budget = 257,
+            |s| s.write_buffer_mib = 0,
+        ] {
+            assert_eq!(out(change), Err(ErrorCode::InvalidInput));
+        }
+        let json = serde_json::to_value(EngineSettings::DEFAULT).unwrap();
+        assert_eq!(json["preallocation"], "sparse");
+        assert_eq!(json["writeBufferMib"], 2);
     }
 
     #[test]
