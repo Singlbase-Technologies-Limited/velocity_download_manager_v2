@@ -102,6 +102,7 @@ Everything the Add dialog sends is checked again natively (`Manager::add_request
 - **A chosen folder is created only when the user agrees,** inside its nearest existing parent, one level at a time, never through a link.
 - **Fetched `.torrent` links** go through the transfer engine with its usual TLS checks, into the app's own `torrent-links` folder, at most 16 MiB and 60 seconds. What arrives must parse as a torrent. It is kept without its trackers, whose addresses can carry a private tracker's passkey; they stay in memory, as every torrent's do (PO decision on #58). When the app starts, it deletes any plain file in that folder that no download comes from, and touches nothing else there.
 - **SFTP host keys** are confirmed by the user in the window, after the download stops before logging in (below). A changed key is only explained, never offered for trust.
+- **A login given again** (`set_download_login`, #59), for a download that came back after a restart without it, is checked as the Add path checks it (`TransferSpec::check_request`): its headers, its login, and that an SSH key is for an SFTP link with a user. An invalid one is refused whole, and the download keeps waiting for it. It stays in memory, as when the download was added.
 
 ## SFTP host keys (#53)
 

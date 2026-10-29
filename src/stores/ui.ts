@@ -15,6 +15,12 @@ export interface AddPrefill {
   fromBrowser?: { referrer: string | null; fileSize: number | null; mime: string | null };
 }
 
+/** Which download needs its login again, and whether it is then resumed or retried. */
+export interface LoginRequest {
+  id: string;
+  then: 'resume' | 'retry';
+}
+
 // Presentation state only (V1's ui store); what the native side owns comes through queries and events.
 interface UiState {
   view: View;
@@ -24,12 +30,16 @@ interface UiState {
   layout: LayoutPrefs;
   /** The Add dialog, and what it opened with. */
   addDialog: { open: boolean; prefill: AddPrefill | null };
+  /** A download that came back without its login, and what to do once it is given again (#59). */
+  loginRequest: LoginRequest | null;
   setView: (view: View) => void;
   setCategoryFilter: (id: string | null) => void;
   setLayout: (patch: Partial<LayoutPrefs>) => void;
   /** Opens the Add dialog; what it opened with replaces an open one's. */
   openAdd: (prefill?: AddPrefill) => void;
   closeAdd: () => void;
+  askLogin: (request: LoginRequest) => void;
+  closeLogin: () => void;
 }
 
 export const useUiStore = create<UiState>((set) => ({
@@ -37,9 +47,12 @@ export const useUiStore = create<UiState>((set) => ({
   categoryFilter: null,
   layout: { ...DEFAULT_LAYOUT },
   addDialog: { open: false, prefill: null },
+  loginRequest: null,
   setView: (view) => { set({ view, categoryFilter: null }); },
   setCategoryFilter: (categoryFilter) => { set({ categoryFilter, view: 'all' }); },
   setLayout: (patch) => { set((s) => ({ layout: { ...s.layout, ...patch } })); },
   openAdd: (prefill) => { set({ addDialog: { open: true, prefill: prefill ?? null } }); },
   closeAdd: () => { set({ addDialog: { open: false, prefill: null } }); },
+  askLogin: (loginRequest) => { set({ loginRequest }); },
+  closeLogin: () => { set({ loginRequest: null }); },
 }));

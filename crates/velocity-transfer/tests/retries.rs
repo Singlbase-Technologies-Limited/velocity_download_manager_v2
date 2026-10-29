@@ -83,7 +83,7 @@ fn serve(options: ServerOptions) -> (TestServer, Vec<u8>) {
 fn recording() -> (Control, Arc<Mutex<Vec<DownloadStatus>>>) {
     let seen = Arc::new(Mutex::new(Vec::new()));
     let s = Arc::clone(&seen);
-    let control = Control::default().with_status(move |status| s.lock().unwrap().push(status));
+    let control = Control::default().with_status(move |status, _| s.lock().unwrap().push(status));
     (control, seen)
 }
 

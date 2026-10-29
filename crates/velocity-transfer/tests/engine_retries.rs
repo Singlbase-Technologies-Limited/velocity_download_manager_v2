@@ -5,7 +5,7 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::Receiver;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use velocity_core::domain::{DownloadStatus, FailureClass};
 use velocity_core::transfer::{
@@ -232,6 +232,89 @@ fn cancelling_while_waiting_to_start_again_removes_it() {
     );
     assert_eq!(s.counters().gets, u64::from(FAST.failures_in_a_row));
     assert!(!part_of(&dest).exists());
+}
+
+fn now_ms() -> u64 {
+    let since = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
+    u64::try_from(since.as_millis()).unwrap()
+}
+
+/// The first snapshot showing Retrying with the next attempt's time, then cancels and returns
+/// that time, when it was asked for, and the last snapshot.
+fn wait_to_retry(
+    engine: &mut InProcessEngine,
+    events: &Receiver<TransferEvent>,
+    id: TransferId,
+    is_wait: impl Fn(&TransferSnapshot) -> bool,
+) -> (u64, u64, TransferSnapshot) {
+    let waiting = snapshots_until(events, id, |s| {
+        s.status == DownloadStatus::Retrying && is_wait(s)
+    })
+    .pop()
+    .unwrap();
+    let seen_at = now_ms();
+    let retry_at = waiting
+        .retry_at_ms
+        .unwrap_or_else(|| panic!("no retry time in {waiting:?}"));
+    engine.cancel(id).expect("cancel");
+    let last = snapshots_until(events, id, finished).pop().unwrap();
+    (retry_at, seen_at, last)
+}
+
+#[test]
+fn a_download_waiting_to_start_again_reports_when() {
+    // #59: the list counts down to the restart.
+    let (s, _) = serve(ServerOptions {
+        drop_first: 1000,
+        ..ServerOptions::default()
+    });
+    let dir = Dir::new("restart-time");
+    let dest = dir.0.join("out.bin");
+    let wait = Duration::from_secs(30);
+    let mut engine = engine(RetryPolicy {
+        first_download_wait: wait,
+        ..FAST
+    });
+    let events = engine.subscribe();
+    let id = engine.add(spec(s.url("f.bin"), dest, 4)).unwrap();
+    let (retry_at, seen_at, last) = wait_to_retry(&mut engine, &events, id, |s| {
+        s.error
+            .as_ref()
+            .is_some_and(|e| e.message.contains("automatically"))
+    });
+    let wait_ms = u64::try_from(wait.as_millis()).unwrap();
+    assert!(
+        retry_at > seen_at && retry_at <= seen_at + wait_ms,
+        "retry at {retry_at}, seen at {seen_at}"
+    );
+    assert_eq!(last.status, DownloadStatus::Removed);
+    assert_eq!(last.retry_at_ms, None, "only Retrying has a retry time");
+}
+
+#[test]
+fn a_request_waiting_to_retry_reports_when() {
+    // The first request fails, and its retry waits 20 s.
+    let (s, _) = serve(ServerOptions {
+        drop_first: 1,
+        ..ServerOptions::default()
+    });
+    let dir = Dir::new("retry-time");
+    let dest = dir.0.join("out.bin");
+    let wait = Duration::from_secs(20);
+    let mut engine = engine(RetryPolicy {
+        first_wait: wait,
+        max_wait: wait,
+        ..FAST
+    });
+    let events = engine.subscribe();
+    let id = engine.add(spec(s.url("f.bin"), dest, 4)).unwrap();
+    let (retry_at, seen_at, last) = wait_to_retry(&mut engine, &events, id, |_| true);
+    let wait_ms = u64::try_from(wait.as_millis()).unwrap();
+    assert!(
+        retry_at > seen_at && retry_at <= seen_at + wait_ms,
+        "retry at {retry_at}, seen at {seen_at}"
+    );
+    assert_eq!(last.retry_at_ms, None);
 }
 
 #[test]

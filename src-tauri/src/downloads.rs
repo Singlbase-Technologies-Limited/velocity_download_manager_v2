@@ -7,7 +7,7 @@ use std::sync::Arc;
 use tauri::{AppHandle, Emitter, Manager as _, State};
 use velocity_core::database::Database;
 use velocity_core::domain::{BatchResult, DownloadsSnapshot, EngineHealth, ErrorCode};
-use velocity_core::manager::{Manager, ManagerService, MoveDirection};
+use velocity_core::manager::{Manager, ManagerService, MoveDirection, SensitiveOptions};
 use velocity_core::paths::Paths;
 use velocity_core::seeding::SeedPolicy;
 use velocity_core::torrent_engine::{MissingTorrentEngine, TorrentEngine, TorrentSettings};
@@ -158,6 +158,18 @@ pub async fn resume_all(downloads: State<'_, Downloads>) -> Result<(), ErrorCode
 #[tauri::command]
 pub async fn clear_completed(downloads: State<'_, Downloads>) -> Result<usize, ErrorCode> {
     on_manager(&downloads, Manager::clear_completed).await?
+}
+
+/// Gives a download that came back after a restart without its login, custom headers or SSH key
+/// those again (#59). The core checks them as when the download was added; the window then
+/// resumes or retries it.
+#[tauri::command]
+pub async fn set_download_login(
+    downloads: State<'_, Downloads>,
+    id: String,
+    login: SensitiveOptions,
+) -> Result<(), ErrorCode> {
+    on_manager(&downloads, move |m| m.set_login(&id, login)).await?
 }
 
 #[tauri::command]

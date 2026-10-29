@@ -4,7 +4,12 @@
 // `git -C . push origin main` or `bash -c '…'` get past them; this reads the command the way a
 // shell would. scripts/agent-guard.mjs is the PreToolUse hook that calls it.
 //
-// When in doubt, deny: a command it can't read that mentions git with push or reset is refused.
+// It also holds `gh pr create` and `gh pr edit` to .github/PULL_REQUEST_TEMPLATE.md (PO decision on #59): the
+// description must come from a file, through --body-file, and pass scripts/pr-body-lib.mjs, as must the title.
+//
+// When in doubt, deny: a command it can't read that mentions git with push or reset, or gh pr create or edit, is refused.
+
+import { checkPrBody, checkPrTitle } from './pr-body-lib.mjs';
 
 const MAX_DEPTH = 8;
 const PROTECTED_BRANCH = 'main';
@@ -259,6 +264,7 @@ const ADVICE = {
   force: 'Never force-push: push a new commit instead, or ask the PO',
   reset: '`git reset --hard` discards work: use `git restore <file>` or `git stash`, or ask the PO',
   unsure: 'Rewrite the command so it can be read (balanced quotes, no unusual wrappers), or ask the PO',
+  pr: 'Write the description from .github/PULL_REQUEST_TEMPLATE.md to a file, check it with `pnpm check:pr-body <file> --title "…"`, and pass it with --body-file and a literal path (PO decision on #59)',
 };
 
 /** Checks one shell text; returns the first refusal, or null. */
@@ -269,8 +275,8 @@ function checkText(text, shell, ctx, depth) {
     lexed = lex(text, shell);
   } catch (e) {
     if (!(e instanceof Unreadable)) throw e;
-    const mentions = /\bgit\b/i.test(text) && /\b(push|reset)\b/i.test(text);
-    return mentions ? deny(`the guard couldn't read this command (${e.message}), and it mentions git push or reset`, ADVICE.unsure) : null;
+    const mentions = (/\bgit\b/i.test(text) && /\b(push|reset)\b/i.test(text)) || /\bgh\b[\s\S]*\bpr\s+(create|edit)\b/i.test(text);
+    return mentions ? deny(`the guard couldn't read this command (${e.message}), and it mentions git push or reset, or gh pr create or edit`, ADVICE.unsure) : null;
   }
   for (const inner of lexed.nested) {
     const r = checkText(inner, shell, ctx, depth + 1);
@@ -322,7 +328,45 @@ function checkWords(input, shell, ctx, depth) {
   }
   if (exe === 'eval' || exe === 'invoke-expression' || exe === 'iex') return checkText(rest.join(' '), shell, ctx, depth + 1);
   if (exe === 'git') return checkGit(rest, ctx, depth);
+  if (exe === 'gh') return checkGh(rest, ctx);
   return null;
+}
+
+/** `gh pr create` and `gh pr edit` options that write the description some other way than a file the guard can read. */
+const PR_BODY_ELSEWHERE = new Set(['--body', '-b', '--fill', '-f', '--fill-first', '--fill-verbose', '--web', '-w', '--editor', '-e', '--template', '-T']);
+
+/** The value of option `long` or `short` in `args`, as `--x v`, `-x v` or `--x=v`; undefined when absent. */
+function optionValue(args, long, short) {
+  for (let i = 0; i < args.length; i++) {
+    if (args[i] === long || args[i] === short) return args[i + 1] ?? '';
+    if (args[i].startsWith(`${long}=`)) return args[i].slice(long.length + 1);
+  }
+  return undefined;
+}
+
+/** `gh pr create` and `gh pr edit` follow the PR template (PO decision on #59); any other gh command passes. */
+function checkGh(args, ctx) {
+  const pr = args.indexOf('pr');
+  const sub = pr >= 0 ? args[pr + 1] : undefined;
+  if (sub !== 'create' && sub !== 'edit') return null;
+  const opts = args.slice(pr + 2);
+  const elsewhere = opts.find((a) => PR_BODY_ELSEWHERE.has(a.split('=')[0]));
+  if (elsewhere) return deny(`\`gh pr ${sub}\` with ${elsewhere} writes a description the guard can't check; use --body-file`, ADVICE.pr);
+  const file = optionValue(opts, '--body-file', '-F');
+  const title = optionValue(opts, '--title', '-t');
+  if (file === undefined) {
+    if (sub === 'create') return deny('`gh pr create` needs the description from --body-file', ADVICE.pr);
+    const problems = title === undefined ? [] : checkPrTitle(title, '');
+    return problems.length ? deny(`the PR title doesn't follow the rules: ${problems.join(' ')}`, ADVICE.pr) : null;
+  }
+  if (!file || file === '-') return deny('the description must come from a file the guard can read, not standard input', ADVICE.pr);
+  const body = ctx.readFile?.(file, ctx.dir ?? []) ?? null;
+  const template = ctx.template?.(ctx.dir ?? []) ?? null;
+  if (body === null) return deny(`the guard couldn't read ${file}, so it can't check the description`, ADVICE.pr);
+  if (template === null) return deny("the guard couldn't find .github/PULL_REQUEST_TEMPLATE.md to check the description against", ADVICE.pr);
+  if (sub === 'create' && title === undefined) return deny('`gh pr create` needs --title, checked with the description', ADVICE.pr);
+  const problems = [...checkPrBody(body, template), ...(title === undefined ? [] : checkPrTitle(title, body))];
+  return problems.length ? deny(`the PR description doesn't follow .github/PULL_REQUEST_TEMPLATE.md: ${problems.join(' ')}`, ADVICE.pr) : null;
 }
 
 function checkGit(args, ctx, depth) {
@@ -440,8 +484,11 @@ function checkRefspecs(refspecs, ctx, del) {
 /**
  * @param {string} command the command the agent is about to run
  * @param {{shell: 'bash' | 'powershell', currentBranch: (dir: string[]) => string | null,
- *   alias: (name: string, dir: string[]) => string | null}} ctx
- *   `currentBranch` gets the `cd`/`-C` directories in order, relative to the session's directory.
+ *   alias: (name: string, dir: string[]) => string | null,
+ *   readFile?: (path: string, dir: string[]) => string | null, template?: (dir: string[]) => string | null}} ctx
+ *   `currentBranch` gets the `cd`/`-C` directories in order, relative to the session's directory. `readFile` reads a
+ *   PR description file and `template` the PR template, for `gh pr create` and `gh pr edit`; without them, a
+ *   description file is refused as unreadable.
  * @returns {{deny: false} | {deny: true, reason: string}}
  */
 export function checkCommand(command, ctx) {

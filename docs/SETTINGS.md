@@ -65,11 +65,12 @@ V1's `general`, `notifications` and `appearance` settings and its first-run flag
 | | `layout.sidebarCollapsed`, `layout.sidebarVisible` | off, on | — |
 | | `layout.detailsWidth` | `null`: a fifth of the window, 300 to 340 px | 280 to 600 px, for the details panel (#61) |
 | | `layout.detailsVisible` | off | — |
+| | `visibleColumns` | `name`, `size`, `progress`, `speed`, `eta`, `status`, `category`, `added` (V1's) | The download list's columns, in display order (#59). Always with `name`, each column once. The ids are V1's 13: those above and `downloaded`, `avgSpeed`, `destination`, `started` and `completed` (`ColumnId`, fixture `columns.json`) |
+| | `columnWidths` | none: each column's default width | The widths the user set by dragging, in CSS pixels by column id, 48 to 1200 px (#59) |
 | `onboarding` | `completed` | off | Set by finishing the first-run setup, which also saves its folder as `downloads.defaultDirectory` |
 
-- **Saved and read like the folder settings:** a panel width outside its bounds is refused with `INVALID_INPUT`, and a saved section that can't be read is a `DATABASE` error for the window, left as it was.
+- **Saved and read like the folder settings:** a panel or column width outside its bounds, and a column list without `name` or with a column twice, are refused with `INVALID_INPUT`. An unknown column id doesn't parse, so `set_appearance` refuses it before it reaches the core, and a saved section that can't be read is a `DATABASE` error for the window, left as it was.
 - **Read when the app starts:** `general` and `notifications` are read when the app starts. A section that can't be read is left as it was, and its defaults apply until it is fixed, so closing and notifications keep working. The Settings screen (#30) will change them while the app runs.
-- **V1's download list columns** (`visibleColumns`, `columnWidths`) belong to the list (#59), and are not in this section yet.
 
 ## What a build can do
 

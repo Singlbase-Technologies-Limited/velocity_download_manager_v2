@@ -47,7 +47,8 @@ use serde::Serialize;
 /// Version 11 (#60) added the Add dialog's commands (`add_downloads`, `get_capabilities`,
 /// `choose_torrents`, `choose_ssh_key`), their types ([`manager::AddRequest`],
 /// [`manager::AddResult`]) and the `torrents-dropped` event.
-pub const COMMAND_API_VERSION: u32 = 11;
+/// Version 12 (#59) added [`domain::DownloadRecord::retry_at_ms`].
+pub const COMMAND_API_VERSION: u32 = 12;
 
 /// Name, version and contract version of the running application.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]

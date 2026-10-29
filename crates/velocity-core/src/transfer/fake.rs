@@ -282,6 +282,7 @@ impl DirectTransfer for FakeTransfer {
             verification: None,
             file_name: spec.file_name.clone(),
             content_type: None,
+            retry_at_ms: None,
         };
         s.transfers.insert(id, Transfer { spec, snapshot });
         s.changed(id);

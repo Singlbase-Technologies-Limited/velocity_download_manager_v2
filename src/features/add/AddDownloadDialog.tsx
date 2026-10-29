@@ -17,6 +17,7 @@ import { formatBytes } from '../../lib/format';
 import { useCapabilities, useCategories } from '../../lib/queries';
 import { nameForDownload } from '../../naming';
 import { useUiStore, type AddPrefill } from '../../stores/ui';
+import { showDownload } from '../downloads/showDownload';
 import { AddOutcomeFooter, AddOutcomeView } from './AddOutcomeView';
 import { plural, sortOutcome, type Outcome } from './outcome';
 import { linkKind, linkProblem, MAX_ADD, parseChecksum, parseHeaders, splitLinks } from './addLogic';
@@ -207,6 +208,10 @@ function AddForm({ prefill, onClose }: { prefill: AddPrefill | null; onClose: ()
               onClose();
             }}
             onRetry={(over) => void run(request(over), outcome.added)}
+            onShow={(id) => {
+              showDownload(id);
+              onClose();
+            }}
           />
         ) : (
           footer

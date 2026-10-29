@@ -18,7 +18,8 @@ pub mod settings;
 mod torrents;
 
 pub use downloads::{
-    resume_from, without_login, Engine, NewDownload, Stored, StoredDownload, StoredOptions,
+    resume_from, without_login, Activity, Engine, NewDownload, Stored, StoredDownload,
+    StoredOptions,
 };
 pub use queue::QueueEntry;
 pub use torrents::{StoredTorrent, TorrentOptions, TorrentOrigin};
@@ -39,6 +40,7 @@ const MIGRATIONS: &[M<'static>] = &[
     M::up(include_str!("../../migrations/0004_verification.sql")),
     M::up(include_str!("../../migrations/0005_torrents.sql")),
     M::up(include_str!("../../migrations/0006_builtin_categories.sql")),
+    M::up(include_str!("../../migrations/0007_activity.sql")),
 ];
 
 /// The migrations this build applies.
@@ -373,7 +375,7 @@ mod tests {
     #[test]
     fn the_migrations_are_valid() {
         assert_eq!(migrations().validate(), Ok(()));
-        assert_eq!(latest_schema_version(), 6);
+        assert_eq!(latest_schema_version(), 7);
     }
 
     #[test]
@@ -491,8 +493,8 @@ mod tests {
             db.insert_download(&sample("d-0001")).unwrap();
         }
         let db = Database::open(&dir.db()).expect("upgrades");
-        // To the latest schema, 6 since #31's built-in categories.
-        assert_eq!(db.schema_version(), Ok(6));
+        // To the latest schema, 7 since #59's activity.
+        assert_eq!(db.schema_version(), Ok(7));
         assert_eq!(db.downloads().unwrap()[0].id, "d-0001");
         db.save_checkpoint("d-0001", &checkpoint(), 5).unwrap();
         assert!(dir.names().iter().any(|n| n.contains(".bak-v1-")));
@@ -508,8 +510,8 @@ mod tests {
             db.insert_download(&sample("d-0001")).unwrap();
         }
         let db = Database::open(&dir.db()).expect("upgrades");
-        // To the latest schema, 6 since #31's built-in categories.
-        assert_eq!(db.schema_version(), Ok(6));
+        // To the latest schema, 7 since #59's activity.
+        assert_eq!(db.schema_version(), Ok(7));
         assert_eq!(db.downloads().unwrap()[0].id, "d-0001");
         let entry = QueueEntry {
             id: "d-0001".to_owned(),
@@ -530,20 +532,45 @@ mod tests {
             db.insert_download(&sample("d-0001")).unwrap();
         }
         let db = Database::open(&dir.db()).expect("upgrades");
-        // To the latest schema, 6 since #31's built-in categories.
-        assert_eq!(db.schema_version(), Ok(6));
+        // To the latest schema, 7 since #59's activity.
+        assert_eq!(db.schema_version(), Ok(7));
         let before = db.downloads().unwrap().remove(0);
         assert_eq!(before.id, "d-0001");
         assert_eq!(before.verification, None);
         let mut record = DownloadRecord::sample();
         record.status = DownloadStatus::Completed;
         record.verification = Some(Verification::Verified);
-        db.update_download(&record).unwrap();
+        db.update_download(&record, &Activity::default()).unwrap();
         assert_eq!(
             db.downloads().unwrap()[0].verification,
             Some(Stored::Known(Verification::Verified))
         );
         assert!(dir.names().iter().any(|n| n.contains(".bak-v3-")));
+    }
+
+    #[test]
+    fn schema_6_is_upgraded_with_its_downloads_and_gains_their_activity() {
+        // Migration 0007 (#59), from the previous schema with a record in it.
+        let dir = Dir::new("v6-to-v7");
+        {
+            let db = open_with(&dir.db(), &Migrations::from_slice(&MIGRATIONS[..6])).unwrap();
+            assert_eq!(db.schema_version(), Ok(6));
+            db.insert_download(&sample("d-0001")).unwrap();
+        }
+        let db = Database::open(&dir.db()).expect("upgrades");
+        assert_eq!(db.schema_version(), Ok(7));
+        let before = db.downloads().unwrap().remove(0);
+        assert_eq!(before.id, "d-0001");
+        assert_eq!(before.activity, Activity::default(), "nothing was measured");
+        let activity = Activity {
+            started_at_ms: Some(1_792_600_001_000),
+            active_ms: 4_000,
+            transferred_bytes: 1_048_576,
+        };
+        db.update_download(&DownloadRecord::sample(), &activity)
+            .unwrap();
+        assert_eq!(db.downloads().unwrap()[0].activity, activity);
+        assert!(dir.names().iter().any(|n| n.contains(".bak-v6-")));
     }
 
     #[test]
@@ -556,7 +583,7 @@ mod tests {
             db.insert_download(&sample("d-0001")).unwrap();
         }
         let db = Database::open(&dir.db()).expect("upgrades");
-        assert_eq!(db.schema_version(), Ok(6));
+        assert_eq!(db.schema_version(), Ok(7));
         assert_eq!(db.downloads().unwrap()[0].id, "d-0001");
         let built_in: Vec<(String, String, bool)> = db
             .conn()
@@ -1023,8 +1050,8 @@ mod tests {
                 db.insert_download(&sample("d-0001")).unwrap();
             }
             let db = Database::open(&dir.db()).expect("upgrades");
-            // To the latest schema, 6 since #31's built-in categories.
-            assert_eq!(db.schema_version(), Ok(6));
+            // To the latest schema, 7 since #59's activity.
+            assert_eq!(db.schema_version(), Ok(7));
             assert_eq!(db.downloads().unwrap()[0].id, "d-0001");
             db.insert_torrent(&torrent_row("d-0002"), &options())
                 .unwrap();

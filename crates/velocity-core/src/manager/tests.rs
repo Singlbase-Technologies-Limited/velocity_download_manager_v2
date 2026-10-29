@@ -111,6 +111,79 @@ fn cancel_ends_the_download_as_removed() {
     assert_eq!(r.completed_at_ms, None);
 }
 
+/// The user's action wins (#59): a running status the engine sent before it stopped the
+/// transfer doesn't show a paused or cancelled download running again.
+#[test]
+fn a_late_running_status_does_not_undo_a_pause() {
+    let (mut m, control, id) = setup();
+    control.progress(TransferId(1), 1024, Some(4096));
+    m.pump(T0);
+    m.pause(&id).unwrap();
+    // The worker reports bytes once more on its way out.
+    control.emit(late_progress(&control, 2048));
+    m.pump(T0);
+    assert_eq!(status(&m, &id), DownloadStatus::Paused);
+    // The bytes are true, so they still count.
+    assert_eq!(m.get(&id).unwrap().progress.completed_bytes, 2048);
+    // Once resumed, the engine's running status shows again.
+    m.resume(&id).unwrap();
+    control.progress(TransferId(1), 3072, Some(4096));
+    m.pump(T0);
+    assert_eq!(status(&m, &id), DownloadStatus::Downloading);
+}
+
+#[test]
+fn a_late_running_status_does_not_undo_a_cancel() {
+    let (mut m, control, id) = setup();
+    control.progress(TransferId(1), 1024, Some(4096));
+    m.pump(T0);
+    m.cancel(&id).unwrap();
+    control.emit(late_progress(&control, 2048));
+    m.pump(T0);
+    assert_eq!(status(&m, &id), DownloadStatus::Removed);
+}
+
+#[test]
+fn a_retrying_download_shows_when_the_engine_tries_again() {
+    // #59: the list counts down to the engine's time; it never invents one.
+    let (mut m, control, id) = setup();
+    let retry_at = T0 + 30_000;
+    control.emit(TransferEvent::Changed {
+        snapshot: TransferSnapshot {
+            status: DownloadStatus::Retrying,
+            retry_at_ms: Some(retry_at),
+            ..control.snapshot(TransferId(1))
+        },
+    });
+    m.pump(T0);
+    let r = m.get(&id).unwrap();
+    assert_eq!(r.status, DownloadStatus::Retrying);
+    assert_eq!(r.retry_at_ms, Some(retry_at));
+    // Paused, a late Retrying keeps the pause, without a time.
+    m.pause(&id).unwrap();
+    m.pump(T0);
+    control.emit(TransferEvent::Changed {
+        snapshot: TransferSnapshot {
+            status: DownloadStatus::Retrying,
+            retry_at_ms: Some(retry_at),
+            ..control.snapshot(TransferId(1))
+        },
+    });
+    m.pump(T0);
+    let r = m.get(&id).unwrap();
+    assert_eq!(r.status, DownloadStatus::Paused);
+    assert_eq!(r.retry_at_ms, None);
+}
+
+/// A Downloading snapshot of transfer 1 with `completed_bytes`, sent late: the fake engine's own
+/// state stays as it is.
+fn late_progress(control: &FakeControl, completed_bytes: u64) -> TransferEvent {
+    let mut snapshot = control.snapshot(TransferId(1));
+    snapshot.status = DownloadStatus::Downloading;
+    snapshot.progress.completed_bytes = completed_bytes;
+    TransferEvent::Changed { snapshot }
+}
+
 #[test]
 fn a_failure_records_the_engine_neutral_error() {
     let (mut m, control, id) = setup();
@@ -216,6 +289,7 @@ fn events_for_unknown_transfers_are_ignored() {
         verification: None,
         file_name: None,
         content_type: None,
+        retry_at_ms: None,
     };
     stray.progress.completed_bytes = 999;
     control.emit(TransferEvent::Changed { snapshot: stray });
@@ -1076,6 +1150,33 @@ mod persistence {
     }
 
     #[test]
+    fn when_it_started_and_its_average_speed_are_shown_and_survive_a_restart() {
+        // #59, V1's "Started" and "Avg. speed" columns.
+        let (mut m, control, db) = with_database();
+        let id = m.add(DownloadKind::Http, spec(), T0).unwrap();
+        m.pump(T0);
+        assert_eq!(
+            m.get(&id).unwrap().started_at_ms,
+            None,
+            "queued isn't started"
+        );
+        control.progress(TransferId(1), 0, Some(4_000_000));
+        m.pump(T0 + 1_000);
+        control.progress(TransferId(1), 2_000_000, Some(4_000_000));
+        m.pump(T0 + 3_000);
+        let r = m.get(&id).unwrap();
+        assert_eq!(r.started_at_ms, Some(T0 + 1_000));
+        assert_eq!(r.average_speed_bps, Some(1_000_000));
+        m.pause(&id).unwrap();
+        m.pump(T0 + 3_000);
+
+        let again = Manager::open(Box::new(FakeTransfer::new()), Arc::clone(&db)).unwrap();
+        let r = again.get(&id).unwrap();
+        assert_eq!(r.started_at_ms, Some(T0 + 1_000));
+        assert_eq!(r.average_speed_bps, Some(1_000_000));
+    }
+
+    #[test]
     fn an_added_download_is_stored_with_what_it_needs_to_restart_and_no_secret() {
         let (mut m, _control, db) = with_database();
         let checksum = Checksum {
@@ -1393,7 +1494,7 @@ mod recovery {
     use super::*;
     use crate::database::{NewDownload, QueueEntry};
     use crate::queue::QueueSettings;
-    use crate::transfer::{Checkpoint, Credentials, Resume, CHECKPOINT_FORMAT};
+    use crate::transfer::{Checkpoint, Credentials, Header, Resume, SshKey, CHECKPOINT_FORMAT};
 
     fn named(name: &str) -> TransferSpec {
         TransferSpec {
@@ -1617,6 +1718,54 @@ mod recovery {
         assert_eq!(control.spec(TransferId(1)).credentials, Some(login));
         assert_eq!(m.get(&id).unwrap().error, None, "the note is gone");
         assert!(!m.needs_login(&id));
+    }
+
+    #[test]
+    fn a_login_given_again_is_checked_as_when_it_was_added() {
+        // #59: the window sends it, so it is untrusted, as the Add dialog's is.
+        let db = Arc::new(Database::open_in_memory().unwrap());
+        let id = {
+            let (mut m, _control) = restart(&db, 1);
+            let s = TransferSpec {
+                credentials: Some(Credentials {
+                    user_name: "user".to_owned(),
+                    password: "secret".to_owned(),
+                }),
+                ..spec()
+            };
+            m.add(DownloadKind::Http, s, T0).unwrap()
+        };
+        let (mut m, _control) = restart(&db, 1);
+        let header = |name: &str| Header {
+            name: name.to_owned(),
+            value: "v".to_owned(),
+        };
+        let refused = [
+            SensitiveOptions {
+                headers: vec![header("Host")],
+                ..SensitiveOptions::default()
+            },
+            SensitiveOptions {
+                headers: vec![header("Bad\r\nName")],
+                ..SensitiveOptions::default()
+            },
+            // A key logs in to SFTP only; this is an https download.
+            SensitiveOptions {
+                ssh_key: Some(SshKey {
+                    path: std::env::temp_dir().join("id_ed25519"),
+                    passphrase: None,
+                }),
+                credentials: Some(Credentials {
+                    user_name: "user".to_owned(),
+                    password: String::new(),
+                }),
+                ..SensitiveOptions::default()
+            },
+        ];
+        for options in refused {
+            assert!(m.set_login(&id, options).is_err());
+            assert!(m.needs_login(&id), "it still waits for a valid login");
+        }
     }
 
     #[test]
@@ -2112,6 +2261,47 @@ mod engine_loss {
         let r = m.get(&id).unwrap();
         assert_eq!(r.status, DownloadStatus::Downloading);
         assert_eq!(r.error, None);
+    }
+
+    #[test]
+    fn the_time_without_an_engine_does_not_lower_the_average_speed() {
+        // #59: a download the engine lost wasn't running until the engine reports it again.
+        let (mut m, control, id) = setup();
+        control.progress(TransferId(1), 0, Some(10_000_000));
+        m.pump(T0 + 1_000);
+        control.progress(TransferId(1), 1_000_000, Some(10_000_000));
+        m.pump(T0 + 2_000);
+        control.fail(TransferId(1), lost());
+        control.set_unavailable(Some(ErrorCode::EngineUnavailable));
+        m.pump(T0 + 3_000);
+        control.set_unavailable(None);
+        m.pump(T0 + 60_000);
+        control.progress(TransferId(2), 1_000_000, Some(10_000_000));
+        m.pump(T0 + 61_000);
+        control.progress(TransferId(2), 2_000_000, Some(10_000_000));
+        m.pump(T0 + 62_000);
+        assert_eq!(m.get(&id).unwrap().average_speed_bps, Some(1_000_000));
+    }
+
+    #[test]
+    fn a_retrying_download_the_engine_lost_waits_without_a_retry_time() {
+        // #59: the engine that would have tried again is gone, so there's nothing to count to.
+        let (mut m, control, id) = setup();
+        control.emit(TransferEvent::Changed {
+            snapshot: TransferSnapshot {
+                status: DownloadStatus::Retrying,
+                retry_at_ms: Some(T0 + 30_000),
+                ..control.snapshot(TransferId(1))
+            },
+        });
+        m.pump(T0 + 1);
+        control.fail(TransferId(1), lost());
+        control.set_unavailable(Some(ErrorCode::EngineUnavailable));
+        m.pump(T0 + 2);
+        let r = m.get(&id).unwrap();
+        assert_eq!(r.status, DownloadStatus::Queued);
+        assert_eq!(r.retry_at_ms, None);
+        assert_eq!(m.snapshot().downloads[0].retry_at_ms, None);
     }
 
     #[test]

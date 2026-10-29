@@ -1,5 +1,6 @@
 {
   "appearance": {
+    "columnWidths": {},
     "density": "comfortable",
     "layout": {
       "detailsVisible": true,
@@ -8,7 +9,17 @@
       "sidebarVisible": true,
       "sidebarWidth": 240
     },
-    "theme": "dark"
+    "theme": "dark",
+    "visibleColumns": [
+      "name",
+      "size",
+      "progress",
+      "speed",
+      "eta",
+      "status",
+      "category",
+      "added"
+    ]
   },
   "defaultDirectory": "/home/user/Downloads",
   "onboardingCompleted": true

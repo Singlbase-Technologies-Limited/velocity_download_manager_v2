@@ -95,6 +95,7 @@ pnpm check:pr                  # L3: the checks this branch's changes need
 pnpm check:full                # L4 locally: L1 + production web build + Rust release build
 pnpm check:links               # relative links and anchors in all Markdown files
 pnpm check:guidance            # AGENTS.md, CLAUDE.md, rules and skills (docs/AGENT_GUIDANCE.md)
+pnpm check:pr-body <file> --title "…"  # a PR description and title against the PR template
 pnpm native:build              # build libcurl and its libraries from verified sources (docs/BUILDING_NATIVE.md)
 ```
 

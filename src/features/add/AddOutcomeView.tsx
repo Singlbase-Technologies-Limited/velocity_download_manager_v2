@@ -88,8 +88,32 @@ export function AddOutcomeView({ outcome }: { outcome: Outcome }) {
   );
 }
 
-/** The choices left: rename, add anyway, or skip; or only Done. */
+/** The footer once something wasn't simply added: Show download for one already in the list, then the choices left. */
 export function AddOutcomeFooter({
+  outcome,
+  submitting,
+  onClose,
+  onRetry,
+  onShow,
+}: {
+  outcome: Outcome;
+  submitting: boolean;
+  onClose: () => void;
+  onRetry: (over: Partial<AddRequest>) => void;
+  /** Shows a download already in the list, and closes the dialog (#59). */
+  onShow: (id: string) => void;
+}) {
+  const listed = outcome.duplicates.find((d) => d.duplicate.inList)?.duplicate.existingId;
+  return (
+    <>
+      {listed ? <Button onClick={() => { onShow(listed); }}>Show download</Button> : null}
+      <OutcomeChoices outcome={outcome} submitting={submitting} onClose={onClose} onRetry={onRetry} />
+    </>
+  );
+}
+
+/** The choices left: rename, add anyway, or skip; or only Done. */
+function OutcomeChoices({
   outcome,
   submitting,
   onClose,

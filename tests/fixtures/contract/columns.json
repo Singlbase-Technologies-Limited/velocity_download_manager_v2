@@ -1,0 +1,29 @@
+{
+  "all": [
+    "name",
+    "size",
+    "downloaded",
+    "progress",
+    "speed",
+    "avgSpeed",
+    "eta",
+    "status",
+    "category",
+    "destination",
+    "added",
+    "started",
+    "completed"
+  ],
+  "default": [
+    "name",
+    "size",
+    "progress",
+    "speed",
+    "eta",
+    "status",
+    "category",
+    "added"
+  ],
+  "maxWidth": 1200,
+  "minWidth": 48
+}

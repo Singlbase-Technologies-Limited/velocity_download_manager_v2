@@ -10,7 +10,7 @@ They're defined once in Rust, in `crates/velocity-core/src/domain.rs` (plus `App
 |---|---|---|
 | `DownloadStatus` | Where a download is: `queued`, `connecting`, `downloading`, `paused`, `verifying`, `retrying`, `stalled`, `completed`, `failed`, `removed`, `fetchingMetadata`, `choosingFiles`, `seeding`, `unknown` | V1's fourteen values. **A new status needs an ADR**, so the UI stays consistent. `completed`, `failed` and `removed` are terminal |
 | `DownloadKind` | `http`, `ftp`, `sftp`, `metalink`, `torrent`, `magnet` | — |
-| `DownloadRecord` | One download as the UI sees it: a stable app `id`, kind, source URL (credentials removed), file name, folder, category, status, progress, error, `verification`, timestamps (milliseconds since the Unix epoch) | Never carries an engine's own id |
+| `DownloadRecord` | One download as the UI sees it: a stable app `id`, kind, source URL (credentials removed), file name, folder, category, status, progress, error, `verification`, timestamps (milliseconds since the Unix epoch), `retryAtMs`: while `retrying`, when the engine tries again, `startedAtMs`: the first time the engine reported it running, and `averageSpeedBps`: the bytes per second it received while it ran, `null` until it ran for a second | Never carries an engine's own id. Since contract version 12 (#59): `retryAtMs` comes only from the engine, is `null` in every other status, and isn't saved; `startedAtMs` and `averageSpeedBps` are the manager's, and survive a restart ([DATA_AND_MIGRATIONS.md](DATA_AND_MIGRATIONS.md#schema)). Time waiting, paused, or before the engine's first report doesn't count, nor do bytes a download resumed with |
 | `Verification` | What was proven about a completed download's bytes: `verified` (a checksum or trusted piece hashes matched), `sizeVerified` (complete, with no hash checked) or `notVerified` (resumed without a strong validator, [ADR-0010](decisions/0010-resume-without-validator.md)). The fixture `verifications.json` lists them | `null` until the download completes. Show "Verified" only for `verified`. Added in contract version 3 (#46) |
 | `Progress` | Completed and total bytes (`totalBytes` is `null` while unknown), download and upload speeds in bytes per second, the connections in use now, and `connectionDetail` | — |
 | `ConnectionDetail` | A direct download's connections: `requested`, `allowed` (at least 1, never above `requested`) and `limitedBy`, what holds `allowed` below `requested`: `perHostCap`, `sharedBudget`, `serverThrottling`, `rampingUp` (adaptive connections are still being added), `noGain` (more connections stopped making it faster) or `fileSize`, or `null` (#47). The fixture `connection-limits.json` lists them | `null` for torrents and while no engine reports it. Added in contract version 2 |
@@ -24,8 +24,9 @@ They're defined once in Rust, in `crates/velocity-core/src/domain.rs` (plus `App
 | `DestinationCheck` | What adding a download would do (#31): `directory`, `directoryExists`, `automaticDirectory`, `categoryId`, `fileName` (`null` when the server will name it), `fileExists`, `partialDownloadExists` (V2's or V1's) and `suggestedName` (the first free name when it is taken) | Since contract version 9. Free disk space isn't reported yet |
 | `OnConflict` | What adding does when the name is taken (#31): `ask` or `rename`. The fixture `on-conflict.json` lists them | Never replace (PO decision on #31). Used by `add_downloads` |
 | `AddRequest` | What the Add dialog asks for (#60): `links` (direct and magnet links, and links to `.torrent` files), `torrentFiles` (absolute paths), `directory`, `fileName` (one direct link only), `categoryId` (each `null` for automatic), `createDirectory`, `onConflict`, `allowDuplicate` ("Add anyway"), `startPaused`, `connections` (`null` for the performance profile's), `speedLimitKib` (0 for none), `headers`, `referrer`, `credentials` (`{ userName, password }`), `sshKey` (`{ path, passphrase }`, for `sftp://` links), `checksum` (`{ algorithm, hex }`), `requireEncryption` (for `ftp://` links) and `chooseFiles` (torrents wait in Choosing files) | Since contract version 11. The fixture `add-request.json` sets every field. The login, headers and passphrase stay in memory |
+| `DownloadLogin` | What `set_download_login` gives a download again (#59): `credentials` (`{ userName, password }` or `null`), `sshKey` (`{ path, passphrase }` or `null`) and `headers`. The fixture `download-login.json` sets every part | Since contract version 12. Kept in memory only, never saved, and redacted in diagnostics |
 | `AddResult` | `{ source, outcome }` for each link and `.torrent` file, in the request's order. `outcome.kind` is `added` (`id`), `conflict` (`check`, a `DestinationCheck`), `duplicate` (`duplicate`: `existingId`, `name`, `status`, `inList`, `canAddAnyway`), `failed` (`code`) or `notFetched` (`error`, a `TransferError`: a `.torrent` link couldn't be fetched) | Since contract version 11. The fixture `add-results.json` has one of each |
-| `ShellSettings` | What the window starts with (#29): `appearance` (`theme`, `density` and `layout`), `onboardingCompleted`, and `defaultDirectory`, the folder downloads go to now (`null` when the system names none). The fixtures `themes.json` and `densities.json` list the themes and densities | Since contract version 10. The settings are in [SETTINGS.md](SETTINGS.md#the-window). `set_appearance` takes and returns an `AppearanceSettings` |
+| `ShellSettings` | What the window starts with (#29): `appearance` (`theme`, `density`, `layout`, and the download list's `visibleColumns` and `columnWidths`), `onboardingCompleted`, and `defaultDirectory`, the folder downloads go to now (`null` when the system names none). The fixtures `themes.json` and `densities.json` list the themes and densities, and `columns.json` the column ids, the default columns and the width bounds | Since contract version 10; the columns since version 12 (#59). The settings are in [SETTINGS.md](SETTINGS.md#the-window). `set_appearance` takes and returns an `AppearanceSettings` |
 | `BatchResult` | What a command over several downloads did: `done` (ids), `failed` (`{ id, code }`), and `kept` (`{ path, reason, code }`, files a removal with files left in place). `reason` is `notPlain`, `tooLarge`, `behindLink`, `notEmpty` or `failed`; `code` is set only for `failed` | The fixture `kept-reasons.json` lists the reasons |
 
 **Conventions:**
@@ -49,6 +50,7 @@ The commands of [`src-tauri/src/downloads.rs`](../src-tauri/src/downloads.rs) (#
 | `retry_failed`, `pause_all`, `resume_all` | — | nothing |
 | `clear_completed` | — | how many were cleared |
 | `move_download` | `id`, `direction` (`top`, `up`, `down`, `bottom`) | nothing |
+| `set_download_login` | `id`, `login` (a `DownloadLogin`) | nothing; `INVALID_STATE` for a download that doesn't need its login, and the Add path's codes for an invalid one. The window then resumes or retries it (#59) |
 | `set_download_connections` | `id`, `connections` | the connections that apply |
 | `set_download_speed_limit` | `id`, `kib` (KiB/s; 0 for no limit, otherwise at least 1) | nothing |
 | `restart_engine` | — | `EngineHealth` |
@@ -57,7 +59,7 @@ The commands of [`src-tauri/src/downloads.rs`](../src-tauri/src/downloads.rs) (#
 | `set_torrent_seeding` | `id`, `seeding` (a seeding policy; `{ "mode": "never" }` stops seeding) | nothing |
 | `restart_torrent_helper` | — | `EngineHealth` |
 
-Adding downloads is #60's, and giving a login back to a download that needs it comes with its dialog (#59, #60).
+Adding downloads is #60's. A download in the snapshot's `needsLogin` came back after a restart without its login, custom headers or SSH key, which are never saved; `set_download_login` gives them again, checked as when it was added, and refused whole if one isn't valid (PO decision on #59).
 
 ## The category commands
 
@@ -79,7 +81,7 @@ The commands of [`src-tauri/src/shell.rs`](../src-tauri/src/shell.rs) (#29). A c
 | Command | Arguments | Returns |
 |---|---|---|
 | `get_shell_settings` | — | `ShellSettings`; `DATABASE` when a section can't be read |
-| `set_appearance` | `appearance` | the `AppearanceSettings` saved; `INVALID_INPUT` for a panel width outside its bounds |
+| `set_appearance` | `appearance` | the `AppearanceSettings` saved; `INVALID_INPUT` for a panel or column width outside its bounds, or a column list without `name` or with a column twice |
 | `complete_onboarding` | `directory`: an existing folder, not a link | `ShellSettings`; `INVALID_PATH`, or `DESTINATION_MISSING` when it doesn't exist |
 | `choose_directory` | `initial` (`null`, or a folder to start in) | the folder chosen with the system's chooser, or `null` when the user cancels |
 | `quit_app` | — | nothing: the app quits. The window calls it only after the user confirms |

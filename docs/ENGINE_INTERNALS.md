@@ -364,7 +364,7 @@ All of them are starting values to tune by measurement, not requirements (PO dec
 
 ### Statuses
 
-`Control::with_status` reports Retrying while a download waits, Stalled while no byte comes, and Downloading when bytes come again, each change once. The engine puts them in the snapshot. An engine that hangs without exiting is the supervisor's ([ENGINE_PROTOCOL.md](ENGINE_PROTOCOL.md#supervisor)).
+`Control::with_status` reports Retrying while a download waits, with when it tries again (#59), Stalled while no byte comes, and Downloading when bytes come again, each change once. With several connections, Retrying shows only when every connection waits, and its time is the first to try again. A restart of the whole download reports its own time, never the last request's. The engine puts them in the snapshot. An engine that hangs without exiting is the supervisor's ([ENGINE_PROTOCOL.md](ENGINE_PROTOCOL.md#supervisor)).
 
 ## Speed limits and back-pressure (#49)
 

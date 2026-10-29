@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import { checkCommand } from './agent-guard-lib.mjs';
 
@@ -23,7 +24,7 @@ describe('checkCommand allows ordinary work', () => {
     'git log origin/main..HEAD',
     'echo "git push origin main"',
     "grep -n 'git reset --hard' AGENTS.md",
-    'GH_TOKEN="$(gh auth token -u velocity-claude-agent)" gh pr create --base main --title x',
+    'GH_TOKEN="$(gh auth token -u velocity-claude-agent)" gh pr list --state open',
     "cat > notes.md <<'EOF'\ngit push origin main\ngit reset --hard\nEOF\nwc -l notes.md",
     'node scripts/check-pr.mjs --base main',
   ])('bash: %s', (command) => {
@@ -167,5 +168,54 @@ describe('checkCommand explains each refusal', () => {
     expect(r.reason).toMatch(/agent-guard/);
     expect(r.reason).toMatch(/pull request/);
     expect(r.reason).toContain('git -C . push origin main');
+  });
+});
+
+describe('checkCommand holds PR descriptions to the template (PO decision on #59)', () => {
+  const template = readFileSync(new URL('../.github/PULL_REQUEST_TEMPLATE.md', import.meta.url), 'utf8');
+  const valid = readFileSync(new URL('./fixtures/pr-body-valid.md', import.meta.url), 'utf8');
+  const files = { 'pr.md': valid, 'bad.md': valid.replace('**Not included:**', 'Nothing else.') };
+  const withFiles = { ...onFeature, readFile: (path) => files[path] ?? null, template: () => template };
+  const gh = (command) => checkCommand(command, { shell: 'bash', ...withFiles });
+  const title = "--title 'feat(engine): add bounded range probe (#41)'";
+
+  it.each([
+    `gh pr create --base main ${title} --body-file pr.md`,
+    `GH_TOKEN="$(gh auth token -u velocity-claude-agent)" gh pr create ${title} -F pr.md`,
+    `gh pr edit 191 ${title} --body-file=pr.md`,
+    'gh pr edit 191 --add-label docs',
+    'gh pr view 191 --json body',
+    'gh pr list',
+  ])('allows %s', (command) => {
+    expect(gh(command)).toEqual({ deny: false });
+  });
+
+  it.each([
+    [`gh pr create ${title}`, /--body-file/],
+    [`gh pr create ${title} --body 'Closes #41.'`, /--body-file/],
+    [`gh pr edit 191 -b 'Closes #41.'`, /--body-file/],
+    [`gh pr create ${title} --fill`, /--body-file/],
+    [`gh pr create ${title} --web`, /--body-file/],
+    [`gh pr create ${title} --body-file -`, /a file the guard can read/],
+    [`gh pr create ${title} --body-file missing.md`, /couldn't read missing\.md/],
+    [`gh pr create --body-file pr.md`, /--title/],
+    [`gh pr create ${title} --body-file bad.md`, /Not included/],
+    [`gh pr create --title 'Add the probe' --body-file pr.md`, /Conventional Commit/],
+    [`gh pr edit 191 --title 'feat: probe (#42)' --body-file pr.md`, /\(#41\)/],
+    [`gh pr edit 191 --title 'Add the probe'`, /Conventional Commit/],
+    [`bash -c "gh pr create ${title}"`, /--body-file/],
+  ])('refuses %s', (command, why) => {
+    const r = gh(command);
+    expect(r.deny).toBe(true);
+    expect(r.reason).toMatch(why);
+    expect(r.reason).toMatch(/PULL_REQUEST_TEMPLATE\.md/);
+  });
+
+  it('refuses in PowerShell too', () => {
+    expect(checkCommand(`gh pr create ${title}`, { shell: 'powershell', ...withFiles }).deny).toBe(true);
+  });
+
+  it('refuses an unreadable command that mentions gh pr create', () => {
+    expect(gh('gh pr create --title "oops').deny).toBe(true);
   });
 });

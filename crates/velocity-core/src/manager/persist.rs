@@ -28,7 +28,9 @@ impl Manager {
                 continue;
             };
             let record = &download.record;
-            let mut result = self.database.update_download(record);
+            let mut result = self
+                .database
+                .update_download(record, &download.activity.totals);
             if matches!(
                 record.status,
                 DownloadStatus::Completed | DownloadStatus::Removed

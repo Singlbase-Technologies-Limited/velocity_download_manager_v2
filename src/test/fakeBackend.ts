@@ -5,9 +5,11 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import {
   COMMAND_API_VERSION,
+  DEFAULT_COLUMNS,
   type AddRequest,
   type AddResult,
   type AppInfo,
+  type BatchResult,
   type Capabilities,
   type Category,
   type DestinationCheck,
@@ -35,6 +37,10 @@ export interface FakeState {
   destination: (args: { url: string; directory: string | null; fileName: string | null; categoryId: string | null }) => DestinationCheck;
   /** What `add_downloads` answers; by default, every link and file is added. */
   addResults: (request: AddRequest) => AddResult[];
+  /** What a command over several downloads answers; by default, each id is done. */
+  batch: (cmd: string, ids: string[]) => BatchResult;
+  /** Commands that wait for this promise before they answer, to see the window while one is sent. */
+  hold: Partial<Record<string, Promise<void>>>;
   /** Commands that fail, with the code they fail with. */
   failures: Partial<Record<string, ErrorCode>>;
   calls: { cmd: string; args: Record<string, unknown> }[];
@@ -47,6 +53,8 @@ export function firstRun(): ShellSettings {
       theme: 'system',
       density: 'compact',
       layout: { sidebarWidth: null, sidebarCollapsed: false, sidebarVisible: true, detailsWidth: null, detailsVisible: false },
+      visibleColumns: [...DEFAULT_COLUMNS],
+      columnWidths: {},
     },
     onboardingCompleted: false,
     defaultDirectory: '/home/user/Downloads',
@@ -84,15 +92,18 @@ export function installFakeBackend(over: Partial<FakeState> = {}): FakeState {
     }),
     addResults: (request) =>
       [...request.links, ...request.torrentFiles].map((source, i) => ({ source, outcome: { kind: 'added', id: `d-${String(100 + i)}` } })),
+    batch: (_cmd, ids) => ({ done: ids, failed: [], kept: [] }),
+    hold: {},
     failures: {},
     calls: [],
     ...over,
   };
   let next = 0;
   mockIPC(
-    (cmd, payload) => {
+    async (cmd, payload) => {
       const args = (payload ?? {}) as Record<string, unknown>;
       if (!cmd.startsWith('plugin:')) state.calls.push({ cmd, args });
+      await state.hold[cmd];
       const failure = state.failures[cmd];
       // Tauri rejects a failed command with its serialised error: the code, a string.
       // eslint-disable-next-line @typescript-eslint/only-throw-error
@@ -142,8 +153,21 @@ export function installFakeBackend(over: Partial<FakeState> = {}): FakeState {
           return state.chosenKey;
         case 'trust_host_key':
           return null;
+        case 'pause_downloads':
+        case 'resume_downloads':
+        case 'cancel_downloads':
         case 'retry_downloads':
-          return { done: args.ids, failed: [], kept: [] };
+        case 'remove_downloads':
+          return state.batch(cmd, args.ids as string[]);
+        case 'retry_failed':
+        case 'pause_all':
+        case 'resume_all':
+        case 'move_download':
+        case 'set_torrent_seeding':
+        case 'set_download_login':
+          return null;
+        case 'clear_completed':
+          return 0;
         default:
           throw new Error(`the fake backend has no command ${cmd}`);
       }

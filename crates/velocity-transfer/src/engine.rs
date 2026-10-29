@@ -18,7 +18,7 @@ use std::path::PathBuf;
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::thread;
-use std::time::Instant;
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use velocity_core::domain::{
     Capabilities, ConnectionDetail, ConnectionLimit, DownloadKind, DownloadStatus, ErrorCode,
@@ -568,6 +568,7 @@ impl DirectTransfer for InProcessEngine {
             verification: None,
             file_name: spec.file_name.clone(),
             content_type: None,
+            retry_at_ms: None,
         };
         state.transfers.insert(
             id,
@@ -860,6 +861,8 @@ fn run(shared: &Shared, id: TransferId, job: &Job, resume: Option<&Resume>, cont
         );
         update(shared, id, |s| {
             s.status = DownloadStatus::Retrying;
+            // The restart's own time, never the last request's wait, which is over.
+            s.retry_at_ms = Some(epoch_ms(SystemTime::now() + wait));
             s.error = Some(waiting);
             s.progress.download_speed_bps = 0;
         });
@@ -947,16 +950,18 @@ fn discard_part(destination: &std::path::Path) -> Result<(), DownloadError> {
     }
 }
 
-/// Turns the downloader's status changes into snapshots: Retrying and Stalled carry no speed, and
-/// Downloading again clears the error of a wait that is over.
+/// Turns the downloader's status changes into snapshots: Retrying and Stalled carry no speed,
+/// Retrying carries when it tries again (#59), and Downloading again clears the error of a wait
+/// that is over.
 fn status_reporter(
     shared: &Arc<Shared>,
     id: TransferId,
-) -> impl Fn(DownloadStatus) + Send + Sync + 'static {
+) -> impl Fn(DownloadStatus, Option<SystemTime>) + Send + Sync + 'static {
     let shared = Arc::clone(shared);
-    move |status| {
+    move |status, retry_at| {
         update(&shared, id, |s| {
             s.status = status;
+            s.retry_at_ms = retry_at.map(epoch_ms);
             if status == DownloadStatus::Downloading {
                 s.error = None;
             } else {
@@ -966,11 +971,25 @@ fn status_reporter(
     }
 }
 
+/// Milliseconds since the Unix epoch, the contract's time (0 for a clock set before it).
+fn epoch_ms(at: SystemTime) -> u64 {
+    at.duration_since(UNIX_EPOCH)
+        .map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))
+}
+
+/// Only Retrying has a retry time.
+fn changed_status(snapshot: &mut TransferSnapshot, change: impl FnOnce(&mut TransferSnapshot)) {
+    change(snapshot);
+    if snapshot.status != DownloadStatus::Retrying {
+        snapshot.retry_at_ms = None;
+    }
+}
+
 /// Applies `change` to a transfer's snapshot and announces it, unless the transfer was removed.
 fn update(shared: &Shared, id: TransferId, change: impl FnOnce(&mut TransferSnapshot)) {
     let mut state = lock(&shared.state);
     if let Some(entry) = state.transfers.get_mut(&id) {
-        change(&mut entry.snapshot);
+        changed_status(&mut entry.snapshot, change);
         state.changed(id);
     }
 }
@@ -979,7 +998,7 @@ fn update(shared: &Shared, id: TransferId, change: impl FnOnce(&mut TransferSnap
 fn ended(shared: &Shared, id: TransferId, change: impl FnOnce(&mut TransferSnapshot)) {
     let mut state = lock(&shared.state);
     if let Some(entry) = state.transfers.get_mut(&id) {
-        change(&mut entry.snapshot);
+        changed_status(&mut entry.snapshot, change);
         entry.running = false;
         entry.snapshot.progress.connection_detail = None;
         if entry.snapshot.status != DownloadStatus::Paused {

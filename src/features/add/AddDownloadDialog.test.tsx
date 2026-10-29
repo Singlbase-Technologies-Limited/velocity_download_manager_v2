@@ -347,6 +347,31 @@ describe('duplicates', () => {
     expect(within(dialog).queryByRole('button', { name: 'Add anyway' })).toBeNull();
     expect(within(dialog).getByRole('button', { name: 'Done' })).toBeTruthy();
   });
+
+  it('shows the download already in the list (#59)', async () => {
+    const user = userEvent.setup();
+    useUiStore.setState({ view: 'completed' });
+    useDownloadsStore.setState({ search: 'something else' });
+    installFakeBackend({
+      snapshot: { ...emptySnapshot(), downloads: [record({ id: 'd-0001', fileName: 'album', status: 'downloading' }), record({ id: 'd-0002', fileName: 'other' })] },
+      addResults: (request) =>
+        request.links.map((source) => ({
+          source,
+          outcome: { kind: 'duplicate', duplicate: { existingId: 'd-0001', name: 'album', status: 'downloading', inList: true, canAddAnyway: false } },
+        })),
+    });
+    renderApp();
+    const dialog = await openDialog(user);
+    await user.type(within(dialog).getByRole('textbox', { name: 'Links' }), 'magnet:?xt=urn:btih:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa');
+    await user.click(within(dialog).getByRole('button', { name: 'Start download' }));
+    await user.click(await within(dialog).findByRole('button', { name: 'Show download' }));
+    await waitFor(() => { expect(screen.queryByRole('dialog')).toBeNull(); });
+    // The whole list, unfiltered, with that download selected.
+    const grid = await screen.findByRole('grid', { name: 'Downloads' });
+    const row = (await within(grid).findByText('album')).closest('[role="row"]');
+    expect(row?.getAttribute('aria-selected')).toBe('true');
+    expect(within(grid).getByText('other')).toBeTruthy();
+  });
 });
 
 describe('torrents', () => {

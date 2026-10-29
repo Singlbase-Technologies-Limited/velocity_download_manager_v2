@@ -10,14 +10,20 @@ class ResizeObserverStub {
   disconnect() {}
 }
 if (!('ResizeObserver' in globalThis)) globalThis.ResizeObserver = ResizeObserverStub;
-const stub = (name: 'scrollIntoView' | 'hasPointerCapture' | 'releasePointerCapture', value: () => unknown) => {
+const stub = (name: 'scrollIntoView' | 'hasPointerCapture' | 'setPointerCapture' | 'releasePointerCapture', value: () => unknown) => {
   if (!(name in Element.prototype)) Object.defineProperty(Element.prototype, name, { configurable: true, value });
 };
 stub('scrollIntoView', () => undefined);
 stub('hasPointerCapture', () => false);
+stub('setPointerCapture', () => undefined);
 stub('releasePointerCapture', () => undefined);
 
 afterEach(() => {
   cleanup();
   clearMocks();
 });
+
+// jsdom does no layout; elements get a plausible size so the virtualised download list draws its rows (V1's setup).
+for (const [name, px] of [['offsetHeight', 800], ['offsetWidth', 1200], ['clientHeight', 800], ['clientWidth', 1200]] as const) {
+  Object.defineProperty(HTMLElement.prototype, name, { configurable: true, get: () => px });
+}

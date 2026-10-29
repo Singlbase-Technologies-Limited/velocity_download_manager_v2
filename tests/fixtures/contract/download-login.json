@@ -1,0 +1,16 @@
+{
+  "credentials": {
+    "password": "not-a-real-password",
+    "userName": "user"
+  },
+  "headers": [
+    {
+      "name": "X-Example",
+      "value": "example"
+    }
+  ],
+  "sshKey": {
+    "passphrase": null,
+    "path": "/home/user/.ssh/id_ed25519"
+  }
+}

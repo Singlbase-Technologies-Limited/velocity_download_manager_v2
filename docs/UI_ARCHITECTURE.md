@@ -7,12 +7,12 @@ How the window (`src/`) is built: where its state lives, how it talks to the nat
 | Folder | What it holds |
 |---|---|
 | `src/app/` | The window as a whole. `App` handles starting up, `Shell` the window once it is set up, plus `Sidebar`, `StatusBar`, the theme hook and the error screen |
-| `src/features/` | One folder for each screen: `onboarding/` (the first-run setup), `categories/` (the Categories screen and its editor), `add/` (the Add download dialog and the SFTP host-key question, #60), and `downloads/` (where the list goes, #59) |
-| `src/components/` | Shared pieces, one per file: `Button`, `Dialog`, `ConfirmDialog` and `confirmAction`, `Field`, `Input`, `Textarea`, `Select`, `Checkbox` (the form controls share `fieldStyles.ts`), `Splitter`, `EmptyState`, `Spinner`, `Badge`, `BrandIcon` and `CategoryGlyph` |
+| `src/features/` | One folder for each screen: `onboarding/` (the first-run setup), `categories/` (the Categories screen and its editor), `add/` (the Add download dialog and the SFTP host-key question, #60), and `downloads/` (the download list, its menus and the login dialog, #59) |
+| `src/components/` | Shared pieces, one per file: `Button`, `Dialog`, `ConfirmDialog` and `confirmAction`, `Field`, `Input`, `Textarea`, `Select`, `Checkbox` (the form controls share `fieldStyles.ts`), `Splitter`, `EmptyState`, `Spinner`, `Badge` (with a status tone), `ProgressBar`, `Menu` (`ContextMenu` and `DropdownMenu`), `BrandIcon` and `CategoryGlyph` |
 | `src/layout/` | The panel rules (`layoutLogic.ts`, V1's), and saving the layout (`useLayout.ts`) |
 | `src/lib/` | The bridge to Rust (`api.ts`, `events.ts`, `errors.ts`), the queries (`queries.ts`), and `format.ts` and `cn.ts` |
-| `src/stores/` | Presentation state (`ui.ts`), and the latest snapshot of the downloads (`downloads.ts`) |
-| `src/downloads/` | Rules about downloads that more than one part uses, such as the counts for each list (`views.ts`) |
+| `src/stores/` | Presentation state (`ui.ts`), and the latest snapshot of the downloads with the list's selection, search and sort (`downloads.ts`) |
+| `src/downloads/` | Rules about downloads that more than one part uses: the counts for each list (`views.ts`), and searching, sorting, the actions each status allows and the status labels (`list.ts`) |
 | `src/contract.ts` | The strict schemas for everything the native side sends ([CONTRACTS.md](CONTRACTS.md)) |
 
 ## Who owns which state
@@ -56,7 +56,7 @@ How the window (`src/`) is built: where its state lives, how it talks to the nat
   - `useTheme` puts the `dark` class on `<html>` for `dark`, or for `system` while the system is dark, and follows the system as it changes.
   - The colours are V1's design tokens, the PO's brand colours, in `src/index.css`. Tailwind reads them through `@theme`.
 - **The views:**
-  - The six lists show their counts in the navigation. The list itself is #59's, and says so.
+  - The six lists show their counts in the navigation, and the download list below.
   - History and Settings come with #32 and #30.
 - **Quitting:**
   - When quitting would stop active downloads and the setting asks for it, Rust shows the window and sends `quit-requested`.
@@ -71,6 +71,18 @@ The Add dialog (#60, V1's) is in `src/features/add/`. Its state is in the `ui` s
 - **What it shows before adding:** the name the file gets (`naming.ts`), the automatic category and folder, a name already taken, and a missing chosen folder, which it offers to create (`check_destination`, 300 ms after the last change). A plain `ftp://` link gets the cleartext warning and "Require encryption (FTPS)".
 - **What it shows after:** `add_downloads` answers for each link. All added closes the dialog with a toast. Otherwise it lists taken names ("Keep both (rename)"; a torrent's are only explained), duplicates ("Add anyway"; a torrent still in the list is only explained), and the links that failed with why (`outcome.ts`).
 - **The SFTP host key** (`HostKeyPrompt`): when a download in the snapshot has failed with `error.hostKey`, the window asks once for that download and key. "Trust and continue" calls `trust_host_key`, then `retry_downloads`. A changed key is only explained.
+
+## The download list
+
+The list (#59, V1's) is in `src/features/downloads/`. It shows the snapshot as it is: what a download becomes after a command comes from the next snapshot, never from the window.
+
+- **The table** (`DownloadTable`) is virtualised with TanStack Virtual, so only the rows in view are drawn. Its 13 columns are V1's (`columns.tsx`); the column chooser shows and hides them, always with Name.
+- **Column widths:** dragging a column's edge previews the width and saves it once, when the drag ends; arrow keys change it by 16 px, and Home or a double-click restores it. The list's columns save through `set_appearance` over the latest saved appearance, so they never overwrite the layout ([SETTINGS.md](SETTINGS.md#the-window)).
+- **Selection** (the `downloads` store, V1's rules): a click selects one, Ctrl or ⌘ toggles, Shift selects a range, and the checkboxes and select-all cover the rows shown. Arrow keys, Home, End, Ctrl+A and Escape move and select; Space pauses or resumes; Delete removes and Shift+Delete deletes the files. A download that leaves the snapshot leaves the selection.
+- **Actions** (`useDownloadActions`): the toolbar and the right-click menu (`menus.tsx`) offer what `actionsFor` allows for the selection, as the manager allows it. Removing a running download and deleting files ask first. A command over several downloads reports what it couldn't do, from its `BatchResult`, and the buttons are disabled while a command is being sent. That a late status from the engine can't undo a pause or a cancel is the manager's rule ([ENGINE_CONTRACT.md](ENGINE_CONTRACT.md#the-managers-side)).
+- **Statuses** (`statusLabel`): Retrying counts down to the engine's `retryAtMs`, and says "Waiting to retry" without one; a stalled direct download says "No data received"; one that came back without its login says "Needs its login". Speed and time left show only while bytes come, and the time left is the engine's speed over the bytes left. A notice says when the transfer engine isn't running, and when saved downloads are from a newer Velocity.
+- **Entering a login again** (`LoginDialog`): resuming or retrying a download in the snapshot's `needsLogin` asks for its login, custom headers or SSH key, sends them with `set_download_login`, then resumes or retries it.
+- **Show download:** the Add dialog's "Show download", for a duplicate already in the list, shows the whole list with that download selected (`showDownload`).
 
 ## The native side of the window
 
@@ -98,13 +110,16 @@ These are in [`src-tauri/src/shell.rs`](../src-tauri/src/shell.rs) and [`tray.rs
 - **UI tests run in jsdom** (`vite.config.ts`, the `ui` project) with Testing Library. Only the Tauri boundary is mocked:
   - `src/test/fakeBackend.ts` answers the commands over Tauri's own `mockIPC`, with the generated contract fixtures, and records every call.
   - Events are sent with Tauri's `emit`.
-- **Pure rules** (`layoutLogic`, `views`, `format`, `parseExtensions`) have unit tests.
+- **Pure rules** (`layoutLogic`, `views`, `list`, `format`, `parseExtensions`) have unit tests.
+- **The test setup gives elements a size** (`src/test/setup.ts`, as V1's), because jsdom does no layout and the virtualised list would draw no rows.
+- **The layout in a real browser** is `pnpm test:e2e:layout` (L4, [TESTING.md](TESTING.md#the-test-pyramid)).
 - **The tray and notifications** are checked by hand on each platform, and the PR records it.
 
 ## Not here yet
 
 - **Owned by later issues:**
-  - The download list, its details panel and its columns (#59, #61).
+  - The details panel, and opening a finished file or its folder (#61, #72).
+  - Choosing a torrent's files, and its trackers and peers (#63).
   - Settings, including the theme, density, tray and notification switches (#30).
   - History (#32).
   - The browser extension's steps (#64).

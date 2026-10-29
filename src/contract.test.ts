@@ -9,10 +9,15 @@ import {
   CapabilitiesSchema,
   CategoryIconSchema,
   CategorySchema,
+  COLUMN_MAX_WIDTH,
+  COLUMN_MIN_WIDTH,
+  ColumnIdSchema,
+  DEFAULT_COLUMNS,
   DensitySchema,
   ConnectionLimitSchema,
   COMMAND_API_VERSION,
   DestinationCheckSchema,
+  DownloadLoginSchema,
   DownloadRecordSchema,
   DownloadsSnapshotSchema,
   DownloadStatusSchema,
@@ -96,6 +101,19 @@ describe('contract fixtures generated from Rust', () => {
 
   it('shell settings (#29)', () => {
     expect(ShellSettingsSchema.parse(fixture('shell-settings.json'))).toEqual(fixture('shell-settings.json'));
+  });
+
+  it('a login given again (#59), with every part set', () => {
+    expect(DownloadLoginSchema.parse(fixture('download-login.json'))).toEqual(fixture('download-login.json'));
+  });
+
+  it('the list columns: exactly the ids the schema knows, in order, the defaults and the width bounds (#59)', () => {
+    expect(fixture('columns.json')).toEqual({
+      all: ColumnIdSchema.options,
+      default: DEFAULT_COLUMNS,
+      minWidth: COLUMN_MIN_WIDTH,
+      maxWidth: COLUMN_MAX_WIDTH,
+    });
   });
 
   it('themes and densities: exactly the values the schemas know, in order (#29)', () => {

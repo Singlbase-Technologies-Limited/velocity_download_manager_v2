@@ -230,6 +230,13 @@ pub struct DownloadRecord {
     /// Milliseconds since the Unix epoch.
     pub created_at_ms: u64,
     pub completed_at_ms: Option<u64>,
+    /// While Retrying, when the engine tries again, in milliseconds since the Unix epoch (#59);
+    /// `None` in every other status. Never invented: only an engine reports it.
+    pub retry_at_ms: Option<u64>,
+    /// The first time the engine reported it running, in milliseconds since the Unix epoch (#59).
+    pub started_at_ms: Option<u64>,
+    /// The bytes per second it received while it ran, once it ran for a second (#59).
+    pub average_speed_bps: Option<u64>,
 }
 
 /// What the UI is sent about the downloads (#58, V1's `get_snapshot`), whenever something in it
@@ -517,6 +524,9 @@ impl DownloadRecord {
             verification: None,
             created_at_ms: 1_792_600_000_000,
             completed_at_ms: None,
+            retry_at_ms: Some(1_792_600_030_000),
+            started_at_ms: Some(1_792_600_001_000),
+            average_speed_bps: Some(262_144),
         }
     }
 }
@@ -1010,6 +1020,41 @@ mod tests {
             check(
                 "densities.json",
                 serde_json::to_value(Density::ALL).unwrap(),
+            );
+        }
+
+        #[test]
+        fn contract_download_login() {
+            use crate::manager::SensitiveOptions;
+            use crate::transfer::{Credentials, Header, SshKey};
+            let login = SensitiveOptions {
+                credentials: Some(Credentials {
+                    user_name: "user".to_owned(),
+                    password: "not-a-real-password".to_owned(),
+                }),
+                ssh_key: Some(SshKey {
+                    path: std::path::PathBuf::from("/home/user/.ssh/id_ed25519"),
+                    passphrase: None,
+                }),
+                headers: vec![Header {
+                    name: "X-Example".to_owned(),
+                    value: "example".to_owned(),
+                }],
+            };
+            check("download-login.json", serde_json::to_value(login).unwrap());
+        }
+
+        #[test]
+        fn contract_columns() {
+            use crate::app_settings::{ColumnId, COLUMN_MAX_WIDTH, COLUMN_MIN_WIDTH};
+            check(
+                "columns.json",
+                serde_json::json!({
+                    "all": ColumnId::ALL,
+                    "default": ColumnId::DEFAULT,
+                    "minWidth": COLUMN_MIN_WIDTH,
+                    "maxWidth": COLUMN_MAX_WIDTH,
+                }),
             );
         }
 

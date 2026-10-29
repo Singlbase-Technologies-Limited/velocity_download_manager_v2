@@ -2,6 +2,8 @@
 //! first-run flag. Each is a section of the settings document ([`Section`]); #30 puts them on
 //! the Settings screen.
 
+use std::collections::BTreeMap;
+
 use serde::{Deserialize, Serialize};
 
 use crate::database::settings::Section;
@@ -123,28 +125,109 @@ impl Default for LayoutSettings {
     }
 }
 
-/// How the app looks (V1's `appearance` settings, without the download list's columns, which are
-/// #59's).
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+/// A column of the download list (#59, V1's column ids).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ColumnId {
+    Name,
+    Size,
+    Downloaded,
+    Progress,
+    Speed,
+    AvgSpeed,
+    Eta,
+    Status,
+    Category,
+    Destination,
+    Added,
+    Started,
+    Completed,
+}
+
+impl ColumnId {
+    /// Every column, in the order the column chooser lists them.
+    pub const ALL: [Self; 13] = [
+        Self::Name,
+        Self::Size,
+        Self::Downloaded,
+        Self::Progress,
+        Self::Speed,
+        Self::AvgSpeed,
+        Self::Eta,
+        Self::Status,
+        Self::Category,
+        Self::Destination,
+        Self::Added,
+        Self::Started,
+        Self::Completed,
+    ];
+
+    /// The columns of a new install (V1's).
+    pub const DEFAULT: [Self; 8] = [
+        Self::Name,
+        Self::Size,
+        Self::Progress,
+        Self::Speed,
+        Self::Eta,
+        Self::Status,
+        Self::Category,
+        Self::Added,
+    ];
+}
+
+/// Bounds for a column width the user set, in CSS pixels (V1's). Mirrored in the UI.
+pub const COLUMN_MIN_WIDTH: u32 = 48;
+pub const COLUMN_MAX_WIDTH: u32 = 1200;
+
+/// How the app looks (V1's `appearance` settings).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default, deny_unknown_fields)]
 pub struct AppearanceSettings {
     pub theme: Theme,
     pub density: Density,
     pub layout: LayoutSettings,
+    /// The download list's columns, in display order (#59).
+    pub visible_columns: Vec<ColumnId>,
+    /// The widths the user set, in CSS pixels; a column not listed has its default width (#59).
+    pub column_widths: BTreeMap<ColumnId, u32>,
+}
+
+impl Default for AppearanceSettings {
+    fn default() -> Self {
+        AppearanceSettings {
+            theme: Theme::default(),
+            density: Density::default(),
+            layout: LayoutSettings::default(),
+            visible_columns: ColumnId::DEFAULT.to_vec(),
+            column_widths: BTreeMap::new(),
+        }
+    }
 }
 
 impl Section for AppearanceSettings {
     const KEY: &'static str = "appearance";
 
-    /// `InvalidInput` for a panel width outside its bounds.
+    /// `InvalidInput` for a panel or column width outside its bounds, and for a column list
+    /// without the Name column or with a column twice.
     fn checked(&self) -> Result<Self, ErrorCode> {
         let within =
             |width: Option<u32>, min: u32, max: u32| width.is_none_or(|w| (min..=max).contains(&w));
         let layout = &self.layout;
+        let columns = &self.visible_columns;
+        let once = columns
+            .iter()
+            .enumerate()
+            .all(|(i, c)| !columns[..i].contains(c));
         if within(layout.sidebar_width, SIDEBAR_MIN_WIDTH, SIDEBAR_MAX_WIDTH)
             && within(layout.details_width, DETAILS_MIN_WIDTH, DETAILS_MAX_WIDTH)
+            && columns.contains(&ColumnId::Name)
+            && once
+            && self
+                .column_widths
+                .values()
+                .all(|w| (COLUMN_MIN_WIDTH..=COLUMN_MAX_WIDTH).contains(w))
         {
-            Ok(*self)
+            Ok(self.clone())
         } else {
             Err(ErrorCode::InvalidInput)
         }
@@ -188,6 +271,7 @@ impl ShellSettings {
                     details_width: None,
                     details_visible: true,
                 },
+                ..AppearanceSettings::default()
             },
             onboarding_completed: true,
             default_directory: Some("/home/user/Downloads".to_owned()),
@@ -244,6 +328,64 @@ mod tests {
         ] {
             assert_eq!(bad.checked(), Err(ErrorCode::InvalidInput), "{bad:?}");
         }
+    }
+
+    #[test]
+    fn the_list_starts_with_v1s_columns_at_their_default_widths() {
+        use ColumnId::*;
+        let look = AppearanceSettings::default();
+        assert_eq!(
+            look.visible_columns,
+            [Name, Size, Progress, Speed, Eta, Status, Category, Added]
+        );
+        assert!(look.column_widths.is_empty());
+    }
+
+    #[test]
+    fn the_column_list_keeps_the_name_and_each_column_once() {
+        use ColumnId::*;
+        let with = |columns: Vec<ColumnId>| AppearanceSettings {
+            visible_columns: columns,
+            ..AppearanceSettings::default()
+        };
+        for ok in [with(vec![Name]), with(ColumnId::ALL.to_vec())] {
+            assert_eq!(ok.checked(), Ok(ok.clone()));
+        }
+        for bad in [with(vec![]), with(vec![Size]), with(vec![Name, Size, Size])] {
+            assert_eq!(bad.checked(), Err(ErrorCode::InvalidInput), "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn column_widths_must_be_within_their_bounds() {
+        let with = |width: u32| AppearanceSettings {
+            column_widths: BTreeMap::from([(ColumnId::Destination, width)]),
+            ..AppearanceSettings::default()
+        };
+        for ok in [with(COLUMN_MIN_WIDTH), with(COLUMN_MAX_WIDTH)] {
+            assert_eq!(ok.checked(), Ok(ok.clone()));
+        }
+        for bad in [with(COLUMN_MIN_WIDTH - 1), with(COLUMN_MAX_WIDTH + 1)] {
+            assert_eq!(bad.checked(), Err(ErrorCode::InvalidInput), "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn saved_columns_are_read_by_v1s_ids_and_an_unknown_one_is_refused() {
+        let look: AppearanceSettings = serde_json::from_value(serde_json::json!({
+            "visibleColumns": ["name", "avgSpeed", "started"],
+            "columnWidths": { "avgSpeed": 120 }
+        }))
+        .unwrap();
+        assert_eq!(
+            look.visible_columns,
+            [ColumnId::Name, ColumnId::AvgSpeed, ColumnId::Started]
+        );
+        assert_eq!(look.column_widths[&ColumnId::AvgSpeed], 120);
+        let unknown = serde_json::from_value::<AppearanceSettings>(serde_json::json!({
+            "visibleColumns": ["name", "gid"]
+        }));
+        assert!(unknown.is_err());
     }
 
     #[test]

@@ -5,7 +5,7 @@
 import { z } from 'zod';
 
 /** Must equal `velocity_core::COMMAND_API_VERSION`; the app refuses to start on a mismatch. */
-export const COMMAND_API_VERSION = 11;
+export const COMMAND_API_VERSION = 12;
 
 const bytes = z.number().int().nonnegative();
 
@@ -94,6 +94,12 @@ export const DownloadRecordSchema = z.strictObject({
   verification: VerificationSchema.nullable(),
   createdAtMs: bytes,
   completedAtMs: bytes.nullable(),
+  /** While retrying, when the engine tries again (#59); `null` in every other status. */
+  retryAtMs: bytes.nullable(),
+  /** The first time the engine reported it running (#59). */
+  startedAtMs: bytes.nullable(),
+  /** Bytes per second while it ran, once it ran for a second (#59). */
+  averageSpeedBps: bytes.nullable(),
 });
 export type DownloadRecord = z.infer<typeof DownloadRecordSchema>;
 
@@ -256,6 +262,17 @@ export type SshKey = z.infer<typeof SshKeySchema>;
 export const HashAlgorithmSchema = z.enum(['md5', 'sha1', 'sha224', 'sha256', 'sha384', 'sha512']);
 export type HashAlgorithm = z.infer<typeof HashAlgorithmSchema>;
 
+/** What a download that came back after a restart without them is given again (#59): `set_download_login`. */
+export const DownloadLoginSchema = z.strictObject({
+  credentials: CredentialsSchema.nullable(),
+  sshKey: SshKeySchema.nullable(),
+  headers: z.array(HeaderSchema),
+});
+export type DownloadLogin = z.infer<typeof DownloadLoginSchema>;
+
+/** Where `move_download` takes a waiting download in the queue (#50). */
+export type MoveDirection = 'top' | 'up' | 'down' | 'bottom';
+
 /** A whole-file hash to verify before the download completes (#46). */
 export const ChecksumSchema = z.strictObject({ algorithm: HashAlgorithmSchema, hex: z.string() });
 export type Checksum = z.infer<typeof ChecksumSchema>;
@@ -343,11 +360,40 @@ export const LayoutSettingsSchema = z.strictObject({
 });
 export type LayoutSettings = z.infer<typeof LayoutSettingsSchema>;
 
-/** How the window looks (#29). */
+/** A column of the download list (#59, V1's ids), in the order the column chooser lists them. */
+export const ColumnIdSchema = z.enum([
+  'name',
+  'size',
+  'downloaded',
+  'progress',
+  'speed',
+  'avgSpeed',
+  'eta',
+  'status',
+  'category',
+  'destination',
+  'added',
+  'started',
+  'completed',
+]);
+export type ColumnId = z.infer<typeof ColumnIdSchema>;
+
+/** The columns of a new install (V1's), as `ColumnId::DEFAULT` in `app_settings.rs`. */
+export const DEFAULT_COLUMNS: readonly ColumnId[] = ['name', 'size', 'progress', 'speed', 'eta', 'status', 'category', 'added'];
+
+/** Bounds for a column width the user set, in CSS pixels, as Rust checks them. */
+export const COLUMN_MIN_WIDTH = 48;
+export const COLUMN_MAX_WIDTH = 1200;
+
+/** How the window looks (#29), and the download list's columns (#59). */
 export const AppearanceSettingsSchema = z.strictObject({
   theme: ThemeSchema,
   density: DensitySchema,
   layout: LayoutSettingsSchema,
+  /** In display order; always with `name`, and each column once. */
+  visibleColumns: z.array(ColumnIdSchema).min(1),
+  /** Only the columns the user resized; the rest have their default width. */
+  columnWidths: z.partialRecord(ColumnIdSchema, z.number().int().min(COLUMN_MIN_WIDTH).max(COLUMN_MAX_WIDTH)),
 });
 export type AppearanceSettings = z.infer<typeof AppearanceSettingsSchema>;
 

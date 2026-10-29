@@ -58,7 +58,9 @@ impl Manager {
         let download = self.downloads.get_mut(id).ok_or(ErrorCode::NotFound)?;
         let mut record = download.record.clone();
         record.category_id = category_id;
-        self.database.update_download(&record).map_err(|e| e.code)?;
+        self.database
+            .update_download(&record, &download.activity.totals)
+            .map_err(|e| e.code)?;
         download.record = record;
         Ok(())
     }

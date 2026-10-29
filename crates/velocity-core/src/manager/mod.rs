@@ -52,6 +52,8 @@ struct Download {
     /// It came back after a restart without the login it had (#70); it waits, paused, for
     /// [`Manager::set_login`].
     needs_login: bool,
+    /// When it started and how fast it went while it ran (#59).
+    activity: activity::Tracker,
 }
 
 /// What a download's engine needs: the direct-download engine's or the torrent helper's.
@@ -161,6 +163,18 @@ fn is_direct_status(status: DownloadStatus) -> bool {
     !matches!(
         status,
         DownloadStatus::FetchingMetadata | DownloadStatus::ChoosingFiles | DownloadStatus::Seeding
+    )
+}
+
+/// A status the engine shows only while it runs the transfer.
+fn is_running_status(status: DownloadStatus) -> bool {
+    matches!(
+        status,
+        DownloadStatus::Connecting
+            | DownloadStatus::Downloading
+            | DownloadStatus::Verifying
+            | DownloadStatus::Retrying
+            | DownloadStatus::Stalled
     )
 }
 
@@ -326,6 +340,9 @@ impl Manager {
                 verification: None,
                 created_at_ms: now_ms,
                 completed_at_ms: None,
+                retry_at_ms: None,
+                started_at_ms: None,
+                average_speed_bps: None,
             },
             job: Job::Direct(Box::new(DirectJob::new(spec, None))),
             running: false,
@@ -333,6 +350,7 @@ impl Manager {
             scheduled: options.scheduled,
             saved_at_ms: None,
             needs_login: false,
+            activity: activity::Tracker::default(),
         };
         download.record.status = download.waiting_status();
         let request = &download.direct().expect("a direct download").request;
@@ -927,15 +945,32 @@ impl Manager {
                 } else {
                     DownloadStatus::Unknown
                 };
-                // The engine pauses the downloads the queue holds back; they show as waiting.
-                let shown = if status == DownloadStatus::Paused && !download.running {
+                // The engine pauses the downloads the queue holds back; they show as waiting. A
+                // running status sent before the engine stopped one the user paused or cancelled
+                // doesn't undo that (#59).
+                let shown = if download.running {
+                    status
+                } else if status == DownloadStatus::Paused {
                     download.waiting_status()
+                } else if is_running_status(status) {
+                    download.record.status
                 } else {
                     status
                 };
                 let before = download.record.clone();
+                download.activity.observe(
+                    now_ms,
+                    download.running && is_running_status(shown),
+                    snapshot.progress.completed_bytes,
+                );
                 let record = &mut download.record;
+                record.started_at_ms = download.activity.totals.started_at_ms;
+                record.average_speed_bps = download.activity.average_speed_bps();
                 record.status = shown;
+                // Not saved: a download read back at start-up isn't waiting to retry.
+                record.retry_at_ms = snapshot
+                    .retry_at_ms
+                    .filter(|_| shown == DownloadStatus::Retrying);
                 record.progress = snapshot.progress;
                 record.error = snapshot.error;
                 record.verification = snapshot.verification;
@@ -968,7 +1003,8 @@ impl Manager {
                     || record.verification != before.verification
                     || record.file_name != before.file_name
                     || record.category_id != before.category_id
-                    || record.completed_at_ms != before.completed_at_ms;
+                    || record.completed_at_ms != before.completed_at_ms
+                    || record.started_at_ms != before.started_at_ms;
                 let due = download
                     .saved_at_ms
                     .is_none_or(|at| now_ms.saturating_sub(at) >= persist::PROGRESS_SAVE_MS);
@@ -1005,6 +1041,7 @@ impl Manager {
     }
 }
 
+mod activity;
 mod adding;
 mod batch;
 mod categories;

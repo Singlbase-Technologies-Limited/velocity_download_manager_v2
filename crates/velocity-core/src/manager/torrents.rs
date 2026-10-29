@@ -189,6 +189,9 @@ impl Manager {
                 verification: None,
                 created_at_ms: now_ms,
                 completed_at_ms: None,
+                retry_at_ms: None,
+                started_at_ms: None,
+                average_speed_bps: None,
             },
             job: Job::Torrent(Box::new(job)),
             running: false,
@@ -196,6 +199,7 @@ impl Manager {
             scheduled: options.scheduled,
             saved_at_ms: None,
             needs_login: false,
+            activity: super::activity::Tracker::default(),
         };
         download.record.status = download.waiting_status();
         let new = NewDownload {
@@ -502,7 +506,21 @@ impl Manager {
         } else {
             snapshot.status
         };
+        let running = d.running
+            && matches!(
+                status,
+                DownloadStatus::Connecting
+                    | DownloadStatus::Downloading
+                    | DownloadStatus::FetchingMetadata
+                    | DownloadStatus::Stalled
+                    | DownloadStatus::Verifying
+                    | DownloadStatus::Retrying
+            );
+        d.activity
+            .observe(now_ms, running, snapshot.progress.completed_bytes);
         let record = &mut d.record;
+        record.started_at_ms = d.activity.totals.started_at_ms;
+        record.average_speed_bps = d.activity.average_speed_bps();
         record.status = status;
         record.progress = snapshot.progress.clone();
         record.error = snapshot.error.clone();
@@ -522,7 +540,8 @@ impl Manager {
         let changed = record.status != before.status
             || record.error != before.error
             || record.file_name != before.file_name
-            || record.completed_at_ms != before.completed_at_ms;
+            || record.completed_at_ms != before.completed_at_ms
+            || record.started_at_ms != before.started_at_ms;
         let due = d
             .saved_at_ms
             .is_none_or(|at| now_ms.saturating_sub(at) >= super::persist::PROGRESS_SAVE_MS);

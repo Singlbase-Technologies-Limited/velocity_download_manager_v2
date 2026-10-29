@@ -10,6 +10,7 @@ These files are guidance. `.claude/settings.json` adds two layers that block the
 
 - **Deny and ask rules** match command text only, so forms such as `git -C . push origin main` or `bash -c '…'` get past them.
 - **The agent guard** ([`scripts/agent-guard.mjs`](scripts/agent-guard.mjs), #98) is a `PreToolUse` hook on every Bash and PowerShell command. It reads the command the way a shell would, and refuses a push to `main`, a force push or `git reset --hard` in any spelling, in every permission mode. If it can't read a command that mentions git push or reset, or if it fails, it refuses.
+- **PR descriptions** (PO decision on #59): the guard also refuses `gh pr create` and `gh pr edit` unless the description comes from `--body-file` and passes `pnpm check:pr-body`, which holds it and the title to [the PR template](.github/PULL_REQUEST_TEMPLATE.md).
 
 Both are a safety net, not a security boundary. The guard can't see inside a script file the command runs, and it lets the call through if Node itself can't start. The rules stand whether a command is blocked or not.
 
@@ -27,6 +28,7 @@ The skills in the table below hold the details of each step.
 4. **When something fails, stop.** Report the actual error. Don't weaken a test, a lint, a check or a security control to get past it.
 5. **Verify** (`/verify-v2`). Add `/platform-verify` and `/security-check` when the change calls for them.
 6. **Pull request** (`/prepare-pr <N>`).
+   - The description is [the PR template](.github/PULL_REQUEST_TEMPLATE.md) filled in, never an earlier PR's shape. Check it with `pnpm check:pr-body <file> --title "…"`, and pass it with `--body-file`.
    - Run `gh` for this repository as `GH_TOKEN="$(gh auth token -u velocity-claude-agent)" gh …`. Never run `gh auth switch`.
    - Set the issue to *In review*.
 7. **Merge only on the PO's explicit approval of that PR,** with `gh pr merge <N> --squash --delete-branch`. It prompts once more by design. Then update local `main`, check that the issue's state is right, tick its box in epic #1, and report.
