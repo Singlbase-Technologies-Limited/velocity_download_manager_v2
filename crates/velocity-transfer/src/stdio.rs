@@ -91,6 +91,7 @@ impl ChildProcessEngine {
                 live_connection_changes: false,
                 metalink: false,
                 max_connections_per_host: 1,
+                libcurl: None,
             }),
         };
         engine.refresh_capabilities()?;

@@ -17,6 +17,8 @@ Every document in `docs/` is listed here. A new document is added to this map in
 | [ENGINE_PROTOCOL.md](ENGINE_PROTOCOL.md) | Change how the app and its child processes (the engine and the torrent helper) talk: framing, versions, limits, the supervisor and its restarts |
 | [TORRENTS.md](TORRENTS.md) | Work on torrents: the bridge, the torrent helper, the checks before libtorrent, the torrent contract and statuses, seeding, resume data and recovery, deleting a torrent's files, trackers and peers, settings and port mapping, and what is still to come |
 | [DATA_AND_MIGRATIONS.md](DATA_AND_MIGRATIONS.md) | Change the app database: the file, the schema, unknown values, secrets, and how to add a migration |
+| [DIAGNOSTICS.md](DIAGNOSTICS.md) | See what V2 logs, how secrets are redacted, what the diagnostics export holds, and the crash-log policy |
+| [PRIVACY.md](PRIVACY.md) | See what V2 sends (only the downloads), what it keeps on this computer, and what a diagnostics export holds |
 | [SECURITY.md](SECURITY.md) | See how V2 verifies TLS certificates on each platform, what was measured (purpose, host, expiry, revocation, TLS 1.3), and how the tests trust a test CA |
 | [SETTINGS.md](SETTINGS.md) | See each setting V2 has so far, what it does and its bounds: performance profiles, the queue, folders, and what a build can do |
 | [FILE_NAMING.md](FILE_NAMING.md) | Change how a download's file is named, its category and folder are chosen, and what happens when the name is taken |

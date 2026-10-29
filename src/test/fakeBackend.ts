@@ -13,6 +13,7 @@ import {
   type Capabilities,
   type Category,
   type DestinationCheck,
+  type DiagnosticReport,
   type DownloadsSnapshot,
   type HistoryPage,
   type HistoryQuery,
@@ -49,6 +50,9 @@ export interface FakeState {
   hold: Partial<Record<string, Promise<void>>>;
   /** What `get_history` answers for a query (#32). */
   history: (query: HistoryQuery) => HistoryPage;
+  /** What `get_diagnostics` answers, and where `export_diagnostics` saved (`null`: the user cancelled) (#28). */
+  diagnostics: () => DiagnosticReport;
+  exportedTo: string | null;
   /** Commands that fail, with the code they fail with. */
   failures: Partial<Record<string, ErrorCode>>;
   /** Downloads whose file is a program: opening one needs `allowProgram` (#61). */
@@ -111,6 +115,8 @@ export function installFakeBackend(over: Partial<FakeState> = {}): FakeState {
     batch: (_cmd, ids) => ({ done: ids, failed: [], kept: [] }),
     hold: {},
     history: () => ({ entries: [], total: 0 }),
+    diagnostics: () => fixture('diagnostics.json') as DiagnosticReport,
+    exportedTo: null,
     failures: {},
     programs: [],
     preview: () => {
@@ -221,6 +227,13 @@ export function installFakeBackend(over: Partial<FakeState> = {}): FakeState {
           return 2;
         case 'delete_history_entries':
           return null;
+        case 'get_diagnostics':
+          return state.diagnostics();
+        case 'export_diagnostics':
+          return state.exportedTo;
+        case 'restart_engine':
+        case 'restart_torrent_helper':
+          return { state: 'running' };
         default:
           throw new Error(`the fake backend has no command ${cmd}`);
       }

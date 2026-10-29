@@ -44,6 +44,7 @@ impl DirectTransfer for MissingEngine {
             live_connection_changes: false,
             metalink: false,
             max_connections_per_host: 1,
+            libcurl: None,
         }
     }
     fn add(&mut self, _spec: TransferSpec) -> Result<TransferId, ErrorCode> {

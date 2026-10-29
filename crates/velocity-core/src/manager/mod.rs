@@ -399,6 +399,20 @@ impl Manager {
         self.engine.capabilities()
     }
 
+    /// The transfer engine's and the torrent helper's last stderr lines, for diagnostics (#28).
+    pub fn transfer_engine_log(&self) -> Vec<String> {
+        self.engine.recent_log()
+    }
+
+    pub fn torrent_engine_log(&self) -> Vec<String> {
+        self.torrents.recent_log()
+    }
+
+    /// The libtorrent the torrent helper runs; `None` while it can't say.
+    pub fn torrent_version(&self) -> Option<String> {
+        self.torrents.version().ok()
+    }
+
     /// Turns Metalink on or off (V1's `advanced.enable_metalink`, off by default; ADR-0005). Its
     /// storage and Settings page are #30's.
     pub fn set_metalink_enabled(&mut self, enabled: bool) {

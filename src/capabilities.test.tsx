@@ -10,6 +10,7 @@ const caps: Capabilities = {
   liveConnectionChanges: true,
   metalink: false,
   maxConnectionsPerHost: 8,
+  libcurl: null,
 };
 const withFtp: Capabilities = {
   ...caps,

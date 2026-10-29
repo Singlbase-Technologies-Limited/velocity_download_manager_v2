@@ -54,7 +54,10 @@ pub fn start(app: &AppHandle, paths: &Paths) -> Result<Downloads, String> {
     let engine: Box<dyn DirectTransfer> =
         match SupervisedEngine::start(program.clone(), SupervisorOptions::default()) {
             Ok(engine) => Box::new(engine),
-            Err(code) => Box::new(MissingEngine::new(code, program)),
+            Err(code) => {
+                tracing::warn!("the transfer engine couldn't start: {code:?}");
+                Box::new(MissingEngine::new(code, program))
+            }
         };
     // The torrent settings are #30's; until then the defaults, which are V1's.
     let torrents: Box<dyn TorrentEngine> = match SupervisedTorrentEngine::start(
@@ -63,7 +66,10 @@ pub fn start(app: &AppHandle, paths: &Paths) -> Result<Downloads, String> {
         TorrentSettings::default(),
     ) {
         Ok(torrents) => Box::new(torrents),
-        Err(code) => Box::new(MissingTorrentEngine::new(code)),
+        Err(code) => {
+            tracing::warn!("the torrent helper couldn't start: {code:?}");
+            Box::new(MissingTorrentEngine::new(code))
+        }
     };
     let mut manager = Manager::open(engine, Arc::new(database))
         .map_err(|e| e.to_string())?
@@ -85,6 +91,17 @@ pub fn start(app: &AppHandle, paths: &Paths) -> Result<Downloads, String> {
     Ok(Arc::new(ManagerService::start(manager, move |snapshot| {
         // Emitting fails only once the app is closing, when no window is left to show it.
         let _ = app.emit(SNAPSHOT_EVENT, snapshot);
+        if let Some(before) = &last {
+            if before.engine != snapshot.engine {
+                tracing::info!("transfer engine: {:?}", snapshot.engine);
+            }
+            if before.torrent_engine != snapshot.torrent_engine {
+                tracing::info!("torrent helper: {:?}", snapshot.torrent_engine);
+            }
+            if before.storage_error != snapshot.storage_error {
+                tracing::warn!("saving downloads: {:?}", snapshot.storage_error);
+            }
+        }
         app.state::<ShellState>()
             .observe(&app, last.as_ref(), snapshot);
         last = Some(snapshot.clone());

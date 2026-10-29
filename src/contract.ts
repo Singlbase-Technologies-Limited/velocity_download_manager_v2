@@ -5,7 +5,7 @@
 import { z } from 'zod';
 
 /** Must equal `velocity_core::COMMAND_API_VERSION`; the app refuses to start on a mismatch. */
-export const COMMAND_API_VERSION = 15;
+export const COMMAND_API_VERSION = 16;
 
 const bytes = z.number().int().nonnegative();
 
@@ -132,11 +132,17 @@ export const ProtocolCapabilitiesSchema = z.strictObject({
 });
 export type ProtocolCapabilities = z.infer<typeof ProtocolCapabilitiesSchema>;
 
+/** A native library an engine runs on, as it reports itself (#28). */
+export const LibraryVersionSchema = z.strictObject({ version: z.string(), tls: z.string() });
+export type LibraryVersion = z.infer<typeof LibraryVersionSchema>;
+
 export const CapabilitiesSchema = z.strictObject({
   protocols: z.array(ProtocolCapabilitiesSchema),
   liveConnectionChanges: z.boolean(),
   metalink: z.boolean(),
   maxConnectionsPerHost: z.number().int().positive(),
+  /** The libcurl the transfer engine runs on, for diagnostics (#28); `null` for an engine without one. */
+  libcurl: LibraryVersionSchema.nullable(),
 });
 export type Capabilities = z.infer<typeof CapabilitiesSchema>;
 
@@ -586,3 +592,32 @@ export const StorageSettingsSchema = z.strictObject({
   maxHistoryEntries: z.number().int().min(100).max(1_000_000),
 });
 export type StorageSettings = z.infer<typeof StorageSettingsSchema>;
+
+// Diagnostics (#28): what the app and its engines say, safe to share. Every log line in it is redacted.
+
+export const LogLineSchema = z.strictObject({
+  atMs: bytes,
+  level: z.enum(['error', 'warn', 'info', 'debug']),
+  target: z.string(),
+  message: z.string(),
+});
+export type LogLine = z.infer<typeof LogLineSchema>;
+
+export const DiagnosticReportSchema = z.strictObject({
+  generatedAtMs: bytes,
+  app: z.strictObject({ name: z.string(), version: z.string(), commandApiVersion: z.number().int() }),
+  os: z.string(),
+  arch: z.string(),
+  transferEngine: EngineHealthSchema,
+  capabilities: CapabilitiesSchema,
+  torrentEngine: EngineHealthSchema,
+  /** `null` while the torrent helper can't say. */
+  libtorrent: z.string().nullable(),
+  /** How many downloads are in the list, by status: no names or links. */
+  downloads: z.array(z.strictObject({ status: DownloadStatusSchema, count: z.number().int().nonnegative() })),
+  storageError: ErrorCodeSchema.nullable(),
+  appLog: z.array(LogLineSchema),
+  transferEngineLog: z.array(z.string()),
+  torrentEngineLog: z.array(z.string()),
+});
+export type DiagnosticReport = z.infer<typeof DiagnosticReportSchema>;

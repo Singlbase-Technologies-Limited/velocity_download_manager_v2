@@ -142,7 +142,7 @@ mod tests {
         // Protocol 3 (#62) names the first id `firstId` for every contract; 2 said `firstTransferId`.
         assert_eq!(
             serde_json::to_string(&start).unwrap(),
-            r#"{"type":"start","protocol":3,"contract":12,"firstId":12}"#
+            r#"{"type":"start","protocol":3,"contract":13,"firstId":12}"#
         );
         let refused = FromChild::Reply {
             seq: 7,

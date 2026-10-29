@@ -398,6 +398,18 @@ pub struct Capabilities {
     pub metalink: bool,
     /// The most connections to one server now: the performance profile's cap (#57).
     pub max_connections_per_host: u32,
+    /// The libcurl it runs on, for diagnostics (#28); `None` for an engine without one.
+    pub libcurl: Option<LibraryVersion>,
+}
+
+/// A native library an engine runs on, as it reports itself (#28).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct LibraryVersion {
+    /// For example `8.23.0`.
+    pub version: String,
+    /// Its TLS backend, for example `Schannel` or `OpenSSL/3.5.9`.
+    pub tls: String,
 }
 
 /// What an engine does for one protocol (#57), reported rather than assumed.
@@ -674,6 +686,10 @@ impl Capabilities {
             live_connection_changes: true,
             metalink: false,
             max_connections_per_host: 8,
+            libcurl: Some(LibraryVersion {
+                version: "8.23.0".to_owned(),
+                tls: "OpenSSL/3.5.9".to_owned(),
+            }),
         }
     }
 }
@@ -925,6 +941,15 @@ mod tests {
         }
 
         /// The Add dialog's request and its results (#60).
+        /// What the diagnostics show (#28).
+        #[test]
+        fn contract_diagnostics() {
+            check(
+                "diagnostics.json",
+                serde_json::to_value(crate::diagnostics::DiagnosticReport::sample()).unwrap(),
+            );
+        }
+
         /// The history's page and query, and the retention's defaults (#32).
         #[test]
         fn contract_history() {

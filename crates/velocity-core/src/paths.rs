@@ -66,6 +66,11 @@ impl Paths {
         self.data_dir.join("torrent-links")
     }
 
+    /// Crash logs (#28): what happened when the app panicked, redacted, never sent anywhere.
+    pub fn crash_logs_dir(&self) -> PathBuf {
+        self.data_dir.join("crash-logs")
+    }
+
     /// The SFTP host keys the user trusted (#53): V2's own known_hosts file, never
     /// `~/.ssh/known_hosts`.
     pub fn known_hosts(&self) -> PathBuf {
@@ -200,7 +205,12 @@ mod tests {
     #[test]
     fn files_live_inside_the_data_dir() {
         let p = Paths::resolve_with(None, Some(abs("data")), "x.y.z").unwrap();
-        for f in [p.database(), p.checkpoints_dir(), p.torrent_links_dir()] {
+        for f in [
+            p.database(),
+            p.checkpoints_dir(),
+            p.torrent_links_dir(),
+            p.crash_logs_dir(),
+        ] {
             assert!(f.starts_with(p.data_dir()), "{}", f.display());
         }
     }

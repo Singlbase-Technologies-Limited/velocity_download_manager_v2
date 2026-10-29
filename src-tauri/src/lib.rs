@@ -2,6 +2,7 @@
 
 mod adding;
 mod categories;
+mod diagnostics;
 mod downloads;
 mod opening;
 mod shell;
@@ -19,6 +20,10 @@ fn app_info() -> AppInfo {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // The app's log, kept in memory and redacted (#28).
+    let log = velocity_core::logs::AppLog::new();
+    diagnostics::install_log(&log);
+    tracing::info!("Velocity {} starting", velocity_core::app_info().version);
     tauri::Builder::default()
         // Registered first, as the plugin requires. It is keyed on the app identifier, so a
         // second launch of V2 focuses this window, and never interferes with V1 (ADR-0003).
@@ -29,6 +34,7 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_notification::init())
         .manage(shell::ShellState::default())
+        .manage(log)
         .setup(|app| {
             // V2's own data directory (velocity_core::paths). Failing to create it stops the
             // app with the reason, instead of running without a place for its data.
@@ -36,6 +42,8 @@ pub fn run() {
             paths.ensure().map_err(|code| {
                 format!("{} ({})", code.user_message(), paths.data_dir().display())
             })?;
+            // Crash logs in the app's own folder, never sent anywhere (#28).
+            diagnostics::install_crash_logs(paths.crash_logs_dir());
             // The downloads (#58): the database, the engine and the manager.
             app.manage(downloads::start(app.handle(), &paths)?);
             // The tray (#29). Without one, closing quits and the app never starts hidden.
@@ -95,6 +103,8 @@ pub fn run() {
             downloads::delete_history_entries,
             downloads::get_storage_settings,
             downloads::set_storage_settings,
+            diagnostics::get_diagnostics,
+            diagnostics::export_diagnostics,
             adding::add_downloads,
             adding::get_capabilities,
             adding::choose_torrents,

@@ -22,7 +22,7 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use velocity_core::domain::{
     Capabilities, ConnectionDetail, ConnectionLimit, DownloadKind, DownloadStatus, ErrorCode,
-    FailureClass, Progress, ProtocolCapabilities, TransferError,
+    FailureClass, LibraryVersion, Progress, ProtocolCapabilities, TransferError,
 };
 use velocity_core::paths::Paths;
 use velocity_core::request::default_user_agent;
@@ -87,6 +87,8 @@ struct Shared {
     retry: RetryPolicy,
     /// The limit all transfers share (#49).
     global: RateLimit,
+    /// The libcurl the engine runs on, as it reports itself, for diagnostics (#28).
+    libcurl: LibraryVersion,
 }
 
 #[derive(Default)]
@@ -314,6 +316,10 @@ impl InProcessEngine {
         known_hosts: PathBuf,
     ) -> Result<Self, String> {
         let libcurl = Libcurl::start().map_err(|e| e.to_string())?;
+        let linked = LibraryVersion {
+            version: libcurl.linked().version.clone(),
+            tls: libcurl.linked().tls.clone(),
+        };
         let options = LoopOptions {
             // libcurl's own cap follows the profile's (#57): with many small downloads, each
             // keeping one connection, it is what bounds a host, not the budget.
@@ -332,6 +338,7 @@ impl InProcessEngine {
                 }),
                 retry,
                 global: RateLimit::new(None),
+                libcurl: linked,
             }),
         })
     }
@@ -512,6 +519,7 @@ impl DirectTransfer for InProcessEngine {
             // their checksums and piece hashes (#46), and their mirrors in the spec's URLs.
             metalink: true,
             max_connections_per_host: lock(&self.shared.state).limits.max_connections_per_host,
+            libcurl: Some(self.shared.libcurl.clone()),
         }
     }
 

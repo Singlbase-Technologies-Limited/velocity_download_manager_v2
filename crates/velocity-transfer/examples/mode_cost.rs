@@ -194,7 +194,8 @@ fn orchestrate(args: &[String]) -> Result<(), String> {
 
 enum Engine {
     InProcess(InProcessEngine),
-    Child(ChildProcessEngine),
+    // Boxed: the child's client holds its capabilities, much larger than the in-process handle.
+    Child(Box<ChildProcessEngine>),
 }
 
 impl Engine {
@@ -202,7 +203,7 @@ impl Engine {
         match mode {
             "in-process" => InProcessEngine::start().map(Engine::InProcess),
             "child" => ChildProcessEngine::spawn(program)
-                .map(Engine::Child)
+                .map(|e| Engine::Child(Box::new(e)))
                 .map_err(|e| format!("{e:?}")),
             other => Err(format!("unknown mode {other}")),
         }
@@ -211,7 +212,7 @@ impl Engine {
     fn api(&mut self) -> &mut dyn DirectTransfer {
         match self {
             Engine::InProcess(e) => e,
-            Engine::Child(e) => e,
+            Engine::Child(e) => e.as_mut(),
         }
     }
 

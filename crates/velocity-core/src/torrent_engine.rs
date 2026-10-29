@@ -467,6 +467,11 @@ pub trait TorrentEngine: Send {
     fn restart(&mut self) -> Result<(), ErrorCode> {
         Err(ErrorCode::Unsupported)
     }
+    /// The helper's last stderr lines, redacted, for diagnostics (#28). Empty for an engine in the
+    /// app's process.
+    fn recent_log(&self) -> Vec<String> {
+        Vec::new()
+    }
 }
 
 /// The torrent engine the manager has when no torrent helper runs: the helper program couldn't
