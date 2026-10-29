@@ -118,7 +118,9 @@ describe('focus in dialogs', () => {
     renderApp();
     await user.click(await screen.findByRole('button', { name: 'Add download' }));
     const dialog = await screen.findByRole('dialog', { name: 'Add download' });
-    for (let i = 0; i < 40; i++) {
+    // One more Tab than the dialog has stops crosses its end at least once.
+    const stops = dialog.querySelectorAll('a[href], button:not(:disabled), input:not(:disabled), select:not(:disabled), textarea:not(:disabled), [tabindex]:not([tabindex="-1"])').length;
+    for (let i = 0; i <= stops; i++) {
       await user.tab();
       expect(dialog.contains(document.activeElement), `tab ${String(i)}`).toBe(true);
     }
