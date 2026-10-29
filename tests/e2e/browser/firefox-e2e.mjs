@@ -1,7 +1,7 @@
 // Real Firefox, driven through geckodriver's W3C WebDriver API (no npm package), with V2's add-on and V1's side by
 // side (#64, #65): ported from V1's tests/e2e/firefox-extension-e2e.mjs. A link clicked on a page goes through V2's
-// add-on and native host into the running V2, which downloads it; Firefox's own copy is cancelled. V1's add-on
-// reaches only V1's host (a recording stand-in), and V2 records the download once.
+// add-on and native host into the running V2, which records it once and holds it to confirm its local address (#67);
+// Firefox's own copy is cancelled. V1's add-on reaches only V1's host (a recording stand-in).
 //
 // Linux only (PO decision on #64): Firefox reads ~/.mozilla/native-messaging-hosts, and HOME is the throwaway one.
 // Build as for the Chromium test, then `pnpm test:e2e:firefox` under a display. Needs `firefox`, `geckodriver` and
@@ -118,14 +118,13 @@ try {
   const link = await cmd('POST', s('/element'), { using: 'css selector', value: '#dl' });
   await cmd('POST', s(`/element/${Object.values(link)[0]}/click`), {});
 
-  await w.checkV2Downloaded();
+  await w.checkV2Held();
 
   // Firefox's own copy: no complete file in its download folder.
   await sleep(1000);
   const leftovers = readdirSync(browserDownloads).filter((f) => f.startsWith('e2e-archive') && statSync(join(browserDownloads, f)).size > 0);
   check('Firefox left no copy of the file in its download folder', leftovers.length === 0, leftovers.join(', '));
 
-  await w.checkRecorded();
   w.checkV1Isolated(V1.firefoxExtensionId);
 } catch (e) {
   check('Firefox end-to-end run', false, String(e?.message ?? e));

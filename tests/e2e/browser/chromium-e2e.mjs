@@ -1,7 +1,7 @@
 // Real Chromium (Playwright's) with V2's extension and V1's side by side (#64, #65): a link clicked on a page is
 // intercepted by V2's extension, goes through V2's native host and the authenticated local connection into the
-// running V2, which downloads it; the browser's own copy is cancelled and erased. V1's extension, also installed,
-// reaches only V1's host (a recording stand-in), and V2 records the download once.
+// running V2, which records it once and holds it to confirm its local address (#67); the browser's own copy is
+// cancelled and erased. V1's extension, also installed, reaches only V1's host (a recording stand-in).
 //
 // Build first: `cargo build -p velocity-desktop-v2 -p velocity-transfer -p velocity-torrent -p velocity-native-host`
 // and `pnpm build:extension`; V1's extension built at ../velocity-download-manager (or V1_EXTENSION_DIR). Then
@@ -80,7 +80,7 @@ try {
   await page.goto(`${w.base}/`);
   await page.click('#dl');
 
-  await w.checkV2Downloaded();
+  await w.checkV2Held();
 
   const browserItems = await waitFor(async () => {
     const items = await popup.evaluate(() => chrome.downloads.search({}));
@@ -89,7 +89,6 @@ try {
   const left = browserItems.filter((i) => i.state === 'complete' && i.filename.endsWith('e2e-archive.zip'));
   check("the browser's copy was cancelled", left.length === 0, `${left.length} complete copy(ies)`);
 
-  await w.checkRecorded();
   w.checkV1Isolated(v1Origin);
 } catch (e) {
   check('Chromium end-to-end run', false, String(e?.message ?? e));

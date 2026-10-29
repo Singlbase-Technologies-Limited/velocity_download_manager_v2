@@ -1,12 +1,12 @@
 // The real-browser tests' set-up (#64, #65), ported from V1's tests/e2e/harness.mjs: a throwaway
 // data folder and home, a local file server, V2 started twice (the second time as a user who
-// finished the setup and turned off "Ask before adding"), and checks that V2, not the browser,
-// downloaded the file and recorded it. V1's extension runs beside V2's, talking to a recording
+// finished the setup and turned off "Ask before adding"), and checks that V2 took the link once
+// and holds it to confirm its local address (#67), without connecting. V1's extension runs beside V2's, talking to a recording
 // stand-in for V1's native host, to show each app gets only its own messages. Everything listens
 // on 127.0.0.1 only. See docs/BROWSER_EXTENSION.md#tests.
 import { execFileSync, spawn } from 'node:child_process';
-import { createHash, randomBytes } from 'node:crypto';
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { randomBytes } from 'node:crypto';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import http from 'node:http';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -99,8 +99,10 @@ export async function setup(prefix, required) {
   const env = { ...process.env, VELOCITY_V2_DATA_DIR: data, HOME: home };
 
   const payload = randomBytes(3 * 1024 * 1024);
-  const sha = createHash('sha256').update(payload).digest('hex');
+  // Each request for the file, with its User-Agent: a browser always sends one, and V2's engine sends none.
+  const fileRequests = [];
   const server = http.createServer((req, res) => {
+    if (req.url === '/files/e2e-archive.zip') fileRequests.push(req.headers['user-agent'] ?? '');
     if (req.url === '/') {
       res.writeHead(200, { 'content-type': 'text/html' });
       res.end('<!doctype html><a id="dl" href="/files/e2e-archive.zip">download</a>');
@@ -175,20 +177,21 @@ db.commit()
     return null;
   };
 
-  /** V2 (not the browser) wrote the whole file, in its automatic folder. */
-  const checkV2Downloaded = async () => {
-    const target = await waitFor(() => {
-      const p = find(downloads, 'e2e-archive.zip');
-      return p && statSync(p).size === payload.length ? p : null;
-    }, 60000, 'the file downloaded by V2');
-    const got = createHash('sha256').update(readFileSync(target)).digest('hex');
-    check('V2 downloaded the intercepted file', got === sha, `sha256 ${got.slice(0, 12)}…`);
-  };
   const query = (sql) => execFileSync(PYTHON, ['-I', '-c', 'import sqlite3,sys; print(sqlite3.connect(sys.argv[1]).execute(sys.argv[2]).fetchone()[0])', dbPath, sql]).toString().trim();
-  const checkRecorded = async () => {
-    const statuses = () => query("select group_concat(status) from downloads where source_url like '%e2e-archive.zip'");
-    const status = await waitFor(() => (statuses() === 'completed' ? 'completed' : null), 15000, 'a completed record').catch(() => statuses());
-    check('V2 recorded exactly one download, completed', status === 'completed', `status: ${status}`);
+  /**
+   * V2 took the link once and holds it for the user: the test page is on 127.0.0.1, and a link from the browser to
+   * a local address waits for "Download anyway" in the details panel (#67, ADR-0006). This test has no window to
+   * click it in, so it checks V2 stopped before connecting: no request for the file came from V2, and no file was
+   * written. The download itself is the engine tests' to check.
+   */
+  const checkV2Held = async () => {
+    const records = () => query("select count(*) || ' ' || group_concat(json_extract(error_json, '$.confirm.kind') || '@' || json_extract(error_json, '$.confirm.address')) from downloads where source_url like '%e2e-archive.zip'");
+    const held = await waitFor(() => (records() === '1 localAddress@127.0.0.1' ? records() : null), 60000, 'the link held for confirmation').catch(() => records());
+    check('V2 recorded the link once, held to confirm its local address', held === '1 localAddress@127.0.0.1', held);
+    const fromV2 = fileRequests.filter((ua) => !ua.includes('Mozilla')).length;
+    check('V2 asked the server for nothing before the user confirmed', fromV2 === 0, `${fromV2} request(s) without a browser's User-Agent`);
+    const written = find(downloads, 'e2e-archive.zip');
+    check('V2 wrote no file', written === null, written ?? '');
   };
 
   const stub = v1Stub(D);
@@ -214,7 +217,7 @@ db.commit()
     }
   };
 
-  return { D, env, downloads, base, stub, startPreseeded, checkV2Downloaded, checkRecorded, checkV1Isolated, teardown };
+  return { D, env, downloads, base, stub, startPreseeded, checkV2Held, checkV1Isolated, teardown };
 }
 
 export function finish() {
