@@ -139,7 +139,7 @@ fn http_and_ftp_logins_leave_no_trace_through_the_child_engine() {
         },
     );
     let ftp = FtpServer::start(
-        vec![("pub/b.bin".into(), data.clone())],
+        vec![("/pub/b.bin".into(), data.clone())],
         FtpOptions {
             login: Some(("ftp-user".to_owned(), FTP_PASSWORD.to_owned())),
             ..FtpOptions::default()
