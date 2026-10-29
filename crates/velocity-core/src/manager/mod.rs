@@ -896,8 +896,6 @@ impl Manager {
     /// on disk, under the name it was saved as.
     fn start(&mut self, id: &str) -> Result<(), ErrorCode> {
         let d = self.downloads.get_mut(id).expect("known");
-        // Until the engine reports it running, this run doesn't count.
-        d.activity.forget_run();
         let name = d.record.file_name.clone();
         let Some(job) = d.direct_mut() else {
             self.start_torrent(id)?;

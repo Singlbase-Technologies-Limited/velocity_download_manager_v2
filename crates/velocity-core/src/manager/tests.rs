@@ -2264,6 +2264,26 @@ mod engine_loss {
     }
 
     #[test]
+    fn the_time_without_an_engine_does_not_lower_the_average_speed() {
+        // #59: a download the engine lost wasn't running until the engine reports it again.
+        let (mut m, control, id) = setup();
+        control.progress(TransferId(1), 0, Some(10_000_000));
+        m.pump(T0 + 1_000);
+        control.progress(TransferId(1), 1_000_000, Some(10_000_000));
+        m.pump(T0 + 2_000);
+        control.fail(TransferId(1), lost());
+        control.set_unavailable(Some(ErrorCode::EngineUnavailable));
+        m.pump(T0 + 3_000);
+        control.set_unavailable(None);
+        m.pump(T0 + 60_000);
+        control.progress(TransferId(2), 1_000_000, Some(10_000_000));
+        m.pump(T0 + 61_000);
+        control.progress(TransferId(2), 2_000_000, Some(10_000_000));
+        m.pump(T0 + 62_000);
+        assert_eq!(m.get(&id).unwrap().average_speed_bps, Some(1_000_000));
+    }
+
+    #[test]
     fn a_retrying_download_the_engine_lost_waits_without_a_retry_time() {
         // #59: the engine that would have tried again is gone, so there's nothing to count to.
         let (mut m, control, id) = setup();
