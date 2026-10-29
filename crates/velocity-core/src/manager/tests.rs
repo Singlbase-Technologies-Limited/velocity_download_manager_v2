@@ -3984,19 +3984,37 @@ mod adding {
     }
 
     #[test]
-    fn a_protocol_the_engine_lacks_is_refused_with_why() {
+    fn a_protocol_the_engine_lacks_is_refused_with_why_before_any_folder_is_made() {
+        let s = setup("lacks");
         let mut caps = Capabilities::sample();
         caps.protocols.retain(|p| p.kind != DownloadKind::Sftp);
-        let db = Arc::new(Database::open_in_memory().unwrap());
-        let mut m = Manager::open(Box::new(FakeTransfer::with_capabilities(caps)), db).unwrap();
+        // Category subfolders on: placing the link would create one.
+        s.db.save_section(
+            &FolderSettings {
+                default_directory: s.dir.to_string_lossy().into_owned(),
+                ..FolderSettings::default()
+            },
+            T0,
+        )
+        .unwrap();
+        let mut m = Manager::open(
+            Box::new(FakeTransfer::with_capabilities(caps)),
+            Arc::clone(&s.db),
+        )
+        .unwrap();
         let results = m
-            .add_request(&links(&["sftp://files.example/a.tar"]), T0)
+            .add_request(&links(&["sftp://files.example/a.zip"]), T0)
             .unwrap();
         assert_eq!(
             results[0].outcome,
             AddOutcome::Failed {
                 code: ErrorCode::Unsupported
             }
+        );
+        assert_eq!(
+            fs::read_dir(&s.dir).unwrap().count(),
+            0,
+            "no category subfolder was made for it"
         );
     }
 

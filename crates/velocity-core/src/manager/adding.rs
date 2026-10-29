@@ -422,6 +422,10 @@ impl Manager {
             return self.add_magnet(link, request, shared, known, now_ms);
         }
         let kind = direct_kind(link)?;
+        // A protocol the engine lacks is refused before placing it can make a folder.
+        if self.engine.capabilities().protocol(kind).is_none() {
+            return Err(ErrorCode::Unsupported);
+        }
         // A login goes in its own fields, never in the link (#40).
         if split_login(link).1.is_some() {
             return Err(ErrorCode::InvalidUrl);
