@@ -66,7 +66,7 @@ impl Manager {
             && d.record
                 .error
                 .as_ref()
-                .and_then(|e| e.confirm.as_ref())
+                .and_then(|e| e.confirm.as_deref())
                 .is_some_and(|c| c.kind() == kind);
         if !waiting {
             return Err(ErrorCode::InvalidState);

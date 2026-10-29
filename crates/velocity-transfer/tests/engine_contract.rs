@@ -1147,7 +1147,7 @@ fn a_link_from_the_browser_to_this_computer_waits_until_the_user_allows_it() {
         });
         assert_eq!(done.status, DownloadStatus::Failed, "{mode}: {done:?}");
         assert_eq!(
-            done.error.and_then(|e| e.confirm),
+            done.error.and_then(|e| e.confirm).map(|c| *c),
             Some(Confirm::LocalAddress {
                 host: "127.0.0.1".to_owned(),
                 address: "127.0.0.1".to_owned(),
