@@ -82,7 +82,9 @@ pub enum FailureClass {
     Permanent,
 }
 
-/// A transfer failure as the engine reports it, independent of the engine behind it.
+/// A transfer failure as the engine reports it, independent of the engine behind it. The host key
+/// and the confirmation are boxed, so the error stays small where it is passed by value (#67:
+/// clippy's `result_large_err` in the engine).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct TransferError {
@@ -92,12 +94,12 @@ pub struct TransferError {
     pub retryable: bool,
     /// An SFTP server's host key that wasn't trusted (#53): the download waits for the user to
     /// confirm an unknown key's fingerprint, and a changed key is always refused. `None` otherwise.
-    pub host_key: Option<HostKeyCheck>,
+    pub host_key: Option<Box<HostKeyCheck>>,
     /// What the user must confirm before the download can go on (#67): it waits, and goes on
     /// once allowed ([`crate::manager::Manager::allow_download`]). `None` otherwise; absent in
     /// errors stored before it existed.
     #[serde(default)]
-    pub confirm: Option<Confirm>,
+    pub confirm: Option<Box<Confirm>>,
 }
 
 /// What a download stopped at, for the user to confirm (#67).
@@ -158,13 +160,13 @@ impl TransferError {
 
     /// The same error, about an SFTP server's untrusted host key (#53).
     pub fn with_host_key(mut self, check: HostKeyCheck) -> Self {
-        self.host_key = Some(check);
+        self.host_key = Some(Box::new(check));
         self
     }
 
     /// The same error, waiting for the user to confirm `confirm` (#67).
     pub fn with_confirm(mut self, confirm: Confirm) -> Self {
-        self.confirm = Some(confirm);
+        self.confirm = Some(Box::new(confirm));
         self
     }
 }

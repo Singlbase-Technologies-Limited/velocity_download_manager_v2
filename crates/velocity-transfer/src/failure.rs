@@ -487,8 +487,8 @@ mod tests {
         });
         assert_eq!(e.class, FailureClass::Permanent, "never retried on its own");
         assert_eq!(
-            e.confirm,
-            Some(Confirm::InsecureRedirect {
+            e.confirm.as_deref(),
+            Some(&Confirm::InsecureRedirect {
                 host: "mirror.example.com".to_owned()
             })
         );
@@ -503,8 +503,8 @@ mod tests {
         }));
         assert_eq!(e.class, FailureClass::Permanent, "never retried on its own");
         assert_eq!(
-            e.confirm,
-            Some(Confirm::LocalAddress {
+            e.confirm.as_deref(),
+            Some(&Confirm::LocalAddress {
                 host: "router.example".to_owned(),
                 address: "192.168.1.1".to_owned(),
             })
