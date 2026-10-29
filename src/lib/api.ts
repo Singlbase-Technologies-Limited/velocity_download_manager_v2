@@ -15,6 +15,8 @@ import {
   type AddRequest,
   type AppearanceSettings,
   type Category,
+  type DownloadLogin,
+  type MoveDirection,
 } from '../contract';
 import { ApiError, ERROR_MESSAGES, toApiError } from './errors';
 
@@ -80,4 +82,19 @@ export const api = {
   /** Trusts the SFTP host key the user confirmed (#53); the download is then retried. */
   trustHostKey: (host: string, port: number, fingerprint: string) => call('trust_host_key', { host, port, fingerprint }, nothing),
   retryDownloads: (ids: string[]) => call('retry_downloads', { ids }, BatchResultSchema),
+  // The list's commands (#58, #59). Those over several downloads say what each did.
+  pauseDownloads: (ids: string[]) => call('pause_downloads', { ids }, BatchResultSchema),
+  resumeDownloads: (ids: string[]) => call('resume_downloads', { ids }, BatchResultSchema),
+  cancelDownloads: (ids: string[]) => call('cancel_downloads', { ids }, BatchResultSchema),
+  removeDownloads: (ids: string[], deleteFiles: boolean) => call('remove_downloads', { ids, deleteFiles }, BatchResultSchema),
+  retryFailed: () => call('retry_failed', undefined, nothing),
+  pauseAll: () => call('pause_all', undefined, nothing),
+  resumeAll: () => call('resume_all', undefined, nothing),
+  /** How many completed downloads left the list. */
+  clearCompleted: () => call('clear_completed', undefined, z.number().int().nonnegative()),
+  moveDownload: (id: string, direction: MoveDirection) => call('move_download', { id, direction }, nothing),
+  /** Stops a torrent seeding: its seeding policy becomes "never". */
+  stopSeeding: (id: string) => call('set_torrent_seeding', { id, seeding: { mode: 'never' } }, nothing),
+  /** Gives a download that came back without its login, headers or SSH key those again; then resume or retry it. */
+  setDownloadLogin: (id: string, login: DownloadLogin) => call('set_download_login', { id, login }, nothing),
 };

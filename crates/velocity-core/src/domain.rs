@@ -1024,6 +1024,27 @@ mod tests {
         }
 
         #[test]
+        fn contract_download_login() {
+            use crate::manager::SensitiveOptions;
+            use crate::transfer::{Credentials, Header, SshKey};
+            let login = SensitiveOptions {
+                credentials: Some(Credentials {
+                    user_name: "user".to_owned(),
+                    password: "not-a-real-password".to_owned(),
+                }),
+                ssh_key: Some(SshKey {
+                    path: std::path::PathBuf::from("/home/user/.ssh/id_ed25519"),
+                    passphrase: None,
+                }),
+                headers: vec![Header {
+                    name: "X-Example".to_owned(),
+                    value: "example".to_owned(),
+                }],
+            };
+            check("download-login.json", serde_json::to_value(login).unwrap());
+        }
+
+        #[test]
         fn contract_columns() {
             use crate::app_settings::{ColumnId, COLUMN_MAX_WIDTH, COLUMN_MIN_WIDTH};
             check(

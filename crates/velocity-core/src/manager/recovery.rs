@@ -38,8 +38,10 @@ const LOGIN_NOTE: &str = "Velocity doesn't keep logins, custom headers or SSH ke
                           closes. Resume this download to enter its login again.";
 
 /// What a download keeps in memory only (#70), given again by the user when a download that had
-/// it comes back after a restart.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+/// it comes back after a restart: `set_download_login` (#59). Each part redacts its secrets in
+/// `Debug`.
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SensitiveOptions {
     pub credentials: Option<Credentials>,
     pub ssh_key: Option<SshKey>,
@@ -254,16 +256,22 @@ impl Manager {
     }
 
     /// Gives a download that came back without its login, headers or SSH key those again; the
-    /// caller then resumes or retries it. `InvalidState` for one that doesn't need them.
+    /// caller then resumes or retries it. `InvalidState` for one that doesn't need them. They are
+    /// checked as when the download was added (#59), and refused whole if one isn't valid.
     pub fn set_login(&mut self, id: &str, options: SensitiveOptions) -> Result<(), ErrorCode> {
         let d = self.downloads.get_mut(id).ok_or(ErrorCode::NotFound)?;
         if !d.needs_login {
             return Err(ErrorCode::InvalidState);
         }
-        let request = &mut d.direct_mut().ok_or(ErrorCode::InvalidState)?.request;
-        request.credentials = options.credentials;
-        request.ssh_key = options.ssh_key;
-        request.headers = options.headers;
+        let job = d.direct_mut().ok_or(ErrorCode::InvalidState)?;
+        let request = TransferSpec {
+            credentials: options.credentials,
+            ssh_key: options.ssh_key,
+            headers: options.headers,
+            ..job.request.clone()
+        };
+        request.check_request()?;
+        job.request = request;
         d.needs_login = false;
         if d.record
             .error

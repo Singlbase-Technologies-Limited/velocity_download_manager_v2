@@ -262,6 +262,17 @@ export type SshKey = z.infer<typeof SshKeySchema>;
 export const HashAlgorithmSchema = z.enum(['md5', 'sha1', 'sha224', 'sha256', 'sha384', 'sha512']);
 export type HashAlgorithm = z.infer<typeof HashAlgorithmSchema>;
 
+/** What a download that came back after a restart without them is given again (#59): `set_download_login`. */
+export const DownloadLoginSchema = z.strictObject({
+  credentials: CredentialsSchema.nullable(),
+  sshKey: SshKeySchema.nullable(),
+  headers: z.array(HeaderSchema),
+});
+export type DownloadLogin = z.infer<typeof DownloadLoginSchema>;
+
+/** Where `move_download` takes a waiting download in the queue (#50). */
+export type MoveDirection = 'top' | 'up' | 'down' | 'bottom';
+
 /** A whole-file hash to verify before the download completes (#46). */
 export const ChecksumSchema = z.strictObject({ algorithm: HashAlgorithmSchema, hex: z.string() });
 export type Checksum = z.infer<typeof ChecksumSchema>;

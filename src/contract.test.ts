@@ -17,6 +17,7 @@ import {
   ConnectionLimitSchema,
   COMMAND_API_VERSION,
   DestinationCheckSchema,
+  DownloadLoginSchema,
   DownloadRecordSchema,
   DownloadsSnapshotSchema,
   DownloadStatusSchema,
@@ -100,6 +101,10 @@ describe('contract fixtures generated from Rust', () => {
 
   it('shell settings (#29)', () => {
     expect(ShellSettingsSchema.parse(fixture('shell-settings.json'))).toEqual(fixture('shell-settings.json'));
+  });
+
+  it('a login given again (#59), with every part set', () => {
+    expect(DownloadLoginSchema.parse(fixture('download-login.json'))).toEqual(fixture('download-login.json'));
   });
 
   it('the list columns: exactly the ids the schema knows, in order, the defaults and the width bounds (#59)', () => {

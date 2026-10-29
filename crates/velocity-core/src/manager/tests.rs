@@ -1494,7 +1494,7 @@ mod recovery {
     use super::*;
     use crate::database::{NewDownload, QueueEntry};
     use crate::queue::QueueSettings;
-    use crate::transfer::{Checkpoint, Credentials, Resume, CHECKPOINT_FORMAT};
+    use crate::transfer::{Checkpoint, Credentials, Header, Resume, SshKey, CHECKPOINT_FORMAT};
 
     fn named(name: &str) -> TransferSpec {
         TransferSpec {
@@ -1718,6 +1718,54 @@ mod recovery {
         assert_eq!(control.spec(TransferId(1)).credentials, Some(login));
         assert_eq!(m.get(&id).unwrap().error, None, "the note is gone");
         assert!(!m.needs_login(&id));
+    }
+
+    #[test]
+    fn a_login_given_again_is_checked_as_when_it_was_added() {
+        // #59: the window sends it, so it is untrusted, as the Add dialog's is.
+        let db = Arc::new(Database::open_in_memory().unwrap());
+        let id = {
+            let (mut m, _control) = restart(&db, 1);
+            let s = TransferSpec {
+                credentials: Some(Credentials {
+                    user_name: "user".to_owned(),
+                    password: "secret".to_owned(),
+                }),
+                ..spec()
+            };
+            m.add(DownloadKind::Http, s, T0).unwrap()
+        };
+        let (mut m, _control) = restart(&db, 1);
+        let header = |name: &str| Header {
+            name: name.to_owned(),
+            value: "v".to_owned(),
+        };
+        let refused = [
+            SensitiveOptions {
+                headers: vec![header("Host")],
+                ..SensitiveOptions::default()
+            },
+            SensitiveOptions {
+                headers: vec![header("Bad\r\nName")],
+                ..SensitiveOptions::default()
+            },
+            // A key logs in to SFTP only; this is an https download.
+            SensitiveOptions {
+                ssh_key: Some(SshKey {
+                    path: std::env::temp_dir().join("id_ed25519"),
+                    passphrase: None,
+                }),
+                credentials: Some(Credentials {
+                    user_name: "user".to_owned(),
+                    password: String::new(),
+                }),
+                ..SensitiveOptions::default()
+            },
+        ];
+        for options in refused {
+            assert!(m.set_login(&id, options).is_err());
+            assert!(m.needs_login(&id), "it still waits for a valid login");
+        }
     }
 
     #[test]
