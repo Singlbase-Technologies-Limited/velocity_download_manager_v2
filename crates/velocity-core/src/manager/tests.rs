@@ -2827,30 +2827,45 @@ mod settings_screen {
 
     #[test]
     fn saving_applies_them_at_once() {
+        // A folder of its own: the system's Downloads folder isn't there on every machine.
+        let dir = std::env::temp_dir().join(format!("v2-settings-apply-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
         let mut s = setup();
-        s.m.set_settings(&changed(), T0).unwrap();
+        let mut settings = changed();
+        settings.downloads.default_directory = dir.to_string_lossy().into_owned();
+        settings.downloads.category_subfolders = false;
+        s.m.set_settings(&settings, T0).unwrap();
         assert_eq!(s.direct.engine_settings(), changed().engine);
         assert_eq!(s.direct.global_limits().max_download_bps, Some(512 * 1024));
         assert!(s.torrents.log().contains(&"set_settings".to_owned()));
         assert_eq!(s.m.queue_settings_now().max_concurrent_downloads, 5);
-        let id = s.m.add(DownloadKind::Http, spec(), T0).unwrap();
-        let _ = id;
         let request = AddRequest {
             links: vec!["https://example.com/files/b.zip".to_owned()],
             ..AddRequest::default()
         };
-        s.m.add_request(&request, T0).unwrap();
-        let last = s
-            .direct
-            .log()
-            .iter()
-            .filter(|l| l.as_str() == "add")
-            .count() as u64;
+        let results = s.m.add_request(&request, T0).unwrap();
+        assert!(
+            matches!(results[0].outcome, AddOutcome::Added { .. }),
+            "{:?}",
+            results[0].outcome
+        );
+        // The engine was given exactly this one download, after the settings.
         assert_eq!(
-            s.direct.spec(TransferId(last)).user_agent.as_deref(),
+            s.direct.log(),
+            [
+                "set_engine_limits",
+                "set_engine_settings",
+                "set_global_limits",
+                "add"
+            ]
+        );
+        assert_eq!(
+            s.direct.spec(TransferId(1)).user_agent.as_deref(),
             Some("Velocity-Test/1"),
             "new downloads send the user's user agent"
         );
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
