@@ -268,10 +268,11 @@ describe('the sidebar and status bar', () => {
     await waitFor(() => { expect(status.textContent).toContain('Transfer engine unavailable'); });
   });
 
-  it('the list views say the list comes with #59, not an empty list', async () => {
+  it('each list view says what it would hold when it is empty (#59)', async () => {
+    useUiStore.setState({ view: 'failed' });
     installFakeBackend();
     renderApp();
-    expect(await screen.findByText(/The download list comes in a later update/)).toBeTruthy();
+    expect(await screen.findByText('No failed downloads')).toBeTruthy();
   });
 });
 
