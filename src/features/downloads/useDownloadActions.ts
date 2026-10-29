@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react';
 import { toast } from 'sonner';
 import { confirmAction } from '../../components/confirmStore';
-import type { BatchResult, DownloadRecord, ErrorCode, KeptFile, KeptReason, MoveDirection } from '../../contract';
+import type { BatchResult, ConfirmKind, DownloadRecord, ErrorCode, KeptFile, KeptReason, MoveDirection } from '../../contract';
 import { displayName } from '../../downloads/list';
 import { api } from '../../lib/api';
 import { ApiError, ERROR_MESSAGES, toApiError } from '../../lib/errors';
@@ -83,6 +83,8 @@ export function useDownloadActions() {
       pause: (ids: string[]) => send(async () => { report(await api.pauseDownloads(ids), 'Paused'); }),
       resume: (ids: string[]) => withLogin(ids, 'resume', api.resumeDownloads, 'Resumed'),
       retry: (ids: string[]) => withLogin(ids, 'retry', api.retryDownloads, 'Retrying'),
+      /** Allows what the download stopped at for the user's confirmation, which retries it (#67). */
+      allow: (id: string, kind: ConfirmKind) => send(async () => { await api.allowDownload(id, kind); toast.success('Retrying'); }),
       cancel: (ids: string[]) => send(async () => { report(await api.cancelDownloads(ids), 'Cancelled'); }),
       async remove(items: DownloadRecord[]) {
         const active = items.filter((d) => !['completed', 'failed', 'removed', 'unknown'].includes(d.status));

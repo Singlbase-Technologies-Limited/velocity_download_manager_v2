@@ -129,6 +129,7 @@ fn a_followed_metalink_downloads_its_file_and_fetches_only_a_bad_piece_again() {
         resume: None,
         require_encryption: false,
         ssh_key: None,
+        trust: Default::default(),
     };
     let id = m.add(DownloadKind::Http, link, 0).unwrap();
     assert_eq!(finished(&mut m, &id), DownloadStatus::Completed);

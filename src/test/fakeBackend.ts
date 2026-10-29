@@ -190,6 +190,7 @@ export function installFakeBackend(over: Partial<FakeState> = {}): FakeState {
         case 'choose_ssh_key':
           return state.chosenKey;
         case 'trust_host_key':
+        case 'allow_download':
           return null;
         case 'pause_downloads':
         case 'resume_downloads':

@@ -158,6 +158,7 @@ mod tests {
             limits: Limits::default(),
             max_connections: 4,
             resume: None,
+            trust: Default::default(),
         }
     }
 

@@ -24,6 +24,7 @@ fn spec() -> TransferSpec {
         resume: None,
         require_encryption: false,
         ssh_key: None,
+        trust: Default::default(),
     }
 }
 
@@ -5595,4 +5596,173 @@ mod adding_through_the_service {
         drop(service);
         let _ = fs::remove_dir_all(&dir);
     }
+}
+
+/// What a download stops at for the user's confirmation (#67): a redirect from https to http, and
+/// a link from the browser that reaches this computer or a private network (ADR-0006).
+mod confirmations {
+    use super::*;
+    use crate::domain::{Confirm, ConfirmKind};
+    use crate::transfer::Trust;
+
+    fn local_address() -> TransferError {
+        TransferError::new(FailureClass::Permanent, None, "a local address").with_confirm(
+            Confirm::LocalAddress {
+                host: "router.example".to_owned(),
+                address: "192.168.1.1".to_owned(),
+            },
+        )
+    }
+
+    fn from_browser() -> TransferSpec {
+        TransferSpec {
+            trust: Trust {
+                from_browser: true,
+                ..Trust::default()
+            },
+            ..spec()
+        }
+    }
+
+    #[test]
+    fn allowing_a_local_address_retries_the_download_with_it_confirmed() {
+        let fake = FakeTransfer::new();
+        let control = fake.control();
+        let mut m = in_memory(fake);
+        let id = m.add(DownloadKind::Http, from_browser(), T0).unwrap();
+        m.pump(T0);
+        assert!(control.spec(TransferId(1)).trust.confirms_local_addresses());
+        control.fail(TransferId(1), local_address());
+        m.pump(T0 + 1);
+        assert_eq!(status(&m, &id), DownloadStatus::Failed);
+
+        m.allow_download(&id, ConfirmKind::LocalAddress).unwrap();
+        m.pump(T0 + 2);
+        let again = control.spec(TransferId(2));
+        assert!(again.trust.from_browser && again.trust.local_address_confirmed);
+        assert!(!again.trust.confirms_local_addresses());
+        assert!(!again.trust.insecure_redirect_confirmed, "only what was asked");
+        assert_eq!(m.get(&id).unwrap().error, None);
+    }
+
+    #[test]
+    fn allowing_a_redirect_to_http_retries_the_download_with_it_confirmed() {
+        let (mut m, control, id) = setup();
+        let error = TransferError::new(FailureClass::Permanent, None, "insecure").with_confirm(
+            Confirm::InsecureRedirect {
+                host: "mirror.example".to_owned(),
+            },
+        );
+        control.fail(TransferId(1), error);
+        m.pump(T0 + 1);
+        m.allow_download(&id, ConfirmKind::InsecureRedirect).unwrap();
+        let again = control.spec(TransferId(2));
+        assert!(again.trust.insecure_redirect_confirmed);
+        assert!(!again.trust.local_address_confirmed);
+    }
+
+    #[test]
+    fn nothing_is_allowed_that_the_download_didnt_stop_at() {
+        let (mut m, control, id) = setup();
+        // Not failed yet.
+        assert_eq!(
+            m.allow_download(&id, ConfirmKind::LocalAddress),
+            Err(ErrorCode::InvalidState)
+        );
+        // Failed for another reason, or waiting for the other confirmation.
+        control.fail(
+            TransferId(1),
+            TransferError::new(FailureClass::Permanent, Some(404), "Not found"),
+        );
+        m.pump(T0 + 1);
+        assert_eq!(
+            m.allow_download(&id, ConfirmKind::LocalAddress),
+            Err(ErrorCode::InvalidState)
+        );
+        assert_eq!(control.log(), ["add"], "nothing retried");
+        assert_eq!(
+            m.allow_download("d-missing", ConfirmKind::LocalAddress),
+            Err(ErrorCode::NotFound)
+        );
+    }
+
+    #[test]
+    fn where_a_download_came_from_and_what_was_allowed_survive_a_restart() {
+        let db = Arc::new(Database::open_in_memory().unwrap());
+        let fake = FakeTransfer::new();
+        let control = fake.control();
+        let mut m = Manager::open(Box::new(fake), Arc::clone(&db)).unwrap();
+        let id = m.add(DownloadKind::Http, from_browser(), T0).unwrap();
+        m.pump(T0);
+        control.fail(TransferId(1), local_address());
+        m.pump(T0 + 1);
+        m.allow_download(&id, ConfirmKind::LocalAddress).unwrap();
+        m.pump(T0 + 2);
+        drop(m);
+
+        let fake = FakeTransfer::new();
+        let control = fake.control();
+        let mut m = Manager::open(Box::new(fake), Arc::clone(&db)).unwrap();
+        m.pump(T0 + 3);
+        let again = control.spec(TransferId(1));
+        assert_eq!(
+            again.trust,
+            Trust {
+                from_browser: true,
+                local_address_confirmed: true,
+                insecure_redirect_confirmed: false,
+            }
+        );
+    }
+
+    #[test]
+    fn a_link_from_the_browser_is_marked_and_a_typed_one_isnt() {
+        let dir = std::env::temp_dir().join(format!("v2-from-browser-{}", std::process::id()));
+        let fake = FakeTransfer::new();
+        let control = fake.control();
+        let mut m = in_memory(fake);
+        for (from_browser, file) in [(true, "b.zip"), (false, "t.zip")] {
+            let request = AddRequest {
+                links: vec![format!("https://example.com/{file}")],
+                directory: Some(dir.to_string_lossy().into_owned()),
+                create_directory: true,
+                from_browser,
+                ..AddRequest::default()
+            };
+            m.add_request(&request, T0).unwrap();
+        }
+        m.pump(T0);
+        assert!(control.spec(TransferId(1)).trust.from_browser);
+        assert!(!control.spec(TransferId(2)).trust.from_browser);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+/// An international domain name is stored and shown in its ASCII form (PO decision on #67).
+#[test]
+fn a_link_with_an_international_domain_name_is_added_in_its_ascii_form() {
+    let dir = std::env::temp_dir().join(format!("v2-idn-{}", std::process::id()));
+    let fake = FakeTransfer::new();
+    let control = fake.control();
+    let mut m = in_memory(fake);
+    let request = AddRequest {
+        links: vec!["https://b\u{fc}cher.example/a.zip".to_owned()],
+        directory: Some(dir.to_string_lossy().into_owned()),
+        create_directory: true,
+        ..AddRequest::default()
+    };
+    let results = m.add_request(&request, T0).unwrap();
+    let AddOutcome::Added { id } = &results[0].outcome else {
+        panic!("{results:?}");
+    };
+    assert_eq!(
+        m.get(id).unwrap().source_url,
+        "https://xn--bcher-kva.example/a.zip"
+    );
+    m.pump(T0);
+    assert_eq!(
+        control.spec(TransferId(1)).urls,
+        ["https://xn--bcher-kva.example/a.zip"]
+    );
+    let _ = std::fs::remove_dir_all(&dir);
 }

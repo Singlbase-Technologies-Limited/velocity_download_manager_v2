@@ -7,7 +7,9 @@ use super::{from_sql_int, to_sql_int, Database, DatabaseError};
 use crate::domain::{
     DownloadKind, DownloadRecord, DownloadStatus, ErrorCode, TransferError, Verification,
 };
-use crate::transfer::{Checkpoint, Checksum, PieceHashes, Resume, TransferSpec, CHECKPOINT_FORMAT};
+use crate::transfer::{
+    Checkpoint, Checksum, PieceHashes, Resume, TransferSpec, Trust, CHECKPOINT_FORMAT,
+};
 
 /// The engine a record is routed to. A record never changes engine.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -93,6 +95,9 @@ pub struct StoredOptions {
     pub checksum: Option<Checksum>,
     #[serde(default)]
     pub pieces: Option<PieceHashes>,
+    /// Where the download came from, and what the user confirmed for it (#67).
+    #[serde(default)]
+    pub trust: Trust,
 }
 
 impl StoredOptions {
@@ -107,6 +112,7 @@ impl StoredOptions {
             referrer: spec.referrer.as_deref().map(Checkpoint::source_of),
             checksum: spec.checksum.clone(),
             pieces: spec.pieces.clone(),
+            trust: spec.trust,
         }
     }
 }

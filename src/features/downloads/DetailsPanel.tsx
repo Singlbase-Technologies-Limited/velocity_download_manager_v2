@@ -131,7 +131,12 @@ export function DetailsPanel({ id, hidden, actions, busy, needsLogin, now, onClo
               {d.error.httpStatus !== null ? `HTTP ${String(d.error.httpStatus)}. ` : ''}
               {d.error.retryable ? 'This kind of failure can usually be retried.' : 'Retrying is unlikely to help without changing the request.'}
             </p>
-            {can.retry ? (
+            {d.status === 'failed' && d.error.confirm ? (
+              // The user's answer, for this download only (#67): a plain retry would only stop at the same place.
+              <Button size="sm" variant="secondary" className="mt-2" disabled={busy} onClick={() => { if (d.error?.confirm) void actions.allow(d.id, d.error.confirm.kind); }}>
+                <RotateCcw /> {d.error.confirm.kind === 'insecureRedirect' ? 'Continue over http' : 'Download anyway'}
+              </Button>
+            ) : can.retry ? (
               <Button size="sm" variant="secondary" className="mt-2" disabled={busy} onClick={() => void actions.retry([d.id])}>
                 <RotateCcw /> Retry
               </Button>

@@ -5,7 +5,7 @@
 import { z } from 'zod';
 
 /** Must equal `velocity_core::COMMAND_API_VERSION`; the app refuses to start on a mismatch. */
-export const COMMAND_API_VERSION = 17;
+export const COMMAND_API_VERSION = 18;
 
 const bytes = z.number().int().nonnegative();
 
@@ -41,12 +41,21 @@ export const HostKeyCheckSchema = z.strictObject({
 });
 export type HostKeyCheck = z.infer<typeof HostKeyCheckSchema>;
 
+/** What a download stopped at for the user to confirm (#67): a redirect from https to http, or a link from the browser that reaches this computer or a private network (ADR-0006). */
+export const ConfirmSchema = z.discriminatedUnion('kind', [
+  z.strictObject({ kind: z.literal('insecureRedirect'), host: z.string() }),
+  z.strictObject({ kind: z.literal('localAddress'), host: z.string(), address: z.string() }),
+]);
+export type Confirm = z.infer<typeof ConfirmSchema>;
+export type ConfirmKind = Confirm['kind'];
+
 export const TransferErrorSchema = z.strictObject({
   class: FailureClassSchema,
   httpStatus: z.number().int().min(100).max(599).nullable(),
   message: z.string(),
   retryable: z.boolean(),
   hostKey: HostKeyCheckSchema.nullable(),
+  confirm: ConfirmSchema.nullable(),
 });
 export type TransferError = z.infer<typeof TransferErrorSchema>;
 
@@ -352,6 +361,8 @@ export const AddRequestSchema = z.strictObject({
   seeding: SeedPolicySchema.nullable(),
   /** KiB/s each torrent uploads at most; 0 for no limit. */
   uploadLimitKib: z.number().int().nonnegative(),
+  /** The browser extension sent the links (#65): a link that reaches this computer or a private network waits for the user (#67). */
+  fromBrowser: z.boolean(),
 });
 export type AddRequest = z.infer<typeof AddRequestSchema>;
 

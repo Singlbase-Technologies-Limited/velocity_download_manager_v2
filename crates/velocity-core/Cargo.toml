@@ -17,6 +17,7 @@ jiff.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 regex.workspace = true
+url.workspace = true
 quick-xml.workspace = true
 # Info hashes for torrents (#62): the SHA-1 and SHA-2 the engine already uses (#46).
 sha1.workspace = true
