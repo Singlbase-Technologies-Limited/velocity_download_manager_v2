@@ -72,6 +72,82 @@ impl Manager {
     }
 }
 
+/// The Settings screen's settings (#30): read, saved whole and applied at once.
+impl Manager {
+    /// Every setting the Settings screen edits, as saved, or the defaults of those never saved.
+    pub fn settings(&self) -> Result<crate::settings::Settings, ErrorCode> {
+        Ok(crate::settings::Settings {
+            general: self.settings_section()?,
+            notifications: self.settings_section()?,
+            downloads: self.settings_section()?,
+            queue: self.settings_section()?,
+            performance: self.settings_section()?,
+            engine: self.settings_section()?,
+            advanced: self.settings_section()?,
+            torrent: self.settings_section()?,
+            new_torrents: self.settings_section()?,
+            storage: self.settings_section()?,
+        })
+    }
+
+    /// Checks every section, saves them in one write, and applies them at once. Nothing is saved
+    /// or applied when one is refused (`InvalidInput`). An engine that isn't running gets them when
+    /// it next starts. Returns the settings as saved.
+    pub fn set_settings(
+        &mut self,
+        settings: &crate::settings::Settings,
+        now_ms: u64,
+    ) -> Result<crate::settings::Settings, ErrorCode> {
+        let settings = settings.checked()?;
+        self.database
+            .save_sections(settings.sections()?, now_ms)
+            .map_err(|e| e.code)?;
+        self.apply_settings(&settings, now_ms)?;
+        Ok(settings)
+    }
+
+    /// Back to the defaults, keeping the folder downloads go to (V1's `reset_settings`).
+    pub fn reset_settings(&mut self, now_ms: u64) -> Result<crate::settings::Settings, ErrorCode> {
+        let mut defaults = crate::settings::Settings::default();
+        defaults.downloads.default_directory = self.settings()?.downloads.default_directory;
+        self.set_settings(&defaults, now_ms)
+    }
+
+    /// Applies the saved settings, when the app starts.
+    pub fn apply_saved_settings(&mut self, now_ms: u64) -> Result<(), ErrorCode> {
+        let settings = self.settings()?;
+        self.apply_settings(&settings, now_ms)
+    }
+
+    /// Gives each part of the app its settings. The engines may be unavailable: they get them when
+    /// they start (the supervisors keep the last ones they were given).
+    fn apply_settings(
+        &mut self,
+        s: &crate::settings::Settings,
+        now_ms: u64,
+    ) -> Result<(), ErrorCode> {
+        self.set_queue_settings(s.queue.clone())?;
+        self.metalink_enabled = s.advanced.enable_metalink;
+        self.torrents_enabled = s.advanced.enable_bittorrent;
+        self.user_agent = s.advanced.user_agent.clone();
+        let global = crate::transfer::Limits::from_kib(s.advanced.global_download_limit_kib)?;
+        let engine = [
+            self.set_performance(s.performance),
+            self.engine.set_engine_settings(s.engine),
+            self.engine.set_global_limits(global),
+            self.torrents.set_settings(s.torrent.clone()),
+        ];
+        for result in engine {
+            match result {
+                Ok(()) | Err(ErrorCode::EngineUnavailable) => {}
+                Err(code) => return Err(code),
+            }
+        }
+        self.apply_retention(now_ms)?;
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
@@ -180,81 +256,5 @@ mod tests {
         };
         assert_eq!(m.set_appearance(&wide, T0), Err(ErrorCode::InvalidInput));
         assert_eq!(m.shell_settings().unwrap().appearance, dark, "kept");
-    }
-}
-
-/// The Settings screen's settings (#30): read, saved whole and applied at once.
-impl Manager {
-    /// Every setting the Settings screen edits, as saved, or the defaults of those never saved.
-    pub fn settings(&self) -> Result<crate::settings::Settings, ErrorCode> {
-        Ok(crate::settings::Settings {
-            general: self.settings_section()?,
-            notifications: self.settings_section()?,
-            downloads: self.settings_section()?,
-            queue: self.settings_section()?,
-            performance: self.settings_section()?,
-            engine: self.settings_section()?,
-            advanced: self.settings_section()?,
-            torrent: self.settings_section()?,
-            new_torrents: self.settings_section()?,
-            storage: self.settings_section()?,
-        })
-    }
-
-    /// Checks every section, saves them in one write, and applies them at once. Nothing is saved
-    /// or applied when one is refused (`InvalidInput`). An engine that isn't running gets them when
-    /// it next starts. Returns the settings as saved.
-    pub fn set_settings(
-        &mut self,
-        settings: &crate::settings::Settings,
-        now_ms: u64,
-    ) -> Result<crate::settings::Settings, ErrorCode> {
-        let settings = settings.checked()?;
-        self.database
-            .save_sections(settings.sections()?, now_ms)
-            .map_err(|e| e.code)?;
-        self.apply_settings(&settings, now_ms)?;
-        Ok(settings)
-    }
-
-    /// Back to the defaults, keeping the folder downloads go to (V1's `reset_settings`).
-    pub fn reset_settings(&mut self, now_ms: u64) -> Result<crate::settings::Settings, ErrorCode> {
-        let mut defaults = crate::settings::Settings::default();
-        defaults.downloads.default_directory = self.settings()?.downloads.default_directory;
-        self.set_settings(&defaults, now_ms)
-    }
-
-    /// Applies the saved settings, when the app starts.
-    pub fn apply_saved_settings(&mut self, now_ms: u64) -> Result<(), ErrorCode> {
-        let settings = self.settings()?;
-        self.apply_settings(&settings, now_ms)
-    }
-
-    /// Gives each part of the app its settings. The engines may be unavailable: they get them when
-    /// they start (the supervisors keep the last ones they were given).
-    fn apply_settings(
-        &mut self,
-        s: &crate::settings::Settings,
-        now_ms: u64,
-    ) -> Result<(), ErrorCode> {
-        self.set_queue_settings(s.queue.clone())?;
-        self.metalink_enabled = s.advanced.enable_metalink;
-        self.torrents_enabled = s.advanced.enable_bittorrent;
-        self.user_agent = s.advanced.user_agent.clone();
-        let global = crate::transfer::Limits::from_kib(s.advanced.global_download_limit_kib)?;
-        let engine = [
-            self.set_performance(s.performance.clone()),
-            self.engine.set_engine_settings(s.engine),
-            self.engine.set_global_limits(global),
-            self.torrents.set_settings(s.torrent.clone()),
-        ];
-        for result in engine {
-            match result {
-                Ok(()) | Err(ErrorCode::EngineUnavailable) => {}
-                Err(code) => return Err(code),
-            }
-        }
-        self.apply_retention(now_ms)?;
-        Ok(())
     }
 }

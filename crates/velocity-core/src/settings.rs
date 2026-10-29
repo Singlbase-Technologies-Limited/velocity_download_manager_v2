@@ -124,7 +124,7 @@ impl Section for PerformanceSettings {
 
     fn checked(&self) -> Result<Self, ErrorCode> {
         self.check()?;
-        Ok(self.clone())
+        Ok(*self)
     }
 }
 

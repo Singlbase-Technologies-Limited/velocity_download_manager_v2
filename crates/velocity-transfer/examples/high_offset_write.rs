@@ -89,7 +89,7 @@ enum How {
 fn measure(path: &Path, how: How, at: u64, len: u64) -> Result<String, String> {
     let file = match how {
         How::Sparse => {
-            let part = velocity_transfer::files::create_part(path)
+            let part = velocity_transfer::files::create_part(path, true)
                 .map_err(|e| format!("{}: {e}", path.display()))?;
             if !part.sparse && cfg!(windows) {
                 return Err("the file system refused to make it sparse".to_owned());
