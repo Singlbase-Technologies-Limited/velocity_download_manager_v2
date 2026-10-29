@@ -9,7 +9,7 @@
 import { mockIPC } from '@tauri-apps/api/mocks';
 import { createRoot } from 'react-dom/client';
 import { App } from '../../../src/app/App';
-import type { Capabilities, Category, DownloadRecord, DownloadsSnapshot, ShellSettings } from '../../../src/contract';
+import type { Category, DownloadRecord, DownloadsSnapshot, ShellSettings } from '../../../src/contract';
 import { COMMAND_API_VERSION, DEFAULT_COLUMNS } from '../../../src/contract';
 import '../../../src/index.css';
 import capabilities from '../../fixtures/contract/capabilities.json';
@@ -95,7 +95,7 @@ mockIPC(
       case 'list_categories':
         return [category as Category];
       case 'get_capabilities':
-        return capabilities as Capabilities;
+        return capabilities;
       case 'pause_downloads':
       case 'resume_downloads':
       case 'cancel_downloads':
