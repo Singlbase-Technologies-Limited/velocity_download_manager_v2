@@ -1,8 +1,8 @@
 import type { PendingPrompt } from './background-core';
 import type { Response } from './shared/protocol';
 import { send } from './shared/ext';
+import { $ } from './shared/dom';
 
-const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 const id = new URLSearchParams(location.search).get('id') ?? '';
 
 function fmtSize(n: number | undefined): string {
@@ -20,24 +20,24 @@ function fmtSize(n: number | undefined): string {
 async function init() {
   const p = await send<PendingPrompt | null>({ type: 'prompt.get', id });
   if (!p) {
-    $('name').textContent = 'This request has expired.';
-    $<HTMLButtonElement>('velocity').disabled = true;
+    $('name', HTMLElement).textContent = 'This request has expired.';
+    $('velocity', HTMLButtonElement).disabled = true;
     return;
   }
   const name = p.payload.filename?.split(/[\\/]/).pop() || new URL(p.payload.url).pathname.split('/').pop() || p.payload.url;
-  $('name').textContent = name;
-  $('meta').textContent = `${fmtSize(p.payload.fileSize)} · ${new URL(p.payload.url).host}`;
-  $('velocity').addEventListener('click', () => {
-    $<HTMLButtonElement>('velocity').disabled = true;
-    $('error').textContent = '';
+  $('name', HTMLElement).textContent = name;
+  $('meta', HTMLElement).textContent = `${fmtSize(p.payload.fileSize)} · ${new URL(p.payload.url).host}`;
+  $('velocity', HTMLElement).addEventListener('click', () => {
+    $('velocity', HTMLButtonElement).disabled = true;
+    $('error', HTMLElement).textContent = '';
     void send<Response>({ type: 'prompt.decide', id, choice: 'velocity' }).then((r) => {
       if (!r.ok) {
-        $('error').textContent = r.error.message;
-        $<HTMLButtonElement>('velocity').disabled = false;
+        $('error', HTMLElement).textContent = r.error.message;
+        $('velocity', HTMLButtonElement).disabled = false;
       }
     });
   });
-  $('browser').addEventListener('click', () => void send({ type: 'prompt.decide', id, choice: 'browser' }));
+  $('browser', HTMLElement).addEventListener('click', () => void send({ type: 'prompt.decide', id, choice: 'browser' }));
 }
 
 void init();

@@ -2,5 +2,6 @@
 export const ext: typeof chrome = (globalThis as { browser?: typeof chrome }).browser ?? chrome;
 
 export async function send<T>(message: unknown): Promise<T> {
-  return (await ext.runtime.sendMessage(message)) as T;
+  const reply: unknown = await ext.runtime.sendMessage(message);
+  return reply as T;
 }

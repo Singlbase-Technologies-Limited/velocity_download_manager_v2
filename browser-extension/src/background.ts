@@ -41,7 +41,7 @@ const api: ExtApi = {
     if (session) await session.remove(key);
     else memory.delete(key);
   },
-  sessionAll: async () => (session ? ((await session.get(null)) as Record<string, PendingPrompt>) : Object.fromEntries(memory)),
+  sessionAll: async () => (session ? await session.get<Record<string, PendingPrompt>>(null) : Object.fromEntries(memory)),
 };
 
 const bg = createBackground(api);
@@ -121,6 +121,8 @@ ext.runtime.onMessage.addListener((msg: unknown, sender, sendResponse) => {
   }
   // Otherwise only the extension's own pages may talk to the background.
   if (sender.id !== ext.runtime.id || !sender.url?.startsWith(ext.runtime.getURL('')) || !isPageMessage(msg)) return false;
-  bg.onPageMessage(msg).then(sendResponse, (e: unknown) => sendResponse({ ok: false, error: { code: 'INTERNAL', message: String(e) } }));
+  bg.onPageMessage(msg).then(sendResponse, (e: unknown) => {
+    sendResponse({ ok: false, error: { code: 'INTERNAL', message: String(e) } });
+  });
   return true;
 });
