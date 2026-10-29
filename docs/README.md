@@ -20,6 +20,7 @@ Every document in `docs/` is listed here. A new document is added to this map in
 | [SECURITY.md](SECURITY.md) | See how V2 verifies TLS certificates on each platform, what was measured (purpose, host, expiry, revocation, TLS 1.3), and how the tests trust a test CA |
 | [SETTINGS.md](SETTINGS.md) | See each setting V2 has so far, what it does and its bounds: performance profiles, the queue, folders, and what a build can do |
 | [FILE_NAMING.md](FILE_NAMING.md) | Change how a download's file is named, its category and folder are chosen, and what happens when the name is taken |
+| [UI_ARCHITECTURE.md](UI_ARCHITECTURE.md) | Change the window: where its state lives, the command bridge, starting up, the shell, the tray and notifications, styling and UI tests |
 | [CONTRACTS.md](CONTRACTS.md) | Change a type shared by the UI and Rust: the domain types, contract fixtures and the contract version |
 | [CONVENTIONS.md](CONVENTIONS.md) | Name Rust and TypeScript code, files, tests, commands, events and error codes |
 

@@ -3,6 +3,7 @@
 //! The application identity and the engine-neutral domain types shared with the UI
 //! (`domain`, docs/CONTRACTS.md).
 
+pub mod app_settings;
 pub mod branding;
 pub mod category;
 pub mod database;
@@ -12,6 +13,7 @@ mod links;
 pub mod manager;
 pub mod metalink;
 pub mod naming;
+pub mod notices;
 pub mod paths;
 pub mod performance;
 pub mod queue;
@@ -39,7 +41,10 @@ use serde::Serialize;
 /// Version 9 (#31) added the category commands, `set_download_category` and
 /// `check_destination`, their types ([`category::Category`], [`domain::DestinationCheck`]) and
 /// [`domain::ErrorCode::NameTaken`].
-pub const COMMAND_API_VERSION: u32 = 9;
+/// Version 10 (#29) added the window's commands (`get_shell_settings`, `set_appearance`,
+/// `complete_onboarding`, `choose_directory`, `quit_app`), [`app_settings::ShellSettings`]
+/// and the `quit-requested` event.
+pub const COMMAND_API_VERSION: u32 = 10;
 
 /// Name, version and contract version of the running application.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]

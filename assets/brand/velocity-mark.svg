@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="240 264 544 650" width="544" height="650">
+  <title>Velocity</title>
+  <!-- Glyph only, on a transparent background, for use on app surfaces. -->
+  <defs>
+    <linearGradient id="mark" x1="268" y1="292" x2="756" y2="886" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#14B8C4"/>
+      <stop offset="0.5" stop-color="#1D6FD8"/>
+      <stop offset="1" stop-color="#2236B8"/>
+    </linearGradient>
+    <mask id="cuts" maskUnits="userSpaceOnUse" x="0" y="0" width="1024" height="1024">
+      <rect width="1024" height="1024" fill="#FFFFFF"/>
+      <rect x="200" y="344" width="312" height="24" fill="#000000"/>
+      <rect x="200" y="428" width="312" height="24" fill="#000000"/>
+    </mask>
+  </defs>
+  <g fill="url(#mark)">
+    <path mask="url(#cuts)" stroke="url(#mark)" stroke-width="18" stroke-linejoin="round"
+          d="M268 292 H404 L512 504 L620 292 H756 L512 770 Z"/>
+    <rect x="340" y="826" width="344" height="60" rx="30"/>
+  </g>
+</svg>

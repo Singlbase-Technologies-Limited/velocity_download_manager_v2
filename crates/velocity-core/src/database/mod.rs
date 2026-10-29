@@ -14,7 +14,7 @@ mod categories;
 mod checkpoints;
 mod downloads;
 mod queue;
-mod settings;
+pub mod settings;
 mod torrents;
 
 pub use downloads::{

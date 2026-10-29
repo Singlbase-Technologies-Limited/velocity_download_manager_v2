@@ -23,7 +23,14 @@ Most crates are MIT, Apache-2.0, BSD, ISC or Zlib, often as `OR` choices. These 
 | `icu_*`, `zerovec`, `yoke`, `zerofrom`, `tinystr`, `litemap`, `writeable`, `potential_utf`, `zerotrie`, and `unicode-ident` in part (19 crates) | Unicode-3.0 | Permissive; keep the licence text in the notices |
 | `r-efi` (2 versions) | MIT OR Apache-2.0 OR LGPL-2.1-or-later | V2 uses it under MIT or Apache-2.0 |
 
+| `@fontsource-variable/inter` (the Inter font, since #29) | OFL-1.1 | The font files are bundled unmodified. Ship its licence text in the notices; never sell the font on its own (PO decision on #29) |
+
 No GPL, AGPL or LGPL-only component is in the shipped graph.
+
+**Since #29 (2026-10-29):**
+- `pnpm licenses list --prod` lists **40 production packages**: React and `@tauri-apps/api` as before, plus Radix's dialogs and their helpers, TanStack Query, zustand, sonner, lucide-react (ISC), clsx, tailwind-merge, class-variance-authority (Apache-2.0), `tslib` (0BSD) and the Inter font (OFL-1.1).
+- The dialog and notification plugins add 18 crates to `Cargo.lock`, all MIT or Apache-2.0 ([DEPENDENCIES.md](DEPENDENCIES.md#approved-direct-dependencies)).
+- Development-only packages under MIT-0, BlueOak-1.0.0 and CC-BY-4.0 are allowed as [DEPENDENCIES.md](DEPENDENCIES.md#allowed-licences) says. None is shipped.
 
 ## Planned native libraries
 

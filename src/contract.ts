@@ -5,7 +5,7 @@
 import { z } from 'zod';
 
 /** Must equal `velocity_core::COMMAND_API_VERSION`; the app refuses to start on a mismatch. */
-export const COMMAND_API_VERSION = 9;
+export const COMMAND_API_VERSION = 10;
 
 const bytes = z.number().int().nonnegative();
 
@@ -240,6 +240,48 @@ export type DestinationCheck = z.infer<typeof DestinationCheckSchema>;
 /** What adding does when the name is taken (#31): ask, or take the first free name. Never replace. */
 export const OnConflictSchema = z.enum(['ask', 'rename']);
 export type OnConflict = z.infer<typeof OnConflictSchema>;
+
+/** The colour theme (#29): the system's, or always light or dark. */
+export const ThemeSchema = z.enum(['system', 'light', 'dark']);
+export type Theme = z.infer<typeof ThemeSchema>;
+
+/** How tightly lists are laid out (#29). */
+export const DensitySchema = z.enum(['compact', 'comfortable']);
+export type Density = z.infer<typeof DensitySchema>;
+
+/** Panel width bounds in CSS pixels, as Rust checks them (`app_settings.rs`, src/layout/layoutLogic.ts). */
+const width = (min: number, max: number) => z.number().int().min(min).max(max).nullable();
+
+/** The window's panels (#29). A `null` width is the responsive default. */
+export const LayoutSettingsSchema = z.strictObject({
+  sidebarWidth: width(184, 360),
+  sidebarCollapsed: z.boolean(),
+  sidebarVisible: z.boolean(),
+  detailsWidth: width(280, 600),
+  detailsVisible: z.boolean(),
+});
+export type LayoutSettings = z.infer<typeof LayoutSettingsSchema>;
+
+/** How the window looks (#29). */
+export const AppearanceSettingsSchema = z.strictObject({
+  theme: ThemeSchema,
+  density: DensitySchema,
+  layout: LayoutSettingsSchema,
+});
+export type AppearanceSettings = z.infer<typeof AppearanceSettingsSchema>;
+
+/** What the window starts with (#29), from `get_shell_settings`. */
+export const ShellSettingsSchema = z.strictObject({
+  appearance: AppearanceSettingsSchema,
+  onboardingCompleted: z.boolean(),
+  /** The folder downloads go to now; `null` when the system names none. */
+  defaultDirectory: z.string().min(1).nullable(),
+});
+export type ShellSettings = z.infer<typeof ShellSettingsSchema>;
+
+/** The `quit-requested` event (#29): quitting would stop this many downloads, so the window asks first. */
+export const QuitRequestSchema = z.strictObject({ active: z.number().int().nonnegative() });
+export type QuitRequest = z.infer<typeof QuitRequestSchema>;
 
 export const AppInfoSchema = z.strictObject({
   name: z.string().min(1),

@@ -4,7 +4,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use tauri::{AppHandle, Emitter, State};
+use tauri::{AppHandle, Emitter, Manager as _, State};
 use velocity_core::database::Database;
 use velocity_core::domain::{BatchResult, DownloadsSnapshot, EngineHealth, ErrorCode};
 use velocity_core::manager::{Manager, ManagerService, MoveDirection};
@@ -14,6 +14,8 @@ use velocity_core::torrent_engine::{MissingTorrentEngine, TorrentEngine, Torrent
 use velocity_core::transfer::{DirectTransfer, Limits, MissingEngine};
 use velocity_torrent::supervisor::SupervisedTorrentEngine;
 use velocity_transfer::supervisor::{SupervisedEngine, SupervisorOptions};
+
+use crate::shell::ShellState;
 
 /// The event each new snapshot is sent as.
 pub const SNAPSHOT_EVENT: &str = "downloads-snapshot";
@@ -32,6 +34,15 @@ pub fn program_beside(app: &Path, name: &str) -> PathBuf {
 /// [`MissingTorrentEngine`]); a database that can't open stops it.
 pub fn start(app: &AppHandle, paths: &Paths) -> Result<Downloads, String> {
     let database = Database::open(&paths.database()).map_err(|e| e.to_string())?;
+    // What closing and notifications do (#29). A saved section this build can't read is left as
+    // it was, and the defaults apply until it is fixed.
+    let shell = app.state::<ShellState>();
+    if let Ok(mut general) = shell.general.lock() {
+        *general = database.section().unwrap_or_default();
+    }
+    if let Ok(mut notifications) = shell.notifications.lock() {
+        *notifications = database.section().unwrap_or_default();
+    }
     let exe = std::env::current_exe()
         .map_err(|e| format!("{} ({e})", ErrorCode::EngineMissing.user_message()))?;
     let program = program_beside(&exe, "velocity-transfer");
@@ -53,9 +64,13 @@ pub fn start(app: &AppHandle, paths: &Paths) -> Result<Downloads, String> {
         .map_err(|e| e.to_string())?
         .with_torrents(torrents);
     let app = app.clone();
+    let mut last: Option<DownloadsSnapshot> = None;
     Ok(Arc::new(ManagerService::start(manager, move |snapshot| {
         // Emitting fails only once the app is closing, when no window is left to show it.
         let _ = app.emit(SNAPSHOT_EVENT, snapshot);
+        app.state::<ShellState>()
+            .observe(&app, last.as_ref(), snapshot);
+        last = Some(snapshot.clone());
     })))
 }
 

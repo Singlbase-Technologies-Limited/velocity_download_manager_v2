@@ -1,6 +1,6 @@
 # Settings
 
-The settings V2 has so far, what each one does, and its bounds. The settings model as a whole, how it is saved and the Settings screen are #30; this page grows with it. Each setting is checked in Rust before it applies, whatever the screen allows.
+The settings V2 has so far, what each one does, and its bounds. They are sections of one settings document in the database, each read and saved through `Database::section` and `Database::save_section`, and checked first (the `Section` trait). The settings model as a whole, how it is saved and the Settings screen are #30; this page grows with it. Each setting is checked in Rust before it applies, whatever the screen allows.
 
 ## Performance
 
@@ -45,6 +45,31 @@ How the queue applies them is in [ENGINE_CONTRACT.md](ENGINE_CONTRACT.md#the-man
 
 - **Before any are saved,** the defaults apply.
 - **Saved ones that can't be read,** or that fail their checks, are a `DATABASE` error and are left as they were, never replaced by the defaults.
+
+## The window
+
+V1's `general`, `notifications` and `appearance` settings and its first-run flag, in [`crates/velocity-core/src/app_settings.rs`](../crates/velocity-core/src/app_settings.rs) (#29). Each is a section of the settings document. #30 puts them on the Settings screen. What the window does with them is in [UI_ARCHITECTURE.md](UI_ARCHITECTURE.md).
+
+| Section | Setting | Default | Bounds |
+|---|---|---|---|
+| `general` | `closeToTray` | on | Closing hides the window in the tray, when there is one |
+| | `startMinimized` | off | Starts hidden in the tray, when there is one |
+| | `confirmExitWithActive` | on | Asks before quitting while downloads are active |
+| `notifications` | `onComplete` | on | Also when a torrent starts seeding, or waits for its files to be chosen |
+| | `onFailure` | on | — |
+| | `onStart` | off | When a download leaves the queue or a pause, not when it recovers from a retry or a stall |
+| | `onEngineFailure` | on | When the transfer engine or the torrent helper becomes unavailable |
+| `appearance` | `theme` | `system` | `system`, `light` or `dark` |
+| | `density` | `compact` | `compact` or `comfortable`, for the download list (#59) |
+| | `layout.sidebarWidth` | `null`: about 17% of the window, 220 to 240 px | 184 to 360 px |
+| | `layout.sidebarCollapsed`, `layout.sidebarVisible` | off, on | — |
+| | `layout.detailsWidth` | `null`: a fifth of the window, 300 to 340 px | 280 to 600 px, for the details panel (#61) |
+| | `layout.detailsVisible` | off | — |
+| `onboarding` | `completed` | off | Set by finishing the first-run setup, which also saves its folder as `downloads.defaultDirectory` |
+
+- **Saved and read like the folder settings:** a panel width outside its bounds is refused with `INVALID_INPUT`, and a saved section that can't be read is a `DATABASE` error for the window, left as it was.
+- **Read when the app starts:** `general` and `notifications` are read when the app starts. A section that can't be read is left as it was, and its defaults apply until it is fixed, so closing and notifications keep working. The Settings screen (#30) will change them while the app runs.
+- **V1's download list columns** (`visibleColumns`, `columnWidths`) belong to the list (#59), and are not in this section yet.
 
 ## What a build can do
 

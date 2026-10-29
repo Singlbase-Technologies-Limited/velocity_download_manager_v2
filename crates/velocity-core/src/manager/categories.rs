@@ -8,7 +8,7 @@ use super::Manager;
 use crate::category::{for_file_name, Category, CategoryInput};
 use crate::database::Database;
 use crate::destination::{
-    existing, resolve, system_downloads, Choice, OnConflict, Place, Placement,
+    existing, resolve, system_downloads, Choice, FolderSettings, OnConflict, Place, Placement,
 };
 use crate::domain::{DestinationCheck, ErrorCode};
 use crate::metalink::create_folders;
@@ -84,7 +84,10 @@ impl Manager {
             return Err(ErrorCode::InvalidUrl);
         }
         let categories = self.categories()?;
-        let settings = self.database.folder_settings().map_err(|e| e.code)?;
+        let settings = self
+            .database
+            .section::<FolderSettings>()
+            .map_err(|e| e.code)?;
         let file_name = name_for_download(url, choice.file_name.as_deref(), |ext| {
             categories
                 .iter()
@@ -176,7 +179,7 @@ impl Manager {
 /// destination check report that error.
 pub(super) fn automatic(database: &Database, name: Option<&str>) -> Option<String> {
     let name = name?;
-    let on = database.folder_settings().ok()?.auto_categorize;
+    let on = database.section::<FolderSettings>().ok()?.auto_categorize;
     let categories = database.categories().ok()?;
     on.then(|| for_file_name(&categories, name).map(|c| c.id.clone()))
         .flatten()

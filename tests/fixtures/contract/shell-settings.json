@@ -1,0 +1,15 @@
+{
+  "appearance": {
+    "density": "comfortable",
+    "layout": {
+      "detailsVisible": true,
+      "detailsWidth": null,
+      "sidebarCollapsed": false,
+      "sidebarVisible": true,
+      "sidebarWidth": 240
+    },
+    "theme": "dark"
+  },
+  "defaultDirectory": "/home/user/Downloads",
+  "onboardingCompleted": true
+}

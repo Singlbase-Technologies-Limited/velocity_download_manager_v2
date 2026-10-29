@@ -74,7 +74,7 @@ From most numerous and fastest to fewest and slowest. Each layer proves what the
 | **Property** | Invariants over many generated inputs: the scheduler's **I1–I7** (partition, exclusivity, acceptance, monotonic coverage, durability, completion, conservation; research report section 5.2), range arithmetic, header parsing | A seeded generator in the crate's tests. A property-testing crate such as `proptest` needs PO approval first ([DEPENDENCIES.md](DEPENDENCIES.md)) | L1 and L2 | #42, #41, #45 |
 | **Protocol fixtures** | The engine against **real libcurl** and a local server that misbehaves on purpose (table below): every row of the research report's section 5.4, checked by SHA-256, the status shown and the wasted bytes | `crates/velocity-transfer/tests/`, `crates/velocity-curl/tests/` ([ADR-0002](decisions/0002-engine-crate-layout.md)) | L2 | #41–#51, #53 |
 | **Integration** | The manager, persistence and engine together: lifecycle, queue, pause and resume, checkpoints after `kill -9`, migrations; since #58, every direct-download command on the real supervised engine, the completion gate, a crashed or unavailable engine, and the app starting again (`velocity-transfer` `tests/manager.rs`), and torrents through the manager with a real helper (`velocity-torrent` `tests/manager.rs`) | `crates/velocity-core/tests/`, `crates/velocity-transfer/tests/` | L2 | #26, #43, #50, #58 |
-| **UI** | What the user sees and does, against a fake native backend; only the Tauri boundary is mocked | Vitest with Tauri's own `mockIPC` (`@tauri-apps/api/mocks`, already a dependency). A DOM-testing library needs approval | L1 and L2 | #29, #59–#61 |
+| **UI** | What the user sees and does, against a fake native backend; only the Tauri boundary is mocked | Vitest in jsdom with Testing Library, against Tauri's own `mockIPC` (`@tauri-apps/api/mocks`) through `src/test/fakeBackend.ts` | L1 and L2 | #29, #59–#61 |
 | **Native host and browser** | Message validation in the host; the real extension, host and app in real Chromium and Firefox | Host: Rust tests with a fake desktop IPC server. Browser: an end-to-end harness (a browser driver needs approval) | L2 (host), L4 (browser) | #64, #65 |
 | **Security** | TLS certificate rules per backend, redirect and credential rules, secret-leak scans, filesystem attacks, fuzzed parsers | Fixture suites plus `cargo-fuzz` targets (needs approval) | L2, plus L4 for fuzzing | #67, #69–#73 |
 | **End-to-end and platform** | The packaged app installed on Windows, Linux and macOS; install and upgrade beside V1 | Installer tests, real machines | L4 and L5 | #81–#83 |
@@ -118,7 +118,8 @@ From most numerous and fastest to fewest and slowest. Each layer proves what the
 
 ## How the frontend is tested
 
-- **Only the native boundary is mocked:** the UI is rendered against a fake backend built on Tauri's own `mockIPC`. Components, hooks and state are real.
+- **Only the native boundary is mocked:** the UI is rendered in jsdom (the `ui` project in `vite.config.ts`) against a fake backend built on Tauri's own `mockIPC` (`src/test/fakeBackend.ts`), which answers with the contract fixtures and records every call. Events are sent with Tauri's `emit`. Components, hooks and state are real ([UI_ARCHITECTURE.md](UI_ARCHITECTURE.md#testing)).
+- **Clicks and typing** go through Testing Library's `user-event`; a drag goes through pointer events. The assertions read roles, names, text and attributes directly, without extra matchers.
 - **Contract fixtures:** the shapes the Rust side sends are generated from Rust into `tests/fixtures/contract/` and validated by the UI's strict schemas, so neither side can drift ([CONTRACTS.md](CONTRACTS.md)).
 - **What the user sees:** tests check text, roles and actions, not component internals.
 
@@ -137,7 +138,7 @@ Test tools are dependencies too. Each needs PO approval before it's added ([DEPE
 |---|---|---|
 | A property-testing crate (for example `proptest`) | Scheduler invariants | #42 |
 | `cargo-fuzz` and libFuzzer | Fuzz targets | #73 |
-| A DOM-testing library for React | UI tests | #29 or #59 |
+| Testing Library (`@testing-library/react`, `dom`, `user-event`) and jsdom (**approved**, test-only) | UI tests | #29 |
 | A browser driver (for example Playwright) | Browser end-to-end | #64 |
 | OpenSSH server (**installed**, a platform tool; Windows feature and Ubuntu package) | SFTP fixtures | #53 |
 | `h2`, tokio, `http` and `bytes` (**approved**, test-only) | The HTTP/2 fixture server | #47 |

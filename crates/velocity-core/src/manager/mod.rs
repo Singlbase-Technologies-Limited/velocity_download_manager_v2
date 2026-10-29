@@ -1001,11 +1001,12 @@ mod options;
 mod persist;
 mod recovery;
 mod service;
+mod settings;
 mod torrents;
 
 pub use batch::MAX_BATCH;
 pub use recovery::SensitiveOptions;
-pub use service::{ManagerService, SNAPSHOT_EVERY, TICK};
+pub use service::{now_ms, ManagerService, SNAPSHOT_EVERY, TICK};
 pub use torrents::TorrentRequest;
 
 #[cfg(test)]

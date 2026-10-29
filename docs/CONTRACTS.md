@@ -23,6 +23,7 @@ They're defined once in Rust, in `crates/velocity-core/src/domain.rs` (plus `App
 | `Category` | A download category (#31): `id`, `name`, `color` (`#rrggbb`), `icon`, `extensions` (lowercase, without the dot), `directory` (its own folder, or `null`) and `builtin`. The fixture `category-icons.json` lists the icons | Since contract version 9. Created and edited as a `CategoryInput` (the same fields without `id` and `builtin`). The rules are in [FILE_NAMING.md](FILE_NAMING.md#categories) |
 | `DestinationCheck` | What adding a download would do (#31): `directory`, `directoryExists`, `automaticDirectory`, `categoryId`, `fileName` (`null` when the server will name it), `fileExists`, `partialDownloadExists` (V2's or V1's) and `suggestedName` (the first free name when it is taken) | Since contract version 9. Free disk space isn't reported yet |
 | `OnConflict` | What adding does when the name is taken (#31): `ask` or `rename`. The fixture `on-conflict.json` lists them | Never replace (PO decision on #31). For #60's Add command |
+| `ShellSettings` | What the window starts with (#29): `appearance` (`theme`, `density` and `layout`), `onboardingCompleted`, and `defaultDirectory`, the folder downloads go to now (`null` when the system names none). The fixtures `themes.json` and `densities.json` list the themes and densities | Since contract version 10. The settings are in [SETTINGS.md](SETTINGS.md#the-window). `set_appearance` takes and returns an `AppearanceSettings` |
 | `BatchResult` | What a command over several downloads did: `done` (ids), `failed` (`{ id, code }`), and `kept` (`{ path, reason, code }`, files a removal with files left in place). `reason` is `notPlain`, `tooLarge`, `behindLink`, `notEmpty` or `failed`; `code` is set only for `failed` | The fixture `kept-reasons.json` lists the reasons |
 
 **Conventions:**
@@ -69,9 +70,23 @@ The commands of [`src-tauri/src/categories.rs`](../src-tauri/src/categories.rs) 
 | `set_download_category` | `id`, `categoryId` (`null` for none) | nothing; nothing is moved |
 | `check_destination` | `url`, `directory`, `fileName`, `categoryId` (each `null` for automatic) | `DestinationCheck` |
 
+## The window's commands
+
+The commands of [`src-tauri/src/shell.rs`](../src-tauri/src/shell.rs) (#29). A command that fails returns its `ErrorCode`. How the window uses them is in [UI_ARCHITECTURE.md](UI_ARCHITECTURE.md).
+
+| Command | Arguments | Returns |
+|---|---|---|
+| `get_shell_settings` | — | `ShellSettings`; `DATABASE` when a section can't be read |
+| `set_appearance` | `appearance` | the `AppearanceSettings` saved; `INVALID_INPUT` for a panel width outside its bounds |
+| `complete_onboarding` | `directory`: an existing folder, not a link | `ShellSettings`; `INVALID_PATH`, or `DESTINATION_MISSING` when it doesn't exist |
+| `choose_directory` | `initial` (`null`, or a folder to start in) | the folder chosen with the system's chooser, or `null` when the user cancels |
+| `quit_app` | — | nothing: the app quits. The window calls it only after the user confirms |
+
+**The `quit-requested` event** carries `{ active }`: quitting would stop that many downloads, and `general.confirmExitWithActive` is on. The window asks the user, and calls `quit_app` only if they confirm.
+
 ## How the two sides stay in step
 
-1. **Rust generates contract fixtures** in `tests/fixtures/contract/` from the real types: `statuses.json`, `error-codes.json`, `download-record.json`, `capabilities.json`, `app-info.json`, `downloads-snapshot.json`, `engine-health.json`, `batch-result.json`, `kept-reasons.json`, `category.json`, `category-icons.json`, `destination-check.json` and `on-conflict.json`. `naming-cases.json` holds the names `src/naming.ts` must give ([FILE_NAMING.md](FILE_NAMING.md#file-names)). A Rust test fails when a fixture no longer matches the types: "fixture … is out of date; regenerate it with `VELOCITY_UPDATE_FIXTURES=1`".
+1. **Rust generates contract fixtures** in `tests/fixtures/contract/` from the real types: `statuses.json`, `error-codes.json`, `download-record.json`, `capabilities.json`, `app-info.json`, `downloads-snapshot.json`, `engine-health.json`, `batch-result.json`, `kept-reasons.json`, `category.json`, `category-icons.json`, `destination-check.json`, `on-conflict.json`, `shell-settings.json`, `themes.json` and `densities.json`. `naming-cases.json` holds the names `src/naming.ts` must give ([FILE_NAMING.md](FILE_NAMING.md#file-names)). A Rust test fails when a fixture no longer matches the types: "fixture … is out of date; regenerate it with `VELOCITY_UPDATE_FIXTURES=1`".
 2. **Vitest validates the same fixtures** with the UI's strict schemas (`src/contract.test.ts`). An unknown field, a missing field, an unknown enum value or a wrong type fails the test.
 3. **So a change on one side alone always fails a test:**
    - Change Rust without regenerating, and the Rust contract test fails.
