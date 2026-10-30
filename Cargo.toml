@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/velocity-child", "crates/velocity-core", "crates/velocity-curl", "crates/velocity-lt", "crates/velocity-sftp", "crates/velocity-test-http", "crates/velocity-torrent", "crates/velocity-transfer", "crates/velocity-transfer-h2c", "src-tauri"]
+members = ["crates/velocity-child", "crates/velocity-core", "crates/velocity-curl", "crates/velocity-lt", "crates/velocity-native-host", "crates/velocity-sftp", "crates/velocity-test-http", "crates/velocity-torrent", "crates/velocity-transfer", "crates/velocity-transfer-h2c", "src-tauri"]
 
 [workspace.package]
 version = "0.1.0"
@@ -83,6 +83,13 @@ cxx-build = "=1.0.205"
 tracing = { version = "=0.1.44", default-features = false, features = ["std"] }
 tracing-subscriber = { version = "=0.3.23", default-features = false, features = ["std", "registry"] }
 regex = "=1.13.1"
+# International domain names in links (PO decision on #67, 2026-10-29): `url::Host::parse` turns a
+# host into its ASCII (punycode) form, as V1 did. The version the build already brought through
+# Tauri; idna 1.1.0 with it.
+url = "=2.5.8"
+# The browser bridge's per-launch token (PO decision on #65, 2026-10-29): 32 bytes from the
+# operating system's secure random source. The version the build already brought through uuid.
+getrandom = "=0.4.3"
 # Secrets in memory are overwritten when dropped (PO decision on #70, 2026-10-29). The version the
 # build already brought through other crates.
 zeroize = "=1.9.1"

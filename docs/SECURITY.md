@@ -1,6 +1,6 @@
 # Security
 
-How V2 protects downloads and the people who use it. The rules every contributor follows are in [AGENTS.md](../AGENTS.md#security-and-data) and `.claude/rules/security.md`. This document records what V2 does and what was measured. It covers TLS, FTP, SFTP host keys and secrets for now; the URL and redirect policy (#67) adds its section when it is built.
+How V2 protects downloads and the people who use it. The rules every contributor follows are in [AGENTS.md](../AGENTS.md#security-and-data) and `.claude/rules/security.md`. This document records what V2 does and what was measured. It covers TLS, links and redirects, the browser bridge, FTP, SFTP host keys and secrets.
 
 ## TLS verification (#69)
 
@@ -60,6 +60,28 @@ Measured on PR checks' Windows runner (run `40072038728`):
 - **Test-only trust:** the tests pass the CA file with velocity-curl's `test-ca` feature (`CURLOPT_CAINFO`, PO decision on #69). It replaces the platform's store for that test; verification and revocation checks stay on. An optimised build refuses to compile with the feature, so a release can't contain it, like `test-h2c`.
 - **Nothing installed** on the machine, except in the Windows store test above.
 - **The FTPS server** terminates TLS itself, with the same kind of test CA, leaf and revocation list (`TestPki`), since `AUTH TLS` starts TLS part way through a connection.
+
+## Links, redirects and local addresses (#67)
+
+Links come from users and from web pages, so each is checked before it reaches the engine, and every request the engine makes is held to an allowlist.
+
+- **Checking a link** (`request::normalize_link`, on every link the Add path takes): a space or a control character is refused with `INVALID_URL`, as V1 refused it. A link longer than 8 KiB is refused, and so is a login in the link, which has its own fields (#40). An international domain name is turned into its ASCII form, so `https://bücher.example/` is stored, shown and requested as `https://xn--bcher-kva.example/` (PO decision on #67, with the `url` crate's IDNA). A look-alike name therefore shows as what it is. Other characters outside ASCII are percent-encoded.
+- **Protocols:** every libcurl request allows only `http`, `https`, `ftp` and `ftps` (`CURLOPT_PROTOCOLS_STR`), and a redirect only `http` and `https` (`CURLOPT_REDIR_PROTOCOLS_STR`). V2 follows redirects itself and checks each one first (`redirect.rs`): a redirect to `file://`, `scp://`, `sftp://` or any other protocol is refused before anything is connected (tested against the local server; CVE-2026-86410 was a redirect to SFTP in the curl tool). At most 10 redirects are followed. SFTP links go to V2's own SFTP layer, never through libcurl.
+- **From `https` to `http`:** a redirect that would leave TLS stops the download with "The server redirected to an insecure http:// address on <host>…", and the details panel offers **Continue over http** (PO decision on #67). Choosing it allows the downgrade for that download only, is stored with it, and retries it. The login and custom headers still don't follow, since `http` is another origin. Tested against the local TLS fixture, with and without the confirmation.
+- **Local addresses** ([ADR-0006](decisions/0006-browser-links-to-local-networks.md)): a link the browser extension sent (`AddRequest.fromBrowser`) that connects to this computer or a private network stops before its request is sent, and the details panel shows the address it really leads to, with **Download anyway**. Choosing it allows local addresses for that download only, is stored with it, and retries it. Local means loopback, private (RFC 1918), shared (RFC 6598), link-local, unspecified and IPv6 unique-local addresses, also when mapped into IPv6. The check is on the address libcurl actually connected to (`CURLOPT_PREREQFUNCTION`), after the name was resolved, so a name that resolves to a local address, as in DNS rebinding, is caught too (tested with `localhost`). Typed and pasted links are never checked.
+- **No ambient configuration:** proxy variables such as `http_proxy` are ignored, because every request sets an empty proxy (ADR-0008; the proxy feature is #192), and `.netrc` support is compiled out of V2's libcurl (`scripts/native/build.mjs`). Both are tested in their own test binaries, which set the variables and a `.netrc` with a login and check the request went direct and without it.
+- **Logs:** a refused redirect's message names no URL, which may hold a token; the libcurl layer never logs one.
+
+## The browser bridge (#65)
+
+Messages from the browser are untrusted, and reach the app only through V2's own native host ([BROWSER_EXTENSION.md](BROWSER_EXTENSION.md#the-native-host)):
+
+- **Only V2's extensions:** the host and the app accept only V2's Chrome extension origin and Firefox add-on ID. V1's are refused (tested).
+- **Checked twice:** the host checks each message against the protocol's allowlist (three commands; no paths, headers, cookies or engine options; at most 64 KiB), and the app checks it again.
+- **Authenticated:** the app writes a per-launch token (32 bytes from the OS's secure random source) where only this user can read it, and refuses an envelope without it (compared in constant time). The Windows pipe is created first and refuses remote clients; the Unix socket is owner-only.
+- **Bounded:** at most 8 connections at once, 15 seconds each, a line of at most 72 KiB, and 30 messages in 10 seconds.
+- **The user decides:** by default a link only opens the Add dialog, and torrents always do. A link added at once is marked as from the browser, so a local address waits for the user ([above](#links-redirects-and-local-addresses-67)).
+- **Registration** is per user, and never touches V1's: every file and registry key is named after V2's host, and unregistering removes only a plain file that names V2's host.
 
 ## FTP and FTPS (#51)
 

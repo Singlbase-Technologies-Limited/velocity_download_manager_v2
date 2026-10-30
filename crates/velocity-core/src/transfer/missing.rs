@@ -129,6 +129,7 @@ mod tests {
             limits: Limits::default(),
             max_connections: 4,
             resume: Some(Resume::DiscardPartFile {}),
+            trust: Default::default(),
         }
     }
 

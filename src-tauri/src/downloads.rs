@@ -6,7 +6,9 @@ use std::sync::Arc;
 
 use tauri::{AppHandle, Emitter, Manager as _, State};
 use velocity_core::database::Database;
-use velocity_core::domain::{BatchResult, DownloadsSnapshot, EngineHealth, ErrorCode, KeptFile};
+use velocity_core::domain::{
+    BatchResult, ConfirmKind, DownloadsSnapshot, EngineHealth, ErrorCode, KeptFile,
+};
 use velocity_core::history::{HistoryPage, HistoryQuery, StorageSettings};
 use velocity_core::manager::{
     Manager, ManagerService, MoveDirection, SensitiveOptions, TorrentDetails, TorrentPreview,
@@ -406,6 +408,17 @@ pub async fn trust_host_key(
         m.trust_host_key(&host, port, &fingerprint)
     })
     .await?
+}
+
+/// Allows what a download stopped at for the user's confirmation, and retries it (#67): a
+/// redirect from https to http, or a link from the browser to a local address (ADR-0006).
+#[tauri::command]
+pub async fn allow_download(
+    downloads: State<'_, Downloads>,
+    id: String,
+    kind: ConfirmKind,
+) -> Result<(), ErrorCode> {
+    on_manager(&downloads, move |m| m.allow_download(&id, kind)).await?
 }
 
 #[cfg(test)]

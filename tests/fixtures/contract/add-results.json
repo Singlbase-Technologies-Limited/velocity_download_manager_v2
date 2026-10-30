@@ -46,6 +46,7 @@
     "outcome": {
       "error": {
         "class": "permanent",
+        "confirm": null,
         "hostKey": null,
         "httpStatus": 404,
         "message": "Not found",

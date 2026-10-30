@@ -17,6 +17,11 @@ jiff.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 regex.workspace = true
+url.workspace = true
+# The browser bridge (#65): its local connection on tokio (named pipes on Windows, a socket on
+# Unix), and its per-launch token.
+tokio.workspace = true
+getrandom.workspace = true
 # Secrets (#70): wiped from memory when dropped, and saved in the system keychain on consent.
 zeroize.workspace = true
 keyring.workspace = true
@@ -24,3 +29,8 @@ quick-xml.workspace = true
 # Info hashes for torrents (#62): the SHA-1 and SHA-2 the engine already uses (#46).
 sha1.workspace = true
 sha2.workspace = true
+
+# Registering the native host with Windows browsers, in HKEY_CURRENT_USER (PO decision on #65:
+# windows-sys rather than winreg).
+[target.'cfg(windows)'.dependencies]
+windows-sys = { workspace = true, features = ["Win32_System_Registry", "Win32_Security"] }

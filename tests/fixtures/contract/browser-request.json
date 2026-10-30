@@ -1,0 +1,8 @@
+{
+  "fileName": "archive.zip",
+  "fileSize": 1048576,
+  "mime": "application/zip",
+  "referrer": "https://example.com/page",
+  "source": "intercept",
+  "url": "https://example.com/files/archive.zip"
+}

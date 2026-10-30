@@ -47,7 +47,10 @@ use std::sync::mpsc::Receiver;
 /// Version 12 (#59) added [`TransferSnapshot::retry_at_ms`].
 /// Version 13 (#28) added [`crate::domain::Capabilities::libcurl`], for diagnostics.
 /// Version 14 (#30) added [`DirectTransfer::set_engine_settings`].
-pub const TRANSFER_CONTRACT_VERSION: u32 = 14;
+/// Version 15 (#67) added [`TransferSpec::trust`] and [`crate::domain::TransferError::confirm`]:
+/// engines stop at a local address for a link from the browser, and follow a redirect from
+/// `https` to `http` only once the user confirmed it.
+pub const TRANSFER_CONTRACT_VERSION: u32 = 15;
 
 /// An engine's id for one transfer. Assigned by the engine, never reused, and never shown as the
 /// app's download id.
@@ -423,6 +426,35 @@ pub struct TransferSpec {
     pub max_connections: u32,
     /// How to treat what an earlier attempt left on disk (#43). `None` for a new download.
     pub resume: Option<Resume>,
+    /// Where the download came from, and what the user confirmed for it (#67). Absent from
+    /// engines that predate it, which is a typed link with nothing confirmed.
+    #[serde(default)]
+    pub trust: Trust,
+}
+
+/// Where a download came from, and what the user confirmed for it (#67, ADR-0006). The engine
+/// stops at what still needs the user's confirmation, with a [`crate::domain::Confirm`] in the
+/// error; the user's answer comes back through [`crate::manager::Manager::allow_download`].
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct Trust {
+    /// The browser extension sent the link: an address on this computer or a private network
+    /// needs the user's confirmation. A typed or pasted link doesn't.
+    #[serde(default)]
+    pub from_browser: bool,
+    /// The user confirmed that this download may reach a local address.
+    #[serde(default)]
+    pub local_address_confirmed: bool,
+    /// The user confirmed that this download may follow a redirect from `https` to `http`.
+    #[serde(default)]
+    pub insecure_redirect_confirmed: bool,
+}
+
+impl Trust {
+    /// Whether the engine must stop at a local address.
+    pub fn confirms_local_addresses(&self) -> bool {
+        self.from_browser && !self.local_address_confirmed
+    }
 }
 
 impl TransferSpec {
@@ -817,6 +849,7 @@ mod tests {
             }),
             require_encryption: false,
             ssh_key: None,
+            trust: Default::default(),
         }
     }
 

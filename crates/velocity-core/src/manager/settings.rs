@@ -87,6 +87,7 @@ impl Manager {
             torrent: self.settings_section()?,
             new_torrents: self.settings_section()?,
             storage: self.settings_section()?,
+            browser: self.settings_section()?,
         })
     }
 

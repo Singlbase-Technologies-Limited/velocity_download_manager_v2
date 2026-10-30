@@ -77,6 +77,12 @@ impl Paths {
         self.data_dir.join("known_hosts")
     }
 
+    /// The browser bridge's per-launch token (#65): written by the app when it starts, read by the
+    /// native host. Only this user can read it.
+    pub fn ipc_token_file(&self) -> PathBuf {
+        self.data_dir.join("ipc.token")
+    }
+
     /// Local socket path (Unix) or named pipe name (Windows) for the browser bridge (#65).
     pub fn ipc_endpoint(&self) -> String {
         if cfg!(windows) {

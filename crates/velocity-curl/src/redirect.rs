@@ -22,18 +22,28 @@ pub struct Hop {
 pub struct Refusal {
     pub kind: CurlFailure,
     pub message: String,
+    /// For a redirect from `https` to `http`: the host it goes to, for the user to confirm (#67).
+    pub host: Option<String>,
 }
 
 /// Decides the redirect from `from` to `to` (absolute), after `followed` redirects of a fetch
-/// whose first URL had the origin `first`: only to `http` or `https`, never from `https` to
-/// `http` (no confirmation exists yet, #67), and at most [`MAX_REDIRECTS`].
+/// whose first URL had the origin `first`: only to `http` or `https`, from `https` to `http` only
+/// when the user confirmed it for this download (`allow_insecure`, #67), and at most
+/// [`MAX_REDIRECTS`].
 pub fn next_hop(
     first: Option<&Origin>,
     from: &str,
     to: &str,
     followed: u32,
+    allow_insecure: bool,
 ) -> Result<Hop, Refusal> {
-    let refuse = |kind, message: String| Err(Refusal { kind, message });
+    let refuse = |kind, message: String| {
+        Err(Refusal {
+            kind,
+            message,
+            host: None,
+        })
+    };
     if followed >= MAX_REDIRECTS {
         return refuse(
             CurlFailure::TooManyRedirects,
@@ -53,11 +63,13 @@ pub fn next_hop(
         );
     }
     let from_https = origin(from).is_some_and(|o| o.scheme == "https");
-    if from_https && target.scheme == "http" {
-        return refuse(
-            CurlFailure::InsecureRedirect,
-            "a redirect from https:// to http://, which isn't allowed".to_owned(),
-        );
+    if from_https && target.scheme == "http" && !allow_insecure {
+        return Err(Refusal {
+            kind: CurlFailure::InsecureRedirect,
+            message: "a redirect from https:// to http://, which needs the user's confirmation"
+                .to_owned(),
+            host: Some(target.host),
+        });
     }
     Ok(Hop {
         url: to.to_owned(),
@@ -74,7 +86,7 @@ mod tests {
     }
 
     fn hop(from: &str, to: &str, followed: u32) -> Result<Hop, Refusal> {
-        next_hop(Some(&first()), from, to, followed)
+        next_hop(Some(&first()), from, to, followed, false)
     }
 
     const FROM: &str = "https://files.example.com/a.zip";
@@ -116,7 +128,7 @@ mod tests {
         );
         // Without a first origin, nothing is the same origin.
         assert_eq!(
-            next_hop(None, FROM, "https://files.example.com/b", 0).map(|h| h.same_origin),
+            next_hop(None, FROM, "https://files.example.com/b", 0, false).map(|h| h.same_origin),
             Ok(false)
         );
     }
@@ -125,20 +137,36 @@ mod tests {
     fn http_may_redirect_to_https() {
         let from = "http://files.example.com/a.zip";
         let to = "https://files.example.com/a.zip";
-        let hop = next_hop(origin(from).as_ref(), from, to, 0).expect("followed");
+        let hop = next_hop(origin(from).as_ref(), from, to, 0, false).expect("followed");
         // Another scheme is another origin.
         assert!(!hop.same_origin);
     }
 
     #[test]
-    fn https_never_redirects_to_http() {
-        let refused = hop(FROM, "http://files.example.com/a.zip", 0).unwrap_err();
+    fn https_never_redirects_to_http_without_the_users_confirmation() {
+        let refused = hop(FROM, "http://mirror.example.com/a.zip", 0).unwrap_err();
         assert_eq!(refused.kind, CurlFailure::InsecureRedirect);
+        // The host is there for the user to confirm; the message names no URL.
+        assert_eq!(refused.host.as_deref(), Some("mirror.example.com"));
         assert!(
-            !refused.message.contains("files.example.com"),
+            !refused.message.contains("example.com"),
             "{}",
             refused.message
         );
+    }
+
+    #[test]
+    fn a_confirmed_download_follows_https_to_http() {
+        let to = "http://files.example.com/a.zip";
+        let hop = next_hop(Some(&first()), FROM, to, 0, true).expect("followed");
+        assert_eq!(hop.url, to);
+        // http is another origin than https: the login and the custom headers stay behind.
+        assert!(!hop.same_origin);
+        // The confirmation is about http only: other protocols stay refused.
+        for to in ["file:///etc/passwd", "sftp://files.example.com/a.zip"] {
+            let refused = next_hop(Some(&first()), FROM, to, 0, true).unwrap_err();
+            assert_eq!(refused.kind, CurlFailure::Refused, "{to}");
+        }
     }
 
     #[test]

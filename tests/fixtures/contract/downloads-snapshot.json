@@ -8,6 +8,7 @@
       "directory": "/home/user/Downloads",
       "error": {
         "class": "throttled",
+        "confirm": null,
         "hostKey": null,
         "httpStatus": 503,
         "message": "Service unavailable",

@@ -84,6 +84,7 @@ fn request_of(stored: &StoredDownload, options: &StoredOptions) -> TransferSpec 
         },
         max_connections: options.max_connections,
         resume: None,
+        trust: options.trust,
     }
 }
 

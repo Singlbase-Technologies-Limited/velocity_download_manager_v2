@@ -87,6 +87,7 @@ fn unnamed(url: String, directory: PathBuf) -> TransferSpec {
         resume: None,
         require_encryption: false,
         ssh_key: None,
+        trust: Default::default(),
     }
 }
 

@@ -82,7 +82,9 @@ pub enum FailureClass {
     Permanent,
 }
 
-/// A transfer failure as the engine reports it, independent of the engine behind it.
+/// A transfer failure as the engine reports it, independent of the engine behind it. The host key
+/// and the confirmation are boxed, so the error stays small where it is passed by value (#67:
+/// clippy's `result_large_err` in the engine).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct TransferError {
@@ -92,7 +94,41 @@ pub struct TransferError {
     pub retryable: bool,
     /// An SFTP server's host key that wasn't trusted (#53): the download waits for the user to
     /// confirm an unknown key's fingerprint, and a changed key is always refused. `None` otherwise.
-    pub host_key: Option<HostKeyCheck>,
+    pub host_key: Option<Box<HostKeyCheck>>,
+    /// What the user must confirm before the download can go on (#67): it waits, and goes on
+    /// once allowed ([`crate::manager::Manager::allow_download`]). `None` otherwise; absent in
+    /// errors stored before it existed.
+    #[serde(default)]
+    pub confirm: Option<Box<Confirm>>,
+}
+
+/// What a download stopped at, for the user to confirm (#67).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase", deny_unknown_fields)]
+pub enum Confirm {
+    /// The server redirected from `https` to `http`, to this host.
+    InsecureRedirect { host: String },
+    /// A link from the browser reached this computer or a private network (ADR-0006): the host
+    /// the link names and the address it connected to.
+    LocalAddress { host: String, address: String },
+}
+
+impl Confirm {
+    /// What allowing it is called.
+    pub fn kind(&self) -> ConfirmKind {
+        match self {
+            Confirm::InsecureRedirect { .. } => ConfirmKind::InsecureRedirect,
+            Confirm::LocalAddress { .. } => ConfirmKind::LocalAddress,
+        }
+    }
+}
+
+/// What the user allows for one download (#67), answering a [`Confirm`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ConfirmKind {
+    InsecureRedirect,
+    LocalAddress,
 }
 
 /// An SFTP server's host key, as the user must see it before trusting it (#53, research report
@@ -118,12 +154,19 @@ impl TransferError {
             message: message.to_owned(),
             retryable: class != FailureClass::Permanent,
             host_key: None,
+            confirm: None,
         }
     }
 
     /// The same error, about an SFTP server's untrusted host key (#53).
     pub fn with_host_key(mut self, check: HostKeyCheck) -> Self {
-        self.host_key = Some(check);
+        self.host_key = Some(Box::new(check));
+        self
+    }
+
+    /// The same error, waiting for the user to confirm `confirm` (#67).
+    pub fn with_confirm(mut self, confirm: Confirm) -> Self {
+        self.confirm = Some(Box::new(confirm));
         self
     }
 }
@@ -774,8 +817,40 @@ mod tests {
         .unwrap();
         assert_eq!(
             json,
-            r#"{"class":"throttled","httpStatus":503,"message":"Service unavailable","retryable":true,"hostKey":null}"#
+            r#"{"class":"throttled","httpStatus":503,"message":"Service unavailable","retryable":true,"hostKey":null,"confirm":null}"#
         );
+    }
+
+    #[test]
+    fn what_a_download_waits_to_confirm_serialises_with_its_kind() {
+        let e = TransferError::new(FailureClass::Permanent, None, "local").with_confirm(
+            Confirm::LocalAddress {
+                host: "router.example".to_owned(),
+                address: "192.168.1.1".to_owned(),
+            },
+        );
+        assert_eq!(
+            serde_json::to_value(&e).unwrap()["confirm"],
+            serde_json::json!({"kind":"localAddress","host":"router.example","address":"192.168.1.1"})
+        );
+        let insecure = Confirm::InsecureRedirect {
+            host: "mirror.example".to_owned(),
+        };
+        assert_eq!(
+            serde_json::to_string(&insecure).unwrap(),
+            r#"{"kind":"insecureRedirect","host":"mirror.example"}"#
+        );
+        assert_eq!(insecure.kind(), ConfirmKind::InsecureRedirect);
+        assert_eq!(
+            serde_json::to_string(&ConfirmKind::LocalAddress).unwrap(),
+            r#""localAddress""#
+        );
+        // An error stored before #67 has no `confirm`, and still reads.
+        let old: TransferError = serde_json::from_str(
+            r#"{"class":"permanent","httpStatus":null,"message":"m","retryable":false,"hostKey":null}"#,
+        )
+        .unwrap();
+        assert_eq!(old.confirm, None);
     }
 
     #[test]
@@ -1023,6 +1098,22 @@ mod tests {
             check(
                 "add-results.json",
                 serde_json::to_value(AddResult::samples()).unwrap(),
+            );
+        }
+
+        /// The browser bridge's types (#65): the Settings section's integration, and the link
+        /// the `browser-request` event carries.
+        #[test]
+        fn contract_browser() {
+            use crate::browser::bridge::BrowserPrompt;
+            use crate::browser::registration::BrowserIntegration;
+            check(
+                "browser-integration.json",
+                serde_json::to_value(BrowserIntegration::sample()).unwrap(),
+            );
+            check(
+                "browser-request.json",
+                serde_json::to_value(BrowserPrompt::sample()).unwrap(),
             );
         }
 

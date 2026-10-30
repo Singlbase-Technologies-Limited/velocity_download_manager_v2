@@ -120,6 +120,7 @@ mod tests {
                 resume: None,
                 require_encryption: false,
                 ssh_key: None,
+                trust: Default::default(),
             };
             let add = ToChild::Request {
                 seq: 1,
@@ -142,7 +143,7 @@ mod tests {
         // Protocol 3 (#62) names the first id `firstId` for every contract; 2 said `firstTransferId`.
         assert_eq!(
             serde_json::to_string(&start).unwrap(),
-            r#"{"type":"start","protocol":3,"contract":14,"firstId":12}"#
+            r#"{"type":"start","protocol":3,"contract":15,"firstId":12}"#
         );
         let refused = FromChild::Reply {
             seq: 7,

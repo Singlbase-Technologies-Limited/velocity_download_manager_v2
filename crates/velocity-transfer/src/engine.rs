@@ -160,6 +160,8 @@ fn request_options(spec: &TransferSpec) -> RequestOptions {
             path: key.path.clone(),
             passphrase: key.passphrase.as_ref().map(|p| p.expose().to_owned()),
         }),
+        allow_insecure_redirect: spec.trust.insecure_redirect_confirmed,
+        confirm_local_addresses: spec.trust.confirms_local_addresses(),
     }
 }
 

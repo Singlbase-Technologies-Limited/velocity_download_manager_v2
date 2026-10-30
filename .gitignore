@@ -5,6 +5,7 @@
 # Node / frontend
 node_modules/
 /dist/
+/browser-extension/dist/
 *.tsbuildinfo
 .vite/
 coverage/

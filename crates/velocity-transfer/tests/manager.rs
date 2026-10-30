@@ -126,6 +126,7 @@ fn spec(url: String, dir: &Path, name: &str) -> TransferSpec {
         resume: None,
         require_encryption: false,
         ssh_key: None,
+        trust: Default::default(),
     }
 }
 
