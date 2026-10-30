@@ -196,9 +196,9 @@ fn a_split_over_http2_resets_only_the_stream() {
     assert_eq!(c.connections, 1, "and the connection kept");
 }
 
-/// The report's ramp with shorter windows, so a test runs in seconds. 4 asked for, so each added
-/// connection that helps adds at least 33%, well clear of the 10% threshold and of measurement
-/// noise on a loaded machine; the 8th would add only 14% (seen stopping at 7 on a 2-vCPU Linux).
+/// The engine's ramp with shorter windows, so a test runs in seconds. 4 asked for, so losing a
+/// connection that helps costs at least 25%, well clear of the 5% threshold and of measurement
+/// noise on a loaded machine.
 const ADAPTIVE: DownloadOptions = DownloadOptions {
     connections: 4,
     adaptive: Some(AdaptivePolicy {
@@ -223,10 +223,9 @@ fn a_server_that_throttles_each_connection_gets_separate_connections() {
         },
     );
     let dir = Dir::new("per-tcp");
-    // 8 asked for, not 4 (#168): on a loaded machine one stream stays below the connection's cap,
-    // so the first few added streams are real gains. With 4 the stream ramp could reach its ceiling
-    // before the connection was saturated, and the trial, which starts only on "no gain", never ran
-    // (CI's Windows runner, run 40073688105). With 8 it saturates the 1 MiB/s first.
+    // 8 asked for (#168): the streams start at 8 and step down while the speed holds, so they stop
+    // below 8 and the trial, which starts only on "no gain", runs. Each count takes 2 windows, so
+    // the streams settle by about 16 s and the trial's own connections by about 20 s (#221).
     let options = DownloadOptions {
         connections: 8,
         ..ADAPTIVE
@@ -273,9 +272,6 @@ fn a_server_that_throttles_each_stream_keeps_one_multiplexed_connection() {
         c.connections, c.peak_answering
     );
     assert!(!r.own_connections, "{r:?}");
-    assert_eq!(
-        c.peak_answering, 4,
-        "it ramped up to the 4 asked for: {c:?}"
-    );
+    assert_eq!(c.peak_answering, 4, "it kept the 4 asked for: {c:?}");
     assert_eq!(c.connections, 1, "as streams on one connection: {c:?}");
 }

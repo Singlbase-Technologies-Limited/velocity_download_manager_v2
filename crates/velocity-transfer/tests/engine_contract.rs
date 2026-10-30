@@ -813,8 +813,8 @@ fn wait_until(timeout: Duration, what: &str, done: impl Fn() -> bool) {
 #[test]
 fn connections_change_live_within_the_cap() {
     let _speed = one_speed_test_at_a_time();
-    // #47: 1 MiB/s per connection, so each added connection helps, and a 48 MiB file is still
-    // running while the engine ramps up to a raised count, one connection per 2 s window.
+    // #47: 1 MiB/s per connection, so each connection helps and the engine keeps them, and a
+    // 48 MiB file is still running after the count is raised.
     let data = seeded_bytes(48 << 20, 47);
     for (mode, mut engine) in engines() {
         let server = TestServer::start(
@@ -837,14 +837,10 @@ fn connections_change_live_within_the_cap() {
             server.counters().gets >= 2
         });
         assert_eq!(engine.set_connections(id, 4), Ok(4), "{mode}");
-        // Raised, it ramps up to 4 rather than jumping (PO decision on #47), and says so.
-        wait_for_snapshot(&events, id, |s| {
-            s.progress.connection_detail.is_some_and(|d| {
-                d.requested == 4 && d.limited_by == Some(ConnectionLimit::RampingUp)
-            })
-        });
+        // Raised, it takes all 4 at once (PO decision on #221). #47's climb, one per 2 s window,
+        // took at least 6 s to reach them.
         wait_until(
-            Duration::from_secs(20),
+            Duration::from_secs(5),
             &format!("{mode}: 4 responses run at once"),
             || server.counters().answering == 4,
         );
@@ -960,7 +956,7 @@ fn downloads_from_one_host_share_its_cap_fairly() {
     let _speed = one_speed_test_at_a_time();
     // #47: 4 downloads each ask for 8 from one host with a cap of 8, so each is allowed 2. At
     // 2 MiB/s per connection, a 48 MiB file takes about 12 s, so each is still running when the
-    // last one has ramped up to its 2, however far apart they started (#154).
+    // last one has its 2, however far apart they started (#154).
     let data = seeded_bytes(48 << 20, 50);
     for (mode, mut engine) in engines() {
         let server = TestServer::start(

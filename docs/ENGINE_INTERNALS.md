@@ -438,23 +438,26 @@ Snapshots carry the connections in use now (`Progress::connections`) and `connec
 
 ### Adaptive connections
 
-The asked-for count is the most a download may use, not a must (PO decision on #47). Every download in the engine starts with one connection, the probe, and ramps up:
+The asked-for count is the most a download may use, not a must (PO decision on #47). A download starts with every connection it may use, as V1 does, and drops the ones that don't help (PO decision on #221):
 
 - **Windows:** the ramp measures the body bytes received over a window of max(2 s, 4 × RTT). RTT is the shortest wait seen between a request and its answer.
-- **Add while it helps:** after a window in which the last connection added raised the speed by at least 10%, it adds another.
-- **A small gain** (2% to 10%) keeps the last one and stops.
-- **No gain:** after 2 windows below 2%, it drops the last one and stops.
+- **Each count is measured for 2 windows,** and judged by their average speed.
+- **Drop while the speed holds:** the first count measured sets the speed to keep. The ramp then drops one connection, and if the speed without it stays within 5% of the best average at a higher count, it drops the next.
+- **Bring back the one that helped:** when the speed without a connection falls by 5% or more, that connection comes back and the ramp stops (`noGain`). At one connection it stops too.
+- **Noise keeps connections:** a slow measurement can only make the ramp keep one more, never lose one that helps.
+- **Why it changed:** #47 started with one connection and added one per window while each added 10%, and stopped for good at the first window that didn't. Normal internet variation could stop it below the count asked for. On 2026-10-30 the app took 319 s for the 2.9 GB Ubuntu 26.04.1 server image, the engine with a fixed 8 connections 294 s, and V1 286 s (one run each, #221).
 - **No decision** while fewer requests run than the ramp wants, at a file's tail for example: that speed says nothing about the count.
-- **A lower ceiling** (the budget, the user, a throttling server) applies at once. **A higher one** starts the ramp again.
-- **Example:** asked for 8, from a server that gives one client no more than 3 connections' worth, a download keeps 3, and shows `noGain`.
+- **A lower ceiling** (the budget, the user, a throttling server) applies at once. **A higher one,** such as a count the user raised, is taken at once, and the ramp judges again (PO decision on #221).
+- **While it tries fewer,** the download shows `rampingUp`, a name from #47's climbing ramp.
+- **Example:** asked for 8, from a server that gives one client no more than 3 connections' worth, a download drops to 2, brings the 3rd back, keeps 3, and shows `noGain`.
 
 `DownloadOptions::adaptive` is `None` for a fixed count, which the CLI uses to compare fixed plans.
 
 ### HTTP/2
 
 - **Multiplexing first:** requests to one host wait for the connection being set up (`CURLOPT_PIPEWAIT`), and share it as streams if it speaks HTTP/2.
-- **Then connections of their own, once:** when the ramp finds that more streams stop helping, the download tries requests on connections of their own (`CURLOPT_FRESH_CONNECT` and `CURLOPT_FORBID_REUSE`), ramping again from one.
-- **The faster way is kept:** connections of their own stay only if their best speed beats the best multiplexed one by the ramp's 10%. Otherwise the download goes back to the multiplexed count. Changing the way stops every request first, so each way is measured on its own.
+- **Then connections of their own, once:** when the ramp finds that more streams stop helping, the download tries requests on connections of their own (`CURLOPT_FRESH_CONNECT` and `CURLOPT_FORBID_REUSE`), starting again with every connection it may use.
+- **The faster way is kept:** connections of their own stay only if their best speed beats the best multiplexed one by 10%. Otherwise the download goes back to the multiplexed count. Changing the way stops every request first, so each way is measured on its own.
 - **`DownloadReport::own_connections`** says which way was kept.
 - **A split** resets only its stream; the connection stays.
 
@@ -468,10 +471,11 @@ All are starting values to tune by measurement (#77); the user can change them (
 | Smallest piece (`Sizes::min_split`) | The profile's: 1 MiB for Balanced | PO decision on #57 |
 | Shared budget (`CONNECTION_BUDGET`) | 48 | V1's `connection_budget`; PO decision on #47 |
 | Window | max(2 s, 4 × RTT) | Report section 5.5 |
-| Gain to add another | 10% | Report section 5.5 |
-| Flat gain, and windows before stepping back | below 2%, 2 windows | Report section 5.5 |
+| Windows per count | 2, averaged | #47's 2 flat windows (report section 5.5); #221 |
+| Loss that brings a connection back | 5% | #221: between #47's 2% flat and 10% gain thresholds; one connection of 8 that carries its share is worth 12.5% |
+| HTTP/2: gain that keeps connections of their own | 10% | Report section 5.5 |
 
-**Measured** on the local test servers (Windows 11). These check behaviour, not speed: no speed claim is made until #77 (PO decision on #47):
+**Measured** on the local test servers (Windows 11), with #47's climbing ramp. These check behaviour, not speed: no speed claim is made until #77 (PO decision on #47). #221 changed the ramp and its fixtures, and these rows haven't been measured again:
 
 | Fixture | Expected | Observed |
 |---|---|---|
@@ -701,7 +705,7 @@ Run it with `cargo run --release -p velocity-transfer --example high_offset_writ
 - **Connection fixtures (#47):** `tests/connections.rs` changes a download's count live (up and down, with no byte wasted and no second probe), holds it to the engine's allowance, reports when the file is too small for more, and runs the adaptive ramp against a per-connection and a per-IP throttle. `tests/engine_contract.rs` checks `set_connections`, the per-host share with Jain's index, and connection reuse in both engine modes. Since #154, so that slow machines don't fail them:
   - `tests/connections.rs` runs its tests one at a time, and so do the three in `tests/engine_contract.rs` that measure speed. At once, on 2 vCPUs, they stretched the ramp's windows to almost 3 s;
   - the ramp fixtures use the engine's own policy, with its 2 s windows. With 1 s windows, noise passed for a 10% gain;
-  - **still known:** about 1 run in 25 on 2 vCPUs, the per-IP fixture sees the ramp try a 5th connection when noise passes for a gain. The check stays at 4, a CI failure there is re-run, and the ramp's response to noise is for #77 (PO decision on #154);
+  - **#154's known failure is gone with #221:** about 1 run in 25 on 2 vCPUs, the per-IP fixture saw the climbing ramp try a 5th connection when noise passed for a gain. The ramp now starts at the count asked for and never adds beyond it, and noise can only keep a connection: the fixture asks for 4 and accepts 2 or 3 kept;
   - the ramp fixtures check "never more than asked" with the engine's own count, `DownloadReport::peak_requests`. A server counts a stopped request for a moment longer, because it writes the request's tail until it sees the connection close;
   - the fairness fixture measures once every download is downloading on its 2 connections. A download's allowance alone is set before it connects.
 - **Integrity fixtures (#46):** `tests/integrity.rs` runs against the test server:

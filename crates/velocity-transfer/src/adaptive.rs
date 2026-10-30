@@ -1,64 +1,75 @@
-//! Adaptive connections (#47, research report section 5.5): a download starts with one connection
-//! and adds one per evaluation window while the last one made it faster, then keeps the count that
-//! stopped helping. The count it asked for is the most it may use, not a must (PO decision on
-//! #47): a server that gives no more speed after 3 connections gets 3, not 8.
+//! Adaptive connections (#47, #221): a download starts with every connection it may use, as V1
+//! does, then drops one at a time while the speed holds without it, and brings back the last one
+//! whose loss made it slower. The count it asked for is the most it may use, not a must (PO
+//! decision on #47): a server that gives no more speed after 3 connections gets 3, not 8.
 //!
-//! All numbers are the report's starting hypotheses, to be tuned by measurement (#77); #30 makes
-//! them settings.
+//! #47 first climbed from one connection instead, and a single window of normal internet
+//! variation could stop it for good below the count asked for: on 2026-10-30 the app took 319 s
+//! for the 2.9 GB Ubuntu 26.04.1 server image, against 294 s with a fixed 8 and V1's 286 s (one
+//! run each, #221). Starting at the top, a mistake keeps a connection too many, never one too few
+//! (PO decision on #221).
+//!
+//! All numbers are starting hypotheses (research report section 5.5), to be tuned by
+//! measurement (#77).
 
 use std::time::{Duration, Instant};
 
-/// When to add a connection and when to stop.
+/// How long a measurement lasts, and when a connection counts as helping.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct AdaptivePolicy {
     /// The shortest evaluation window: a window lasts max(`min_window`, `rtts_per_window` × RTT).
     pub min_window: Duration,
     pub rtts_per_window: u32,
-    /// Another connection is added while the last one raised the speed by at least this much.
-    pub add_gain_percent: u32,
-    /// A window whose gain is below this is flat.
-    pub flat_gain_percent: u32,
-    /// After this many flat windows, the last connection is dropped and no more are added.
-    pub flat_windows: u32,
+    /// Each count is measured over this many windows, averaged, so one noisy window doesn't decide.
+    pub windows_per_count: u32,
+    /// A dropped connection helped if the speed without it fell by at least this much below the
+    /// best seen with more.
+    pub help_percent: u32,
+    /// HTTP/2: connections of their own are kept only if their best speed beats the best
+    /// multiplexed one by this much.
+    pub switch_gain_percent: u32,
 }
 
 impl AdaptivePolicy {
-    /// Report section 5.5: windows of max(2 s, 4 × RTT), add while the gain is at least 10%, and
-    /// step back after 2 windows below 2% (PO decision on #47).
+    /// Windows of max(2 s, 4 × RTT) (report section 5.5), two per count (#47's two flat windows).
+    /// 5% sits between #47's 2% flat and 10% gain thresholds: one connection of 8 that carries its
+    /// share is worth 12.5%. Hypotheses, for #77 to measure (#221).
     pub const DEFAULT: AdaptivePolicy = AdaptivePolicy {
         min_window: Duration::from_secs(2),
         rtts_per_window: 4,
-        add_gain_percent: 10,
-        flat_gain_percent: 2,
-        flat_windows: 2,
+        windows_per_count: 2,
+        help_percent: 5,
+        switch_gain_percent: 10,
     };
 }
 
 /// Why the ramp uses fewer connections than it may.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Tuning {
-    /// It is still adding connections, one per window.
+    /// It is trying fewer, to find how many help (#221; #47 climbed from one, hence the name).
     RampingUp,
     /// More connections stopped making it faster.
     NoGain,
 }
 
-/// One download's ramp. Each added connection is judged once, against the speed before it:
-/// enough gain keeps it and adds the next; a small gain keeps it and stops; no gain for
-/// [`AdaptivePolicy::flat_windows`] windows drops it and stops.
+/// One download's ramp. It measures the speed with every connection, then drops one and measures
+/// again: if the speed held, it drops the next; if it fell by [`AdaptivePolicy::help_percent`],
+/// the dropped one comes back and the ramp stops.
 #[derive(Debug)]
 pub struct Ramp {
     policy: AdaptivePolicy,
     target: u32,
-    /// The speed, in bytes per second, before the connection being judged was added.
+    /// The best average speed, in bytes per second, with the connections already judged. It never
+    /// falls while connections are dropped, so each one dropped is judged against the best.
     base: Option<f64>,
-    /// A connection was added and hasn't been judged yet.
+    /// A connection was dropped and the count without it is being measured.
     judging: bool,
-    /// Flat windows since it was added.
-    flat: u32,
-    /// More connections stopped helping; nothing is added until the ceiling rises.
+    /// The windows measured at this count, and the sum of their speeds.
+    measured: u32,
+    sum: f64,
+    /// Fewer stopped keeping the speed; nothing changes until the ceiling rises.
     holding: bool,
-    /// The ceiling at the last step.
+    /// The ceiling at the last step; 0 before the first.
     ceiling: u32,
     /// When the current window started, and the bytes received by then.
     window: Option<(Instant, u64)>,
@@ -67,35 +78,38 @@ pub struct Ramp {
 }
 
 impl Ramp {
+    /// A ramp that takes the whole ceiling at its first step.
     pub fn new(policy: AdaptivePolicy) -> Self {
         Ramp {
             policy,
             target: 1,
             base: None,
             judging: false,
-            flat: 0,
+            measured: 0,
+            sum: 0.0,
             holding: false,
-            ceiling: 1,
+            ceiling: 0,
             window: None,
             best: None,
         }
     }
 
-    /// A ramp that keeps `target` connections and adds none until the ceiling rises: what a
+    /// A ramp that keeps `target` connections under `ceiling` until the ceiling rises: what a
     /// download goes back to after trying another way that did no better (#47).
-    pub fn holding_at(policy: AdaptivePolicy, target: u32) -> Self {
+    pub fn holding_at(policy: AdaptivePolicy, target: u32, ceiling: u32) -> Self {
+        let ceiling = ceiling.max(1);
         Ramp {
-            target: target.max(1),
+            target: target.clamp(1, ceiling),
             holding: true,
-            ceiling: target.max(1),
+            ceiling,
             ..Ramp::new(policy)
         }
     }
 
-    /// Whether the ramp has stopped changing: more stopped helping, or it reached `ceiling` and
-    /// judged its last connection.
-    pub fn settled(&self, ceiling: u32) -> bool {
-        self.holding || (self.target >= ceiling && !self.judging)
+    /// Whether the ramp has stopped changing: fewer stopped keeping the speed, or it is down to
+    /// one connection.
+    pub fn settled(&self) -> bool {
+        self.holding
     }
 
     /// The fastest window measured so far, in bytes per second.
@@ -130,18 +144,18 @@ impl Ramp {
         rtt: Option<Duration>,
     ) {
         let ceiling = ceiling.max(1);
-        if ceiling > self.ceiling && self.holding {
-            // More may be used now, so the ramp tries again.
+        if ceiling > self.ceiling {
+            // A new download, or more may be used now: take them all at once and judge again
+            // (PO decision on #221).
+            self.target = ceiling;
             self.holding = false;
-        }
-        self.ceiling = ceiling;
-        if self.target > ceiling {
+            self.restart();
+        } else if self.target > ceiling {
             // A lower ceiling applies at once; what was measured above it no longer counts.
             self.target = ceiling;
-            self.base = None;
-            self.judging = false;
-            self.window = None;
+            self.restart();
         }
+        self.ceiling = ceiling;
         if running < self.target {
             // A connection is starting, or the file has too little left for all of them: the
             // speed says nothing about the count.
@@ -163,49 +177,58 @@ impl Ramp {
         self.judge(rate);
     }
 
+    /// Forgets what was measured at the old count.
+    fn restart(&mut self) {
+        self.base = None;
+        self.judging = false;
+        self.measured = 0;
+        self.sum = 0.0;
+        self.window = None;
+    }
+
     /// Ends a window measured at `rate` bytes per second.
     fn judge(&mut self, rate: f64) {
+        if self.holding {
+            return;
+        }
+        self.measured += 1;
+        self.sum += rate;
+        if self.measured < self.policy.windows_per_count.max(1) {
+            return;
+        }
+        let mean = self.sum / f64::from(self.measured);
+        self.measured = 0;
+        self.sum = 0.0;
         match self.base {
             Some(base) if self.judging => {
-                let gain = if base > 0.0 {
-                    (rate - base) / base * 100.0
-                } else if rate > 0.0 {
-                    f64::INFINITY
+                let loss = if base > 0.0 {
+                    (base - mean) / base * 100.0
                 } else {
                     0.0
                 };
-                if gain >= f64::from(self.policy.add_gain_percent) {
-                    self.base = Some(rate);
-                    self.judging = false;
-                    self.add();
-                } else if gain < f64::from(self.policy.flat_gain_percent) {
-                    self.flat += 1;
-                    if self.flat >= self.policy.flat_windows {
-                        self.target = (self.target - 1).max(1);
-                        self.judging = false;
-                        self.holding = true;
-                    }
-                } else {
-                    self.base = Some(rate);
+                if loss >= f64::from(self.policy.help_percent) {
+                    // The dropped connection helped: it comes back, and the ramp stops.
+                    self.target += 1;
                     self.judging = false;
                     self.holding = true;
+                    return;
                 }
+                self.base = Some(base.max(mean));
             }
-            _ if !self.holding => {
-                // The first window, or the ceiling rose: this speed is the base for the next.
-                self.base = Some(rate);
-                self.add();
-            }
-            _ => {}
+            // The first count measured: the speed to keep.
+            _ => self.base = Some(mean),
         }
+        self.drop_one();
     }
 
-    /// Adds a connection to be judged, if the ceiling allows.
-    fn add(&mut self) {
-        if self.target < self.ceiling {
-            self.target += 1;
+    /// Drops a connection to be judged, or stops at one.
+    fn drop_one(&mut self) {
+        if self.target > 1 {
+            self.target -= 1;
             self.judging = true;
-            self.flat = 0;
+        } else {
+            self.judging = false;
+            self.holding = true;
         }
     }
 }
@@ -213,6 +236,7 @@ impl Ramp {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::cell::Cell;
 
     const WINDOW: Duration = AdaptivePolicy::DEFAULT.min_window;
 
@@ -240,106 +264,162 @@ mod tests {
         targets
     }
 
+    /// A ramp after its first step, with 8 allowed and all 8 running.
     fn start() -> (Ramp, (Instant, u64)) {
         let mut ramp = Ramp::new(AdaptivePolicy::DEFAULT);
         let clock = (Instant::now(), 0);
-        ramp.step(clock.0, clock.1, 8, 1, None);
+        ramp.step(clock.0, clock.1, 8, 8, None);
         (ramp, clock)
     }
 
+    /// A server that throttles each connection: losing one of 8 costs 12.5%.
+    fn linear(n: u32) -> u64 {
+        u64::from(n) * 1_000_000
+    }
+
+    /// A server that gives one client no more than 3 connections' worth.
+    fn capped(n: u32) -> u64 {
+        u64::from(n.min(3)) * 1_000_000
+    }
+
+    /// What a ramp against [`capped`] does: each count is measured for 2 windows; without the 3rd
+    /// the speed falls, so it comes back and the ramp stops at 3.
+    const DOWN_TO_THREE: [u32; 15] = [8, 7, 7, 6, 6, 5, 5, 4, 4, 3, 3, 2, 2, 3, 3];
+
+    /// `speed`, times `factor` during window `which` (1-based) of [`run`].
+    fn in_window(which: u32, factor: f64, speed: impl Fn(u32) -> u64) -> impl Fn(u32) -> u64 {
+        let ticks = Cell::new(0u32);
+        move |n| {
+            ticks.set(ticks.get() + 1);
+            let window = (ticks.get() - 1) / 20 + 1;
+            if window == which {
+                (speed(n) as f64 * factor) as u64
+            } else {
+                speed(n)
+            }
+        }
+    }
+
     #[test]
-    fn starts_with_one_connection_and_says_it_is_ramping_up() {
+    fn starts_with_every_connection_it_may_use() {
         let (ramp, _) = start();
-        assert_eq!(ramp.target(), 1);
-        assert_eq!(ramp.why(8), Some(Tuning::RampingUp));
+        assert_eq!(ramp.target(), 8, "not one, as #47 had it");
+        assert_eq!(ramp.why(8), None);
     }
 
     #[test]
-    fn adds_one_connection_per_window_while_each_helps() {
-        // A server that throttles each connection: speed grows with the count.
+    fn keeps_every_connection_while_each_helps() {
         let (mut ramp, mut clock) = start();
-        let targets = run(&mut ramp, &mut clock, 9, 8, |n| u64::from(n) * 1_000_000);
-        assert_eq!(targets, [2, 3, 4, 5, 6, 7, 8, 8, 8]);
+        let targets = run(&mut ramp, &mut clock, 6, 8, linear);
+        assert_eq!(
+            targets,
+            [8, 7, 7, 8, 8, 8],
+            "the 8th tried without, then kept"
+        );
         assert_eq!(ramp.why(8), None, "at the most it may use");
+        assert!(ramp.settled());
     }
 
     #[test]
-    fn steps_back_and_stays_when_more_connections_stop_helping() {
-        // A server that throttles the whole client to what 3 connections get.
+    fn drops_the_connections_that_dont_help_and_keeps_the_rest() {
         let (mut ramp, mut clock) = start();
-        let targets = run(&mut ramp, &mut clock, 8, 8, |n| {
-            u64::from(n.min(3)) * 1_000_000
-        });
-        // 1→2→3→4; 4 brings nothing for 2 windows, so it goes back to 3 and stays.
-        assert_eq!(targets, [2, 3, 4, 4, 3, 3, 3, 3]);
+        let targets = run(&mut ramp, &mut clock, 15, 8, capped);
+        assert_eq!(targets, DOWN_TO_THREE);
         assert_eq!(ramp.why(8), Some(Tuning::NoGain));
     }
 
     #[test]
-    fn a_small_gain_stops_the_ramp_without_stepping_back() {
-        // The 3rd connection adds 5%: kept, but no 4th.
+    fn one_slow_window_at_the_start_does_not_cost_a_connection_that_helps() {
+        // The first window with all 8 comes in at half speed: normal variation. Fewer then look
+        // faster, but each count is judged against the best before it, so it still stops at the 3
+        // that help.
         let (mut ramp, mut clock) = start();
-        let speed = |n: u32| match n {
-            1 => 1_000_000,
-            2 => 2_000_000,
-            _ => 2_100_000,
-        };
-        let targets = run(&mut ramp, &mut clock, 5, 8, speed);
-        assert_eq!(targets, [2, 3, 3, 3, 3]);
-        assert_eq!(ramp.why(8), Some(Tuning::NoGain));
+        let targets = run(&mut ramp, &mut clock, 15, 8, in_window(1, 0.5, capped));
+        assert_eq!(targets, DOWN_TO_THREE);
     }
 
     #[test]
-    fn follows_a_lower_ceiling_and_ramps_again_when_it_rises() {
+    fn one_fast_window_does_not_freeze_the_count() {
+        // #47 stopped for good at the first window under a 10% gain. Here a window 6% fast, with
+        // all 8, raises the bar by 3% on average: fewer stay within 5% of it, so the ramp goes on
+        // and still finds the 3 that help.
         let (mut ramp, mut clock) = start();
-        let linear = |n: u32| u64::from(n) * 1_000_000;
+        let targets = run(&mut ramp, &mut clock, 15, 8, in_window(2, 1.06, capped));
+        assert_eq!(targets, DOWN_TO_THREE);
+    }
+
+    #[test]
+    fn one_slow_window_while_judging_keeps_the_connection() {
+        // Noise only ever keeps a connection: a slow window without the 8th brings it back.
+        let (mut ramp, mut clock) = start();
+        let targets = run(
+            &mut ramp,
+            &mut clock,
+            4,
+            8,
+            in_window(3, 0.5, |_| 8_000_000),
+        );
+        assert_eq!(targets, [8, 7, 7, 8]);
+    }
+
+    #[test]
+    fn follows_a_lower_ceiling_at_once_and_takes_a_higher_one_at_once() {
+        let (mut ramp, mut clock) = start();
         run(&mut ramp, &mut clock, 4, 8, linear);
-        assert_eq!(ramp.target(), 5);
+        assert_eq!(ramp.target(), 8);
         // The budget or the user lowered the ceiling: the ramp follows at once.
-        run(&mut ramp, &mut clock, 1, 2, linear);
-        assert_eq!(ramp.target(), 2);
+        let targets = run(&mut ramp, &mut clock, 1, 2, linear);
+        assert_eq!(targets, [2]);
         assert_eq!(ramp.why(2), None);
-        // Raised again: it goes on adding, one per window.
-        let targets = run(&mut ramp, &mut clock, 2, 8, linear);
-        assert_eq!(targets, [3, 4]);
+        // Raised again: all of them at once, not one per window (PO decision on #221).
+        clock.0 += Duration::from_millis(100);
+        ramp.step(clock.0, clock.1, 8, 2, None);
+        assert_eq!(ramp.target(), 8);
+        assert_eq!(ramp.why(8), None);
     }
 
     #[test]
-    fn a_ceiling_raised_after_the_ramp_stopped_starts_it_again() {
+    fn a_ceiling_raised_after_the_ramp_stopped_takes_the_new_one_and_judges_again() {
         let (mut ramp, mut clock) = start();
-        let capped = |n: u32| u64::from(n.min(3)) * 1_000_000;
-        run(&mut ramp, &mut clock, 8, 8, capped);
-        assert_eq!(ramp.why(8), Some(Tuning::NoGain));
-        let linear = |n: u32| u64::from(n) * 1_000_000;
-        let targets = run(&mut ramp, &mut clock, 2, 16, linear);
-        assert_eq!(targets, [4, 5]);
-    }
-
-    #[test]
-    fn settles_when_it_stops_or_reaches_the_ceiling_and_knows_its_best_speed() {
-        let (mut ramp, mut clock) = start();
-        assert!(!ramp.settled(8));
-        run(&mut ramp, &mut clock, 8, 8, |n| {
-            u64::from(n.min(3)) * 1_000_000
-        });
-        assert!(ramp.settled(8), "stopped: more stopped helping");
-        let best = ramp.best_rate().expect("measured");
-        assert!((best - 3_000_000.0).abs() < 1.0, "{best}");
-
-        let (mut ramp, mut clock) = start();
-        run(&mut ramp, &mut clock, 3, 3, |n| u64::from(n) * 1_000_000);
-        assert!(
-            ramp.settled(3),
-            "at the ceiling, its last connection judged"
+        run(&mut ramp, &mut clock, 15, 8, capped);
+        assert_eq!((ramp.target(), ramp.why(8)), (3, Some(Tuning::NoGain)));
+        // The first window starts once all 16 run, so each decision lands a window later.
+        let targets = run(&mut ramp, &mut clock, 5, 16, linear);
+        assert_eq!(
+            targets,
+            [16, 16, 15, 15, 16],
+            "the 16th tried without, and kept"
         );
     }
 
     #[test]
+    fn settles_when_fewer_stop_keeping_the_speed_and_knows_its_best_speed() {
+        let (mut ramp, mut clock) = start();
+        assert!(!ramp.settled());
+        run(&mut ramp, &mut clock, 15, 8, capped);
+        assert!(ramp.settled());
+        let best = ramp.best_rate().expect("measured");
+        assert!((best - 3_000_000.0).abs() < 1.0, "{best}");
+    }
+
+    #[test]
+    fn settles_at_one_when_one_is_as_fast_as_any() {
+        let (mut ramp, mut clock) = start();
+        let targets = run(&mut ramp, &mut clock, 16, 8, |_| 1_000_000);
+        assert_eq!(targets.last(), Some(&1));
+        assert!(ramp.settled());
+        assert_eq!(ramp.why(8), Some(Tuning::NoGain));
+    }
+
+    #[test]
     fn a_ramp_can_start_holding_at_a_count() {
-        let ramp = Ramp::holding_at(AdaptivePolicy::DEFAULT, 3);
+        let mut ramp = Ramp::holding_at(AdaptivePolicy::DEFAULT, 3, 8);
         assert_eq!(ramp.target(), 3);
         assert_eq!(ramp.why(8), Some(Tuning::NoGain));
-        assert!(ramp.settled(8));
+        assert!(ramp.settled());
+        // The same ceiling is not a raised one: it keeps holding.
+        ramp.step(Instant::now(), 0, 8, 3, None);
+        assert_eq!(ramp.target(), 3);
     }
 
     #[test]
@@ -351,25 +431,24 @@ mod tests {
             clock.1 += 100_000;
             ramp.step(clock.0, clock.1, 8, 0, None);
         }
-        assert_eq!(ramp.target(), 1);
+        assert_eq!(ramp.target(), 8);
     }
 
     #[test]
     fn a_window_lasts_at_least_four_round_trips() {
-        // RTT 1 s: windows of 4 s, so nothing changes after 3 s.
+        // RTT 1 s: windows of 4 s, so the 2 windows at 8 end at 8 s, not 4 s.
         let (mut ramp, mut clock) = start();
         let rtt = Some(Duration::from_secs(1));
-        for _ in 0..30 {
+        let mut tick = |ramp: &mut Ramp| {
             clock.0 += Duration::from_millis(100);
             clock.1 += 100_000;
-            ramp.step(clock.0, clock.1, 8, 1, rtt);
+            ramp.step(clock.0, clock.1, 8, 8, rtt);
+        };
+        for _ in 0..79 {
+            tick(&mut ramp);
         }
-        assert_eq!(ramp.target(), 1);
-        for _ in 0..11 {
-            clock.0 += Duration::from_millis(100);
-            clock.1 += 100_000;
-            ramp.step(clock.0, clock.1, 8, 1, rtt);
-        }
-        assert_eq!(ramp.target(), 2);
+        assert_eq!(ramp.target(), 8);
+        tick(&mut ramp);
+        assert_eq!(ramp.target(), 7);
     }
 }
