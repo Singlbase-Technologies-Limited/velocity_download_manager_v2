@@ -164,4 +164,4 @@ These are in [`src-tauri/src/shell.rs`](../src-tauri/src/shell.rs) and [`tray.rs
   - The file checks for opening, hardened further (#72).
   - The browser extension's steps (#64).
 - **Keyboard shortcuts:** Ctrl+, opens Settings (#30), and Ctrl+N the Add dialog (#60).
-- **The accessibility audit** is #66.
+- **Accessibility:** what is checked, and how, is in [ACCESSIBILITY.md](ACCESSIBILITY.md) (#66).
