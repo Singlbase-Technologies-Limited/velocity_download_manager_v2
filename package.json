@@ -33,6 +33,8 @@
     "check:guidance": "node scripts/check-guidance.mjs",
     "check:pr-body": "node scripts/check-pr-body.mjs",
     "check:advisories": "node scripts/check-advisories.mjs",
+    "check:notices": "node scripts/notices.mjs --check",
+    "notices": "node scripts/notices.mjs",
     "native:fetch": "node scripts/native/fetch.mjs",
     "native:build": "node scripts/native/build.mjs",
     "native:verify": "node scripts/native/verify.mjs"

@@ -34,7 +34,7 @@ The rule in [AGENTS.md](../AGENTS.md#engineering) is short: **a new crate, npm p
 
 **After approval:** add the dependency to the [register](#approved-direct-dependencies) in the same PR.
 
-**Transitive dependencies** don't need individual approval, but they must pass the licence rules below. The notices generator (#76) lists every one and flags any that don't.
+**Transitive dependencies** don't need individual approval, but they must pass the licence rules below. The notices generator lists every one, and `pnpm check:notices` fails on any that don't ([LICENSING.md](LICENSING.md#third-party-notices), #76).
 
 ## Allowed licences
 
@@ -76,6 +76,7 @@ curl    8.23.0  https://curl.se/download/curl-8.23.0.tar.xz  8dadd7d2536a314f982
   - The build checks the detached `<source-url>.asc` with gpg against that one key only, and refuses a signature from any other key, an expired or revoked key, or a file with more than one signature.
 - **Licence** is an SPDX identifier from the permissive class in the table above. A line with any other licence is refused until the PO records an exception.
 - **Enforced by** `scripts/native/native-lib.mjs` (unit tested), which `pnpm native:fetch` and `pnpm native:build` use ([BUILDING_NATIVE.md](BUILDING_NATIVE.md)).
+- **Licence text:** each native library's own licence file, copied from its verified source, is `scripts/native/licenses/<name>.txt`. The notices generator refuses a library without one (#76).
 
 ### Libraries from vcpkg
 
@@ -117,7 +118,7 @@ A release or release candidate isn't built while any of these is true (#17, #18,
 
 ## Approved direct dependencies
 
-The register of direct dependencies and how each was approved. Transitive dependencies are listed by the notices generator (#76).
+The register of direct dependencies and how each was approved. Transitive dependencies are listed in [THIRD_PARTY_NOTICES.md](../THIRD_PARTY_NOTICES.md) (#76).
 
 | Dependency | Kind | Licence | Purpose | Approved |
 |---|---|---|---|---|

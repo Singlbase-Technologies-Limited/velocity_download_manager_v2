@@ -22,4 +22,4 @@ Work is planned as issues on the [project board](https://github.com/users/vincen
 
 ## Licence
 
-Not yet chosen (issue #86). All rights reserved until then.
+Not yet chosen (issue #86). All rights reserved until then. The third-party components V2 contains, and their licences, are in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).

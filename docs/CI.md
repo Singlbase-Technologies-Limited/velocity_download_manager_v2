@@ -147,6 +147,7 @@ GitHub's guidance is in [secure use](https://docs.github.com/en/actions/referenc
 - **Dependabot** updates the pins: [`.github/dependabot.yml`](../.github/dependabot.yml) checks the workflows and the composite action **monthly**, grouped into **one PR**, so an update costs one CI run. Each update is an ordinary PR the PO reviews. For Cargo and npm, Dependabot opens security-fix PRs only, no routine version updates (PO decision on #75); other dependency changes need PO approval (#9).
 - **No `pull_request_target`** that checks out PR code. No secrets in PR workflows.
 - **Untrusted text stays out of commands.** Titles, branch names and other user-controlled strings never go straight into `run:` scripts; they pass through environment variables.
+- **Third-party notices** (#76): the Linux job of PR checks and Main checks runs `pnpm check:notices` whenever Rust is selected, which every lockfile change does. It fails on a licence outside the allowed list and on a `THIRD_PARTY_NOTICES.md` that no longer matches the dependency graphs ([LICENSING.md](LICENSING.md#third-party-notices)). Once, on Linux: the graphs cover every target platform.
 - **Self-hosted runners:** none. If one is ever added (PO decision), it never runs code from a fork.
 
 ## Collecting failures
