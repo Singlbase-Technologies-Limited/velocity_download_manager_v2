@@ -34,6 +34,11 @@ const tools = {
   pnpm: pnpmBin,
 };
 
+/** The command line that starts `name` (a key of `tools`), without a shell. */
+export function toolCommand(name) {
+  return tools[name]();
+}
+
 /** Stops with a hint when cargo or node_modules is missing. */
 export function requirePrerequisites() {
   if (!cargoOnPath && !existsSync(cargo)) {

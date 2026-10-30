@@ -4,8 +4,9 @@
 # saves the Rust dependency caches (one per OS), which pull requests restore. A red run opens the
 # tracking issue "main is failing", and the next green run closes it (scripts/ci-main-status.mjs).
 #
-# Failure collection (#91, docs/CI_DIAGNOSTICS.md): every job runs to completion and writes a
-# report; `summary` combines them into one table and the `ci-diagnostics` artifact.
+# Failure collection (#91, docs/CI_DIAGNOSTICS.md): every job that runs completes and writes a
+# report; `summary` combines them into one table and the `ci-diagnostics` artifact. A failed `select`
+# (its docs or guidance check) stops the Linux and Windows jobs, which are reported BLOCKED (#76).
 #
 # Temporarily manual-only (#204, docs/CI.md#while-ci-runs-by-hand-only): to save Actions minutes,
 # the `push` trigger on `main` is off, and this workflow runs only when started by hand, once per
@@ -40,7 +41,8 @@ jobs:
   select:
     name: Select jobs
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    # Most of it is check:notices fetching every target's crates (#76).
+    timeout-minutes: 10
     env:
       CI_REPORT_PATH: ${{ github.workspace }}/../ci-checks.json
     outputs:
@@ -84,11 +86,26 @@ jobs:
         name: Agent guidance (check:guidance)
         if: ${{ !cancelled() && steps.node.outcome == 'success' }}
         run: node scripts/check-guidance.mjs
+      # The third-party notices and the licence check (#76, docs/LICENSING.md): every shipped
+      # component's licence is allowed, and THIRD_PARTY_NOTICES.md matches the dependency graphs.
+      # Here, on a fresh runner and in about a minute: in the Linux job, after check:fast's build,
+      # downloading every target's crates filled the disk (run 41091551241). Once is enough: the
+      # graphs are the same on every OS (`cargo tree --target all`). The runner's stable cargo reads
+      # the graphs, as for the selection.
+      - id: notices
+        name: Third-party notices (check:notices)
+        if: ${{ !cancelled() && steps.select.outputs.rust == 'true' }}
+        env:
+          RUSTUP_TOOLCHAIN: stable
+        run: |
+          corepack enable
+          pnpm install --frozen-lockfile
+          pnpm check:notices
       - name: Write the job report
         if: ${{ !cancelled() && steps.checkout.outcome == 'success' }}
         env:
           STEPS: ${{ toJSON(steps) }}
-        run: node scripts/ci-report.mjs job --job select --infra checkout,node --step-check "select=Job selection"
+        run: node scripts/ci-report.mjs job --job select --infra checkout,node --step-check "select=Job selection" --step-check "notices=Third-party notices (check:notices)"
       - name: Upload the job report
         if: ${{ !cancelled() && steps.checkout.outcome == 'success' }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -100,7 +117,10 @@ jobs:
   linux:
     name: Linux checks
     needs: select
-    if: ${{ !cancelled() && needs.select.outputs.code == 'true' }}
+    # Only after the selection succeeded, its docs and guidance checks included: a broken link
+    # or guidance rule, found in seconds, stops the run before the long checks (PO decision on
+    # #76, 2026-10-30; minutes are scarce, #204). The job is then reported BLOCKED by `select`.
+    if: ${{ needs.select.result == 'success' && needs.select.outputs.code == 'true' }}
     runs-on: ubuntu-latest
     # Long enough for a cold build of Boost and libtorrent (#205); a warm run takes far less.
     timeout-minutes: 90
@@ -113,6 +133,16 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
+      # The hosted runner has about 14 GB free, and a cold build of Boost and libtorrent plus
+      # check:fast's debug build filled it twice, the second time while saving the Rust cache
+      # (runs 41091551241 and 41101400776, #76). Toolchains V2 never uses go first: .NET, the
+      # Android SDK, GHC and CodeQL, about 20 GB.
+      - name: Free disk space
+        if: ${{ needs.select.outputs.rust == 'true' }}
+        run: |
+          df -h /
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache/CodeQL
+          df -h /
       - id: setup
         uses: ./.github/actions/setup
         with:
@@ -189,7 +219,10 @@ jobs:
   windows:
     name: Windows checks (check:fast)
     needs: select
-    if: ${{ !cancelled() && needs.select.outputs.windows == 'true' }}
+    # Only after the selection succeeded, its docs and guidance checks included: a broken link
+    # or guidance rule, found in seconds, stops the run before the long checks (PO decision on
+    # #76, 2026-10-30; minutes are scarce, #204). The job is then reported BLOCKED by `select`.
+    if: ${{ needs.select.result == 'success' && needs.select.outputs.windows == 'true' }}
     runs-on: windows-latest
     # Long enough for a cold build of Boost and libtorrent (#205); a warm run takes far less.
     timeout-minutes: 120

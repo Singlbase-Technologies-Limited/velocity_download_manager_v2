@@ -97,6 +97,8 @@ pnpm check:links               # relative links and anchors in all Markdown file
 pnpm check:guidance            # AGENTS.md, CLAUDE.md, rules and skills (docs/AGENT_GUIDANCE.md)
 pnpm check:pr-body <file> --title "…"  # a PR description and title against the PR template
 pnpm check:advisories          # known advisories in Cargo.lock and pnpm-lock.yaml (needs cargo-deny)
+pnpm notices                   # regenerate THIRD_PARTY_NOTICES.md after a dependency change (docs/LICENSING.md)
+pnpm check:notices             # every shipped licence is allowed and THIRD_PARTY_NOTICES.md is current
 pnpm native:build              # build libcurl and its libraries from verified sources (docs/BUILDING_NATIVE.md)
 ```
 

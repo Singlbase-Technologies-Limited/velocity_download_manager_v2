@@ -1,6 +1,6 @@
 # CI design
 
-V2's CI runs on GitHub Actions in a private repository on GitHub Free. The plan includes 2,000 runner minutes a month, and usage is **blocked**, not billed, once they run out ([billing](https://docs.github.com/en/billing/concepts/product-billing/github-actions)). Every design choice below protects two things: the checks that matter run on every change, and the monthly quota lasts the month.
+V2's CI runs on GitHub Actions in a private repository, now on GitHub Pro (recorded on 2026-10-30, #204; it was on Free when CI was designed). Free includes 2,000 runner minutes a month and Pro 3,000, and usage is **blocked**, not billed, once they run out ([billing](https://docs.github.com/en/billing/concepts/product-billing/github-actions)). Every design choice below protects two things: the checks that matter run on every change, and the monthly quota lasts the month.
 
 > **For now, CI runs only by hand, once per batch of five issues** (PO decision, 2026-10-30, #204), to save Actions minutes until there is money for them. It replaces the pause of 2026-10-24 (#173). The design below is unchanged and comes back as it is. See [below](#while-ci-runs-by-hand-only).
 
@@ -34,11 +34,11 @@ This page is the design. The workflows are written in #13, #14, #16 to #19 and #
 
 **No `develop` or `staging` tiers.** All work merges into `main`, and releases are tags on verified `main` commits ([DEVELOPMENT_WORKFLOW.md](DEVELOPMENT_WORKFLOW.md)).
 
-**There is no server-side gate on GitHub Free for a private repository.** Branch protection, required status checks and rulesets return HTTP 403 (verified 2026-10-21, #89). Environment *required reviewers* are only available for public repositories on Free ([environments](https://docs.github.com/en/actions/reference/workflows-and-actions/deployments-and-environments)). So:
+**No required checks yet.** On GitHub Free, rulesets returned HTTP 403 for this private repository (2026-10-21, #89). On Pro, the PO's *Main* ruleset blocks deleting `main` and force-pushing to it (2026-10-30), but no status check is required, because PR checks don't start on a pull request while CI runs by hand only ([REPOSITORY_SETTINGS.md](REPOSITORY_SETTINGS.md#rules-for-the-main-branch)). So:
 
 - **"Required" means by convention:** the PO merges only when `ci-required` is green (docs/REVIEWING.md).
 - **The release gate is a person:** only the PO pushes `v*` tags or starts a release run (an ask rule in `.claude/settings.json` stops the agent from doing it unprompted). The workflow creates a *draft* release, never a published one.
-- **Revisit when the repository goes public or the plan changes** (#7, #90): rulesets, required checks and environment reviewers become available.
+- **Revisit when the automatic triggers come back:** make `ci-required` a required check in the Main ruleset ([REPOSITORY_SETTINGS.md](REPOSITORY_SETTINGS.md#when-something-changes)).
 
 ## Selecting jobs
 
@@ -109,6 +109,8 @@ The repository gets **10 GB of Actions cache**, separate from artifact storage. 
 - **The native libraries (#205):** a composite action of their own, [`.github/actions/native`](../.github/actions/native/action.yml), called by the setup action and by PR checks' Windows native job, restores `target/native`. Only when that misses does it set up vcpkg: a clone of `microsoft/vcpkg` at the `builtin-baseline` commit of `scripts/native/vcpkg/vcpkg.json`, bootstrapped with `-disableMetrics`, with `VCPKG_DISABLE_METRICS=1`. Every job that builds them saves them right after its checks, whatever their result, so a rerun on the same branch skips the build. A cold build of Boost and libtorrent is why the Rust jobs may run up to 90 minutes (Windows Main checks 120); a warm one takes far less. GitHub restores a cache only on the branch that saved it or from the default branch, so a new branch builds them once unless a run on `main` saved them.
 - **No incremental compilation in CI:** `CARGO_INCREMENTAL=0` keeps the cache smaller and CI builds faster.
 
+**Runner disk.** A hosted Linux runner has about 14 GB free. A cold build of Boost and libtorrent plus `check:fast`'s debug build filled it twice (#76), so the Linux jobs that build Rust first delete toolchains V2 never uses (.NET, the Android SDK, GHC and CodeQL), about 20 GB.
+
 ### The post-merge tier
 
 [`main.yml`](../.github/workflows/main.yml) has four jobs (#16):
@@ -147,11 +149,14 @@ GitHub's guidance is in [secure use](https://docs.github.com/en/actions/referenc
 - **Dependabot** updates the pins: [`.github/dependabot.yml`](../.github/dependabot.yml) checks the workflows and the composite action **monthly**, grouped into **one PR**, so an update costs one CI run. Each update is an ordinary PR the PO reviews. For Cargo and npm, Dependabot opens security-fix PRs only, no routine version updates (PO decision on #75); other dependency changes need PO approval (#9).
 - **No `pull_request_target`** that checks out PR code. No secrets in PR workflows.
 - **Untrusted text stays out of commands.** Titles, branch names and other user-controlled strings never go straight into `run:` scripts; they pass through environment variables.
+- **Third-party notices** (#76): the Select jobs job of PR checks and Main checks runs `pnpm check:notices` whenever Rust is selected, which every lockfile change does, so a failure stops the run before the long checks. It fails on a licence outside the allowed list and on a `THIRD_PARTY_NOTICES.md` that no longer matches the dependency graphs ([LICENSING.md](LICENSING.md#third-party-notices)). Once, on Linux: the graphs cover every target platform.
 - **Self-hosted runners:** none. If one is ever added (PO decision), it never runs code from a fork.
 
 ## Collecting failures
 
 Every run completes every check that can still run, and reports all failures in one place (#91). The details are in [CI_DIAGNOSTICS.md](CI_DIAGNOSTICS.md).
+
+**The quick checks come first** (PO decision on #76, 2026-10-30). The docs, guidance and notices checks run in the `select` job and take about a minute. When one fails, the Linux and Windows jobs don't start, and the summary reports them BLOCKED by `select`. The run ends in about a minute instead of 30 to 40, so a broken link costs a minute to find, not a whole run. Fix it and run again; the code checks then run. Until #76, the code jobs ran even after a failed docs check, so that one broken link wouldn't hide every code failure (#91).
 
 - **Checks run to completion:**
   - The check runner runs every check even after one fails.
