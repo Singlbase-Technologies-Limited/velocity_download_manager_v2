@@ -105,6 +105,7 @@ describe('checkCommands', () => {
       'rust-clippy',
       'rust-test',
       'tsc',
+      'tsc-extension',
       'eslint',
       'vitest',
     ]);
@@ -133,7 +134,12 @@ describe('checkCommands', () => {
   });
 
   it('runs no Rust checks for a frontend-only selection', () => {
-    expect(ids({ all: false, frontend: true, rustPackages: [] })).toEqual(['tsc', 'eslint', 'vitest']);
+    expect(ids({ all: false, frontend: true, rustPackages: [] })).toEqual(['tsc', 'tsc-extension', 'eslint', 'vitest']);
+  });
+
+  it("checks the browser extension's types with its own project (#64)", () => {
+    const tsc = checkCommands({ all: false, frontend: true, rustPackages: [] }).find((c) => c.id === 'tsc-extension');
+    expect(tsc).toMatchObject({ tool: 'tsc', args: ['--noEmit', '-p', 'browser-extension'] });
   });
 
   it('runs nothing for an empty selection', () => {
@@ -155,6 +161,7 @@ describe('focusedCommands', () => {
 
   it('runs the frontend or script tests with Vitest', () => {
     expect(focusedCommands(['frontend'], workspace)[0]).toMatchObject({ tool: 'vitest', args: ['run', 'src'] });
+    expect(focusedCommands(['extension'], workspace)[0]).toMatchObject({ tool: 'vitest', args: ['run', 'browser-extension'] });
     expect(focusedCommands(['scripts', '-t', 'selectChecks'], workspace)[0]).toMatchObject({
       tool: 'vitest',
       args: ['run', 'scripts', '-t', 'selectChecks'],
@@ -173,6 +180,7 @@ describe('selectJobs (CI, #13)', () => {
   const cases = [
     ['docs only', ['docs/CI.md', 'README.md'], { rust: false, frontend: false, docs: true }, []],
     ['frontend only', ['src/App.tsx'], { rust: false, frontend: true, docs: false }, []],
+    ['the browser extension (#64)', ['browser-extension/src/background.ts'], { rust: false, frontend: true, docs: false }, []],
     ['one crate with a dependent', ['crates/velocity-core/src/lib.rs'], { rust: true, frontend: false, docs: false }, all],
     ['the shell crate alone', ['src-tauri/src/lib.rs'], { rust: true, frontend: false, docs: false }, ['velocity-desktop-v2']],
     ['Cargo.lock', ['Cargo.lock'], { rust: true, frontend: true, docs: true }, all],

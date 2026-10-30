@@ -14,7 +14,7 @@ All check commands run every check even after one fails, print a PASS/FAIL summa
 | Level | Command | Scope | Typical duration | When it runs |
 |---|---|---|---|---|
 | **L1** | `pnpm check:fast` | Whole workspace: the native libraries (`native:build`, reused when up to date; [BUILDING_NATIVE.md](BUILDING_NATIVE.md)), `cargo fmt --check`, `cargo clippy --workspace --all-targets --keep-going -D warnings`, `cargo test --workspace --no-fail-fast`, `tsc --noEmit`, ESLint (zero warnings), Vitest | **Measured:** 5.5–9 s warm, 14 s after a one-file Rust change (Windows; DEVELOPMENT.md). The first run after a clean clone takes 2–3 min | Locally before every PR; in CI on every merge to `main` |
-| **L2** | `pnpm test:focused -- <area> [args]` | The tests of one area. A crate runs `cargo test -p <crate> [args]`, unit and integration tests; `frontend` runs `vitest run src`; `scripts` runs `vitest run scripts`. Protocol and fixture suites run here for their crate once they exist | Seconds for today's unit tests; protocol suites will be measured when they arrive | While iterating (Red–Green–Refactor); in CI as part of the selected areas |
+| **L2** | `pnpm test:focused -- <area> [args]` | The tests of one area. A crate runs `cargo test -p <crate> [args]`, unit and integration tests; `frontend` runs `vitest run src`; `scripts` runs `vitest run scripts`; `extension` runs `vitest run browser-extension`. Protocol and fixture suites run here for their crate once they exist | Seconds for today's unit tests; protocol suites will be measured when they arrive | While iterating (Red–Green–Refactor); in CI as part of the selected areas |
 | **L3** | `pnpm check:pr [--base <ref>]` | The L1 and L2 checks that the branch's changes need, selected from every path changed since the merge base with `origin/main` | **Measured in CI:** 2 billed min for docs-only, 4–5 for code with a warm cache; locally like L1 | Before pushing; CI's PR tier runs it ([CI.md](CI.md)) |
 | **L4** | `pnpm check:full`; later the cross-platform, end-to-end, fuzz, stress and benchmark suites | Every L1 check, then `vite build` and `cargo build --workspace --release` (LTO, one codegen unit), and since #46 the engine's examples for release, so a test-only feature can't break them unseen. `pnpm test:e2e:layout` (#59): the window's layout in a real Chromium, run on its own. Later: browser end-to-end (#64), fuzzing (#73), stress and resource bounds (#77), benchmarks (#20, #21), macOS (#83) | **Measured:** 224–249 s locally, mostly the release build; suites to be measured | Before a release candidate, after build-setting changes, and weekly in CI (#19) |
 | **L5** | Production acceptance (none yet) | Installed builds on real machines: install and upgrade beside V1 (#81), parity with V1 (#85), soak runs (research report section 7, at least 300 runs per key scenario), release-readiness review (#78) | Hours to days | Before a release is published |
@@ -35,7 +35,7 @@ pnpm check:pr                                      # what this branch needs
 pnpm check:pr --base HEAD                          # only the uncommitted changes
 ```
 
-Areas for `test:focused` are the workspace crates (`velocity-core`, `velocity-desktop-v2`), `frontend` and `scripts`. An unknown area prints the valid ones.
+Areas for `test:focused` are the workspace crates (`velocity-core`, `velocity-desktop-v2`), `frontend`, `scripts` and `extension` (the browser extension, #64). An unknown area prints the valid ones.
 
 ## How `check:pr` selects checks
 
