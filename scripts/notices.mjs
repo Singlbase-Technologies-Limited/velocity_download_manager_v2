@@ -5,7 +5,8 @@
 // - Rust: `cargo tree` for the programs V2 ships, on every target, and `cargo metadata`;
 // - npm: `pnpm licenses list --prod`;
 // - native: scripts/native/deps.lock and the vcpkg overlay ports, with their licence texts in
-//   scripts/native/licenses/ (copied from each verified source).
+//   scripts/notices/native/ (copied from each verified source; kept out of scripts/native/, whose
+//   contents key the native libraries' CI cache).
 // Licence texts come from each package's own files; scripts/notices/licenses/ holds the SPDX
 // standard texts for packages that ship none.
 import { spawnSync } from 'node:child_process';
@@ -62,8 +63,8 @@ const ports = readdirSync(join(NATIVE, 'vcpkg', 'ports')).map((name) => {
   return { name: port.name, version: port.version };
 });
 const native = nativeComponents(parseDepsLock(readFileSync(join(NATIVE, 'deps.lock'), 'utf8')), ports).map((c) => {
-  const file = join(NATIVE, 'licenses', `${c.name}.txt`);
-  if (!existsSync(file)) throw new Error(`${c.name} has no licence text in scripts/native/licenses/`);
+  const file = join(root, 'scripts', 'notices', 'native', `${c.name}.txt`);
+  if (!existsSync(file)) throw new Error(`${c.name} has no licence text in scripts/notices/native/`);
   return { ...c, authors: [], texts: [{ licence: c.licence, text: read(file) }] };
 });
 

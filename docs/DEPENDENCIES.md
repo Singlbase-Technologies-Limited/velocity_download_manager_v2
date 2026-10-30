@@ -76,7 +76,7 @@ curl    8.23.0  https://curl.se/download/curl-8.23.0.tar.xz  8dadd7d2536a314f982
   - The build checks the detached `<source-url>.asc` with gpg against that one key only, and refuses a signature from any other key, an expired or revoked key, or a file with more than one signature.
 - **Licence** is an SPDX identifier from the permissive class in the table above. A line with any other licence is refused until the PO records an exception.
 - **Enforced by** `scripts/native/native-lib.mjs` (unit tested), which `pnpm native:fetch` and `pnpm native:build` use ([BUILDING_NATIVE.md](BUILDING_NATIVE.md)).
-- **Licence text:** each native library's own licence file, copied from its verified source, is `scripts/native/licenses/<name>.txt`. The notices generator refuses a library without one (#76).
+- **Licence text:** each native library's own licence file, copied from its verified source, is `scripts/notices/native/<name>.txt`, outside `scripts/native/` so that it doesn't change the native libraries' CI cache key. The notices generator refuses a library without one (#76).
 
 ### Libraries from vcpkg
 
