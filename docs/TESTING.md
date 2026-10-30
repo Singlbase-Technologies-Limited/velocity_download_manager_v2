@@ -117,6 +117,15 @@ From most numerous and fastest to fewest and slowest. Each layer proves what the
 - **Acceptance rows.** Each row of the research report's section 5.4 becomes at least one named fixture test, checking the final SHA-256, the status shown and the wasted bytes.
 - **Crash recovery.** `kill -9` at random points over 100 trials: always resumes; re-downloaded bytes are at most one checkpoint interval plus in-flight data (#43, #74).
 
+## The secret-leak scan (#71)
+
+`velocity_test_http::leaks::LeakScan` looks for a test's known secrets everywhere V2 writes or shows something. A test that uses a login, a cookie, a key's passphrase or a tracker passkey runs it at the end:
+
+- **Where it looks:** every file under the folders the test gives it (the database and its WAL, checkpoints, part and finished files), files in the system's temporary folder changed since the test began (three levels deep), texts such as the app's log, the diagnostics export and what the details panel shows, and a running child process's arguments and environment.
+- **In what forms:** each secret as written, percent-encoded, and in base64 at each of its three possible alignments, so a `Basic` login or an encoded link is caught too. A secret must be at least 8 bytes, so it can't match by chance.
+- **A running child, on Linux only:** it reads `/proc/<pid>/cmdline` and `environ` of the engine and the torrent helper. On Windows that part prints NOT RUN, and `secret_leaks.rs` checks the command a child is started with instead: one fixed argument and a cleared environment (PO decision on #71).
+- **Where it runs:** `crates/velocity-transfer/tests/secret_leaks.rs` (HTTP login and cookie and FTP login through the child engine; SFTP key and password logins) and `crates/velocity-torrent/tests/manager.rs` (a private tracker's passkey, through the manager and the torrent helper). The scan's own tests plant each kind of leak and check it is found.
+
 ## How the frontend is tested
 
 - **Only the native boundary is mocked:** the UI is rendered in jsdom (the `ui` project in `vite.config.ts`) against a fake backend built on Tauri's own `mockIPC` (`src/test/fakeBackend.ts`), which answers with the contract fixtures and records every call. Events are sent with Tauri's `emit`. Components, hooks and state are real ([UI_ARCHITECTURE.md](UI_ARCHITECTURE.md#testing)).
