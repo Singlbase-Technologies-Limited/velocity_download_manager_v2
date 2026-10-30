@@ -1,0 +1,132 @@
+# Release-candidate builds (#17, docs/RELEASE_CANDIDATES.md): installers for the PO to test, from a
+# verified commit on `main`. Started by hand with a `main` commit, or by pushing a `vX.Y.Z-rc.N`
+# tag, which only the PO does (docs/DEVELOPMENT_WORKFLOW.md, "Releases").
+#
+# 1. `verify` refuses a commit that isn't on `main`, has no green Main checks run on `main`, or
+#    whose tag isn't `v<package.json version>-rc.N` (scripts/release-candidate.mjs).
+# 2. The Windows installer and the Linux packages are built from exactly that commit, by the same
+#    workflows as by hand, with their own checks, and the Linux packages' install tests.
+# 3. `assemble` names every file with the version, the candidate, the short commit and the date,
+#    and adds each platform's licence report, `build-info.json` and `SHA256SUMS`.
+#
+# Every job runs only when each job it needs succeeded: no `always()`, `!cancelled()` or
+# `continue-on-error` (#91; release-candidate-lib.test.mjs checks it). Nothing is signed, tagged or
+# published: the candidate is an artifact, kept 14 days (docs/CI.md, "Costs").
+name: Release candidate
+
+on:
+  workflow_dispatch:
+    inputs:
+      commit:
+        description: The commit on main to build (a full or short SHA, or main)
+        required: true
+        default: main
+  push:
+    tags:
+      - 'v[0-9]+.[0-9]+.[0-9]+-rc.[0-9]+'
+
+permissions:
+  contents: read
+  # To find the Main checks run on the commit.
+  actions: read
+
+concurrency:
+  group: release-candidate-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    name: Verify the commit
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      commit: ${{ steps.verify.outputs.commit }}
+      name: ${{ steps.verify.outputs.name }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # Every commit of main, so `git merge-base --is-ancestor` can answer.
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24.12.0
+      - id: verify
+        name: Is it on main, with green Main checks?
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          # The input, through the environment: never expanded into the script (docs/CI.md).
+          COMMIT: ${{ github.event_name == 'push' && github.sha || inputs.commit }}
+        run: |
+          git fetch --quiet origin main
+          case "$COMMIT" in main) COMMIT=origin/main ;; esac
+          node scripts/release-candidate.mjs verify "$COMMIT"
+
+  windows:
+    name: Windows
+    needs: verify
+    uses: ./.github/workflows/package-windows.yml
+    with:
+      ref: ${{ needs.verify.outputs.commit }}
+
+  linux:
+    name: Linux
+    needs: verify
+    uses: ./.github/workflows/package-linux.yml
+    with:
+      ref: ${{ needs.verify.outputs.commit }}
+
+  assemble:
+    name: Assemble the candidate
+    needs: [verify, windows, linux]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.verify.outputs.commit }}
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24.12.0
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: velocity-v2-windows-installer
+          path: packages/windows
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: velocity-v2-linux-packages
+          path: packages/linux
+      - name: Name, record and checksum the files
+        env:
+          COMMIT: ${{ needs.verify.outputs.commit }}
+          NAME: ${{ needs.verify.outputs.name }}
+        run: node scripts/release-candidate.mjs assemble packages "candidate/$NAME" "$COMMIT" "$NAME"
+      - name: Check the checksums
+        env:
+          NAME: ${{ needs.verify.outputs.name }}
+        working-directory: candidate/${{ needs.verify.outputs.name }}
+        run: sha256sum --check --strict SHA256SUMS
+      - name: Summary
+        env:
+          NAME: ${{ needs.verify.outputs.name }}
+          COMMIT: ${{ needs.verify.outputs.commit }}
+        run: |
+          {
+            echo "## Release candidate $NAME"
+            echo
+            echo "From \`$COMMIT\` on \`main\`. Download the \`$NAME\` artifact (kept 14 days)."
+            echo
+            echo '```text'
+            cat "candidate/$NAME/SHA256SUMS"
+            echo '```'
+            echo
+            echo "Check a download with \`sha256sum --check --ignore-missing SHA256SUMS\` (Linux) or \`Get-FileHash <file>\` (Windows)."
+            echo "How to install it beside V1, and how to go back to an earlier version: docs/RELEASE_CANDIDATES.md."
+          } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ${{ needs.verify.outputs.name }}
+          path: candidate/${{ needs.verify.outputs.name }}
+          if-no-files-found: error
+          retention-days: 14

@@ -320,6 +320,24 @@ export function licenceProblems(components) {
     .sort(byCodePoint);
 }
 
+/**
+ * One platform's licence report (#17, from #76): every third-party component a release-candidate
+ * build for `platform` (a Rust target triple) ships, with the licence V2 uses it under, and the
+ * problems `licenceProblems` finds. The crates are those `cargo tree --target <platform>` lists.
+ */
+export function licenceReport({ platform, native, crates, npm }) {
+  const entry = (kind) => (c) => {
+    const choice = c.licence ? chooseLicence(c.licence, c) : { ok: false };
+    return { kind, name: c.name, version: c.version, licence: c.licence, usedUnder: choice.ok ? choice.ids.join(' AND ') : null, source: c.source };
+  };
+  return {
+    schema: 1,
+    platform,
+    components: [...native.map(entry('native')), ...[...crates].sort(byComponent).map(entry('crate')), ...[...npm].sort(byComponent).map(entry('npm'))],
+    problems: licenceProblems([...native, ...crates, ...npm]),
+  };
+}
+
 const cell = (s) => String(s).replaceAll('|', '\\|').replaceAll('\n', ' ');
 const fence = (text) => `\`\`\`\`text\n${text}\n\`\`\`\``;
 
