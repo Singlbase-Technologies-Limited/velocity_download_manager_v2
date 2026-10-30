@@ -1,6 +1,6 @@
 # Security
 
-How V2 protects downloads and the people who use it. The rules every contributor follows are in [AGENTS.md](../AGENTS.md#security-and-data) and `.claude/rules/security.md`. This document records what V2 does and what was measured. It covers TLS, links and redirects, the browser bridge, FTP, SFTP host keys and secrets.
+How V2 protects downloads and the people who use it. The rules every contributor follows are in [AGENTS.md](../AGENTS.md#security-and-data) and `.claude/rules/security.md`. This document records what V2 does and what was measured. It covers TLS, links and redirects, the browser bridge, FTP, SFTP host keys, secrets and dependency advisories.
 
 ## TLS verification (#69)
 
@@ -147,3 +147,30 @@ Logins, custom header values (cookies, tokens) and SSH key passphrases are secre
 - **Never written** to the database, a checkpoint, the app's log, or a child process's arguments or environment. The leak test (`crates/velocity-transfer/tests/secret_leaks.rs`) adds downloads with an HTTP login and cookie and an FTP login through the real child engine, and SFTP key and password logins, pauses one so a checkpoint is stored, then scans every file the database wrote (WAL included, open and after closing) and the app's log for the secrets, after logging each download's record to it (the core itself logs nothing while a download runs); it checks the child's arguments are only `serve` and its environment holds only the few kept variables. The SFTP password part runs where a password server is provisioned (CI's Linux runner); elsewhere it says NOT RUN, as the SFTP engine tests do.
 - **The system keychain, on consent only** ([ADR-0015](decisions/0015-keychain-with-consent.md)): "Remember this login in the system keychain", unticked by default, saves that download's login, headers and key passphrase as one entry under V2's own service name (`<identifier>.logins`), through the `keyring` crate: Windows Credential Manager, or the Secret Service on Linux. After a restart the download gets them back from there; removing it deletes the entry. A keychain that is missing or refuses is said (`KEYCHAIN_UNAVAILABLE`), and nothing is saved. A saved login is checked again, as when it was added, before it is used.
 - **After a restart, without a remembered login,** a download that had one waits for it again, with a note (V1's behaviour, #58).
+
+## Dependency advisories (#75)
+
+V2 ships native libraries and many crates and npm packages, and advisories against them are published every week. How V2 finds them and what it does (PO decisions on #75):
+
+- **The check:** `pnpm check:advisories` runs cargo-deny 0.20.2 (`cargo deny --locked check advisories`, configured in [`deny.toml`](../deny.toml)) against `Cargo.lock` and the RustSec database, and `pnpm audit --audit-level moderate` against `pnpm-lock.yaml`. It fails on a vulnerability, on unsound code anywhere in the graph, on an unmaintained crate V2 depends on directly, and on an npm advisory rated Medium (npm's "moderate") or higher, unless the advisory is accepted below. A yanked crate is a warning. cargo-deny is a developer tool, installed with `cargo install cargo-deny --locked --version 0.20.2` ([DEPENDENCIES.md](DEPENDENCIES.md)).
+- **When it runs:** weekly, Mondays 04:00 UTC, in [`advisories.yml`](../.github/workflows/advisories.yml), which is disabled while CI is paused ([CI.md](CI.md#while-ci-is-paused)); meanwhile by hand, at least before each release candidate.
+- **Native libraries** aren't in either lockfile, so they are watched by hand, at each check and before each native update ([BUILDING_NATIVE.md](BUILDING_NATIVE.md)): curl ([vulnerability table](https://curl.se/docs/vulnerabilities.html)), nghttp2, zlib and OpenSSL (the versions in [`scripts/native/deps.lock`](../scripts/native/deps.lock)), libtorrent with Boost and OpenSSL from vcpkg (#62), and SQLite, which `libsqlite3-sys` bundles (RustSec covers the crate, not every SQLite CVE). The WebView (WebView2 on Windows, WebKitGTK on Linux) is the operating system's and is updated with it. russh is a crate, so RustSec covers it.
+- **Dependabot** opens security-fix PRs for Cargo and npm, and no routine version updates. Each is an ordinary PR the PO reviews.
+- **Assessing one:** each advisory that affects a locked or native dependency gets an issue from the "Advisory assessment" template: where the dependency comes in, on which platforms, whether the affected code is built in and reachable, and whether it ships or is only a development tool. Then it is fixed, or accepted with its reason in `deny.toml` (or pnpm's audit configuration) and in the register below.
+- **Response times,** from the day the advisory is published or found, whichever is later, to a fix merged or an accepted assessment: **Critical 2 days, High 7 days, Medium 30 days, Low with the next release.**
+- **Release blocker:** an unfixed advisory rated Medium or higher that affects a feature V2 enables blocks a release or release candidate ([DEPENDENCIES.md](DEPENDENCIES.md#release-blockers-related-to-provenance)).
+
+### The register
+
+What the check found or accepts, checked 2026-10-30:
+
+| Advisory | Dependency | Where it comes from | Status |
+|---|---|---|---|
+| RUSTSEC-2026-0418 (GHSA-8p3x-q3q3-q3v5) | libz-sys 1.1.30: its build script writes the whole build environment, secrets included, under `target/` on Linux | curl-sys, for libcurl | **Fixed** in #75: libz-sys 1.1.31 |
+| RUSTSEC-2023-0071 | rsa 0.10.0-rc: a timing side channel ("Marvin") in private-key operations, no fix | russh, for SFTP RSA keys | **Accepted** (PO, #53): an SFTP client signs once per login with the user's own key; host-key checks use public keys only |
+| RUSTSEC-2024-0429 (GHSA-wrw7-89jp-8q8g) | glib 0.18.5: unsound `VariantStrIter` | Tauri's GTK 3 stack, Linux only | **Accepted** (PO, #184): V2 never calls it. Waits for a Tauri release on gtk-rs 0.20 (#184) |
+| RUSTSEC-2024-0370 | proc-macro-error 1.0.4: unmaintained | glib-macros 0.18, Tauri's GTK 3 stack, Linux only | **Listed** (PO, #75): a build-time macro crate; moves with Tauri |
+| RUSTSEC-2026-0370, RUSTSEC-2026-0371, RUSTSEC-2026-0372 | zvariant 5.15.1, zbus_names, zvariant_derive: unmaintained | zbus 5.19, for the Secret Service (keyring) and notifications (notify-rust) on Linux | **Listed** (PO, #75): moves with keyring and tauri-plugin-notification |
+| (yanked) | crypto-bigint 0.7.7: yanked by its authors | russh 0.64.1 and its elliptic-curve crates | **Listed:** a warning; moves with russh |
+
+npm: `pnpm audit` found no known vulnerabilities on 2026-10-30.

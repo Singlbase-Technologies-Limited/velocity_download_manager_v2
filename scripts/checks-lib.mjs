@@ -218,6 +218,16 @@ export const FULL_EXTRA_COMMANDS = [
   },
 ];
 
+/**
+ * `pnpm check:advisories` (#75, docs/SECURITY.md): known advisories in the dependencies as locked.
+ * cargo-deny reads Cargo.lock against the RustSec database, with the advisories V2 accepted listed in
+ * deny.toml; pnpm audit reads pnpm-lock.yaml, failing from Medium (npm's "moderate") up.
+ */
+export const ADVISORY_COMMANDS = [
+  { id: 'cargo-deny', name: 'Rust advisories (cargo deny check advisories)', tool: 'cargo', args: ['deny', '--locked', 'check', 'advisories'] },
+  { id: 'pnpm-audit', name: 'npm advisories (pnpm audit)', tool: 'pnpm', args: ['audit', '--audit-level', 'moderate'] },
+];
+
 const FRONTEND_AREAS = { frontend: 'src', scripts: 'scripts', extension: 'browser-extension' };
 
 /**

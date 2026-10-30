@@ -1,0 +1,22 @@
+# cargo-deny's configuration (PO decision on #75). Only `cargo deny check advisories` is used, by
+# `pnpm check:advisories`: known advisories against Cargo.lock, from the RustSec database. Licences
+# and banned crates are #76's. The process, response times and the register of accepted advisories
+# are in docs/SECURITY.md#dependency-advisories-75.
+
+[graph]
+# Every feature of every workspace crate, so crates only test-only features bring are checked too.
+all-features = true
+
+[advisories]
+# An unmaintained crate is an error when a workspace crate depends on it directly. Deeper in the
+# graph it can only be moved with the crate that brings it, so it is followed in the advisory
+# register instead (PO decision on #75).
+unmaintained = "workspace"
+# Unsound code is an error anywhere in the graph, unless accepted below.
+unsound = "all"
+# Advisories V2 accepted after assessing them. Each says why it doesn't apply and who decided; a new
+# entry needs the same assessment (docs/SECURITY.md).
+ignore = [
+    { id = "RUSTSEC-2023-0071", reason = "rsa: Marvin timing side channel, no fix. An SFTP client signs once per login with the user's own RSA key; host-key checks use public keys only (PO, #53)" },
+    { id = "RUSTSEC-2024-0429", reason = "glib 0.18 VariantStrIter unsoundness (GHSA-wrw7-89jp-8q8g), Linux only through Tauri's GTK 3 stack; V2 never calls it. Kept until Tauri moves to gtk-rs 0.20 (PO, #184)" },
+]
