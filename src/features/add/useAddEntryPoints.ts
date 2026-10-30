@@ -1,12 +1,13 @@
 import { useEffect } from 'react';
 import { toast } from 'sonner';
-import { onTorrentsDropped } from '../../lib/events';
+import { onBrowserRequest, onTorrentsDropped } from '../../lib/events';
 import { torrentLinksInPaste } from '../torrents/torrentLogic';
 import { useUiStore } from '../../stores/ui';
 
 /**
  * Where the Add dialog opens from besides the navigation (#60): Ctrl+N (⌘N on macOS), as in V1, `.torrent` files
- * dropped on the window, and magnet or `.torrent` links pasted outside a text field (#63). The browser's prefill (#64, #65) calls `openAdd` too.
+ * dropped on the window, magnet or `.torrent` links pasted outside a text field (#63), and links the browser sends for
+ * the user to check (#65).
  */
 export function useAddEntryPoints() {
   useEffect(() => {
@@ -39,6 +40,26 @@ export function useAddEntryPoints() {
     };
     document.addEventListener('paste', onPaste);
     return () => { document.removeEventListener('paste', onPaste); };
+  }, []);
+
+  useEffect(() => {
+    let disposed = false;
+    let unlisten: (() => void) | undefined;
+    void onBrowserRequest((r) => {
+      useUiStore.getState().openAdd({
+        links: r.url,
+        ...(r.fileName ? { fileName: r.fileName } : {}),
+        ...(r.referrer ? { referrer: r.referrer } : {}),
+        fromBrowser: { referrer: r.referrer, fileSize: r.fileSize, mime: r.mime },
+      });
+    }).then((u) => {
+      if (disposed) u();
+      else unlisten = u;
+    });
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
   }, []);
 
   useEffect(() => {

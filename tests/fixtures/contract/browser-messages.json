@@ -1,0 +1,25 @@
+{
+  "valid": [
+    { "v": 1, "id": "3f2c9a1e-6b7d-4c1a-9a55-1c2b3d4e5f60", "type": "ping" },
+    { "v": 1, "id": "a1", "type": "app.status" },
+    {
+      "v": 1,
+      "id": "b2",
+      "type": "download.add",
+      "payload": { "url": "https://example.com/file.zip", "source": "contextMenu", "referrer": "https://example.com/page", "filename": "file.zip", "fileSize": 1024, "mime": "application/zip" }
+    },
+    { "v": 1, "id": "b3", "type": "download.add", "payload": { "url": "https://example.com/file.zip", "source": "intercept" } }
+  ],
+  "invalid": [
+    { "v": 2, "id": "x1", "type": "ping" },
+    { "v": 1, "id": "", "type": "ping" },
+    { "v": 1, "id": "has space", "type": "ping" },
+    { "v": 1, "id": "x2", "type": "shell.exec", "payload": { "cmd": "calc" } },
+    { "v": 1, "id": "x3", "type": "ping", "payload": { "a": 1 } },
+    { "v": 1, "id": "x4", "type": "download.add", "payload": { "url": "file:///etc/passwd", "source": "popup" } },
+    { "v": 1, "id": "x5", "type": "download.add", "payload": { "url": "https://example.com/a", "source": "popup", "directory": "/tmp" } },
+    { "v": 1, "id": "x6", "type": "download.add", "payload": { "url": "https://example.com/a", "source": "elsewhere" } },
+    { "v": 1, "id": "x7", "type": "download.add", "payload": { "url": "https://example.com/a", "source": "popup", "referrer": "javascript:alert(1)" } },
+    { "v": 1, "id": "x8", "type": "download.add", "payload": { "url": "https://example.com/a", "source": "popup" }, "extra": true }
+  ]
+}

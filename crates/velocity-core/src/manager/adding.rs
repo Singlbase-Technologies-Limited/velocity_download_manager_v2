@@ -29,12 +29,12 @@ use crate::domain::{
 use crate::links::is_link;
 use crate::metalink::{self, create_folders};
 use crate::request::{
-    check_credentials, check_headers, check_referrer, split_login, MAX_URL_BYTES,
+    check_credentials, check_headers, check_referrer, normalize_link, split_login, MAX_URL_BYTES,
 };
 use crate::seeding::SeedPolicy;
 use crate::torrent::{parse_magnet, parse_torrent, TorrentMeta, MAX_TORRENT_BYTES};
 use crate::torrent_engine::MAX_RATE_LIMIT;
-use crate::transfer::{Checksum, Credentials, Header, Limits, SshKey, TransferSpec};
+use crate::transfer::{Checksum, Credentials, Header, Limits, SshKey, TransferSpec, Trust};
 
 /// The most links and `.torrent` files one request adds (V1's `MAX_SOURCES`).
 pub const MAX_ADD: usize = 500;
@@ -81,6 +81,10 @@ pub struct AddRequest {
     pub seeding: Option<SeedPolicy>,
     /// KiB/s each torrent uploads at most (#63); 0 for no limit.
     pub upload_limit_kib: u64,
+    /// The browser extension sent the links (#65): a direct download that reaches this computer
+    /// or a private network waits for the user's confirmation (#67, ADR-0006). Typed and pasted
+    /// links don't.
+    pub from_browser: bool,
 }
 
 /// The files chosen for one `.torrent` file of an [`AddRequest`] (#63).
@@ -178,6 +182,7 @@ impl AddRequest {
             }],
             seeding: Some(SeedPolicy::Ratio { ratio: 2.0 }),
             upload_limit_kib: 64,
+            from_browser: true,
         }
     }
 }
@@ -472,6 +477,7 @@ impl Manager {
         if is_magnet(link) {
             return self.add_magnet(link, request, shared, known, now_ms);
         }
+        let link = &normalize_link(link)?;
         let kind = direct_kind(link)?;
         // A protocol the engine lacks is refused before placing it can make a folder.
         if self.engine.capabilities().protocol(kind).is_none() {
@@ -508,6 +514,10 @@ impl Manager {
             // The profile caps it ([`Manager::add_with`]).
             max_connections: request.connections.unwrap_or(u32::MAX),
             resume: None,
+            trust: Trust {
+                from_browser: request.from_browser,
+                ..Trust::default()
+            },
         };
         spec.check_request()?;
         let options = Self::options(request, place.category_id);

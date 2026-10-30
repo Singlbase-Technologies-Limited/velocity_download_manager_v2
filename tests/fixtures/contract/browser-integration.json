@@ -1,0 +1,40 @@
+{
+  "chromeExtensionIds": [
+    "adhefdmekgeafmopfbiappajaolcbhkc"
+  ],
+  "firefoxExtensionId": "velocity-download-manager-v2@velocity.local",
+  "hostPath": "/opt/velocity/velocity-native-host-v2",
+  "nativeHostName": "dev.velocity.download_manager_v2",
+  "registrations": [
+    {
+      "browser": "chrome",
+      "hostMatches": true,
+      "manifestPath": "/home/user/.config/chrome/NativeMessagingHosts/dev.velocity.download_manager_v2.json",
+      "registered": true
+    },
+    {
+      "browser": "chromium",
+      "hostMatches": false,
+      "manifestPath": "/home/user/.config/chromium/NativeMessagingHosts/dev.velocity.download_manager_v2.json",
+      "registered": false
+    },
+    {
+      "browser": "edge",
+      "hostMatches": false,
+      "manifestPath": "/home/user/.config/edge/NativeMessagingHosts/dev.velocity.download_manager_v2.json",
+      "registered": false
+    },
+    {
+      "browser": "brave",
+      "hostMatches": false,
+      "manifestPath": "/home/user/.config/brave/NativeMessagingHosts/dev.velocity.download_manager_v2.json",
+      "registered": false
+    },
+    {
+      "browser": "firefox",
+      "hostMatches": false,
+      "manifestPath": "/home/user/.config/firefox/NativeMessagingHosts/dev.velocity.download_manager_v2.json",
+      "registered": false
+    }
+  ]
+}

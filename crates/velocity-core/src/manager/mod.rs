@@ -503,6 +503,7 @@ impl Manager {
                         limits: selection.limits,
                         max_connections: self.connections_for_new_downloads(),
                         resume: None,
+                        trust: Default::default(),
                     };
                     self.add_with(DownloadKind::Metalink, spec, options.clone(), now_ms)
                 },

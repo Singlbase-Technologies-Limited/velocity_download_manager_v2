@@ -5932,6 +5932,7 @@ name = "velocity-core"
 version = "0.1.0"
 dependencies = [
  "dirs",
+ "getrandom 0.4.3",
  "jiff",
  "quick-xml",
  "regex",
@@ -5941,8 +5942,11 @@ dependencies = [
  "serde_json",
  "sha1",
  "sha2 0.11.1",
+ "tokio",
  "tracing",
  "tracing-subscriber",
+ "url",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -5982,6 +5986,15 @@ dependencies = [
  "cxx-build",
  "serde_json",
  "sha2 0.11.1",
+]
+
+[[package]]
+name = "velocity-native-host"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
+ "tokio",
+ "velocity-core",
 ]
 
 [[package]]

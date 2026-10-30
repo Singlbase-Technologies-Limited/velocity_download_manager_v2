@@ -6,9 +6,9 @@
 use std::io;
 use std::time::{Duration, SystemTime};
 
-use velocity_core::domain::{FailureClass, HostKeyCheck, TransferError};
+use velocity_core::domain::{Confirm, FailureClass, HostKeyCheck, TransferError};
 use velocity_core::transfer::HashAlgorithm;
-use velocity_curl::{CurlFailure, FetchError, HostKeyProblem, ResponseHead};
+use velocity_curl::{AddressProblem, CurlFailure, FetchError, HostKeyProblem, ResponseHead};
 
 /// The failure an error status stands for, or `None` for a status that isn't one here (`416` is
 /// read by the probe and the segment checks).
@@ -169,6 +169,24 @@ pub(crate) fn fetch_failure(e: FetchError) -> TransferError {
             TransferError::new(class, None, &format!("{words} (SFTP: {message})"))
         }
         FetchError::HostKey(problem) => host_key_failure(problem),
+        FetchError::InsecureRedirect { host } => TransferError::new(
+            FailureClass::Permanent,
+            None,
+            &format!(
+                "The server redirected to an insecure http:// address on {host}. Continue over \
+                 http only if you trust the network you're on."
+            ),
+        )
+        .with_confirm(Confirm::InsecureRedirect { host }),
+        FetchError::LocalAddress(AddressProblem { host, address }) => TransferError::new(
+            FailureClass::Permanent,
+            None,
+            &format!(
+                "This link from the browser leads to {address}, on this computer or your local \
+                 network. Download it only if you expected that."
+            ),
+        )
+        .with_confirm(Confirm::LocalAddress { host, address }),
         FetchError::LoopStopped => {
             TransferError::new(FailureClass::Transient, None, "the libcurl loop stopped")
         }
@@ -460,6 +478,39 @@ mod tests {
             e.message
         );
         assert!(!e.message.contains("libcurl error"), "{}", e.message);
+    }
+
+    #[test]
+    fn an_unconfirmed_redirect_to_http_waits_for_the_user() {
+        let e = fetch_failure(FetchError::InsecureRedirect {
+            host: "mirror.example.com".to_owned(),
+        });
+        assert_eq!(e.class, FailureClass::Permanent, "never retried on its own");
+        assert_eq!(
+            e.confirm.as_deref(),
+            Some(&Confirm::InsecureRedirect {
+                host: "mirror.example.com".to_owned()
+            })
+        );
+        assert!(e.message.contains("mirror.example.com"), "{}", e.message);
+    }
+
+    #[test]
+    fn a_link_from_the_browser_to_a_local_address_waits_for_the_user() {
+        let e = fetch_failure(FetchError::LocalAddress(AddressProblem {
+            host: "router.example".to_owned(),
+            address: "192.168.1.1".to_owned(),
+        }));
+        assert_eq!(e.class, FailureClass::Permanent, "never retried on its own");
+        assert_eq!(
+            e.confirm.as_deref(),
+            Some(&Confirm::LocalAddress {
+                host: "router.example".to_owned(),
+                address: "192.168.1.1".to_owned(),
+            })
+        );
+        // The address the link really leads to is what the user must see (ADR-0006).
+        assert!(e.message.contains("192.168.1.1"), "{}", e.message);
     }
 
     #[test]

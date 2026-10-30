@@ -13,23 +13,29 @@
 //!   pauses a transfer whose limit has no tokens, and the loop thread resumes it once all its
 //!   limits have tokens again (`rate.rs`, #49).
 //! - **Safe defaults:** only `http`, `https`, `ftp` and `ftps`, redirects only to `http` and
-//!   `https`, an explicitly empty proxy so `http_proxy` and the like are ignored (ADR-0008), no
-//!   `Accept-Encoding`, and TLS verification as libcurl's default (on).
+//!   `https` (from `https` to `http` only once the user confirmed it, #67), an explicitly empty
+//!   proxy so `http_proxy` and the like are ignored (ADR-0008), no `Accept-Encoding`, and TLS
+//!   verification as libcurl's default (on). libcurl is built without `.netrc` support.
+//! - **Local addresses** (#67, ADR-0006): a request that must confirm them is stopped before it is
+//!   sent when the address it connected to is this computer's or a private network's
+//!   (`CURLOPT_PREREQFUNCTION`, `address.rs`).
 //! - **FTP** (#51): its control replies become a response head before the first body byte
 //!   (`ftp.rs`), so the gate works as for HTTP. A range is sent as `REST`, and its end is the
 //!   fetch's body limit. Passive mode only, to the control connection's address.
 
 use std::collections::HashMap;
-use std::ffi::CString;
+use std::ffi::{c_char, c_int, c_void, CStr, CString};
+use std::net::IpAddr;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, SystemTime};
 
 use curl::easy::{Easy2, Handler, InfoType, List, WriteError};
 use curl::multi::{Easy2Handle, Multi, MultiWaker};
 
+use crate::address::is_local;
 use crate::ftp::{is_ftp, FtpReplies};
 use crate::pipe::{Fetch, FetchControl, Flow, GateFn, Offered, Sink, Transport};
 use crate::rate::{self, RateLimit};
@@ -52,6 +58,14 @@ const RATE_CHECK: Duration = Duration::from_millis(10);
 /// `CURLOPTTYPE_STRINGPOINT` + 318 and + 319). curl-sys 0.4.91 doesn't define them.
 const CURLOPT_PROTOCOLS_STR: curl_sys::CURLoption = 10_318;
 const CURLOPT_REDIR_PROTOCOLS_STR: curl_sys::CURLoption = 10_319;
+/// `CURLOPT_PREREQFUNCTION` and `CURLOPT_PREREQDATA` (curl.h of curl 8.23.0:
+/// `CURLOPTTYPE_FUNCTIONPOINT` + 312 and `CURLOPTTYPE_CBPOINT` + 313; libcurl 7.80+), and the
+/// callback's answers `CURL_PREREQFUNC_OK` and `CURL_PREREQFUNC_ABORT`. curl-sys 0.4.91 doesn't
+/// define them.
+const CURLOPT_PREREQFUNCTION: curl_sys::CURLoption = 20_312;
+const CURLOPT_PREREQDATA: curl_sys::CURLoption = 10_313;
+const CURL_PREREQFUNC_OK: c_int = 0;
+const CURL_PREREQFUNC_ABORT: c_int = 1;
 
 /// One HTTP(S) or FTP GET.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -89,6 +103,11 @@ pub struct RequestOptions {
     pub require_encryption: bool,
     /// SFTP only: log in with this private key, as the user of `login` (#53).
     pub ssh_key: Option<SshKeyFile>,
+    /// Follow a redirect from `https` to `http`: the user confirmed it for this download (#67).
+    pub allow_insecure_redirect: bool,
+    /// Stop before sending a request whose connection reached this computer or a private
+    /// network (#67, ADR-0006): a link from the browser that the user hasn't confirmed.
+    pub confirm_local_addresses: bool,
 }
 
 /// A private key file for an SFTP login, and its passphrase if it is encrypted (#53). `Debug`
@@ -121,6 +140,8 @@ impl std::fmt::Debug for RequestOptions {
             .field("login", &self.login.as_ref().map(|_| "<redacted>"))
             .field("require_encryption", &self.require_encryption)
             .field("ssh_key", &self.ssh_key)
+            .field("allow_insecure_redirect", &self.allow_insecure_redirect)
+            .field("confirm_local_addresses", &self.confirm_local_addresses)
             .finish()
     }
 }
@@ -214,9 +235,15 @@ pub enum FetchError {
         code: i64,
         message: String,
     },
-    /// Velocity refused to follow a redirect (`redirect.rs`, #40): too many, to another
-    /// protocol, or from `https` to `http`. The message names no URL.
+    /// Velocity refused to follow a redirect (`redirect.rs`, #40): too many, or to another
+    /// protocol. The message names no URL.
     RedirectRefused { kind: CurlFailure, message: String },
+    /// A redirect from `https` to `http` that the user hasn't confirmed for this download (#67):
+    /// the host it goes to.
+    InsecureRedirect { host: String },
+    /// The connection reached this computer or a private network, and the request must confirm
+    /// that first (#67, ADR-0006). Nothing was sent.
+    LocalAddress(AddressProblem),
     /// SFTP failed (#53): what kind of failure it is, and what went wrong, for diagnostics.
     Sftp { kind: CurlFailure, message: String },
     /// The SFTP server's host key isn't one the user has trusted (#53): unknown, or changed.
@@ -235,6 +262,16 @@ pub struct HostKeyProblem {
     pub fingerprint: String,
     /// The fingerprint of the key pinned for this server before, when the key changed.
     pub pinned: Option<String>,
+}
+
+/// A request stopped before it was sent because its connection reached this computer or a
+/// private network (#67, ADR-0006).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AddressProblem {
+    /// The host the URL names.
+    pub host: String,
+    /// The address libcurl connected to, as libcurl gives it.
+    pub address: String,
 }
 
 /// What kind of failure libcurl reported, so that callers can decide about retries without
@@ -492,6 +529,7 @@ impl CurlLoop {
             followed: 0,
             redirecting: false,
             ftp,
+            local_address: Box::default(),
         };
         let control = CurlControl {
             token,
@@ -599,6 +637,9 @@ struct Collector {
     redirecting: bool,
     /// An FTP fetch's control replies, which make its head (#51); `None` for HTTP.
     ftp: Option<FtpReplies>,
+    /// The local address that `prereq` stopped the request at (#67). Boxed: libcurl holds a
+    /// pointer to it (`CURLOPT_PREREQDATA`), which must stay put while the handle lives.
+    local_address: Box<OnceLock<String>>,
 }
 
 impl Collector {
@@ -815,6 +856,9 @@ fn set_options(
     easy.proxy("")?;
     set_string(easy, CURLOPT_PROTOCOLS_STR, PROTOCOLS)?;
     set_string(easy, CURLOPT_REDIR_PROTOCOLS_STR, REDIRECT_PROTOCOLS)?;
+    if extra.confirm_local_addresses {
+        check_addresses(easy)?;
+    }
     if request.own_connection {
         // A connection of its own, closed at the end, so no other fetch shares it (#47).
         easy.fresh_connect(true)?;
@@ -903,16 +947,23 @@ fn follow(
             &collector.request.url,
             &to,
             collector.followed,
+            collector.request.options.allow_insecure_redirect,
         ),
         None => Err(Refusal {
             kind: CurlFailure::Refused,
             message: "a redirect without a usable Location".to_owned(),
+            host: None,
         }),
     }
     .map_err(|r| {
-        fail(FetchError::RedirectRefused {
-            kind: r.kind,
-            message: r.message,
+        fail(match r.host {
+            Some(host) if r.kind == CurlFailure::InsecureRedirect => {
+                FetchError::InsecureRedirect { host }
+            }
+            _ => FetchError::RedirectRefused {
+                kind: r.kind,
+                message: r.message,
+            },
         })
     })?;
     collector.followed += 1;
@@ -929,6 +980,63 @@ fn follow(
     next.set_token(token)
         .map_err(|e| fail(local("started", i64::from(e.code()), e.to_string())))?;
     Ok(next)
+}
+
+/// Has libcurl call [`prereq`] once each connection is made and before the request is sent, with
+/// the address it connected to (#67, ADR-0006). Set again on every hop, since `follow` resets the
+/// handle.
+fn check_addresses(easy: &mut Easy2<Collector>) -> Result<(), curl::Error> {
+    let data: *const OnceLock<String> = &*easy.get_ref().local_address;
+    let callback: extern "C" fn(*mut c_void, *mut c_char, *mut c_char, c_int, c_int) -> c_int =
+        prereq;
+    // SAFETY: `easy.raw()` is a live easy handle owned by `easy`. CURLOPT_PREREQFUNCTION takes a
+    // `curl_prereq_callback`, whose C signature `prereq` has. CURLOPT_PREREQDATA takes a pointer
+    // that libcurl only passes back to the callback: it points into the collector's box, which
+    // the handle owns, so it lives as long as the handle and never moves.
+    let code = unsafe {
+        let code = curl_sys::curl_easy_setopt(easy.raw(), CURLOPT_PREREQFUNCTION, callback);
+        if code == curl_sys::CURLE_OK {
+            curl_sys::curl_easy_setopt(easy.raw(), CURLOPT_PREREQDATA, data.cast::<c_void>())
+        } else {
+            code
+        }
+    };
+    if code == curl_sys::CURLE_OK {
+        Ok(())
+    } else {
+        Err(curl::Error::new(code))
+    }
+}
+
+/// libcurl's pre-request callback (#67): lets the request go to a public address, and stops it
+/// at a local one, which it records for the user to confirm. An address it can't read is stopped
+/// too. On the loop thread; it never blocks.
+extern "C" fn prereq(
+    data: *mut c_void,
+    primary_ip: *mut c_char,
+    _local_ip: *mut c_char,
+    _primary_port: c_int,
+    _local_port: c_int,
+) -> c_int {
+    let address = if primary_ip.is_null() {
+        String::new()
+    } else {
+        // SAFETY: libcurl passes the connected address as a NUL-terminated string that is valid
+        // during the call; it is copied before returning.
+        unsafe { CStr::from_ptr(primary_ip) }
+            .to_string_lossy()
+            .into_owned()
+    };
+    if address.parse::<IpAddr>().is_ok_and(|ip| !is_local(ip)) {
+        return CURL_PREREQFUNC_OK;
+    }
+    if !data.is_null() {
+        // SAFETY: `data` is the CURLOPT_PREREQDATA set by `check_addresses`: a live
+        // `OnceLock<String>` in the collector's box, only read elsewhere on this thread.
+        let found = unsafe { &*data.cast::<OnceLock<String>>() };
+        let _ = found.set(address);
+    }
+    CURL_PREREQFUNC_ABORT
 }
 
 /// Sets a string option that the curl crate doesn't wrap.
@@ -1119,6 +1227,17 @@ fn run_loop(
                     Err(_) if collector.stopped_at_limit => Ok(()),
                     Err(e) => match &collector.abort {
                         Some(reason) => Err(FetchError::Aborted(reason.clone())),
+                        // Stopped before the request at a local address (#67).
+                        None if collector.local_address.get().is_some() => {
+                            Err(FetchError::LocalAddress(AddressProblem {
+                                host: collector
+                                    .first
+                                    .as_ref()
+                                    .map(|o| o.host.clone())
+                                    .unwrap_or_default(),
+                                address: collector.local_address.get().cloned().unwrap_or_default(),
+                            }))
+                        }
                         // An FTP range past the end ends without a body, like an HTTP 416.
                         None if collector
                             .ftp

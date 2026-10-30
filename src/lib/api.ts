@@ -6,6 +6,7 @@ import {
   AddResultSchema,
   AppearanceSettingsSchema,
   BatchResultSchema,
+  BrowserIntegrationSchema,
   CapabilitiesSchema,
   CategorySchema,
   DestinationCheckSchema,
@@ -24,6 +25,8 @@ import {
   TorrentPreviewSchema,
   TrackerStatusSchema,
   type AddRequest,
+  type Browser,
+  type ConfirmKind,
   type AppearanceSettings,
   type Category,
   type DownloadLogin,
@@ -101,6 +104,12 @@ export const api = {
   chooseSshKey: () => call('choose_ssh_key', undefined, z.string().min(1).nullable()),
   /** Trusts the SFTP host key the user confirmed (#53); the download is then retried. */
   trustHostKey: (host: string, port: number, fingerprint: string) => call('trust_host_key', { host, port, fingerprint }, nothing),
+  // The browser integration (#65): where the native host is registered, for this user only.
+  browserIntegration: () => call('get_browser_integration', undefined, BrowserIntegrationSchema),
+  registerBrowser: (browser: Browser) => call('register_browser', { browser }, BrowserIntegrationSchema),
+  unregisterBrowser: (browser: Browser) => call('unregister_browser', { browser }, BrowserIntegrationSchema),
+  /** Allows what a download stopped at for the user's confirmation (#67), and retries it. */
+  allowDownload: (id: string, kind: ConfirmKind) => call('allow_download', { id, kind }, nothing),
   retryDownloads: (ids: string[]) => call('retry_downloads', { ids }, BatchResultSchema),
   // The list's commands (#58, #59). Those over several downloads say what each did.
   pauseDownloads: (ids: string[]) => call('pause_downloads', { ids }, BatchResultSchema),

@@ -23,6 +23,7 @@
     }
   ],
   "fileName": null,
+  "fromBrowser": true,
   "headers": [
     {
       "name": "Cookie",

@@ -149,7 +149,7 @@ describe('the Add download dialog', () => {
         { source: request.links[0] ?? '', outcome: { kind: 'failed', code: 'UNSUPPORTED_SCHEME' } },
         {
           source: request.links[1] ?? '',
-          outcome: { kind: 'notFetched', error: { class: 'permanent', httpStatus: 404, message: 'Not found', retryable: false, hostKey: null } },
+          outcome: { kind: 'notFetched', error: { class: 'permanent', httpStatus: 404, message: 'Not found', retryable: false, hostKey: null, confirm: null } },
         },
       ],
     });
@@ -436,6 +436,43 @@ describe('torrents', () => {
     expect(within(within(dialog).getByRole('list', { name: 'Torrent files' })).getByText('dropped.torrent')).toBeTruthy();
   });
 
+  it('opens with a link the browser sent, which is sent back as from the browser (#65)', async () => {
+    const state = installFakeBackend();
+    renderApp();
+    await screen.findByRole('button', { name: 'Add download' });
+    await act(() => emit('browser-request', fixture('browser-request.json')));
+    const dialog = await screen.findByRole('dialog', { name: 'Add download' });
+    expect(within(dialog).getByRole<HTMLTextAreaElement>('textbox', { name: 'Links' }).value).toBe('https://example.com/files/archive.zip');
+    expect(within(dialog).getByRole<HTMLInputElement>('textbox', { name: 'File name' }).value).toBe('archive.zip');
+    expect(within(dialog).getByText('From https://example.com/page')).toBeTruthy();
+    await userEvent.setup().click(within(dialog).getByRole('button', { name: 'Start download' }));
+    await waitFor(() => { expect(requests(state)).toHaveLength(1); });
+    expect(requests(state)[0]).toMatchObject({ links: ['https://example.com/files/archive.zip'], referrer: 'https://example.com/page', fromBrowser: true });
+  });
+
+  it('a link typed in place of the browser’s isn’t from the browser (#67)', async () => {
+    const state = installFakeBackend();
+    const user = userEvent.setup();
+    renderApp();
+    await screen.findByRole('button', { name: 'Add download' });
+    await act(() => emit('browser-request', fixture('browser-request.json')));
+    const dialog = await screen.findByRole('dialog', { name: 'Add download' });
+    const links = within(dialog).getByRole('textbox', { name: 'Links' });
+    await user.clear(links);
+    await user.type(links, 'https://example.com/typed.zip');
+    await user.click(within(dialog).getByRole('button', { name: 'Start download' }));
+    await waitFor(() => { expect(requests(state)).toHaveLength(1); });
+    expect(requests(state)[0]).toMatchObject({ links: ['https://example.com/typed.zip'], fromBrowser: false });
+  });
+
+  it('ignores a browser request that isn’t one', async () => {
+    installFakeBackend();
+    renderApp();
+    await screen.findByRole('button', { name: 'Add download' });
+    await act(() => emit('browser-request', { url: '', source: 'elsewhere' }));
+    expect(screen.queryByRole('dialog')).toBeNull();
+  });
+
   it('says so when nothing dropped was a .torrent file', async () => {
     installFakeBackend();
     renderApp();
@@ -459,6 +496,7 @@ describe('the SFTP host key', () => {
         message: 'The server’s host key isn’t trusted yet.',
         retryable: false,
         hostKey: { host: 'files.example', port: 2222, fingerprint: 'SHA256:abc123', pinned },
+        confirm: null,
       },
     });
 

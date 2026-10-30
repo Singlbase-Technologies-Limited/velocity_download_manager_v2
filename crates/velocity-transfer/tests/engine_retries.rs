@@ -72,6 +72,7 @@ fn spec(url: String, destination: PathBuf, connections: u32) -> TransferSpec {
         resume: None,
         require_encryption: false,
         ssh_key: None,
+        trust: Default::default(),
     }
 }
 
