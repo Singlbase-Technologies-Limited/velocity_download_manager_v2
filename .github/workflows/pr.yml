@@ -6,17 +6,26 @@
 # Failure collection (#91, docs/CI_DIAGNOSTICS.md): every check runs to completion, each job writes
 # a report of its checks (`if: !cancelled()`), and `ci-required` turns them into one table and the
 # `ci-diagnostics` artifact. It fails unless every mandatory check passed or was deselected.
+#
+# Temporarily manual-only (#204, docs/CI.md#while-ci-runs-by-hand-only): to save Actions minutes,
+# the `pull_request` trigger is off, and this workflow runs only when started by hand on a branch,
+# against the `base` commit given. To revert, put back `pull_request: branches: [main]` as the
+# trigger, `pr-${{ github.event.pull_request.number }}` as the concurrency group, and
+# `github.event.pull_request.base.sha` as BASE_SHA.
 name: PR checks
 
 on:
-  pull_request:
-    branches: [main]
+  workflow_dispatch:
+    inputs:
+      base:
+        description: Compare with this commit, as a pull request would (for example main's)
+        required: true
 
 permissions:
   contents: read
 
 concurrency:
-  group: pr-${{ github.event.pull_request.number }}
+  group: pr-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -44,7 +53,7 @@ jobs:
       - id: select
         name: Decide which jobs run
         env:
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          BASE_SHA: ${{ inputs.base }}
           # `cargo metadata --no-deps` only reads manifests; the runner's stable toolchain is enough,
           # so this job doesn't download the pinned one.
           RUSTUP_TOOLCHAIN: stable
@@ -82,7 +91,8 @@ jobs:
     # If the selection step itself failed, there is no output, and the job is reported BLOCKED.
     if: ${{ !cancelled() && needs.select.outputs.code == 'true' }}
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    # Long enough for a cold build of Boost and libtorrent (#205); a warm run takes far less.
+    timeout-minutes: 90
     env:
       # Incremental compilation only helps repeated local builds; in CI it costs time and cache space.
       CARGO_INCREMENTAL: 0
@@ -106,7 +116,7 @@ jobs:
       - id: checks
         name: Run the selected checks
         env:
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          BASE_SHA: ${{ inputs.base }}
           RUST: ${{ needs.select.outputs.rust }}
         run: |
           # Without Rust, check:pr only reads manifests (`cargo metadata`); the runner's stable
@@ -115,6 +125,14 @@ jobs:
           node scripts/check-pr.mjs --base "$BASE_SHA"
       # check:pr builds the native libraries before any Rust check (#35), so this job is also the
       # Linux native build; its record is the evidence.
+      # The native libraries as soon as they were built, even if a later check failed (#205), so a
+      # rerun doesn't build Boost and libtorrent again.
+      - name: Save the native libraries
+        if: ${{ !cancelled() && needs.select.outputs.rust == 'true' && steps.setup.outputs.native-cache-hit != 'true' && hashFiles('target/native/*/libtorrent-info.json') != '' }}
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          key: ${{ steps.setup.outputs.native-cache-key }}
+          path: target/native
       - name: Upload build-info.json
         if: ${{ !cancelled() && hashFiles('target/native/x86_64-unknown-linux-gnu/build-info.json') != '' }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -145,7 +163,8 @@ jobs:
     needs: select
     if: ${{ !cancelled() && needs.select.outputs.native == 'true' }}
     runs-on: windows-latest
-    timeout-minutes: 30
+    # Long enough for a cold build of Boost and libtorrent (#205); a warm run takes far less.
+    timeout-minutes: 90
     defaults:
       run:
         shell: bash
@@ -163,9 +182,19 @@ jobs:
       - id: toolchain
         name: Install the pinned Rust toolchain
         run: rustup toolchain install "$(sed -n 's/^channel = "\(.*\)"/\1/p' rust-toolchain.toml)" --profile minimal
+      - id: native
+        uses: ./.github/actions/native
       - id: build
         name: Native build (native:build)
         run: node scripts/native/build.mjs
+      # The native libraries as soon as they were built, even if a later check failed (#205), so a
+      # rerun doesn't build Boost and libtorrent again.
+      - name: Save the native libraries
+        if: ${{ !cancelled() && steps.native.outputs.cache-hit != 'true' && hashFiles('target/native/*/libtorrent-info.json') != '' }}
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          key: ${{ steps.native.outputs.cache-key }}
+          path: target/native
       - name: Upload build-info.json
         if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2

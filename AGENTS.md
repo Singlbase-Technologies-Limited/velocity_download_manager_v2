@@ -99,7 +99,7 @@ pnpm check:pr-body <file> --title "…"  # a PR description and title against th
 pnpm native:build              # build libcurl and its libraries from verified sources (docs/BUILDING_NATIVE.md)
 ```
 
-Run `pnpm check:fast` before opening a pull request. Use pnpm only; `package.json` pins its version. The levels and selection rules are in [docs/TESTING.md](docs/TESTING.md).
+Run `pnpm check:fast` before opening a pull request (temporarily, the batch CI run does it instead: [docs/CI.md](docs/CI.md#while-ci-runs-by-hand-only), #204). Use pnpm only; `package.json` pins its version. The levels and selection rules are in [docs/TESTING.md](docs/TESTING.md).
 
 ## Documentation
 
