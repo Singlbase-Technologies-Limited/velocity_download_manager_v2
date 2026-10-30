@@ -1,7 +1,7 @@
 //! How the torrent helper reaches peers (#62's tracker and port-mapping part): limits, trackers
 //! and re-announce, peers, extra trackers, and the listening port. Peers are libtorrent sessions
 //! on loopback found through local trackers; DHT, peer exchange, local peer discovery and port
-//! mapping are off, so nothing leaves the machine.
+//! mapping are off, so nothing leaves the machine. And through the user's proxy (#192).
 
 mod common;
 
@@ -9,7 +9,10 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use common::*;
+use velocity_core::proxy::{Proxy, ProxyKind};
 use velocity_core::torrent_engine::{PortMapState, TrackerState, MAX_RATE_LIMIT};
+use velocity_core::transfer::Credentials;
+use velocity_test_http::proxy::Socks5Proxy;
 
 fn helper_with(settings: TorrentSettings) -> (SupervisedTorrentEngine, Receiver<TorrentEvent>) {
     let mut engine = helper();
@@ -286,4 +289,58 @@ fn the_helper_listens_on_the_port_set_and_reports_one_it_cant_open() {
         }),
         Err(ErrorCode::InvalidInput)
     );
+}
+
+/// #192 (PO decision): with a SOCKS5 proxy, given before the settings as the supervisor does,
+/// the tracker and the peer are reached through it, with its login, and the torrent's files are
+/// right.
+#[test]
+fn trackers_and_peers_go_through_a_socks5_proxy() {
+    let name = "v1-multi";
+    let seed_dir = Dir::new("proxy-seed");
+    let dir = Dir::new("proxy");
+    let seeder = seed(name, &seed_dir.0);
+    let tracker = tracker(seeder.port);
+    let proxy = Socks5Proxy::start(Some(("proxy-user", "PROXY-PASSWORD-192")), &[]);
+    let mut engine = helper();
+    let events = engine.subscribe();
+    engine
+        .set_proxy(Some(Proxy {
+            kind: ProxyKind::Socks5,
+            host: "127.0.0.1".to_owned(),
+            port: proxy.port(),
+            login: Some(Credentials {
+                user_name: "proxy-user".to_owned(),
+                password: "PROXY-PASSWORD-192".into(),
+            }),
+        }))
+        .unwrap();
+    engine.set_settings(OFF).unwrap();
+    let id = engine
+        .add(spec(file(name), &dir.0, vec![tracker.clone()]))
+        .unwrap();
+    wait_snapshot(&events, id, "completed", 120, completed);
+    for (path, _) in files_of(name) {
+        assert_eq!(
+            digest_on_disk(&dir.0, &path),
+            content_digest(name, &path),
+            "{path}"
+        );
+    }
+    let record = proxy.record();
+    let tracker_at = tracker
+        .trim_start_matches("http://")
+        .trim_end_matches("/announce")
+        .to_owned();
+    assert!(
+        record.targets.contains(&tracker_at),
+        "the tracker: {record:?}"
+    );
+    assert!(
+        record
+            .targets
+            .contains(&format!("127.0.0.1:{}", seeder.port)),
+        "the peer: {record:?}"
+    );
+    assert_eq!(record.refused, 0, "{record:?}");
 }

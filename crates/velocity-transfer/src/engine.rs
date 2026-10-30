@@ -26,11 +26,13 @@ use velocity_core::domain::{
     FailureClass, LibraryVersion, Progress, ProtocolCapabilities, TransferError,
 };
 use velocity_core::paths::Paths;
+use velocity_core::proxy::{Proxy, ProxyKind};
 use velocity_core::request::default_user_agent;
 use velocity_core::transfer::{
     Checkpoint, Checksum, DirectTransfer, EngineLimits, EngineSettings, Limits, PieceHashes,
     Resume, TransferEvent, TransferId, TransferSnapshot, TransferSpec,
 };
+use velocity_curl::ProxyConfig;
 use velocity_curl::{
     CurlLoop, Fetch, FetchRequest, GateFn, Libcurl, LoopOptions, RateLimit, RequestOptions,
     SshKeyFile, Transport,
@@ -94,6 +96,8 @@ struct Shared {
     global: RateLimit,
     /// The libcurl the engine runs on, as it reports itself, for diagnostics (#28).
     libcurl: LibraryVersion,
+    /// The proxy the user set (#192): read by each transfer as its worker starts.
+    proxy: Mutex<Option<Proxy>>,
 }
 
 #[derive(Default)]
@@ -162,6 +166,26 @@ fn request_options(spec: &TransferSpec) -> RequestOptions {
         }),
         allow_insecure_redirect: spec.trust.insecure_redirect_confirmed,
         confirm_local_addresses: spec.trust.confirms_local_addresses(),
+        proxy: None,
+    }
+}
+
+/// The proxy as the libcurl and SFTP layers take it, its password copied out of its
+/// [`velocity_core::secret::Secret`] for the transfer's life (#70, #192).
+fn proxy_config(proxy: &Proxy) -> ProxyConfig {
+    ProxyConfig {
+        kind: match proxy.kind {
+            ProxyKind::Https => velocity_curl::ProxyKind::Https,
+            ProxyKind::Socks5 => velocity_curl::ProxyKind::Socks5,
+            // `Proxy::check` refuses `None`.
+            ProxyKind::Http | ProxyKind::None => velocity_curl::ProxyKind::Http,
+        },
+        host: proxy.host.clone(),
+        port: proxy.port,
+        login: proxy
+            .login
+            .as_ref()
+            .map(|l| (l.user_name.clone(), l.password.expose().to_owned())),
     }
 }
 
@@ -355,6 +379,7 @@ impl InProcessEngine {
                 disk: Mutex::new(DiskOptions::DEFAULT),
                 global: RateLimit::new(None),
                 libcurl: linked,
+                proxy: Mutex::new(None),
             }),
         })
     }
@@ -746,6 +771,14 @@ impl DirectTransfer for InProcessEngine {
         Ok(())
     }
 
+    fn set_proxy(&mut self, proxy: Option<Proxy>) -> Result<(), ErrorCode> {
+        if let Some(proxy) = &proxy {
+            proxy.check()?;
+        }
+        *lock_value(&self.shared.proxy) = proxy;
+        Ok(())
+    }
+
     fn set_connections(&mut self, id: TransferId, connections: u32) -> Result<u32, ErrorCode> {
         let mut state = self.known(id)?;
         let cap = state.limits.max_connections_per_host;
@@ -802,7 +835,10 @@ fn start_worker(shared: &Arc<Shared>, id: TransferId, resume: Option<Resume>) {
         let control = Control::with_progress(progress_reporter(shared, id))
             .with_status(status_reporter(shared, id))
             .with_limits(vec![entry.limit.clone(), shared.global.clone()])
-            .with_request(entry.job.request.clone())
+            .with_request(RequestOptions {
+                proxy: lock_value(&shared.proxy).as_ref().map(proxy_config),
+                ..entry.job.request.clone()
+            })
             .with_checkpoints(move |checkpoint| {
                 let mut state = lock(&reporter.state);
                 if let Some(entry) = state.transfers.get_mut(&id) {

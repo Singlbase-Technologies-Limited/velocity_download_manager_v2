@@ -109,6 +109,11 @@ impl ChildTorrentEngine {
         }
     }
 
+    /// Sets the proxy, or none (#192). Its login crosses the pipe like a download's.
+    pub fn set_proxy(&self, proxy: Option<velocity_core::proxy::Proxy>) -> Result<(), ErrorCode> {
+        self.done(TorrentCommand::SetProxy { proxy })
+    }
+
     pub fn set_settings(&self, settings: TorrentSettings) -> Result<(), ErrorCode> {
         self.done(TorrentCommand::SetSettings { settings })
     }
@@ -221,6 +226,10 @@ impl ChildTorrentEngine {
 impl TorrentEngine for ChildTorrentEngine {
     fn version(&self) -> Result<String, ErrorCode> {
         ChildTorrentEngine::version(self)
+    }
+
+    fn set_proxy(&mut self, proxy: Option<velocity_core::proxy::Proxy>) -> Result<(), ErrorCode> {
+        ChildTorrentEngine::set_proxy(self, proxy)
     }
 
     fn set_settings(&mut self, settings: TorrentSettings) -> Result<(), ErrorCode> {

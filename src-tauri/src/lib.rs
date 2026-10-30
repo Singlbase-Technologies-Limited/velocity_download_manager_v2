@@ -130,6 +130,8 @@ pub fn run() {
             shell::get_settings,
             shell::set_settings,
             shell::reset_settings,
+            shell::get_proxy_password_set,
+            shell::set_proxy_password,
             shell::get_torrent_network,
             shell::choose_directory,
             shell::quit_app,

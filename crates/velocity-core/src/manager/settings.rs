@@ -88,6 +88,7 @@ impl Manager {
             new_torrents: self.settings_section()?,
             storage: self.settings_section()?,
             browser: self.settings_section()?,
+            proxy: self.settings_section()?,
         })
     }
 
@@ -100,10 +101,13 @@ impl Manager {
         now_ms: u64,
     ) -> Result<crate::settings::Settings, ErrorCode> {
         let settings = settings.checked()?;
+        let proxy_before = self.settings_section::<crate::proxy::ProxySettings>()?;
         self.database
             .save_sections(settings.sections()?, now_ms)
             .map_err(|e| e.code)?;
         self.apply_settings(&settings, now_ms)?;
+        // Saved and applied whatever the keychain says; its refusal is then the error (#192).
+        self.proxy_remembering_changed(&proxy_before, &settings.proxy)?;
         Ok(settings)
     }
 
@@ -114,9 +118,10 @@ impl Manager {
         self.set_settings(&defaults, now_ms)
     }
 
-    /// Applies the saved settings, when the app starts.
+    /// Applies the saved settings, when the app starts, with the proxy's remembered password.
     pub fn apply_saved_settings(&mut self, now_ms: u64) -> Result<(), ErrorCode> {
         let settings = self.settings()?;
+        self.load_proxy_password(&settings.proxy);
         self.apply_settings(&settings, now_ms)
     }
 
@@ -144,6 +149,7 @@ impl Manager {
                 Err(code) => return Err(code),
             }
         }
+        self.apply_proxy(&s.proxy)?;
         self.apply_retention(now_ms)?;
         Ok(())
     }

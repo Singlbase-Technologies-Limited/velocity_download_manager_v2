@@ -16,6 +16,7 @@ use velocity_child::ledger::Ledger;
 use velocity_child::supervisor::{Book, Retired, Supervisor};
 pub use velocity_child::supervisor::{EngineHealth, SupervisorOptions};
 use velocity_core::domain::{DownloadStatus, ErrorCode, Progress};
+use velocity_core::proxy::Proxy;
 use velocity_core::seeding::SeedPolicy;
 use velocity_core::torrent::MAX_RESUME_BYTES;
 use velocity_core::torrent_engine::{
@@ -81,6 +82,9 @@ pub struct TorrentBook {
     torrents: Ledger<TorrentSnapshot>,
     /// The settings last set, given to every new helper.
     settings: TorrentSettings,
+    /// The proxy last set, given to every new helper before its settings (#192), so nothing it
+    /// does ever goes around the proxy.
+    proxy: Option<Proxy>,
     incoming: BTreeMap<TorrentId, Incoming>,
     resume: BTreeMap<TorrentId, Saved>,
     /// How each torrent was added, with the choice, pause and policy set since: what a new
@@ -97,10 +101,10 @@ impl TorrentBook {
 }
 
 impl Book<ChildTorrentEngine> for TorrentBook {
-    type Setup = (TorrentSettings, Vec<Lost>);
+    type Setup = (Option<Proxy>, TorrentSettings, Vec<Lost>);
 
-    /// The settings, and the torrents earlier helpers lost.
-    fn setup(&self) -> (TorrentSettings, Vec<Lost>) {
+    /// The proxy, the settings, and the torrents earlier helpers lost.
+    fn setup(&self) -> (Option<Proxy>, TorrentSettings, Vec<Lost>) {
         let lost = self
             .torrents
             .orphans()
@@ -115,15 +119,18 @@ impl Book<ChildTorrentEngine> for TorrentBook {
                 })
             })
             .collect();
-        (self.settings.clone(), lost)
+        (self.proxy.clone(), self.settings.clone(), lost)
     }
 
-    /// Gives the helper the settings, then the lost torrents. One the helper refuses stays
-    /// failed; a helper that stops answering fails the start.
+    /// Gives the helper the proxy, then the settings, then the lost torrents. One the helper
+    /// refuses stays failed; a helper that stops answering fails the start.
     fn prepare(
         helper: &ChildTorrentEngine,
-        (settings, lost): (TorrentSettings, Vec<Lost>),
+        (proxy, settings, lost): (Option<Proxy>, TorrentSettings, Vec<Lost>),
     ) -> Result<(), ErrorCode> {
+        if proxy.is_some() {
+            helper.set_proxy(proxy)?;
+        }
         helper.set_settings(settings)?;
         for lost in lost {
             // A torrent the helper refuses stays failed, as the ledger has it.
@@ -212,9 +219,24 @@ impl SupervisedTorrentEngine {
         options: SupervisorOptions,
         settings: TorrentSettings,
     ) -> Result<Self, ErrorCode> {
+        Self::start_with_proxy(program, options, settings, None)
+    }
+
+    /// [`Self::start`] with the user's proxy, which the first helper gets before its settings
+    /// (#192): no peer or tracker connection is made before it.
+    pub fn start_with_proxy(
+        program: PathBuf,
+        options: SupervisorOptions,
+        settings: TorrentSettings,
+        proxy: Option<Proxy>,
+    ) -> Result<Self, ErrorCode> {
+        if let Some(proxy) = &proxy {
+            proxy.check()?;
+        }
         let book = TorrentBook {
             torrents: Ledger::default(),
             settings,
+            proxy,
             incoming: BTreeMap::new(),
             resume: BTreeMap::new(),
             specs: BTreeMap::new(),
@@ -317,6 +339,20 @@ impl SupervisedTorrentEngine {
 impl TorrentEngine for SupervisedTorrentEngine {
     fn version(&self) -> Result<String, ErrorCode> {
         self.helper()?.version()
+    }
+
+    /// Kept first, so a helper that isn't running gets it when it starts; then given to the
+    /// running one.
+    fn set_proxy(&mut self, proxy: Option<Proxy>) -> Result<(), ErrorCode> {
+        if let Some(proxy) = &proxy {
+            proxy.check()?;
+        }
+        let kept = proxy.clone();
+        self.supervisor.update(|book, _| {
+            book.proxy = kept;
+            ((), Vec::new())
+        });
+        self.helper()?.set_proxy(proxy)
     }
 
     fn set_settings(&mut self, settings: TorrentSettings) -> Result<(), ErrorCode> {

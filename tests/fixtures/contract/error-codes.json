@@ -88,6 +88,10 @@
     "message": "The system keychain isn't available, so the login wasn't saved."
   },
   {
+    "code": "PROXY_UNSUPPORTED",
+    "message": "Torrents can't go through an HTTPS proxy. Choose an HTTP or SOCKS5 proxy in Settings, Proxy."
+  },
+  {
     "code": "UNSUPPORTED",
     "message": "This isn't supported on this system yet."
   },

@@ -162,6 +162,23 @@ pub async fn set_settings(
     Ok(saved)
 }
 
+/// Whether the proxy has a password, typed this session or remembered (#192). The password itself
+/// never goes to the window.
+#[tauri::command]
+pub async fn get_proxy_password_set(downloads: State<'_, Downloads>) -> Result<bool, ErrorCode> {
+    on_manager(&downloads, |m| m.proxy_password_set()).await
+}
+
+/// Sets the proxy's password, or clears it with `null` (#192): checked in the core, held in
+/// memory, and kept in the system keychain when the Proxy settings ask to remember it.
+#[tauri::command]
+pub async fn set_proxy_password(
+    downloads: State<'_, Downloads>,
+    password: Option<String>,
+) -> Result<(), ErrorCode> {
+    on_manager(&downloads, move |m| m.set_proxy_password(password)).await?
+}
+
 /// Back to the defaults, keeping the download folder (#30, V1's `reset_settings`).
 #[tauri::command]
 pub async fn reset_settings(

@@ -27,6 +27,7 @@ export const ERROR_MESSAGES: Record<ErrorCode, string> = {
   PROTOCOL_DISABLED: "This kind of download is turned off in Settings.",
   CONFIRMATION_REQUIRED: "This action needs your confirmation first.",
   KEYCHAIN_UNAVAILABLE: "The system keychain isn't available, so the login wasn't saved.",
+  PROXY_UNSUPPORTED: "Torrents can't go through an HTTPS proxy. Choose an HTTP or SOCKS5 proxy in Settings, Proxy.",
   UNSUPPORTED: "This isn't supported on this system yet.",
   INTERNAL: "Something went wrong inside Velocity.",
 };

@@ -319,3 +319,71 @@ fn sftp_key_and_password_logins_leave_no_trace() {
     drop(m);
     scan.files(&dir.0).temp_files(since).assert_clean();
 }
+
+/// #192: the proxy's password, set through the manager and used by the real child engine for a
+/// download through a proxy that requires it, is nowhere V2 writes or shows: the database, the
+/// files, temporary files, the app's log, the diagnostics export, or the running engine.
+#[test]
+fn the_proxy_password_leaves_no_trace() {
+    use velocity_core::proxy::{ProxyKind, ProxySettings};
+    use velocity_core::settings::Settings;
+    use velocity_test_http::proxy::HttpProxy;
+
+    const PROXY_PASSWORD: &str = "LEAK-PROXY-PASSWORD-192";
+    let log = AppLog::new();
+    let _logging =
+        tracing::subscriber::set_default(tracing_subscriber::registry().with(log.layer()));
+    let since = SystemTime::now();
+    let dir = Dir::new("proxy");
+    let data = seeded_bytes(500_000, 192);
+    let http = TestServer::start(
+        vec![("p.bin".into(), data.clone())],
+        ServerOptions::default(),
+    );
+    let proxy = HttpProxy::start(Some(("proxy-user", PROXY_PASSWORD)));
+    let mut scan = LeakScan::new(&[PROXY_PASSWORD]);
+    {
+        let db = Arc::new(Database::open(&dir.0.join("velocity.sqlite3")).unwrap());
+        let engine = SupervisedEngine::start(program(), SupervisorOptions::default()).unwrap();
+        let pid = engine.process_id().expect("the engine runs");
+        let mut m = Manager::open(Box::new(engine), Arc::clone(&db)).unwrap();
+        let settings = Settings {
+            proxy: ProxySettings {
+                kind: ProxyKind::Http,
+                host: "127.0.0.1".to_owned(),
+                port: proxy.port(),
+                user_name: "proxy-user".to_owned(),
+                remember_password: false,
+            },
+            ..m.settings().unwrap()
+        };
+        m.set_settings(&settings, now()).unwrap();
+        m.set_proxy_password(Some(PROXY_PASSWORD.to_owned()))
+            .unwrap();
+        let id = m
+            .add(
+                DownloadKind::Http,
+                spec(http.url("p.bin"), &dir.0.join("files"), "p.bin"),
+                now(),
+            )
+            .unwrap();
+        until(&mut m, &id, "completed", |m| {
+            status(m, &id) == Some(DownloadStatus::Completed)
+        });
+        assert!(std::fs::read(dir.0.join("files").join("p.bin")).unwrap() == data);
+        scan.process("the running engine", pid);
+        m.pump(now());
+        log_records(&m);
+        scan.files(&dir.0);
+        scan_log_and_export(&mut scan, &log, &m);
+    }
+    scan.files(&dir.0).temp_files(since);
+    scan.assert_clean();
+    assert!(
+        proxy
+            .record()
+            .logins
+            .contains(&Some(("proxy-user".to_owned(), PROXY_PASSWORD.to_owned()))),
+        "the download went through the proxy with its password"
+    );
+}

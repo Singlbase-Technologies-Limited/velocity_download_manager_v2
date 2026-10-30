@@ -3,7 +3,8 @@
 //!
 //! Each fetch runs as a task on this transport's own tokio runtime:
 //!
-//! 1. **Connect,** within the connect timeout, to the link's host and port (22 by default).
+//! 1. **Connect,** within the connect timeout, to the link's host and port (22 by default),
+//!    directly or through the user's proxy (#192, `proxy.rs`).
 //! 2. **The host key,** checked against V2's known_hosts file ([`KnownHosts`]) before anything
 //!    else is sent. An unknown key is refused and remembered, so the user can trust exactly that
 //!    key ([`SftpTransport::trust_host_key`]); a changed key is always refused. Either ends the
@@ -249,17 +250,10 @@ async fn transfer(job: &Job, pipe: &mut FetchPipe, control: &Control) -> Result<
     }
 }
 
-/// Connects, checks the host key, logs in, and opens the SFTP subsystem.
+/// Connects, directly or through the user's proxy (#192), checks the host key, logs in, and opens
+/// the SFTP subsystem.
 async fn connect(job: &Job, target: &Target) -> Result<SftpSession, FetchError> {
     let timeout = job.options.connect_timeout;
-    let addrs: Vec<SocketAddr> = tokio::time::timeout(
-        timeout,
-        tokio::net::lookup_host((target.host.as_str(), target.port)),
-    )
-    .await
-    .map_err(|_| failure(CurlFailure::Timeout, "resolving the host timed out"))?
-    .map_err(|e| failure(CurlFailure::Resolve, format!("{}: {e}", target.host)))?
-    .collect();
     let problem: Arc<Mutex<Option<HostKeyProblem>>> = Arc::default();
     let handler = HostKeyCheck {
         known_hosts: job.known_hosts.clone(),
@@ -269,9 +263,38 @@ async fn connect(job: &Job, target: &Target) -> Result<SftpSession, FetchError> 
         problem: Arc::clone(&problem),
     };
     let config = Arc::new(client::Config::default());
-    let connected = tokio::time::timeout(timeout, client::connect(config, &addrs[..], handler))
-        .await
-        .map_err(|_| failure(CurlFailure::Timeout, "connecting timed out"))?;
+    let connected = match &job.request.options.proxy {
+        Some(proxy) => {
+            // Through the proxy, which resolves the server's name (#192).
+            let stream = tokio::time::timeout(
+                timeout,
+                crate::proxy::tunnel(proxy, &target.host, target.port),
+            )
+            .await
+            .map_err(|_| {
+                failure(
+                    CurlFailure::Timeout,
+                    "connecting through the proxy timed out",
+                )
+            })??;
+            tokio::time::timeout(timeout, client::connect_stream(config, stream, handler))
+                .await
+                .map_err(|_| failure(CurlFailure::Timeout, "connecting timed out"))?
+        }
+        None => {
+            let addrs: Vec<SocketAddr> = tokio::time::timeout(
+                timeout,
+                tokio::net::lookup_host((target.host.as_str(), target.port)),
+            )
+            .await
+            .map_err(|_| failure(CurlFailure::Timeout, "resolving the host timed out"))?
+            .map_err(|e| failure(CurlFailure::Resolve, format!("{}: {e}", target.host)))?
+            .collect();
+            tokio::time::timeout(timeout, client::connect(config, &addrs[..], handler))
+                .await
+                .map_err(|_| failure(CurlFailure::Timeout, "connecting timed out"))?
+        }
+    };
     let mut session = match connected {
         Ok(session) => session,
         Err(e) => {
@@ -444,7 +467,7 @@ fn percent_decode(s: &str) -> Option<String> {
     String::from_utf8(out).ok()
 }
 
-fn failure(kind: CurlFailure, message: impl Into<String>) -> FetchError {
+pub(crate) fn failure(kind: CurlFailure, message: impl Into<String>) -> FetchError {
     FetchError::Sftp {
         kind,
         message: message.into(),

@@ -11,6 +11,7 @@
 pub mod ftp;
 mod http2;
 pub mod leaks;
+pub mod proxy;
 pub mod ssh;
 pub mod tls;
 

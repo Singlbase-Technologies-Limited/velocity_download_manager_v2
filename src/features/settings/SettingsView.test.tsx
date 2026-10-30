@@ -223,3 +223,51 @@ describe('the Browser section (#65)', () => {
     expect(screen.getByRole<HTMLButtonElement>('button', { name: 'Register with Mozilla Firefox' }).disabled).toBe(true);
   });
 });
+
+describe('the Proxy section (#192)', () => {
+  it('saves the proxy without its password, and checks nothing that the native side checks', async () => {
+    const state = installFakeBackend();
+    const user = await openSettings('Proxy');
+    const host = await screen.findByLabelText('Host');
+    await user.type(host, 'proxy.example.com');
+    await user.tab();
+    await waitFor(() => { expect(state.appSettings.proxy.host).toBe('proxy.example.com'); });
+    await user.selectOptions(screen.getByLabelText('Type'), 'socks5');
+    await waitFor(() => { expect(state.appSettings.proxy.kind).toBe('socks5'); });
+    expect(JSON.stringify(saved(state))).not.toContain('password"');
+  });
+
+  it('sets the password on its own, never shows it, and can clear it', async () => {
+    const state = installFakeBackend();
+    const user = await openSettings('Proxy');
+    expect(await screen.findByText('No password is set.')).toBeTruthy();
+    const field = screen.getByLabelText<HTMLInputElement>('Password');
+    expect(field.type).toBe('password');
+    await user.type(field, 'hunter2-proxy');
+    await user.click(screen.getByRole('button', { name: 'Save password' }));
+    await waitFor(() => { expect(state.proxyPassword).toBe('hunter2-proxy'); });
+    expect(await screen.findByText('A password is set.')).toBeTruthy();
+    expect(field.value).toBe('');
+    await user.click(screen.getByRole('button', { name: 'Clear' }));
+    await waitFor(() => { expect(state.proxyPassword).toBeNull(); });
+    expect(callsOf(state, 'set_proxy_password').map((c) => c.args.password)).toEqual(['hunter2-proxy', null]);
+  });
+
+  it('says why a password was refused', async () => {
+    const state = installFakeBackend();
+    state.failures.set_proxy_password = 'KEYCHAIN_UNAVAILABLE';
+    const user = await openSettings('Proxy');
+    await user.type(await screen.findByLabelText('Password'), 'hunter2-proxy');
+    await user.click(screen.getByRole('button', { name: 'Save password' }));
+    expect((await screen.findByRole('alert')).textContent).toContain('keychain');
+  });
+
+  it('remembers the password in the keychain only when ticked', async () => {
+    const state = installFakeBackend();
+    const user = await openSettings('Proxy');
+    const remember = await screen.findByRole('checkbox', { name: 'Remember the password in the system keychain' });
+    expect((remember as HTMLInputElement).checked).toBe(false);
+    await user.click(remember);
+    await waitFor(() => { expect(state.appSettings.proxy.rememberPassword).toBe(true); });
+  });
+});

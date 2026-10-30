@@ -736,3 +736,13 @@ Run it with `cargo run --release -p velocity-transfer --example high_offset_writ
 - **Mirror values:** the cooldown, the failure limit and the scoring are starting values; #77 measures them.
 - **Folders a Metalink download creates** stay when it's cancelled or fails, even when empty. Only part files are removed.
 - **A fuzz target for the Metalink parser** comes with #73, which brings the fuzzing tool.
+
+## Proxy (#192)
+
+The proxy the user set ([SETTINGS.md](SETTINGS.md#proxy), [ADR-0008](decisions/0008-proxy-support.md)) reaches the engine through `set_proxy` (transfer contract version 16). The engine keeps it, and each transfer reads it as its worker starts, so a download that starts, resumes or retries uses the proxy of that moment. The supervisor gives it to a new engine before anything else.
+
+- **libcurl (HTTP, HTTPS, FTP):** `CURLOPT_PROXY` is always set: the proxy, or empty, so `http_proxy`, `ALL_PROXY` and the like are never used. Through an HTTP or HTTPS proxy every connection is a `CONNECT` tunnel (`CURLOPT_HTTPPROXYTUNNEL`), even for `http://` and FTP, so the proxy never reads a request, its headers or a site's login. A SOCKS5 proxy is used as `socks5h`: the proxy resolves the names. The proxy's login goes in `CURLOPT_PROXYUSERNAME` and `CURLOPT_PROXYPASSWORD`, Basic only, to the proxy alone; an HTTPS proxy's certificate is verified as a server's.
+- **SFTP:** russh has no proxy support, so velocity-sftp opens the connection itself (`proxy.rs`): an HTTP `CONNECT` tunnel with `Proxy-Authorization: Basic`, or a SOCKS5 `CONNECT` by name with RFC 1929's login, and russh runs over it (`connect_stream`). The host key is checked against the server's name as without a proxy. An HTTPS proxy is refused: "SFTP can't go through an HTTPS proxy" (PO decision on #192).
+- **A refused proxy:** an HTTP proxy's `407` to `CONNECT`, or a SOCKS5 refusal, fails the download as permanent: "The proxy refused the connection. Check its user name and password in Settings, Proxy."
+- **Local addresses (#67):** through a proxy, the connection is to the proxy, which the user chose, so its address isn't held. A browser link that names this computer or a private network itself (`localhost`, or a local IP address) still stops before its request; a name only the proxy resolves can't be checked ([SECURITY.md](SECURITY.md#proxy-192)).
+- **Tests:** velocity-curl `tests/proxy.rs` and `tests/no_ambient_proxy.rs`, velocity-sftp `tests/sftp.rs`, against the local proxies in `velocity_test_http::proxy` ([TESTING.md](TESTING.md)).

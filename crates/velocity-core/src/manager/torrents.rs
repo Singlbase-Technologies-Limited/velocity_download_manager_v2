@@ -361,6 +361,7 @@ impl Manager {
     /// Gives the helper a torrent: from its stored resume data when there is some, otherwise from
     /// where it came from; or resumes it when the helper has it.
     pub(super) fn start_torrent(&mut self, id: &str) -> Result<(), ErrorCode> {
+        self.torrents_can_use_the_proxy()?;
         let directory = PathBuf::from(&self.downloads[id].record.directory);
         let job = self.torrent_job(id)?;
         if let Some(torrent) = job.torrent {

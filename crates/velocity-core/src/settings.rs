@@ -16,6 +16,7 @@ use crate::destination::FolderSettings;
 use crate::domain::ErrorCode;
 use crate::history::StorageSettings;
 use crate::performance::PerformanceSettings;
+use crate::proxy::ProxySettings;
 use crate::queue::QueueSettings;
 use crate::seeding::SeedPolicy;
 use crate::torrent_engine::{TorrentSettings, MAX_RATE_LIMIT};
@@ -163,6 +164,8 @@ pub struct Settings {
     pub storage: StorageSettings,
     /// Links from the browser extension (#65).
     pub browser: BrowserSettings,
+    /// The proxy downloads go through (#192), without its password.
+    pub proxy: ProxySettings,
 }
 
 impl Settings {
@@ -180,6 +183,7 @@ impl Settings {
             new_torrents: self.new_torrents.checked()?,
             storage: self.storage.checked()?,
             browser: self.browser.checked()?,
+            proxy: self.proxy.checked()?,
         })
     }
 
@@ -205,6 +209,7 @@ impl Settings {
             json(NewTorrentSettings::KEY, &self.new_torrents)?,
             json(StorageSettings::KEY, &self.storage)?,
             json(BrowserSettings::KEY, &self.browser)?,
+            json(ProxySettings::KEY, &self.proxy)?,
         ])
     }
 

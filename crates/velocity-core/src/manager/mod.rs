@@ -165,6 +165,10 @@ pub struct Manager {
     just_completed: Vec<String>,
     /// `.torrent` links being fetched, and the trackers of those fetched (#60).
     links: torrent_links::TorrentLinks,
+    /// The proxy's password (#192): typed this session, or remembered in the keychain.
+    proxy_password: Option<crate::secret::Secret>,
+    /// The kind of proxy set, for the torrents that can't use an HTTPS one.
+    proxy_kind: crate::proxy::ProxyKind,
 }
 
 /// Statuses a direct engine may report. The torrent-only ones (fetching metadata, choosing files,
@@ -292,6 +296,8 @@ impl Manager {
             user_agent: None,
             just_completed: Vec::new(),
             links: torrent_links::TorrentLinks::default(),
+            proxy_password: None,
+            proxy_kind: crate::proxy::ProxyKind::None,
         }
     }
 
@@ -1108,6 +1114,7 @@ mod history;
 mod opening;
 mod options;
 mod persist;
+mod proxy;
 mod recovery;
 mod service;
 mod settings;
@@ -1119,6 +1126,7 @@ pub use adding::{
     is_torrent_link, AddOutcome, AddRequest, AddResult, Duplicate, FETCH_WAIT, MAX_ADD,
 };
 pub use batch::MAX_BATCH;
+pub use proxy::saved_proxy;
 pub use recovery::SensitiveOptions;
 pub use service::{now_ms, ManagerService, SNAPSHOT_EVERY, TICK};
 pub use torrent_links::FetchReply;

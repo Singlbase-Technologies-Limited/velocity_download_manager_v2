@@ -56,12 +56,13 @@ Torrent metadata and magnet links are untrusted input. `velocity_core::torrent` 
 
 ## The torrent contract
 
-`TORRENT_CONTRACT_VERSION` is 4: version 1 had no file choice, version 2 no seeding or resume data, and version 3 no trackers, peers, limits or port settings. Every wire form refuses unknown fields.
+`TORRENT_CONTRACT_VERSION` is 5: version 1 had no file choice, version 2 no seeding or resume data, version 3 no trackers, peers, limits or port settings, and version 4 no proxy. Every wire form refuses unknown fields.
 
 | Command | Reply | What it does |
 |---|---|---|
 | `version {}` | `version { libtorrent }` | The libtorrent version, for diagnostics; also the supervisor's hang check |
 | `setSettings { settings }` | `done {}` | [The settings](#settings-and-identity) |
+| `setProxy { proxy }` | `done {}` | The user's proxy, or none (#192): [below](#settings-and-identity) |
 | `add { spec }` | `added { id }` | `spec`: `source` (`{"kind":"file","path":…}`, `{"kind":"magnet","uri":…}` or `{"kind":"resume"}`), `directory`, `trackers`, `paused`, `chooseFiles`, `files` (a `.torrent` file's first choice, or `null` for every file), `seeding` (its [policy](#seeding)), and `uploadLimit` and `downloadLimit` (bytes per second, 0 for none) |
 | `restore { id, spec }` | `done {}` | Adds a torrent under an id an earlier helper gave it ([Recovery](#resume-data-and-recovery)). `INVALID_INPUT` for an id the helper has, or could still give |
 | `setFiles { id, files }` | `done {}` | Downloads exactly these files ([File choice](#file-choice)) |
@@ -207,6 +208,7 @@ The Settings screen's BitTorrent section edits them ([SETTINGS.md](SETTINGS.md#a
   - **`listen_port` and `dht_listen_port`:** these were aria2's two ports. libtorrent uses `listenPort` for TCP, uTP and DHT alike.
   - **`enable_dht6`:** aria2's too. libtorrent runs DHT on every listening socket, IPv4 and IPv6 together, under `dht`, as V1's libtorrent engine did.
 - **Not kept from V1:** `request_peer_speed_limit_kib` (aria2's "look for more peers while slower than this") is dropped, as ADR-0005 planned for a setting libtorrent can't do. libtorrent 2.0.15 has no such setting; it finds peers on its own within its connection limits.
+- **Through the user's proxy** (#192, PO decision): peers, trackers and the names they use go through it (libtorrent's `proxy_peer_connections`, `proxy_tracker_connections`, `proxy_hostnames`), with its login. Nothing V2 starts goes around it: local peer discovery and port mapping are off while it is set, and the DHT is on only through a SOCKS5 proxy, which carries it. The supervisor gives every helper the proxy before its settings, and the app gives the first helper the saved one, with a remembered password, so no connection is made before it. libtorrent can't use an HTTPS proxy: then every kind of discovery is off, and the app starts no torrent (`PROXY_UNSUPPORTED`). The helper still listens on its port, so a peer can connect to it; listening on loopback only would also keep libtorrent from reaching a remote proxy. Tested through a local SOCKS5 proxy with a login (`tests/network.rs`).
 - **Identity:** peers see the peer-id prefix `-VD0100-` (`-VD` and the version digits), and trackers see `Velocity V2/0.1.0 libtorrent/2.0.15.0` (PO decision on #62). V1's `-VL` prefix isn't reused.
 
 ## In the app (#58)
