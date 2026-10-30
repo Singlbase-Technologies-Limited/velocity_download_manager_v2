@@ -1,6 +1,6 @@
 # Engine internals
 
-How the direct-download engine in `crates/velocity-transfer` fetches a file. The contract the manager sees is in [ENGINE_CONTRACT.md](ENGINE_CONTRACT.md), and how the engine's child process talks to the app is in [ENGINE_PROTOCOL.md](ENGINE_PROTOCOL.md). The design comes from section 5 of the [research report](research/2026-10-21-libcurl-engine-research-r2.md); the terms are in the [glossary](GLOSSARY.md).
+How the direct-download engine in `crates/velocity-transfer` fetches a file. Checked against the code at commit `9a4f484` (2026-10-30, #80). The contract the manager sees is in [ENGINE_CONTRACT.md](ENGINE_CONTRACT.md), and how the engine's child process talks to the app is in [ENGINE_PROTOCOL.md](ENGINE_PROTOCOL.md). The design comes from section 5 of the [research report](research/2026-10-21-libcurl-engine-research-r2.md); the terms are in the [glossary](GLOSSARY.md).
 
 ## The probe (#41)
 
@@ -30,7 +30,7 @@ The probe is the download's first request and also its first segment, so its byt
 Velocity follows redirects itself; libcurl's `CURLOPT_FOLLOWLOCATION` is off. libcurl would follow one with every custom header, and it drops only `Authorization` and `Cookie` when the host changes. When a response is a `3xx` with a `Location`, the libcurl loop drops its body, reads the next URL as libcurl resolved it (`CURLINFO_REDIRECT_URL`), and checks the hop ([`redirect.rs`](../crates/velocity-curl/src/redirect.rs)):
 
 - **Protocols:** only `http` and `https`. A redirect to `ftp`, `sftp`, `scp`, `file` or anything else is refused before any connection. libcurl's `CURLOPT_REDIR_PROTOCOLS_STR` stays set to `http,https` as a second barrier.
-- **No downgrade:** a redirect from `https` to `http` is refused. Allowing it after the user confirms is #67.
+- **No downgrade:** a redirect from `https` to `http` is refused, unless the user confirmed it for this download (`trust.insecureRedirectConfirmed`, #67; [SECURITY.md](SECURITY.md#links-redirects-and-local-addresses-67)).
 - **At most 10** redirects per request; the 11th is refused.
 - **Origins:** the next request carries the login and the custom headers only when it goes to the first URL's origin: its scheme, host and port. The origin is read with libcurl's own URL parser ([`url.rs`](../crates/velocity-curl/src/url.rs), `curl_url`), so Velocity and libcurl agree on the host. For example, `http://evil.example\@good.example/` goes to `good.example` for both. The user agent and the referrer go with every request.
 
@@ -48,7 +48,7 @@ The name is then sanitised ([`naming.rs`](../crates/velocity-core/src/naming.rs)
 
 - **No extra request:** the part file is created when the probe's first byte arrives, or when the probe ends without a body, as for an empty file. Before that nothing is on disk; a pause then keeps nothing, and the next attempt asks again.
 - **Reported:** the engine reports the name in the snapshot's `fileName`. From then on, retries, pauses and cancels use that file.
-- **Given names:** a spec that gives `fileName` is saved under it, and it fails with `FileExists` when the name is taken; #31 adds the conflict settings. `naming::file_name_for_link` decides whether a link names its file on its own: `report.pdf` does, `download.php?id=3` and `/files/12345` don't, so those are left to the server. Nothing calls it yet; the add flow that will is R8's.
+- **Given names:** a spec that gives `fileName` is saved under it, and it fails with `FileExists` when the name is taken; #31 adds the conflict settings. `naming::file_name_for_link` decides whether a link names its file on its own: `report.pdf` does, `download.php?id=3` and `/files/12345` don't, so those are left to the server. The manager uses it through `naming::name_for_download` when a download is added (#31).
 
 ## FTP and FTPS (#51)
 
@@ -80,7 +80,7 @@ An FTP download uses one connection, whatever is asked (PO decision on #51): eac
 ### Logins and encryption
 
 - **The login** comes from the spec's `credentials` and goes out as FTP's `USER` and `PASS`. Without one, libcurl logs in as `anonymous`. A link with a login in it is refused by the engine; the app splits it off first and never stores it (`database::without_login`). FTP has no redirects, so the origin rules don't apply.
-- **Plain FTP sends the login and the file in clear.** The engine reports what it can encrypt per protocol (`ProtocolCapabilities::encryption`), and the add form (R8) shows `cleartextWarning` from `src/capabilities.ts` before it starts a plain `ftp://` download (PO decision on #51).
+- **Plain FTP sends the login and the file in clear.** The engine reports what it can encrypt per protocol (`ProtocolCapabilities::encryption`), and the Add download form shows `cleartextWarning` from `src/capabilities.ts` before it starts a plain `ftp://` download, with the choice to require encryption (#60, PO decision on #51).
 - **Explicit FTPS:** a download that requires encryption (`TransferSpec::require_encryption`) asks `AUTH TLS` before the login, then `PBSZ 0` and `PROT P`, so the data connections are TLS too (`CURLUSESSL_ALL`, `CURLFTPAUTH_TLS`). A server that refuses fails the download at once, as `EncryptionRefused`, before the login is sent. There is no fallback to plain FTP.
 - **Implicit FTPS:** an `ftps://` link is TLS from the first byte, on both connections.
 - **Certificates** are verified as for HTTPS, with the platform's trust store ([SECURITY.md](SECURITY.md#tls-verification-69)). A refused one fails at once, before the login.
@@ -167,13 +167,13 @@ A Metalink document lists files with their sources, hashes and piece hashes: Met
 - **The folder:** each file goes into its subfolders inside the chosen folder (PO decision on #54: kept, as V1 did). They're created one level at a time. A folder already there is used, but a file or a link (a symbolic link, or on Windows a junction or mount point; [SECURITY.md](SECURITY.md#files-and-folders-72)) in the way is refused, never followed.
 - **The download:** its sources the engine can fetch, best first, in `TransferSpec::urls`; its hash in `checksum` and its piece list in `pieces`; its name in `fileName`. No login, headers or referrer: a document's sources are other servers.
 - **All or nothing:** a file with no source the engine supports refuses the lot before anything is added. A file the engine refuses after others were added takes those back (they're cancelled), and the refusal is the error.
-- **A local file:** `metalink::read_file` reads a `.metalink` or `.meta4` file the user chose, as V1's `validate_local_metadata_file` did: an absolute path to a plain file, never a link. The file chooser and its Tauri command are #58's and #60's.
+- **A local file:** `metalink::read_file` reads a `.metalink` or `.meta4` file, as V1's `validate_local_metadata_file` did: an absolute path to a plain file, never a link. **Not wired:** no command calls it, so the app can't add a local Metalink file yet; Metalink downloads come only from links.
 
 ### Following a link
 
 As aria2's `follow-metalink` did for V1: while Metalink is on, a completed HTTP or FTP download that is a Metalink file adds every file it lists, into its own folder.
 
-- **How it's known:** its name ends `.meta4` or `.metalink`, or the server called it `application/metalink4+xml` or `application/metalink+xml` (`TransferSnapshot::contentType`, contract 11).
+- **How it's known:** its name ends `.meta4` or `.metalink`, or the server called it `application/metalink4+xml` or `application/metalink+xml` (`TransferSnapshot::content_type`, `contentType` on the wire, contract 11).
 - **The Metalink file stays** on disk as a completed download.
 - **One that can't be used** fails, with the reason: "Velocity downloaded this Metalink file but couldn't add its files: …". The file is kept.
 - **Never twice:** a download that came from a Metalink is never followed, so one document can't chain to another.
@@ -360,7 +360,7 @@ While it waits, the snapshot shows Retrying, with the failure's message and "Ret
 
 ### The values
 
-All of them are starting values to tune by measurement, not requirements (PO decision on #48). `RetryPolicy::DEFAULT` holds them, and the connect timeout is `LoopOptions::connect_timeout`. Settings will make them the user's (#30). The engine in the app's process takes another policy with `InProcessEngine::start_with`. The child process uses the defaults, because the contract doesn't carry a policy.
+All of them are starting values to tune by measurement, not requirements (PO decision on #48). `RetryPolicy::DEFAULT` holds them, and the connect timeout is `LoopOptions::connect_timeout`. The user's engine settings replace them (`set_engine_settings`, transfer contract version 14; [SETTINGS.md](SETTINGS.md#engine), #30), for downloads that start or retry after a change. The engine in the app's process also takes a policy with `InProcessEngine::start_with`.
 
 ### Statuses
 
@@ -727,9 +727,8 @@ Run it with `cargo run --release -p velocity-transfer --example high_offset_writ
 
 ## Not yet
 
-- **https→http after confirmation:** such a redirect is refused; #67 adds the confirmation. `redirect.rs`'s unit tests cover the rule; an end-to-end test on the TLS fixture (#69) comes with #67.
-- **Credentials beyond memory:** the keychain and zeroisation are #70's ([SECURITY.md](SECURITY.md#secrets-70)); the engine takes the login as plain strings for the transfer's life, copied out of its `Secret`s in `request_options`. The full secret-leak scan of every file is #71.
-- **Requiring encryption from the add form:** `TransferSpec::require_encryption` and the cleartext warning are ready; the add form that sets one and shows the other is R8's. Until then, the app's FTP downloads are plain unless the link is `ftps://`.
+- **Logins inside the engine:** the engine takes the login as plain strings for the transfer's life, copied out of its `Secret`s in `request_options`, because libcurl needs them so. Outside the engine they are `Secret`s, wiped when dropped ([SECURITY.md](SECURITY.md#secrets-70)).
+- **A local Metalink file:** `metalink::read_file` exists, but no command calls it ([Metalink](#adding-its-files)).
 - **FTP over several connections:** one connection until #77 measures whether more help.
 - **Connection values:** the per-host cap and the smallest piece come from the performance profile (#57), and the budget from the user's engine settings ([SETTINGS.md](SETTINGS.md#engine), #30). The ramp's values are engine defaults, to tune by measurement (#77).
 - **Learning per host:** what a host allowed isn't remembered between downloads (a non-goal of #47).

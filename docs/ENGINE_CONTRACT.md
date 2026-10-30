@@ -2,6 +2,8 @@
 
 The manager talks to a direct-download engine (HTTP, FTP, SFTP, Metalink) only through the `DirectTransfer` contract in [`crates/velocity-core/src/transfer.rs`](../crates/velocity-core/src/transfer.rs) (#36, [ADR-0002](decisions/0002-engine-crate-layout.md)). The manager never sees libcurl types, engine-internal ids or aria2 vocabulary. Torrent operations (trackers, peers, file priorities, seeding, magnet metadata) are not part of this contract; they belong to the torrent bridge (research report section 4.2).
 
+Checked against the code at commit `9a4f484` (2026-10-30, #80).
+
 Contract version: `TRANSFER_CONTRACT_VERSION = 16`. Raise it with any incompatible change to a command, reply, event or type. Version 2 added checkpoints (#43), version 3 the global speed limit (#49), version 4 the connection detail in snapshots (#47), version 5 the checkpoint's `contentEncoding` (#45), version 6 integrity (#46): checked checksums with SHA-224 and SHA-384, `pieces` in the spec, and `verification` in snapshots, version 7 the performance profile (#57): `set_engine_limits`, and capabilities per protocol, and version 8 HTTP details (#40): `directory` and an optional `fileName` in place of `destination`, `credentials` in place of the credential handle, `referrer` and `userAgent` in the spec, and `fileName` in snapshots, version 9 FTP and FTPS (#51): `requireEncryption` in the spec and `encryption` in each protocol's capabilities, version 10 SFTP (#53): `sshKey` in the spec, `hostKey` in errors, and `trust_host_key`, version 11 Metalink (#54): `contentType` in snapshots, and engines may report `metalink`, version 12 the retry countdown (#59): `retryAtMs` in snapshots, version 13 diagnostics (#28): `libcurl` in the capabilities, the version and TLS backend the engine runs on, version 14 the engine settings (#30): `set_engine_settings`, with `EngineSettings` ([SETTINGS.md](SETTINGS.md#engine)), version 15 links and redirects (#67): `trust` in the spec and `confirm` in errors, and version 16 the proxy (#192): `set_proxy`.
 
 ## Commands
@@ -28,7 +30,7 @@ A limit below 1 KiB/s (`Limits::MIN_BPS`), in a spec or a command, is refused wi
 ## Types
 
 - **`TransferSpec`:** URLs (primary first, then mirrors; never empty, with no login in them), the folder and an optional file name, a login, custom headers, a referrer, a user agent, an optional trusted checksum, optional trusted piece hashes, limits, and the requested connection count. `TransferSpec::check_request` checks what a user or the browser may set, and the engine runs it on `add` (#40):
-  - **`directory` and `fileName`:** the file goes in `directory`. Without a `fileName`, the server names it ([ENGINE_INTERNALS.md](ENGINE_INTERNALS.md#file-names-40)). A given name must be one safe component (`naming::check_file_name`, else `InvalidFilename`), and is refused with `FileExists` when taken; #31 adds the conflict settings. A spec with a `resume` must give the name (`InvalidInput`).
+  - **`directory` and `fileName`:** the file goes in `directory`. Without a `fileName`, the server names it ([ENGINE_INTERNALS.md](ENGINE_INTERNALS.md#file-names-40)). A given name must be one safe component (`naming::check_file_name`, else `InvalidFilename`), and is refused with `FileExists` when taken. The manager applies the user's choice for a taken name before the spec reaches the engine ([FILE_NAMING.md](FILE_NAMING.md), #31). A spec with a `resume` must give the name (`InvalidInput`).
   - **`credentials`:** `{ userName, password }`, sent as HTTP Basic only to the first URL's origin, or as FTP's `USER` and `PASS`. The user name has no colon, and neither part has a control character or exceeds 1 KiB. A URL with a login in it is refused with `InvalidUrl`; `request::split_login` moves it out.
   - **`sshKey`:** for an `sftp://` link, `{ path, passphrase }`: log in with this private key, as the user of `credentials`. The path is absolute; the passphrase follows the credentials' rules and travels like a password. Refused with `InvalidInput` for any other link or without `credentials` ([ENGINE_INTERNALS.md](ENGINE_INTERNALS.md#sftp-53)).
   - **`requireEncryption`:** for an `ftp://` link, insist on TLS (`AUTH TLS`) for the login and the file, and fail if the server can't, with no fallback to plain FTP (PO decision on #51). `https://` and `ftps://` are always encrypted. With an `http://` link it is refused with `InvalidInput` ([ENGINE_INTERNALS.md](ENGINE_INTERNALS.md#logins-and-encryption)).
@@ -42,6 +44,41 @@ A limit below 1 KiB/s (`Limits::MIN_BPS`), in a spec or a command, is refused wi
 - **`TransferEvent`:** `changed { snapshot }` or `removed { id }`.
 
 A direct engine reports only these statuses: Queued, Connecting, Downloading, Retrying, Stalled, Paused, Verifying, Completed, Failed and Removed. "Cancelled" in the research report is Removed here.
+
+```mermaid
+stateDiagram-v2
+    [*] --> Queued: add
+    Queued --> Connecting
+    Connecting --> Downloading: the probe's answer
+    Downloading --> Stalled: no byte for 15 s
+    Stalled --> Downloading: bytes again
+    Connecting --> Retrying: a failure worth retrying
+    Downloading --> Retrying: a failure worth retrying
+    Stalled --> Retrying: no byte for 30 s
+    Retrying --> Connecting: after the wait
+    Downloading --> Verifying: every byte is in, with a checksum to finish
+    Verifying --> Completed: checked, flushed, renamed
+    Downloading --> Completed: every byte is in, no checksum
+    Connecting --> Failed: permanent, or retries used up
+    Downloading --> Failed: permanent, or retries used up
+    Retrying --> Failed: retries used up
+    Verifying --> Failed: a failed check
+    Queued --> Paused: pause
+    Connecting --> Paused: pause
+    Downloading --> Paused: pause
+    Retrying --> Paused: pause
+    Stalled --> Paused: pause
+    Verifying --> Paused: pause
+    Paused --> Queued: resume
+    Queued --> Removed: cancel
+    Paused --> Removed: cancel
+    Downloading --> Removed: cancel
+    Completed --> [*]: remove
+    Failed --> [*]: remove
+    Removed --> [*]: remove
+```
+
+Cancel works from every unfinished status; the diagram shows three of them. Retrying a failed or removed download is the manager's: it adds the transfer again ([below](#retrying-removing-and-clearing-58)).
 
 - **Retrying:** the transfer waits before trying again (#48), and `retryAtMs` says until when (#59). When the engine starts a failed download again, `error` holds the failure it waits after, with "Retrying automatically (n of 2)." The error is cleared once bytes come again.
 - **Stalled:** no byte has come from the network for a while. The transfer isn't failed, and goes back to Downloading when bytes come.
@@ -70,7 +107,7 @@ A direct engine reports only these statuses: Queued, Connecting, Downloading, Re
 
 ## Secrets
 
-- **Logins** cross the contract in memory, because the engine must send them (PO decision on #40). To an engine in a child process they go only through its pipe, never its arguments or environment ([ADR-0012](decisions/0012-engine-child-process.md)). They never reach a checkpoint, the database or a log. `Debug` output of `Credentials`, an `SshKey`, a `TransferSpec` or the libcurl layer's `RequestOptions` shows `<redacted>` for every secret (tested). The keychain and the secret-leak scan are #70's and #71's.
+- **Logins** cross the contract in memory, because the engine must send them (PO decision on #40). To an engine in a child process they go only through its pipe, never its arguments or environment ([ADR-0012](decisions/0012-engine-child-process.md)). They never reach a checkpoint, the database or a log. `Debug` output of `Credentials`, an `SshKey`, a `TransferSpec` or the libcurl layer's `RequestOptions` shows `<redacted>` for every secret (tested). A login the user asked to remember is kept in the system keychain ([ADR-0015](decisions/0015-keychain-with-consent.md), #70), and the secret-leak scan checks every file V2 writes ([TESTING.md](TESTING.md#the-secret-leak-scan-71), #71).
 - **Header values** may be secrets (cookies, tokens). They cross the contract the same way, and `Debug` output of a `Header`, a `TransferSpec` or `RequestOptions` never shows them (tested).
 - **Only to the first origin:** the login and the custom headers go only to the first URL's origin (scheme, host and port, as libcurl reads the URL). Once a redirect leaves it, no request carries them ([ENGINE_INTERNALS.md](ENGINE_INTERNALS.md#redirects-40)).
 
@@ -116,8 +153,8 @@ The manager is opened over the database (`Manager::open`), and every change it m
 - **When the app starts:**
   - finished downloads come back as they ended;
   - unfinished ones wait in their saved order, a paused one still paused. Each resumes from its checkpoint when it fits, or starts over by discarding its part file (`resume_from`, PO decision on #43). Nothing starts in `open`: the app applies its queue settings first;
-  - **a download that had a login, custom headers or an SSH key comes back Paused** with a note. It resumes or is retried only after `set_login` gives them again (PO decision on #58);
-  - a record this build can't read, or a torrent record until the manager runs torrents, is listed by `unavailable()` and never acted on;
+  - **a download that had a login, custom headers or an SSH key comes back Paused** with a note, unless the user asked to remember its login: then it is read back from the system keychain (#70). Otherwise it resumes or is retried only after `set_login` gives them again (PO decision on #58);
+  - a record this build can't read, or a torrent whose own record is missing or unreadable, is listed by `unavailable()` and never acted on;
   - downloads removed from the list stay in the history only (#32), and aren't loaded;
   - ids continue after the highest one stored, so none is given twice.
 

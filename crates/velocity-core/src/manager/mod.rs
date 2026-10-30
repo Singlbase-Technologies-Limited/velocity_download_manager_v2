@@ -13,8 +13,8 @@
 //!   for downloads the engine isn't running: Paused when the user paused one, Queued when it waits
 //!   for a slot or the schedule.
 //!
-//! Saving the queue is the database's (`downloads.queue_position`, `scheduled`); loading it when
-//! the app starts is #58. Engine events are untrusted (AGENTS.md): events for unknown transfers
+//! Saving the queue is the database's (`downloads.queue_position`, `scheduled`); `recovery.rs`
+//! reads it back when the app starts (#58). Engine events are untrusted (AGENTS.md): events for unknown transfers
 //! are ignored, and a status a direct engine must never report becomes `Unknown`.
 
 use crate::database::{Database, DatabaseError, NewDownload, QueueEntry};
