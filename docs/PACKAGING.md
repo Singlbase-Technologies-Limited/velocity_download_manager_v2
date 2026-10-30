@@ -64,7 +64,7 @@ The installer isn't signed. Windows SmartScreen therefore warns on first run ("W
 A deb, for Ubuntu and Debian, and an rpm, for Fedora and openSUSE, made by Tauri from the same [`src-tauri/tauri.release.conf.json`](../src-tauri/tauri.release.conf.json). No AppImage: it would carry its own copies of WebKitGTK, GTK and their libraries, several of them LGPL, which needs a licence review of its own (PO decision on #82; [LICENSING.md](LICENSING.md)).
 
 - **Which Linux:** they are built on Ubuntu 22.04, so they need glibc 2.35 at most, and run on Ubuntu 22.04 and newer, Debian 12 and other distributions of the same age or newer (PO decision on #82). The build checks every program against that limit.
-- **Package name:** `velocity-download-manager-v2`, version 0.1.0.
+- **Package name:** `velocity-download-manager-v2`, version 0.1.0 (release 1 in the rpm). The files are `Velocity Download Manager V2_<version>_amd64.deb` and `Velocity Download Manager V2-<version>-1.x86_64.rpm`, each about 17 MiB.
 - **What they install:**
 
   | Path | What |
@@ -75,7 +75,7 @@ A deb, for Ubuntu and Debian, and an rpm, for Fedora and openSUSE, made by Tauri
   | `/usr/share/applications/Velocity Download Manager V2.desktop` | The menu entry |
   | `/usr/share/icons/hicolor/<size>/apps/velocity-desktop-v2.png` | The icons |
 
-- **What they depend on:** the distribution's WebKitGTK 4.1 and GTK 3 (Tauri adds `libwebkit2gtk-4.1-0` and `libgtk-3-0` to the deb, and the matching libraries to the rpm), which the package manager installs. Nothing of theirs is bundled.
+- **What they depend on:** the distribution's WebKitGTK 4.1, GTK 3 and Ayatana AppIndicator, for the tray. Tauri adds them: the deb `Depends:` on `libayatana-appindicator3-1, libwebkit2gtk-4.1-0, libgtk-3-0`, and the rpm `Requires:` `libayatana-appindicator3.so.1`, `libgtk-3.so.0` and `libwebkit2gtk-4.1.so.0`. The package manager installs them; nothing of theirs is bundled.
 - **What they don't depend on:** libcurl, OpenSSL, nghttp2, zlib, libtorrent and Boost are linked into V2's programs statically ([BUILDING_NATIVE.md](BUILDING_NATIVE.md)), so a distribution's copies are never used. The build checks that no program loads one.
 - **The release identity:** as on Windows, every program runs as `com.velocity.downloadmanager.v2`, with its data in `~/.local/share/com.velocity.downloadmanager.v2` ([COEXISTENCE.md](COEXISTENCE.md)).
 
