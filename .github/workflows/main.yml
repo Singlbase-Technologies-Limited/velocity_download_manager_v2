@@ -6,12 +6,16 @@
 #
 # Failure collection (#91, docs/CI_DIAGNOSTICS.md): every job runs to completion and writes a
 # report; `summary` combines them into one table and the `ci-diagnostics` artifact.
+#
+# Temporarily manual-only (#204, docs/CI.md#while-ci-runs-by-hand-only): to save Actions minutes,
+# the `push` trigger on `main` is off, and this workflow runs only when started by hand, once per
+# batch of five issues on its `batch/` branch. To revert, put back:
+#   push:
+#     branches: [main]
 name: Main checks
 
 on:
-  push:
-    branches: [main]
-  # Manual runs, for example on a branch to try a change to this workflow. Without a base they
+  # Manual runs: the batch run, or a branch to try a change to this workflow. Without a base they
   # check everything. A tracking title is for test runs only: on main the title is fixed.
   workflow_dispatch:
     inputs:

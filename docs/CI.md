@@ -2,22 +2,25 @@
 
 V2's CI runs on GitHub Actions in a private repository on GitHub Free. The plan includes 2,000 runner minutes a month, and usage is **blocked**, not billed, once they run out ([billing](https://docs.github.com/en/billing/concepts/product-billing/github-actions)). Every design choice below protects two things: the checks that matter run on every change, and the monthly quota lasts the month.
 
-> **CI is paused until the end of epic #1** (PO decision, 2026-10-24, recorded in #173). See [below](#while-ci-is-paused).
+> **For now, CI runs only by hand, once per batch of five issues** (PO decision, 2026-10-30, #204), to save Actions minutes until there is money for them. It replaces the pause of 2026-10-24 (#173). The design below is unchanged and comes back as it is. See [below](#while-ci-runs-by-hand-only).
 
 This page is the design. The workflows are written in #13, #14, #16 to #19 and #91. Every figure below is labelled as **measured** or **assumed**. Assumed CI times get replaced by measured ones as the jobs start running (#14).
 
-## While CI is paused
+## While CI runs by hand only
 
-GitHub Actions stopped starting jobs on this repository (billing), and the PO decided not to depend on Actions minutes while building V2 (#173).
+**Temporary** (PO decision, 2026-10-30, #204): the repository is on GitHub Pro with a limited budget of Actions minutes, and the PO wants to spend as few as possible during development. This replaces the pause of 2026-10-24 (#173). The workflows, their jobs and their checks are unchanged; only their triggers are, and each workflow's header says what to put back.
 
-- **Workflows:** `main.yml` (Main checks) and `pr.yml` (PR checks) are disabled with `gh workflow disable`, so a push doesn't start a run that fails in seconds. Dependabot stays on.
-- **The merge gate meanwhile:** the PO's approval of the PR's head commit, plus these local checks, each marked PASS:
-  - on Windows: `pnpm check:fast`;
-  - then, not at the same time, in the WSL clean clone: `pnpm check:fast`, `pnpm check:links` and `pnpm check:guidance`, with the password-login SFTP server described ([platform-verify reference](../.claude/skills/platform-verify/reference.md#local-sftp-password-login-server)).
-
-  CI itself is reported as NOT RUN (paused).
-- **Not covered locally:** a clean machine (the WSL clone reuses tools already installed), and CI as an independent second check. Failures the final run finds are traced back with `git bisect`.
-- **Coming back:** at the end of epic #1, `gh workflow enable main.yml` and `gh workflow enable pr.yml`, then `gh workflow run main.yml --ref main` for one full run. Its first green run closes #173. Then this section is removed.
+- **Triggers:** `main.yml` (Main checks) and `pr.yml` (PR checks), and the advisory check (`advisories.yml`, #75), run only when started by hand (`workflow_dispatch`). Nothing runs on a push, a pull request or a merge to `main`, and nothing on a schedule. Dependabot stays on.
+- **One run per batch of five issues,** on Linux and Windows:
+  1. When the five issues are built, push a `batch/<issues>` branch, for example `batch/71-72-74-75-192`: the latest `main` with the five issue branches merged in.
+  2. Start Main checks on it with no base, which checks everything on Linux and Windows: `gh workflow run main.yml --ref batch/<issues>`.
+  3. A failure is fixed in its issue's own branch, never in the batch branch. The fixed branch is merged into the batch branch again, and Main checks is started again, until it is green. Only then does work go on.
+  4. The batch branch is deleted once the five pull requests are merged.
+- **No local test runs:** no `cargo test`, `pnpm test:focused`, Vitest, end-to-end, platform runs or check scripts (`check:fast` and the others). Compiling, formatting and linting while writing code stay allowed (`cargo check`, `cargo clippy`, `cargo fmt`, `tsc --noEmit`, ESLint). Tests are still written first; the batch run is where they first run.
+- **The merge gate meanwhile:** the PO's approval of the pull request, and a green batch run that included its head commit. Each check is reported from that run's `ci-diagnostics` ([CI_DIAGNOSTICS.md](CI_DIAGNOSTICS.md)); the PR's own CI and local checks are NOT RUN.
+- **Not covered meanwhile:** a run per pull request, a run of `main` after each merge (the next batch run checks it), and a recorded red run before each fix.
+- **PR checks by hand,** when a single change needs them: `gh workflow run pr.yml --ref <branch> -f base=<commit>`, with the commit the pull request would compare with.
+- **Coming back** (when there is money for minutes): put back each workflow's triggers as its header says (`push` on `main` for Main checks, `pull_request` into `main` for PR checks, the weekly `schedule` for the advisory check), then remove this section and the pointers to it in AGENTS.md, CLAUDE.md and the skills, and run Main checks on `main` once. Its first green run closes #173.
 
 ## Tiers
 
