@@ -144,7 +144,7 @@ GitHub's guidance is in [secure use](https://docs.github.com/en/actions/referenc
 
 - **Read-only by default.** Every workflow declares `permissions: contents: read`, and a job raises only what it needs (for example `contents: write` for the draft-release job in #18).
 - **Pinned actions.** Third-party actions are pinned to a **full commit SHA**, with the version in a comment. GitHub's own `actions/*` are pinned the same way, for consistency.
-- **Dependabot** updates the pins: [`.github/dependabot.yml`](../.github/dependabot.yml) checks the workflows and the composite action **monthly**, grouped into **one PR**, so an update costs one CI run. Each update is an ordinary PR the PO reviews. Cargo and npm updates aren't automated: dependency changes need PO approval (#9, #75).
+- **Dependabot** updates the pins: [`.github/dependabot.yml`](../.github/dependabot.yml) checks the workflows and the composite action **monthly**, grouped into **one PR**, so an update costs one CI run. Each update is an ordinary PR the PO reviews. For Cargo and npm, Dependabot opens security-fix PRs only, no routine version updates (PO decision on #75); other dependency changes need PO approval (#9).
 - **No `pull_request_target`** that checks out PR code. No secrets in PR workflows.
 - **Untrusted text stays out of commands.** Titles, branch names and other user-controlled strings never go straight into `run:` scripts; they pass through environment variables.
 - **Self-hosted runners:** none. If one is ever added (PO decision), it never runs code from a fork.
@@ -170,6 +170,7 @@ Every run completes every check that can still run, and reports all failures in 
 | Weekly full | Mondays 03:00 UTC, only if `main` changed since the last run | `check:full`, all L2 suites | Linux, Windows |
 | Fuzzing, stress, extended benchmarks | Weekly, staggered, once the suites exist (#73, #77) | Time-boxed per target, with a fixed seed recorded | Linux |
 | macOS | `workflow_dispatch` only | `check:full` | macOS (#83) |
+| Advisories ([`advisories.yml`](../.github/workflows/advisories.yml), #75) | By hand (`workflow_dispatch`) while CI runs by hand only; Mondays 04:00 UTC once CI runs automatically again | `pnpm check:advisories`: cargo-deny and pnpm audit against the lockfiles ([SECURITY.md](SECURITY.md#dependency-advisories-75)) | Linux |
 
 macOS minutes cost about 10 times Linux ($0.062 against $0.006 a minute), so macOS never runs on a schedule or per change until it's an established platform and the quota allows it.
 

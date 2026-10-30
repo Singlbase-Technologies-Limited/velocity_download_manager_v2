@@ -1,0 +1,50 @@
+name: Advisory assessment
+description: A published security advisory against a dependency V2 uses or ships (#75)
+title: "security: advisory "
+labels: ["security", "dependencies"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        **Advisory assessment.** One issue per advisory. The process and the response times are in `docs/SECURITY.md` ("Dependency advisories"). The response time counts from the day the advisory was published or found, whichever is later.
+  - type: input
+    id: advisory
+    attributes:
+      label: Advisory
+      description: Its identifiers and link, for example RUSTSEC-…, GHSA-…, CVE-…, or curl's advisory page.
+    validations:
+      required: true
+  - type: input
+    id: dependency
+    attributes:
+      label: Dependency and version
+      description: The crate, npm package or native library (curl, nghttp2, OpenSSL, zlib, libtorrent, SQLite, russh…), the version V2 has, and the fixed version.
+    validations:
+      required: true
+  - type: dropdown
+    id: severity
+    attributes:
+      label: Severity
+      description: As the advisory rates it. Critical 2 days, High 7 days, Medium 30 days, Low with the next release (PO decision on #75).
+      options:
+        - Critical
+        - High
+        - Medium
+        - Low
+        - Not rated
+    validations:
+      required: true
+  - type: textarea
+    id: reach
+    attributes:
+      label: Does it affect V2?
+      description: Where the dependency comes in (`cargo tree -i <crate>`, `pnpm why <package>`), on which platforms, whether the affected code or feature is built in and reachable, and whether it ships in the app or only in development tools. Mark what was verified and what was assumed.
+    validations:
+      required: true
+  - type: textarea
+    id: action
+    attributes:
+      label: Action
+      description: Update to the fixed version (and its check level), or why it doesn't apply and is accepted (then it goes in deny.toml or pnpm's audit config with that reason, and in the register in docs/SECURITY.md). An unfixed Medium or higher in an enabled feature blocks a release.
+    validations:
+      required: true

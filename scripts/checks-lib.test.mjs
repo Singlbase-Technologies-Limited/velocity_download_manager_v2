@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { checkCommands, focusedCommands, FULL_EXTRA_COMMANDS, jobSummaryMarkdown, selectChecks, selectJobs, workspaceFromMetadata } from './checks-lib.mjs';
+import { ADVISORY_COMMANDS, checkCommands, focusedCommands, FULL_EXTRA_COMMANDS, jobSummaryMarkdown, selectChecks, selectJobs, workspaceFromMetadata } from './checks-lib.mjs';
 
 // Mirrors this repository: the desktop shell depends on the core crate.
 const workspace = {
@@ -298,5 +298,14 @@ describe('FULL_EXTRA_COMMANDS', () => {
     // On their own: across the workspace, examples turn on every member's dev-dependency
     // features, velocity-curl's own test-h2c included, which an optimised build refuses.
     expect(args('rust-release-examples')).toEqual(['build', '--release', '-p', 'velocity-transfer', '--examples']);
+  });
+});
+
+describe('ADVISORY_COMMANDS', () => {
+  it('checks the Rust lockfile with cargo-deny and every npm dependency with pnpm audit, from Medium up (#75)', () => {
+    const args = (id) => ADVISORY_COMMANDS.find((c) => c.id === id)?.args;
+    expect(args('cargo-deny')).toEqual(['deny', '--locked', 'check', 'advisories']);
+    expect(args('pnpm-audit')).toEqual(['audit', '--audit-level', 'moderate']);
+    expect(ADVISORY_COMMANDS.map((c) => c.tool)).toEqual(['cargo', 'pnpm']);
   });
 });
