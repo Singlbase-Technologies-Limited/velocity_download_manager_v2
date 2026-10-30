@@ -1,19 +1,24 @@
 //! The download manager with a real torrent helper (#58, L2): a supervised `velocity-torrent
 //! serve` child, a database file, and a libtorrent seeder on loopback. A torrent downloads through
 //! the manager and keeps its metadata and its resume data without trackers; it comes back after
-//! the app starts again and after the helper crashes; and removing it with its files deletes only
-//! its own.
+//! the app starts again and after the helper crashes; removing it with its files deletes only its
+//! own; and a private tracker's passkey is nowhere V2 writes or shows (#71).
 
 mod common;
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::time::SystemTime;
 
 use common::*;
+use tracing_subscriber::layer::SubscriberExt;
 use velocity_core::database::{Database, TorrentOrigin};
 use velocity_core::domain::{DownloadKind, DownloadStatus, EngineHealth};
+use velocity_core::logs::AppLog;
 use velocity_core::manager::{AddOptions, Manager, TorrentRequest};
 use velocity_core::torrent::parse_metadata;
 use velocity_core::transfer::MissingEngine;
+use velocity_test_http::leaks::LeakScan;
 
 const NAME: &str = "v1-multi";
 
@@ -245,4 +250,62 @@ fn removing_a_torrent_with_its_files_deletes_only_its_own() {
     assert_eq!(m.remove(&id, true), Ok(Vec::new()));
     assert_eq!(files_under(&dir.0), vec!["not-the-torrents.txt".to_owned()]);
     assert!(m.get(&id).is_none());
+}
+
+/// #71: a private tracker's passkey, given with the torrent, is nowhere V2 writes or shows once
+/// the torrent has announced to it and finished: the database (resume data included), the
+/// downloaded files, temporary files, the app's log, the trackers as the details panel shows them,
+/// the diagnostics export, or the running helper (on Linux; docs/TESTING.md).
+#[test]
+fn a_private_trackers_passkey_leaves_no_trace() {
+    const PASSKEY: &str = "s3cretpasskey";
+    let log = AppLog::new();
+    let _logging =
+        tracing::subscriber::set_default(tracing_subscriber::registry().with(log.layer()));
+    let since = SystemTime::now();
+    let seed_dir = Dir::new("passkey-seed");
+    let dir = Dir::new("passkey-download");
+    let data = Dir::new("passkey-db");
+    let seeder = seed(NAME, &seed_dir.0);
+    let (tracker, announces) = switchable_tracker(seeder.port, Arc::new(AtomicBool::new(false)));
+    assert!(tracker.contains(PASSKEY), "{tracker}");
+    let db = Arc::new(Database::open(&data.0.join("velocity.db")).unwrap());
+    let (mut m, pid) = app(&db, &tracker);
+    let id = m
+        .add_torrent(
+            TorrentRequest {
+                trackers: vec![tracker.clone()],
+                ..request(&dir.0, SeedPolicy::Never {})
+            },
+            AddOptions::default(),
+            now(),
+        )
+        .unwrap();
+    until(
+        &mut m,
+        &id,
+        "completed",
+        status_is(&id, DownloadStatus::Completed),
+    );
+    assert!(announces.load(Ordering::SeqCst) > 0, "the tracker was used");
+
+    let mut scan = LeakScan::new(&[PASSKEY]);
+    scan.process("the running torrent helper", pid);
+    // What the app would log and show: every record, and the torrent's trackers.
+    for record in m.snapshot().downloads {
+        tracing::info!("{record:?}");
+    }
+    for t in m.torrent_trackers(&id).unwrap() {
+        scan.text("the trackers shown", &format!("{t:?}"));
+    }
+    m.prepare_to_close(Duration::from_secs(10), now());
+    for line in log.lines() {
+        scan.text("the app's log", &line.message);
+    }
+    let export = m.diagnostics(log.lines(), now()).export().unwrap();
+    scan.text("the diagnostics export", &export);
+    drop(m);
+    scan.files(&data.0).files(&dir.0).temp_files(since);
+    scan.assert_clean();
+    assert!(!log.lines().is_empty(), "the log was captured");
 }

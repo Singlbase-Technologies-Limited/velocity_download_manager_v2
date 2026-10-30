@@ -29,3 +29,6 @@ required-features = ["engine"]
 velocity-test-http = { path = "../velocity-test-http" }
 serde_json.workspace = true
 sha2.workspace = true
+# The app's log, captured to check no passkey reaches it (#71), as velocity-transfer's leak test.
+tracing.workspace = true
+tracing-subscriber.workspace = true
