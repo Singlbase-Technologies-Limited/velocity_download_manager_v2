@@ -5,6 +5,7 @@ import {
   BASELINE_LIBRARIES,
   chooseLicence,
   crateComponents,
+  firstDifference,
   FILE_COPYLEFT,
   FONT_LICENCES,
   licenceProblems,
@@ -205,6 +206,17 @@ describe('pickLicenceFiles', () => {
   it('tells 0BSD from the BSD licences', () => {
     expect(pickLicenceFiles(['LICENSE-0BSD', 'LICENSE-BSD', 'LICENSE-MIT'], ['0BSD'])).toEqual(['LICENSE-0BSD']);
     expect(pickLicenceFiles(['LICENSE-0BSD', 'LICENSE-BSD'], ['BSD-3-Clause'])).toEqual(['LICENSE-BSD']);
+  });
+});
+
+describe('firstDifference', () => {
+  it('finds the first line that differs, with what follows on each side', () => {
+    expect(firstDifference('a\nb\nc\nd', 'a\nb\nX\nd', 2)).toEqual({ line: 3, committed: ['c', 'd'], fresh: ['X', 'd'] });
+  });
+
+  it('reports a file that only got longer, and nothing for equal files', () => {
+    expect(firstDifference('a\nb', 'a\nb\nc')).toEqual({ line: 3, committed: [], fresh: ['c'] });
+    expect(firstDifference('a\nb', 'a\nb')).toBeNull();
   });
 });
 

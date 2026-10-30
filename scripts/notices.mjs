@@ -16,6 +16,7 @@ import { recordCheck, root, toolCommand } from './checks-runner.mjs';
 import {
   chooseLicence,
   crateComponents,
+  firstDifference,
   licenceProblems,
   nativeComponents,
   normaliseText,
@@ -80,7 +81,12 @@ if (problems.length) {
 if (check) {
   const current = existsSync(OUTPUT) ? readFileSync(OUTPUT, 'utf8').replace(/\r\n/g, '\n') : '';
   const stale = current !== notices;
-  if (stale) console.error('THIRD_PARTY_NOTICES.md is out of date: run `pnpm notices` and commit the result.');
+  if (stale) {
+    console.error('THIRD_PARTY_NOTICES.md is out of date: run `pnpm notices` and commit the result.');
+    const d = firstDifference(current, notices);
+    const show = (lines) => lines.map((l) => `    ${l.slice(0, 200)}`).join('\n');
+    console.error(`First difference at line ${d.line}.\n  Committed:\n${show(d.committed)}\n  Generated here:\n${show(d.fresh)}`);
+  }
   recordCheck({
     id: 'notices',
     name: 'Third-party notices (check:notices)',

@@ -263,6 +263,19 @@ export function pickLicenceFiles(names, ids) {
     .sort(byCodePoint);
 }
 
+/**
+ * Where a stale THIRD_PARTY_NOTICES.md first differs from a fresh one: the line number and up to
+ * `context` lines of each from there, or null when they are equal. For the check's message.
+ */
+export function firstDifference(committed, fresh, context = 6) {
+  const a = committed.split('\n');
+  const b = fresh.split('\n');
+  const at = a.findIndex((line, i) => line !== b[i]);
+  const line = at === -1 ? (a.length === b.length ? -1 : a.length) : at;
+  if (line === -1) return null;
+  return { line: line + 1, committed: a.slice(line, line + context), fresh: b.slice(line, line + context) };
+}
+
 /** Line endings and trailing spaces don't make two texts different. */
 export function normaliseText(text) {
   return text
