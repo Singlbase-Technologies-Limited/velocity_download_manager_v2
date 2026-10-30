@@ -272,11 +272,15 @@ pub(crate) fn retry_after(head: &ResponseHead, now: SystemTime) -> Option<Durati
     Some(at.duration_since(now).unwrap_or(Duration::ZERO))
 }
 
-/// The message for a local disk error a user can fix, such as a full disk.
+/// The message for a local disk error a user can fix: a full disk, or a folder V2 may no longer
+/// write to (#74). The download keeps its part file, so a retry once it is fixed resumes.
 pub(crate) fn disk_message(e: &io::Error) -> Option<&'static str> {
     match e.kind() {
         io::ErrorKind::StorageFull | io::ErrorKind::QuotaExceeded => {
             Some("There is not enough disk space.")
+        }
+        io::ErrorKind::PermissionDenied | io::ErrorKind::ReadOnlyFilesystem => {
+            Some("Velocity isn't allowed to write to that location.")
         }
         _ => None,
     }
@@ -559,9 +563,22 @@ mod tests {
             let message = disk_message(&io::Error::from(kind)).expect("a disk message");
             assert!(message.contains("not enough disk space"), "{message}");
         }
+    }
+
+    /// A refused write has its own message since #74; before, only the system's text was shown.
+    #[test]
+    fn a_refused_write_says_so() {
+        for kind in [
+            io::ErrorKind::PermissionDenied,
+            io::ErrorKind::ReadOnlyFilesystem,
+        ] {
+            let message = disk_message(&io::Error::from(kind)).expect("a disk message");
+            assert!(message.contains("isn't allowed to write"), "{message}");
+        }
         assert_eq!(
-            disk_message(&io::Error::from(io::ErrorKind::PermissionDenied)),
-            None
+            disk_message(&io::Error::from(io::ErrorKind::NotFound)),
+            None,
+            "other errors keep the system's text"
         );
     }
 }

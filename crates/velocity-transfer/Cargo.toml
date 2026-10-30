@@ -6,6 +6,12 @@ edition.workspace = true
 publish.workspace = true
 rust-version.workspace = true
 
+# `test-faults` makes writes to a part file fail on demand, for the disk-full and refused-write
+# tests (#74, PO decision). Test builds only: an optimised build refuses it, like velocity-curl's
+# `test-ca`. Its tests live in velocity-transfer-h2c, for the reason given there.
+[features]
+test-faults = []
+
 [dependencies]
 velocity-core = { path = "../velocity-core" }
 velocity-child = { path = "../velocity-child" }

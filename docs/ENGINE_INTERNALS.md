@@ -331,7 +331,7 @@ A failure is classified first ([`failure.rs`](../crates/velocity-transfer/src/fa
 |---|---|---|
 | Transient | No answer, or a connection broken during the request; a name that doesn't resolve; a refused connection; the 30 s connect timeout; a failed TLS handshake; `408`; other `5xx`; a stall | Retried after a wait |
 | Throttled | `429`, `503` | Retried after at least what `Retry-After` asks for (seconds or an HTTP date), up to 10 minutes. Without `Retry-After`, at least 60 s, as in V1. The download's connections are halved, down to one |
-| Permanent | `401`, `403`, `404`, `410`, other `4xx`; an untrusted certificate; too many redirects; a protocol outside the allowlist; an answer that contradicts itself; a full disk | Never retried |
+| Permanent | `401`, `403`, `404`, `410`, other `4xx`; an untrusted certificate; too many redirects; a protocol outside the allowlist; an answer that contradicts itself; a full disk, or a folder V2 may no longer write to | Never retried. A full disk or a refused write keeps the part file and a checkpoint of what reached the disk, so the user's retry, once it is fixed, resumes (#74) |
 
 ### Inside a download
 
@@ -671,7 +671,13 @@ Run it with `cargo run --release -p velocity-transfer --example high_offset_writ
   - what wasn't durable at the kill is at most one checkpoint interval's worth;
   - the bytes fetched twice are at most that plus what was in flight.
 
-  CI runs 3 trials. The full 100 run by hand with `VELOCITY_CRASH_TRIALS=100 cargo test -p velocity-transfer --test crash_recovery -- --nocapture` (PO decision on #43), and `VELOCITY_CRASH_SEED` repeats a run.
+  The same file kills the app too (#74): the test binary starts itself again as an app process (the manager over a database file, with its own child engine), kills it at a random moment, waits for its orphaned engine to stop, then opens the same database in a new manager, which brings the download back from its stored checkpoint and must finish it with the source's bytes.
+
+  CI runs 3 trials of each. The full 100 run by hand with `VELOCITY_CRASH_TRIALS=100 cargo test -p velocity-transfer --test crash_recovery -- --nocapture` (PO decision on #43), and `VELOCITY_CRASH_SEED` repeats a run.
+- **A full disk and a refused write (#74):** `crates/velocity-transfer-h2c/tests/disk_faults.rs`, through the manager and the in-process engine. velocity-transfer's test-only `test-faults` feature makes the part file's writes fail after a chosen number of bytes, as a full disk (`StorageFull`) or a refused write (`PermissionDenied`) would; an optimised build refuses the feature, like `test-ca`. No real small drive is made (PO decision on #74). The fault strikes once inside the 4 MiB probe and once among the parallel segments, never on a chunk boundary, so the failing write is cut part-way, as an interrupted write is. Each case checks:
+  - the download fails, as permanent, with "There is not enough disk space." or "Velocity isn't allowed to write to that location.";
+  - the part file and a checkpoint of what reached the disk are kept;
+  - once the fault is cleared, the user's retry fetches only what was missing, and the file equals the source.
 - **Changed-object fixtures (#45):** `tests/changed.rs` checks every request's `Range` and `If-Range` against a server whose file changes after a set number of GETs:
   - a new strong ETag starts over once and ends as the new file;
   - a dropped ETag counts as a change;

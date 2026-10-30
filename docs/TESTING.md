@@ -107,7 +107,7 @@ From most numerous and fastest to fewest and slowest. Each layer proves what the
 | Mirrors and Metalink | **Built** (#46): wrong piece hashes, as piece lists the tests supply, with a byte sent flipped once. **Built** (#54): a Metalink corpus (`crates/velocity-core/tests/fixtures/metalink/`: RFC 5854's example, Metalink 4 with subfolders and sources V2 can't use, Metalink 3) with malicious documents in the unit tests (entity bombs, external entities, unsafe and duplicate names, oversized documents), the HTTP server's `Content-Type` (`FileHeaders::content_type`), and an end-to-end test of a followed link whose file gets one bad piece. **Built** (#55): mirrors as several local servers in `crates/velocity-transfer/tests/mirrors.rs`: one missing the file, one dead (a closed port), one with other bytes of the same size, a throttled one beside a fast one, ETags that do or don't match, and the requests a mirror received (no login, no custom header) | Failover, integrity | #46, #54, #55 |
 | BitTorrent tracker and peers | Local tracker, libtorrent seeders and leechers; DHT, LPD and peer exchange off | Torrents | **#62** |
 | Fake desktop IPC and browser harness | Malformed messages, the app unavailable, wrong caller | Native host, extension | **#65**, #64 |
-| Disk and crash faults | Disk full (quota), permission denied, `kill -9` at random points | Recovery | **#74**, #43 |
+| Disk and crash faults | **Built:** a full disk and a refused write, simulated by velocity-transfer's test-only `test-faults` feature (no real small drive, PO decision on #74); the engine (#43) and the app (#74) killed at random points ([ENGINE_INTERNALS.md](ENGINE_INTERNALS.md#tests)) | Recovery | **#74**, #43 |
 | Benchmark server | Byte and request counters, throttle modes, h2 and TLS, kill and resume | V2's own benchmarks, later (ADR-0009) | #77 |
 
 ## How the engine is tested
@@ -115,7 +115,8 @@ From most numerous and fastest to fewest and slowest. Each layer proves what the
 - **Scheduler logic without a network.** `velocity-transfer` runs against a **simulated transport**: random chunk sizes, delays, splits, cancellations, retries, duplicate and late callbacks, `200` substitutions and simulated crashes (runtime state dropped, durable coverage kept). After every simulated event, a property test asserts invariants I1–I7 and byte equality with the source.
 - **Protocol behaviour with real libcurl.** `velocity-curl` and the engine run against the fixture servers above, so abort-at-boundary, HTTP/2 stream resets and libcurl's real callbacks are covered.
 - **Acceptance rows.** Each row of the research report's section 5.4 becomes at least one named fixture test, checking the final SHA-256, the status shown and the wasted bytes.
-- **Crash recovery.** `kill -9` at random points over 100 trials: always resumes; re-downloaded bytes are at most one checkpoint interval plus in-flight data (#43, #74).
+- **Crash recovery.** `kill -9` at random points over 100 trials: always resumes; re-downloaded bytes are at most one checkpoint interval plus in-flight data (#43). The app killed the same way comes back from its database and finishes the right file (#74).
+- **Disk faults.** A full disk or a refused write mid-download fails with its own message, keeps what reached the disk, and resumes once fixed (#74).
 
 ## How the frontend is tested
 
