@@ -2851,13 +2851,15 @@ mod settings_screen {
             "{:?}",
             results[0].outcome
         );
-        // The engine was given exactly this one download, after the settings.
+        // The engine was given exactly this one download, after the settings, and the proxy, which
+        // is always set explicitly, here as none (#192).
         assert_eq!(
             s.direct.log(),
             [
                 "set_engine_limits",
                 "set_engine_settings",
                 "set_global_limits",
+                "set_proxy",
                 "add"
             ]
         );
