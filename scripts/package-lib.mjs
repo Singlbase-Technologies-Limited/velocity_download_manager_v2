@@ -117,9 +117,10 @@ export function linuxPackageFiles() {
 }
 
 /**
- * The paths a listing of a deb (`dpkg-deb -c`: permissions, owner, size, date, time, then `./path`,
+ * The paths a listing of a deb (`dpkg-deb -c`: permissions, owner, size, date, time, then the path,
  * with ` -> target` for a link) or an rpm (`rpm -qlp`: one absolute path a line) installs, without
- * the leading `./` or `/`, and without bare directories.
+ * a leading `./` or `/`, and without directories. Tauri's debs list `usr/bin/…`, with no `./`, and
+ * directories with no trailing `/`, so a deb's directories are known by their `d` permission.
  */
 export function packagePaths(listing) {
   return listing
@@ -127,8 +128,9 @@ export function packagePaths(listing) {
     .map((l) => l.trim())
     .filter(Boolean)
     .map((l) => {
-      const deb = /^\S+\s+\S+\s+\d+\s+\S+\s+\S+\s+\.\/(.*?)(?: -> .*)?$/.exec(l);
-      return deb ? deb[1] : l.replace(/^\/+/, '');
+      const deb = /^([-dlbcps])[-rwxsStT]{9}\s+\S+\s+\d+\s+\S+\s+\S+\s+(?:\.\/)?(.*?)(?: -> .*)?$/.exec(l);
+      if (!deb) return l.replace(/^\/+/, '');
+      return deb[1] === 'd' ? '' : deb[2];
     })
     .filter((p) => p && !p.endsWith('/'));
 }

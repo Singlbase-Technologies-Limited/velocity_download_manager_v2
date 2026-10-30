@@ -118,6 +118,18 @@ describe('Linux packages', () => {
     ]);
   });
 
+  it("reads the paths of a deb Tauri built: no ./, and directories without a /", () => {
+    // `dpkg-deb -c` on the deb built on Ubuntu 22.04 for #82.
+    const listing = [
+      'drwxr-xr-x 0/0               0 2026-10-30 21:39 usr',
+      'drwxr-xr-x 0/0               0 2026-10-30 21:39 usr/bin',
+      '-rwxr-xr-x 0/0        13064808 2026-10-30 21:39 usr/bin/velocity-torrent',
+      '-rw-r--r-- 0/0             223 2026-10-30 21:39 usr/share/applications/Velocity Download Manager V2.desktop',
+      'drwxr-xr-x 0/0               0 2026-10-30 21:39 usr/share/icons/hicolor/32x32',
+    ].join('\n');
+    expect(packagePaths(listing)).toEqual(['usr/bin/velocity-torrent', 'usr/share/applications/Velocity Download Manager V2.desktop']);
+  });
+
   it('reads the paths of an rpm listing', () => {
     expect(packagePaths('/usr/bin/velocity-desktop-v2\n/usr/lib/Velocity Download Manager V2/build-info.json\n')).toEqual([
       'usr/bin/velocity-desktop-v2',
