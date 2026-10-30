@@ -1,0 +1,102 @@
+# The Linux packages (#82, docs/PACKAGING.md): `pnpm package:linux`, the same command as locally,
+# on Ubuntu 22.04, so the packages run there and on anything newer (PO decision on #82). It builds
+# a deb and an rpm as the release identity, checks what they hold, and installs, checks and removes
+# each in clean containers. Unsigned; nothing is published.
+#
+# Started by hand only (`workflow_dispatch`), on the branch to package. It isn't a check: it runs
+# on no push, pull request or schedule, and the release-candidate workflow (#17) will build from
+# verified `main` commits.
+name: Linux packages
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: package-linux-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  package:
+    name: Linux packages
+    runs-on: ubuntu-22.04
+    # A cold build of Boost and libtorrent takes about 15 minutes (#205), the release builds more.
+    timeout-minutes: 120
+    env:
+      CARGO_INCREMENTAL: 0
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # As main.yml's Linux job (#76): a cold native build and a release build fill the runner's
+      # disk otherwise.
+      - name: Free disk space
+        run: |
+          df -h /
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache/CodeQL
+          df -h /
+      - id: setup
+        uses: ./.github/actions/setup
+        with:
+          rust: 'true'
+          # Built on 22.04: never mixed with the checks' caches from the newer ubuntu-latest.
+          cache-scope: '-ubuntu22.04'
+      # `rpm -qlp` lists the rpm's files for the contents check.
+      - name: Install rpm
+        run: sudo timeout 180 apt-get install -y --no-install-recommends rpm
+      - name: Native libraries
+        run: pnpm native:build
+      - name: Save the native libraries
+        if: ${{ !cancelled() && steps.setup.outputs.native-cache-hit != 'true' && hashFiles('target/native/*/libtorrent-info.json') != '' }}
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          key: ${{ steps.setup.outputs.native-cache-key }}
+          path: target/native
+      - name: Build the packages
+        run: pnpm package:linux --require-listing
+      - name: List the files every package must install
+        run: node -e "import('./scripts/package-lib.mjs').then((m) => console.log(m.linuxPackageFiles().join('\n')))" > target/release/bundle/expected-files.txt
+      - name: Upload the packages
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: velocity-v2-linux-packages
+          path: |
+            target/release/bundle/deb/*.deb
+            target/release/bundle/deb/*.deb.sha256
+            target/release/bundle/rpm/*.rpm
+            target/release/bundle/rpm/*.rpm.sha256
+            target/release/bundle/expected-files.txt
+          if-no-files-found: error
+          retention-days: 14
+
+  install:
+    name: Install on ${{ matrix.image }}
+    needs: package
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - image: ubuntu:22.04
+            package: deb
+          - image: ubuntu:24.04
+            package: deb
+          - image: debian:12
+            package: deb
+          - image: fedora:42
+            package: rpm
+    container: ${{ matrix.image }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: velocity-v2-linux-packages
+          path: packages
+      - name: Install, check and remove
+        shell: bash
+        run: bash scripts/package-install-test.sh packages/*/*.${{ matrix.package }} packages/expected-files.txt

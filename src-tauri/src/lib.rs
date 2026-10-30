@@ -223,7 +223,7 @@ mod tests {
     }
 
     /// What `tauri build --config src-tauri/tauri.release.conf.json` merges over tauri.conf.json
-    /// for the Windows installer (#81).
+    /// for the Windows installer (#81) and the Linux packages (#82).
     fn release_config() -> serde_json::Value {
         serde_json::from_str(include_str!("../tauri.release.conf.json"))
             .expect("tauri.release.conf.json is valid JSON")
@@ -254,12 +254,13 @@ mod tests {
         assert_eq!(release, dev);
     }
 
-    /// One installer for this user, no MSI (PO decisions on #81), with the programs the app
-    /// starts from beside its own executable.
+    /// One installer for this user, no MSI (PO decisions on #81), a deb and an rpm, no AppImage
+    /// (PO decision on #82), with the programs the app starts from beside its own executable.
     #[test]
     fn the_installer_is_a_per_user_setup_with_every_program() {
         let bundle = &release_config()["bundle"];
-        assert_eq!(bundle["targets"], serde_json::json!(["nsis"]));
+        assert_eq!(bundle["targets"], serde_json::json!(["nsis", "deb", "rpm"]));
+        assert!(bundle["linux"].get("appimage").is_none());
         assert_eq!(bundle["windows"]["nsis"]["installMode"], "currentUser");
         let programs: Vec<&str> = bundle["externalBin"]
             .as_array()
