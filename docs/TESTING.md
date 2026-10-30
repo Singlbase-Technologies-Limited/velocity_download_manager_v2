@@ -163,3 +163,4 @@ Without approval, a hand-written seeded generator or a Node built-in module is t
 - **Never weaken a test to get a pass:** don't delete, skip or weaken it.
 - **Location:** Rust unit tests live next to the code in `#[cfg(test)] mod tests`. Integration and fixture tests go in a crate's `tests/` directory. Frontend tests are `src/**/*.test.ts(x)`, and script tests are `scripts/**/*.test.mjs`. Names follow [CONVENTIONS.md](CONVENTIONS.md).
 - **Determinism:** tests don't use the public network, uncontrolled timing or shared global state (see the fixture policy above).
+- **Wait for what you expect, not for a fixed time.** A test that needs a message or a state waits until it arrives, bounded by a generous deadline, and only then checks that nothing more happens. A fixed window fails when the whole machine pauses: a 1 s freeze of the test process failed the manager's snapshot timing test 4 times in 16, and none of 380 runs under CPU load did (#188).
