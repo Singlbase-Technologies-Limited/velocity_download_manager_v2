@@ -508,13 +508,16 @@ pub enum ErrorCode {
     ConfirmationRequired,
     /// The system keychain is missing or refused (#70): nothing was saved in it.
     KeychainUnavailable,
+    /// The proxy the user set can't carry this kind of download (#192): torrents through an
+    /// HTTPS proxy.
+    ProxyUnsupported,
     Unsupported,
     Internal,
 }
 
 impl ErrorCode {
     /// Every code. V1's codes without the four aria2 JSON-RPC ones (`RPC_*`).
-    pub const ALL: [Self; 24] = [
+    pub const ALL: [Self; 25] = [
         Self::InvalidInput,
         Self::InvalidUrl,
         Self::UnsupportedScheme,
@@ -537,6 +540,7 @@ impl ErrorCode {
         Self::ProtocolDisabled,
         Self::ConfirmationRequired,
         Self::KeychainUnavailable,
+        Self::ProxyUnsupported,
         Self::Unsupported,
         Self::Internal,
     ];
@@ -569,6 +573,9 @@ impl ErrorCode {
             Self::ConfirmationRequired => "This action needs your confirmation first.",
             Self::KeychainUnavailable => {
                 "The system keychain isn't available, so the login wasn't saved."
+            }
+            Self::ProxyUnsupported => {
+                "Torrents can't go through an HTTPS proxy. Choose an HTTP or SOCKS5 proxy in Settings, Proxy."
             }
             Self::Unsupported => "This isn't supported on this system yet.",
             Self::Internal => "Something went wrong inside Velocity.",

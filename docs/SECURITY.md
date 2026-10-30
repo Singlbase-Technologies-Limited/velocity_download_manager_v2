@@ -1,6 +1,6 @@
 # Security
 
-How V2 protects downloads and the people who use it. The rules every contributor follows are in [AGENTS.md](../AGENTS.md#security-and-data) and `.claude/rules/security.md`. This document records what V2 does and what was measured. It covers TLS, links and redirects, the browser bridge, FTP, SFTP host keys, secrets, files and folders, and dependency advisories.
+How V2 protects downloads and the people who use it. The rules every contributor follows are in [AGENTS.md](../AGENTS.md#security-and-data) and `.claude/rules/security.md`. This document records what V2 does and what was measured. It covers TLS, links and redirects, the browser bridge, FTP, SFTP host keys, secrets, files and folders, dependency advisories and the proxy.
 
 ## TLS verification (#69)
 
@@ -188,3 +188,14 @@ What the check found or accepts, checked 2026-10-30:
 | (yanked) | crypto-bigint 0.7.7: yanked by its authors | russh 0.64.1 and its elliptic-curve crates | **Listed:** a warning; moves with russh |
 
 npm: `pnpm audit` found no known vulnerabilities on 2026-10-30.
+
+## Proxy (#192)
+
+The proxy the user sets ([SETTINGS.md](SETTINGS.md#proxy), [ADR-0008](decisions/0008-proxy-support.md)) carries every download. What protects V2 and the user:
+
+- **Set explicitly, always:** a proxy, or explicitly none. `http_proxy`, `HTTPS_PROXY`, `ALL_PROXY`, `NO_PROXY` and the system's proxy are never used (tested, with V2's own proxy set too).
+- **Checked in the native layer:** the host must be a DNS name or an IP address, the port 1 to 65535, the user name and password what a login may have; the engines check what crosses their pipes again (`Proxy::check`).
+- **The login goes to the proxy alone:** never as a server's `Authorization`, never in a URL. Tested: the server sees no `Proxy-Authorization` and no trace of the password, and the proxy gets the login. Through an HTTP proxy every connection is a tunnel, so the proxy doesn't read a request, its headers or a site's login.
+- **TLS stays on:** to the server through the tunnel, and to an HTTPS proxy, whose certificate is verified as a server's (#69).
+- **The password** is held in memory, crosses the engines' pipes like a download's login, and is saved only in the system keychain, only while "Remember" is ticked (ADR-0015). It never reaches the database, the settings, a log, the diagnostics export, a checkpoint, a temporary file, a process argument or the window: `secret_leaks.rs` scans for it after a download through a proxy that requires it (#71).
+- **Local addresses (ADR-0006, PO decision on #192):** through a proxy, the connection is to the proxy, which the user chose, so its address isn't held even when it is on the local network. A browser link that names `localhost` or a local IP address itself still stops before its request. **A gap, accepted:** a name that only the proxy resolves can't be checked, so a browser link to such a name can reach this computer or a private network through the proxy (tested).

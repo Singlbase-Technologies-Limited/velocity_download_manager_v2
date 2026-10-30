@@ -24,6 +24,13 @@ pub mod ffi {
         pub upload_rate_limit: i32,
         pub download_rate_limit: i32,
         pub connections_limit: i32,
+        /// The proxy peers and trackers go through (#192): 0 none, 1 HTTP, 2 SOCKS5.
+        pub proxy_type: u8,
+        pub proxy_host: String,
+        pub proxy_port: u16,
+        /// Empty for no login. May contain a password: never log it.
+        pub proxy_username: String,
+        pub proxy_password: String,
     }
 
     #[derive(Debug, Clone, Default)]

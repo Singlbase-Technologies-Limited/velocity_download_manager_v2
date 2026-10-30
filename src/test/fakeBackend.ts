@@ -58,6 +58,8 @@ export interface FakeState {
   history: (query: HistoryQuery) => HistoryPage;
   /** The Settings screen's settings, as `set_settings` saved them, and the helper's network (#30). */
   appSettings: Settings;
+  /** The proxy's password, as `set_proxy_password` set it (#192). */
+  proxyPassword: string | null;
   browser: BrowserIntegration;
   network: NetworkStatus;
   /** Commands that fail, with the code they fail with. */
@@ -125,6 +127,7 @@ export function installFakeBackend(over: Partial<FakeState> = {}): FakeState {
     exportedTo: null,
     history: () => ({ entries: [], total: 0 }),
     appSettings: fixture('settings.json') as Settings,
+    proxyPassword: null,
     browser: fixture('browser-integration.json') as BrowserIntegration,
     network: { listenPort: 6890, listenError: null, portMapping: { state: 'off' } },
     failures: {},
@@ -252,6 +255,11 @@ export function installFakeBackend(over: Partial<FakeState> = {}): FakeState {
         case 'reset_settings':
           state.appSettings = { ...(fixture('settings.json') as Settings), downloads: state.appSettings.downloads };
           return state.appSettings;
+        case 'get_proxy_password_set':
+          return state.proxyPassword !== null;
+        case 'set_proxy_password':
+          state.proxyPassword = args.password as string | null;
+          return null;
         case 'get_torrent_network':
           return state.network;
         case 'get_diagnostics':

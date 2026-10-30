@@ -81,6 +81,10 @@ export const api = {
   /** Checks, saves and applies every section; the settings as saved. */
   setSettings: (settings: Settings) => call('set_settings', { settings }, SettingsSchema),
   resetSettings: () => call('reset_settings', undefined, SettingsSchema),
+  /** Whether the proxy has a password (#192); the password itself never comes back. */
+  proxyPasswordSet: () => call('get_proxy_password_set', undefined, z.boolean()),
+  /** Sets the proxy's password, or clears it with `null` (#192). */
+  setProxyPassword: (password: string | null) => call('set_proxy_password', { password }, nothing),
   torrentNetwork: () => call('get_torrent_network', undefined, NetworkStatusSchema),
   completeOnboarding: (directory: string) => call('complete_onboarding', { directory }, ShellSettingsSchema),
   /** The system's folder chooser; `null` when the user cancels. */

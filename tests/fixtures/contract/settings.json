@@ -50,6 +50,13 @@
     },
     "profile": "balanced"
   },
+  "proxy": {
+    "host": "",
+    "kind": "none",
+    "port": 8080,
+    "rememberPassword": false,
+    "userName": ""
+  },
   "queue": {
     "maxConcurrentDownloads": 3,
     "schedule": {

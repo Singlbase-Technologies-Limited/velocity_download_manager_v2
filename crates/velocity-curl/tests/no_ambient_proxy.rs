@@ -1,9 +1,16 @@
 //! V2 ignores proxy environment variables (ADR-0008): a proxy is only ever set from V2's own
-//! settings. Its own test binary, because it changes the process environment.
+//! settings, and then it is the one used (#192). Its own test binary, because it changes the
+//! process environment.
 
 use std::time::Duration;
 
-use velocity_curl::{CurlLoop, FetchEvent, FetchRequest, Gate, Libcurl, LoopOptions};
+use std::sync::Arc;
+
+use velocity_curl::{
+    CurlLoop, FetchEvent, FetchRequest, Gate, Libcurl, LoopOptions, ProxyConfig, ProxyKind,
+    RequestOptions,
+};
+use velocity_test_http::proxy::HttpProxy;
 use velocity_test_http::{seeded_bytes, ServerOptions, TestServer};
 
 #[test]
@@ -53,4 +60,30 @@ fn proxy_environment_variables_are_ignored() {
         1,
         "the request reached the server directly"
     );
+
+    // With V2's own proxy set, that proxy is used, never the environment's (#192).
+    let proxy = HttpProxy::start(None);
+    let options = RequestOptions {
+        proxy: Some(ProxyConfig {
+            kind: ProxyKind::Http,
+            host: "127.0.0.1".to_owned(),
+            port: proxy.port(),
+            login: None,
+        }),
+        ..RequestOptions::default()
+    };
+    let fetch = l.fetch(
+        FetchRequest::get(server.url("a.bin")).with_options(Arc::new(options)),
+        |_| Gate::Accept,
+    );
+    loop {
+        let event = fetch
+            .next_event(Duration::from_secs(20))
+            .expect("an event in time");
+        if let FetchEvent::Done(done) = event {
+            assert_eq!(done, Ok(()), "the fetch went through V2's proxy");
+            break;
+        }
+    }
+    assert_eq!(proxy.record().targets.len(), 1);
 }

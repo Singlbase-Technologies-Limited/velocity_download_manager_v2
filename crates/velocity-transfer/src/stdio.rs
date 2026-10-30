@@ -26,6 +26,8 @@ use velocity_core::transfer::{
     TransferId, TransferReply, TransferSnapshot, TransferSpec,
 };
 
+use velocity_core::proxy::Proxy;
+
 use crate::engine::InProcessEngine;
 use crate::protocol::TransferContract;
 
@@ -176,6 +178,11 @@ impl ChildProcessEngine {
         self.done(TransferCommand::SetEngineSettings { settings })
     }
 
+    /// Sets the proxy, or none (#192). Its login crosses the pipe like a download's.
+    pub fn set_proxy(&self, proxy: Option<Proxy>) -> Result<(), ErrorCode> {
+        self.done(TransferCommand::SetProxy { proxy })
+    }
+
     pub fn set_connections(&self, id: TransferId, connections: u32) -> Result<u32, ErrorCode> {
         match self
             .process
@@ -284,6 +291,10 @@ impl DirectTransfer for ChildProcessEngine {
 
     fn set_engine_settings(&mut self, settings: EngineSettings) -> Result<(), ErrorCode> {
         ChildProcessEngine::set_engine_settings(self, settings)
+    }
+
+    fn set_proxy(&mut self, proxy: Option<Proxy>) -> Result<(), ErrorCode> {
+        ChildProcessEngine::set_proxy(self, proxy)
     }
 
     fn set_connections(&mut self, id: TransferId, connections: u32) -> Result<u32, ErrorCode> {

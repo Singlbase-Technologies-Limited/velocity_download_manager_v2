@@ -50,7 +50,9 @@ use std::sync::mpsc::Receiver;
 /// Version 15 (#67) added [`TransferSpec::trust`] and [`crate::domain::TransferError::confirm`]:
 /// engines stop at a local address for a link from the browser, and follow a redirect from
 /// `https` to `http` only once the user confirmed it.
-pub const TRANSFER_CONTRACT_VERSION: u32 = 15;
+/// Version 16 (#192) added [`DirectTransfer::set_proxy`]: engines download through the proxy the
+/// user set.
+pub const TRANSFER_CONTRACT_VERSION: u32 = 16;
 
 /// An engine's id for one transfer. Assigned by the engine, never reused, and never shown as the
 /// app's download id.
@@ -654,6 +656,10 @@ pub trait DirectTransfer: Send {
     /// to downloads that start or retry after it, and the connection budget at once.
     /// `InvalidInput` for settings out of bounds.
     fn set_engine_settings(&mut self, settings: EngineSettings) -> Result<(), ErrorCode>;
+    /// Sets the proxy every transfer goes through, or none (#192, ADR-0008). It applies to
+    /// transfers that start, resume or retry after it is set. `InvalidInput` for a proxy that
+    /// fails [`crate::proxy::Proxy::check`].
+    fn set_proxy(&mut self, proxy: Option<crate::proxy::Proxy>) -> Result<(), ErrorCode>;
     /// Requests a connection count and returns the count the engine applied, which is at least 1
     /// and at most `capabilities().max_connections_per_host`.
     fn set_connections(&mut self, id: TransferId, connections: u32) -> Result<u32, ErrorCode>;
@@ -728,6 +734,9 @@ pub enum TransferCommand {
     SetEngineSettings {
         settings: EngineSettings,
     },
+    SetProxy {
+        proxy: Option<crate::proxy::Proxy>,
+    },
     TrustHostKey {
         host: String,
         port: u16,
@@ -793,6 +802,10 @@ pub fn dispatch(
         }
         TransferCommand::SetEngineSettings { settings } => {
             engine.set_engine_settings(settings)?;
+            TransferReply::Done {}
+        }
+        TransferCommand::SetProxy { proxy } => {
+            engine.set_proxy(proxy)?;
             TransferReply::Done {}
         }
         TransferCommand::TrustHostKey {

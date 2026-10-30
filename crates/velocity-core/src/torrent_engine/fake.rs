@@ -224,6 +224,18 @@ impl TorrentEngine for FakeTorrentEngine {
         settings.check()
     }
 
+    fn set_proxy(&mut self, proxy: Option<crate::proxy::Proxy>) -> Result<(), ErrorCode> {
+        let mut s = lock(&self.state);
+        s.command(match &proxy {
+            Some(p) => format!("set_proxy {}:{}", p.host, p.port),
+            None => "set_proxy none".to_owned(),
+        })?;
+        match &proxy {
+            Some(p) => p.check(),
+            None => Ok(()),
+        }
+    }
+
     fn add(&mut self, spec: TorrentSpec) -> Result<TorrentId, ErrorCode> {
         let mut s = lock(&self.state);
         s.command("add".to_owned())?;

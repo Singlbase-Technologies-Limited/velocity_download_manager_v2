@@ -75,6 +75,9 @@ impl DirectTransfer for MissingEngine {
     fn set_engine_settings(&mut self, _settings: EngineSettings) -> Result<(), ErrorCode> {
         Err(UNAVAILABLE)
     }
+    fn set_proxy(&mut self, _proxy: Option<crate::proxy::Proxy>) -> Result<(), ErrorCode> {
+        Err(UNAVAILABLE)
+    }
     fn set_connections(&mut self, _id: TransferId, _connections: u32) -> Result<u32, ErrorCode> {
         Err(UNAVAILABLE)
     }

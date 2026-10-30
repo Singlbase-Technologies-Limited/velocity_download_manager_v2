@@ -7,7 +7,7 @@ import { CapabilityOption } from '../../CapabilityOption';
 import { Button } from '../../components/Button';
 import { confirmAction } from '../../components/confirmStore';
 import { Spinner } from '../../components/Spinner';
-import type { AppearanceSettings, Browser, Density, PerformanceProfile, Preallocation, Settings, ShellSettings, Theme } from '../../contract';
+import type { AppearanceSettings, Browser, Density, PerformanceProfile, Preallocation, ProxyKind, Settings, ShellSettings, Theme } from '../../contract';
 import { api } from '../../lib/api';
 import { toApiError } from '../../lib/errors';
 import { cn } from '../../lib/cn';
@@ -16,6 +16,7 @@ import { useUiStore, type SettingsSection } from '../../stores/ui';
 import { DiagnosticsPanel } from '../diagnostics/DiagnosticsPanel';
 import { SeedingFields } from '../torrents/SeedingFields';
 import { portMapText } from '../torrents/torrentLogic';
+import { Input } from '../../components/Input';
 import { Choice, Group, Num, Text, Toggle } from './fields';
 
 const SECTIONS: { id: SettingsSection; label: string }[] = [
@@ -24,6 +25,7 @@ const SECTIONS: { id: SettingsSection; label: string }[] = [
   { id: 'performance', label: 'Queue and performance' },
   { id: 'bittorrent', label: 'BitTorrent' },
   { id: 'browser', label: 'Browser' },
+  { id: 'proxy', label: 'Proxy' },
   { id: 'notifications', label: 'Notifications' },
   { id: 'appearance', label: 'Appearance' },
   { id: 'storage', label: 'History and storage' },
@@ -169,7 +171,94 @@ function SectionContent({ section, s, patch }: { section: Exclude<SettingsSectio
       return <AdvancedSection s={s} patch={patch} />;
     case 'browser':
       return <BrowserSection s={s} patch={patch} />;
+    case 'proxy':
+      return <ProxySection s={s} patch={patch} />;
   }
+}
+
+const PROXY_KINDS: { value: ProxyKind; label: string }[] = [
+  { value: 'none', label: 'No proxy' },
+  { value: 'http', label: 'HTTP' },
+  { value: 'https', label: 'HTTPS' },
+  { value: 'socks5', label: 'SOCKS5' },
+];
+
+/**
+ * The proxy every download goes through (#192, ADR-0008). Its password is set on its own and never comes back to
+ * the window: it is held in memory, and in the system keychain only when the user ticks "Remember" (ADR-0015).
+ */
+function ProxySection({ s, patch }: { s: Settings; patch: Patch }) {
+  const qc = useQueryClient();
+  const passwordSet = useQuery({ queryKey: ['proxy-password-set'], queryFn: api.proxyPasswordSet });
+  const [password, setPassword] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [problem, setProblem] = useState<string | null>(null);
+  const proxy = s.proxy;
+  const setPasswordTo = async (value: string | null) => {
+    setBusy(true);
+    setProblem(null);
+    try {
+      await api.setProxyPassword(value);
+      setPassword('');
+      toast.success(value === null ? 'Proxy password cleared' : 'Proxy password saved');
+    } catch (e) {
+      setProblem(toApiError(e).message);
+    } finally {
+      setBusy(false);
+      await qc.invalidateQueries({ queryKey: ['proxy-password-set'] });
+    }
+  };
+  return (
+    <>
+      <Group
+        title="Proxy"
+        description="Every download goes through this proxy: HTTP, HTTPS, FTP, SFTP and torrents. Proxy settings of the system or the environment are never used. Fill in the host and port, then choose the type."
+      >
+        <Choice
+          title="Type"
+          description="SFTP and torrents can’t go through an HTTPS proxy."
+          value={proxy.kind}
+          options={PROXY_KINDS}
+          onChange={(v) => { patch((x) => ({ ...x, proxy: { ...x.proxy, kind: v } })); }}
+        />
+        <Text title="Host" description="A name or an IP address, without http:// or a port." value={proxy.host === '' ? null : proxy.host} placeholder="proxy.example.com" onChange={(v) => { patch((x) => ({ ...x, proxy: { ...x.proxy, host: v ?? '' } })); }} />
+        <Num title="Port" value={proxy.port} min={1} max={65_535} onChange={(v) => { patch((x) => ({ ...x, proxy: { ...x.proxy, port: v } })); }} />
+      </Group>
+      <Group title="Proxy login" description="Only for a proxy that asks for one. It is sent to the proxy alone, never to a server you download from.">
+        <Text title="User name" value={proxy.userName === '' ? null : proxy.userName} onChange={(v) => { patch((x) => ({ ...x, proxy: { ...x.proxy, userName: v ?? '' } })); }} />
+        <div className="flex items-center justify-between gap-4 py-2.5">
+          <div className="min-w-0">
+            <label htmlFor="proxy-password" className="text-[13px]">
+              Password
+            </label>
+            <p className="text-xs text-fg-muted">
+              {passwordSet.isPending ? 'Checking…' : passwordSet.data === true ? 'A password is set.' : 'No password is set.'}
+            </p>
+          </div>
+          <div className="flex shrink-0 items-center gap-2">
+            <Input id="proxy-password" type="password" autoComplete="off" className="h-8 w-44" value={password} onChange={(e) => { setPassword(e.target.value); }} />
+            <Button size="sm" variant="secondary" busy={busy} disabled={busy || password === ''} onClick={() => void setPasswordTo(password)}>
+              Save password
+            </Button>
+            <Button size="sm" variant="ghost" disabled={busy || passwordSet.data !== true} onClick={() => void setPasswordTo(null)}>
+              Clear
+            </Button>
+          </div>
+        </div>
+        {problem === null ? null : (
+          <p role="alert" className="py-2 text-xs text-danger">
+            {problem}
+          </p>
+        )}
+        <Toggle
+          title="Remember the password in the system keychain"
+          description="Unticked, Velocity asks for it again after it restarts."
+          checked={proxy.rememberPassword}
+          onChange={(v) => { patch((x) => ({ ...x, proxy: { ...x.proxy, rememberPassword: v } })); }}
+        />
+      </Group>
+    </>
+  );
 }
 
 const BROWSER_NAMES: Record<Browser, string> = {

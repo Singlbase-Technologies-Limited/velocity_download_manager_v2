@@ -5,7 +5,7 @@
 import { z } from 'zod';
 
 /** Must equal `velocity_core::COMMAND_API_VERSION`; the app refuses to start on a mismatch. */
-export const COMMAND_API_VERSION = 20;
+export const COMMAND_API_VERSION = 21;
 
 const bytes = z.number().int().nonnegative();
 
@@ -178,6 +178,7 @@ export const ErrorCodeSchema = z.enum([
   'PROTOCOL_DISABLED',
   'CONFIRMATION_REQUIRED',
   'KEYCHAIN_UNAVAILABLE',
+  'PROXY_UNSUPPORTED',
   'UNSUPPORTED',
   'INTERNAL',
 ]);
@@ -716,6 +717,18 @@ export const BrowserSettingsSchema = z.strictObject({
   confirmBeforeAdding: z.boolean(),
 });
 
+/** The proxy downloads go through (#192), without its password, which never comes to the window. */
+export const ProxyKindSchema = z.enum(['none', 'http', 'https', 'socks5']);
+export type ProxyKind = z.infer<typeof ProxyKindSchema>;
+export const ProxySettingsSchema = z.strictObject({
+  kind: ProxyKindSchema,
+  host: z.string(),
+  port: z.number().int().min(0).max(65_535),
+  userName: z.string(),
+  rememberPassword: z.boolean(),
+});
+export type ProxySettings = z.infer<typeof ProxySettingsSchema>;
+
 /** The browsers the native host can be registered with (#65). */
 export const BrowserSchema = z.enum(['chrome', 'chromium', 'edge', 'brave', 'firefox']);
 export type Browser = z.infer<typeof BrowserSchema>;
@@ -762,6 +775,7 @@ export const SettingsSchema = z.strictObject({
   newTorrents: NewTorrentSettingsSchema,
   storage: StorageSettingsSchema,
   browser: BrowserSettingsSchema,
+  proxy: ProxySettingsSchema,
 });
 export type Settings = z.infer<typeof SettingsSchema>;
 

@@ -6,7 +6,7 @@ import type { ListView } from '../downloads/views';
 export type View = ListView | 'categories' | 'history' | 'settings';
 
 /** The Settings screen's sections (#30). */
-export type SettingsSection = 'general' | 'downloads' | 'performance' | 'bittorrent' | 'browser' | 'notifications' | 'appearance' | 'storage' | 'advanced' | 'about';
+export type SettingsSection = 'general' | 'downloads' | 'performance' | 'bittorrent' | 'browser' | 'proxy' | 'notifications' | 'appearance' | 'storage' | 'advanced' | 'about';
 
 /** What the Add dialog opens with (#60): pasted or dropped input, or what the browser sent (#64, #65). */
 export interface AddPrefill {

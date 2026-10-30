@@ -57,6 +57,22 @@ The screen (#30, `src/features/settings/SettingsView.tsx`) edits every section b
 
 The torrent helper's own settings are the `torrent` section, `TorrentSettings` ([TORRENTS.md](TORRENTS.md#settings-and-identity)); the screen shows them with the helper's port and port mapping (`get_torrent_network`).
 
+## Proxy
+
+`ProxySettings` (the `proxy` section) in [`crates/velocity-core/src/proxy.rs`](../crates/velocity-core/src/proxy.rs) (#192, [ADR-0008](decisions/0008-proxy-support.md)). The screen's Proxy section edits it. It holds no password.
+
+| Setting | Default | Bounds |
+|---|---|---|
+| `kind` | `none` | `none`, `http`, `https` or `socks5` |
+| `host` | empty | With a proxy: a DNS name (an international one kept in its ASCII form, as links are), an IPv4 address, or an IPv6 address in brackets; no scheme, port or login. Without one, kept as typed |
+| `port` | 8080 | 1 to 65535 with a proxy |
+| `userName` | empty: no login | What a login may have: no `:` or control character |
+| `rememberPassword` | off | Keep the password in the system keychain ([ADR-0015](decisions/0015-keychain-with-consent.md)) |
+
+- **The password** is set on its own (`set_proxy_password`) and never comes back to the window, which only learns whether one is set (`get_proxy_password_set`). It is held in memory, and saved in the keychain only while `rememberPassword` is on; turning it off deletes it there (PO decision on #192). A keychain that refuses is said (`KEYCHAIN_UNAVAILABLE`), and the password is still used until the app closes.
+- **What it covers:** every direct download (HTTP, HTTPS, FTP, SFTP) that starts, resumes or retries after a change, and the torrent helper at once. SFTP and torrents can't use an HTTPS proxy: SFTP downloads fail with a message saying so, and no torrent starts (`PROXY_UNSUPPORTED`). How each engine uses it is in [ENGINE_INTERNALS.md](ENGINE_INTERNALS.md#proxy-192) and [TORRENTS.md](TORRENTS.md#settings-and-identity).
+- **When the app starts** the torrent helper gets the proxy, with a remembered password, before anything else, and the transfer engine before the first download starts.
+
 ## The window
 
 

@@ -35,6 +35,8 @@ use velocity_core::transfer::{
     TransferSnapshot, TransferSpec,
 };
 
+use velocity_core::proxy::Proxy;
+
 use crate::stdio::ChildProcessEngine;
 
 /// What a lost transfer fails with: after a crash, after a hang, and after a restart by hand. The
@@ -55,6 +57,9 @@ pub struct TransferBook {
     engine_limits: EngineLimits,
     /// The engine settings last set, given to every new engine (#30).
     engine_settings: EngineSettings,
+    /// The proxy last set, given to every new engine before anything else (#192), so no
+    /// transfer of a new engine ever goes around it.
+    proxy: Option<Proxy>,
 }
 
 impl TransferBook {
@@ -71,6 +76,7 @@ impl TransferBook {
             global_limits: Limits::default(),
             engine_limits: EngineLimits::DEFAULT,
             engine_settings: EngineSettings::DEFAULT,
+            proxy: None,
         }
     }
 
@@ -105,16 +111,25 @@ impl TransferBook {
 }
 
 impl Book<ChildProcessEngine> for TransferBook {
-    type Setup = (Limits, EngineLimits, EngineSettings);
+    type Setup = (Limits, EngineLimits, EngineSettings, Option<Proxy>);
 
-    fn setup(&self) -> (Limits, EngineLimits, EngineSettings) {
-        (self.global_limits, self.engine_limits, self.engine_settings)
+    fn setup(&self) -> (Limits, EngineLimits, EngineSettings, Option<Proxy>) {
+        (
+            self.global_limits,
+            self.engine_limits,
+            self.engine_settings,
+            self.proxy.clone(),
+        )
     }
 
     fn prepare(
         engine: &ChildProcessEngine,
-        (global, limits, settings): (Limits, EngineLimits, EngineSettings),
+        (global, limits, settings, proxy): (Limits, EngineLimits, EngineSettings, Option<Proxy>),
     ) -> Result<(), ErrorCode> {
+        // The proxy first (#192).
+        if proxy.is_some() {
+            engine.set_proxy(proxy)?;
+        }
         // A new engine starts unlimited: it gets the global limit its predecessor had.
         if global != Limits::default() {
             engine.set_global_limits(global)?;
@@ -309,6 +324,20 @@ impl DirectTransfer for SupervisedEngine {
             ((), Vec::new())
         });
         Ok(())
+    }
+
+    /// Kept first, so an engine that isn't running gets it when it starts; then given to the
+    /// running one.
+    fn set_proxy(&mut self, proxy: Option<Proxy>) -> Result<(), ErrorCode> {
+        if let Some(proxy) = &proxy {
+            proxy.check()?;
+        }
+        let kept = proxy.clone();
+        self.supervisor.update(|book, _| {
+            book.proxy = kept;
+            ((), Vec::new())
+        });
+        self.engine()?.set_proxy(proxy)
     }
 
     fn set_engine_limits(&mut self, limits: EngineLimits) -> Result<(), ErrorCode> {

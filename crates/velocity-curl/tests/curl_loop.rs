@@ -459,6 +459,7 @@ fn options() -> Arc<RequestOptions> {
         ssh_key: None,
         allow_insecure_redirect: false,
         confirm_local_addresses: false,
+        proxy: None,
     })
 }
 

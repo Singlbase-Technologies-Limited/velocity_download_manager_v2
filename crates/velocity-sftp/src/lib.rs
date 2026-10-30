@@ -4,5 +4,6 @@
 
 mod client;
 pub mod known_hosts;
+mod proxy;
 
 pub use client::{SftpOptions, SftpTransport, TrustError};

@@ -42,6 +42,7 @@ use std::time::{Duration, Instant};
 
 use crate::portmap::PortMapTracker;
 use velocity_core::domain::{DownloadStatus, ErrorCode, FailureClass, Progress, TransferError};
+use velocity_core::proxy::{Proxy, ProxyKind};
 use velocity_core::seeding::{seed_queue_plan, SeedPolicy};
 use velocity_core::torrent::{
     check_resume_data, check_tracker, file_priorities, parse_magnet, parse_metadata, parse_torrent,
@@ -101,20 +102,50 @@ fn listening_port(asked: u16) -> u16 {
 }
 
 /// The session's settings: listening on `port` on every interface, router port mapping only when
-/// the user turned it on, and the global limits.
-fn session_config(settings: &TorrentSettings, port: u16) -> SessionConfig {
+/// the user turned it on, and the global limits. With a proxy (#192, PO decision), nothing goes
+/// around it: peers, trackers and their names go through it, local peer discovery and port
+/// mapping are off, and the DHT is on only through SOCKS5, which carries it. An HTTPS proxy,
+/// which libtorrent can't use, turns all of them off and sets no proxy: the app starts no torrent
+/// meanwhile.
+fn session_config(settings: &TorrentSettings, port: u16, proxy: Option<&Proxy>) -> SessionConfig {
+    let kind = proxy.map(|p| p.kind);
+    let direct = kind.is_none();
+    let (proxy_type, host, proxy_port, user, password) = match proxy {
+        Some(p) if matches!(p.kind, ProxyKind::Http | ProxyKind::Socks5) => (
+            if p.kind == ProxyKind::Http { 1 } else { 2 },
+            p.host
+                .trim_start_matches('[')
+                .trim_end_matches(']')
+                .to_owned(),
+            p.port,
+            p.login
+                .as_ref()
+                .map(|l| l.user_name.clone())
+                .unwrap_or_default(),
+            p.login
+                .as_ref()
+                .map(|l| l.password.expose().to_owned())
+                .unwrap_or_default(),
+        ),
+        _ => (0, String::new(), 0, String::new(), String::new()),
+    };
     SessionConfig {
         listen_interfaces: format!("0.0.0.0:{port},[::]:{port}"),
-        enable_dht: settings.dht,
-        enable_lsd: settings.local_peer_discovery,
-        enable_upnp: settings.port_mapping,
-        enable_natpmp: settings.port_mapping,
+        enable_dht: settings.dht && (direct || kind == Some(ProxyKind::Socks5)),
+        enable_lsd: settings.local_peer_discovery && direct,
+        enable_upnp: settings.port_mapping && direct,
+        enable_natpmp: settings.port_mapping && direct,
         dht_bootstrap_nodes: settings.dht_bootstrap_nodes.join(","),
         user_agent: user_agent(),
         peer_fingerprint: peer_fingerprint(env!("CARGO_PKG_VERSION")),
         upload_rate_limit: rate(settings.upload_limit),
         download_rate_limit: rate(settings.download_limit),
         connections_limit: 0,
+        proxy_type,
+        proxy_host: host,
+        proxy_port,
+        proxy_username: user,
+        proxy_password: password,
     }
 }
 
@@ -415,6 +446,8 @@ struct State {
     /// interface doesn't hide it, since peers on the failed one can't connect.
     listen_error: Option<String>,
     portmap: PortMapTracker,
+    /// The user's proxy (#192), applied with every change of the settings.
+    proxy: Option<Proxy>,
 }
 
 impl State {
@@ -839,7 +872,7 @@ impl LtEngine {
         let mut portmap = PortMapTracker::default();
         portmap.reset(settings.port_mapping, Instant::now());
         let port = listening_port(settings.listen_port);
-        let session = velocity_lt::new_session(&session_config(&settings, port))
+        let session = velocity_lt::new_session(&session_config(&settings, port, None))
             .map_err(|e| format!("starting libtorrent: {}", e.what()))?;
         let shared = Arc::new(Shared {
             session,
@@ -853,6 +886,7 @@ impl LtEngine {
                 port,
                 listen_error: None,
                 portmap,
+                proxy: None,
             }),
             stop: AtomicBool::new(false),
             clock: AtomicU64::new(0),
@@ -1067,7 +1101,11 @@ impl TorrentEngine for LtEngine {
         };
         self.shared
             .session
-            .apply_config(&session_config(&settings, port))
+            .apply_config(&session_config(
+                &settings,
+                port,
+                self.shared.state().proxy.as_ref(),
+            ))
             .map_err(|_| ErrorCode::InvalidInput)?;
         let mut state = self.shared.state();
         state.port = port;
@@ -1080,6 +1118,22 @@ impl TorrentEngine for LtEngine {
             state.portmap.reset(settings.port_mapping, Instant::now());
         }
         state.settings = settings;
+        Ok(())
+    }
+
+    fn set_proxy(&mut self, proxy: Option<Proxy>) -> Result<(), ErrorCode> {
+        if let Some(proxy) = &proxy {
+            proxy.check()?;
+        }
+        let (settings, port) = {
+            let state = self.shared.state();
+            (state.settings.clone(), state.port)
+        };
+        self.shared
+            .session
+            .apply_config(&session_config(&settings, port, proxy.as_ref()))
+            .map_err(|_| ErrorCode::InvalidInput)?;
+        self.shared.state().proxy = proxy;
         Ok(())
     }
 
@@ -1380,7 +1434,7 @@ mod tests {
     /// V1's `session_settings_follow_the_user_settings`, with V2's port.
     #[test]
     fn the_session_follows_the_settings() {
-        let c = session_config(&TorrentSettings::default(), 6890);
+        let c = session_config(&TorrentSettings::default(), 6890, None);
         assert_eq!(c.listen_interfaces, "0.0.0.0:6890,[::]:6890");
         assert!(!c.enable_upnp && !c.enable_natpmp, "port mapping is opt-in");
         assert_eq!((c.upload_rate_limit, c.download_rate_limit), (0, 0));
@@ -1391,6 +1445,7 @@ mod tests {
                 ..TorrentSettings::default()
             },
             6890,
+            None,
         );
         assert_eq!(c.dht_bootstrap_nodes, "a.test:1,[2001:db8::1]:2");
         let c = session_config(
@@ -1403,6 +1458,7 @@ mod tests {
                 ..TorrentSettings::default()
             },
             41_000,
+            None,
         );
         // A random port is picked first, and is the same on every interface.
         assert_eq!(c.listen_interfaces, "0.0.0.0:41000,[::]:41000");

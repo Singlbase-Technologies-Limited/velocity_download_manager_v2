@@ -121,9 +121,11 @@ The commands of [`src-tauri/src/shell.rs`](../src-tauri/src/shell.rs) (#29). A c
 | `quit_app` | — | nothing: the app quits. The window calls it only after the user confirms |
 | `get_browser_integration` | — | `BrowserIntegration`: `hostPath` (the native host beside the app, `null` when missing), `nativeHostName`, `chromeExtensionIds`, `firefoxExtensionId`, and `registrations`, one `{ browser, registered, manifestPath, hostMatches }` per browser (`chrome`, `chromium`, `edge`, `brave`, `firefox`). The fixture `browser-integration.json`. Since contract version 19 (#65) |
 | `register_browser`, `unregister_browser` | `browser` | `BrowserIntegration` as it is now. Registering needs the host beside the app (`NOT_FOUND`); unregistering removes only V2's registration ([BROWSER_EXTENSION.md](BROWSER_EXTENSION.md#registering-with-each-browser)). Since contract version 19 (#65) |
-| `get_settings` | — | `Settings`: every section the Settings screen edits ([SETTINGS.md](SETTINGS.md#the-settings-screen)). The fixture `settings.json` has the defaults. Since contract version 17 (#30); the `browser` section since version 19 (#65) |
+| `get_settings` | — | `Settings`: every section the Settings screen edits ([SETTINGS.md](SETTINGS.md#the-settings-screen)). The fixture `settings.json` has the defaults. Since contract version 17 (#30); the `browser` section since version 19 (#65), the `proxy` section since version 21 (#192) |
 | `set_settings` | `settings` | the `Settings` saved; `INVALID_INPUT`, with nothing saved or applied, when a section is out of bounds |
 | `reset_settings` | — | the defaults saved, keeping the download folder |
+| `get_proxy_password_set` | — | whether the proxy has a password, typed this session or remembered; the password never comes to the window. Since contract version 21 (#192) |
+| `set_proxy_password` | `password` (`null` clears it) | nothing. Gives both engines the proxy with it, and keeps it in the system keychain when `proxy.rememberPassword` is on; `INVALID_INPUT` for one a login can't have, `KEYCHAIN_UNAVAILABLE` when the keychain refused (it is still used). Since contract version 21 (#192) |
 | `get_torrent_network` | — | the torrent helper's `NetworkStatus`: `listenPort`, `listenError` and `portMapping` |
 
 **The `quit-requested` event** carries `{ active }`: quitting would stop that many downloads, and `general.confirmExitWithActive` is on. The window asks the user, and calls `quit_app` only if they confirm.

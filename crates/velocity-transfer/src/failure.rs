@@ -255,6 +255,10 @@ fn curl_failure(kind: CurlFailure) -> (FailureClass, &'static str) {
             Permanent,
             "The server can't encrypt the connection, and this download requires encryption.",
         ),
+        CurlFailure::ProxyRefused => (
+            Permanent,
+            "The proxy refused the connection. Check its user name and password in Settings, Proxy.",
+        ),
         CurlFailure::Local => (Permanent, "A local error stopped the transfer."),
         CurlFailure::Other => (Transient, "A network problem occurred."),
     }

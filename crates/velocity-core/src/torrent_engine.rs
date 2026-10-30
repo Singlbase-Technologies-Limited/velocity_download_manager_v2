@@ -30,7 +30,8 @@ use crate::seeding::{SeedPolicy, MAX_ACTIVE_SEEDS};
 /// extra trackers and peers per torrent in [`TorrentSettings`]; per-torrent limits in
 /// [`TorrentSpec`] and [`TorrentCommand::SetLimits`]; [`TorrentCommand::Trackers`],
 /// [`TorrentCommand::Reannounce`], [`TorrentCommand::Peers`] and [`TorrentCommand::Network`].
-pub const TORRENT_CONTRACT_VERSION: u32 = 4;
+/// Version 5 (#192): [`TorrentCommand::SetProxy`]; peers and trackers go through the user's proxy.
+pub const TORRENT_CONTRACT_VERSION: u32 = 5;
 
 /// The port the torrent helper listens on unless the user sets another (PO decision on #62):
 /// not V1's 6881 or 6882.
@@ -415,6 +416,12 @@ pub trait TorrentEngine: Send {
     fn version(&self) -> Result<String, ErrorCode>;
     /// Sets how the engine finds peers. An engine starts with [`TorrentSettings::default`].
     fn set_settings(&mut self, settings: TorrentSettings) -> Result<(), ErrorCode>;
+    /// Sets the proxy peer and tracker connections go through, or none (#192, ADR-0008). With
+    /// one, nothing goes around it: local peer discovery and router port mapping are off, and
+    /// the DHT is on only through a SOCKS5 proxy. An HTTPS proxy, which libtorrent can't use,
+    /// turns all of them off, and the app starts no torrent while it is set (PO decision on
+    /// #192). `InvalidInput` for a proxy that fails [`crate::proxy::Proxy::check`].
+    fn set_proxy(&mut self, proxy: Option<crate::proxy::Proxy>) -> Result<(), ErrorCode>;
     /// Starts a torrent: Fetching metadata for a magnet link, otherwise Queued (or Paused).
     fn add(&mut self, spec: TorrentSpec) -> Result<TorrentId, ErrorCode>;
     /// Adds a torrent as [`TorrentEngine::add`] does, under `id`, which an earlier engine gave
@@ -500,6 +507,9 @@ impl TorrentEngine for MissingTorrentEngine {
     fn set_settings(&mut self, _settings: TorrentSettings) -> Result<(), ErrorCode> {
         Err(ErrorCode::EngineUnavailable)
     }
+    fn set_proxy(&mut self, _proxy: Option<crate::proxy::Proxy>) -> Result<(), ErrorCode> {
+        Err(ErrorCode::EngineUnavailable)
+    }
     fn add(&mut self, _spec: TorrentSpec) -> Result<TorrentId, ErrorCode> {
         Err(ErrorCode::EngineUnavailable)
     }
@@ -575,6 +585,9 @@ pub enum TorrentCommand {
     Version {},
     SetSettings {
         settings: TorrentSettings,
+    },
+    SetProxy {
+        proxy: Option<crate::proxy::Proxy>,
     },
     Add {
         spec: TorrentSpec,
@@ -653,6 +666,10 @@ pub fn dispatch(
         },
         TorrentCommand::SetSettings { settings } => {
             engine.set_settings(settings)?;
+            TorrentReply::Done {}
+        }
+        TorrentCommand::SetProxy { proxy } => {
+            engine.set_proxy(proxy)?;
             TorrentReply::Done {}
         }
         TorrentCommand::Add { spec } => TorrentReply::Added {

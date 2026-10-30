@@ -66,6 +66,9 @@ const CURLOPT_PREREQFUNCTION: curl_sys::CURLoption = 20_312;
 const CURLOPT_PREREQDATA: curl_sys::CURLoption = 10_313;
 const CURL_PREREQFUNC_OK: c_int = 0;
 const CURL_PREREQFUNC_ABORT: c_int = 1;
+/// `CURLE_PROXY` (curl.h of curl 8.23.0, libcurl 7.73+): a SOCKS proxy refused, its reason in
+/// `CURLINFO_PROXY_ERROR`. curl-sys 0.4.91 doesn't define it.
+const CURLE_PROXY: curl_sys::CURLcode = 97;
 
 /// One HTTP(S) or FTP GET.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -108,6 +111,55 @@ pub struct RequestOptions {
     /// Stop before sending a request whose connection reached this computer or a private
     /// network (#67, ADR-0006): a link from the browser that the user hasn't confirmed.
     pub confirm_local_addresses: bool,
+    /// The proxy every connection goes through (#192); `None` connects directly. Proxy
+    /// variables in the environment are never used either way.
+    pub proxy: Option<ProxyConfig>,
+}
+
+/// A proxy, as the user set it (#192, ADR-0008). `Debug` never shows the login.
+#[derive(Clone, PartialEq, Eq)]
+pub struct ProxyConfig {
+    pub kind: ProxyKind,
+    /// A DNS name, an IPv4 address, or an IPv6 address in brackets.
+    pub host: String,
+    pub port: u16,
+    /// The proxy's own login, sent only to the proxy.
+    pub login: Option<(String, String)>,
+}
+
+/// What kind of proxy.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ProxyKind {
+    /// HTTP, through `CONNECT` tunnels.
+    Http,
+    /// HTTP over TLS to the proxy, its certificate verified like a server's.
+    Https,
+    /// SOCKS5, which also resolves the names connected to.
+    Socks5,
+}
+
+impl ProxyConfig {
+    /// The proxy as libcurl takes it: `http://`, `https://` or `socks5h://`, then host and port.
+    /// `socks5h` lets the proxy resolve names, so no lookup leaves this computer.
+    pub fn url(&self) -> String {
+        let scheme = match self.kind {
+            ProxyKind::Http => "http",
+            ProxyKind::Https => "https",
+            ProxyKind::Socks5 => "socks5h",
+        };
+        format!("{scheme}://{}:{}", self.host, self.port)
+    }
+}
+
+impl std::fmt::Debug for ProxyConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ProxyConfig")
+            .field("kind", &self.kind)
+            .field("host", &self.host)
+            .field("port", &self.port)
+            .field("login", &self.login.as_ref().map(|_| "<redacted>"))
+            .finish()
+    }
 }
 
 /// A private key file for an SFTP login, and its passphrase if it is encrypted (#53). `Debug`
@@ -142,6 +194,7 @@ impl std::fmt::Debug for RequestOptions {
             .field("ssh_key", &self.ssh_key)
             .field("allow_insecure_redirect", &self.allow_insecure_redirect)
             .field("confirm_local_addresses", &self.confirm_local_addresses)
+            .field("proxy", &self.proxy)
             .finish()
     }
 }
@@ -305,6 +358,9 @@ pub enum CurlFailure {
     /// Encryption was required, and the server can't encrypt the connection (FTP's `AUTH TLS`,
     /// #51). Nothing was sent in clear after the greeting.
     EncryptionRefused,
+    /// The proxy refused its login, or refused to connect onward (#192): an HTTP proxy's `407`
+    /// to `CONNECT`, or a SOCKS5 proxy's refusal.
+    ProxyRefused,
     /// A local problem: memory, or the write side.
     Local,
     /// Any other code.
@@ -852,12 +908,21 @@ fn set_options(
     // Velocity follows redirects itself (`follow`, `redirect.rs`): libcurl would send the custom
     // headers to another host.
     easy.follow_location(false)?;
-    // An empty proxy disables proxies, including those from http_proxy and similar variables.
-    easy.proxy("")?;
+    set_proxy(easy, extra.proxy.as_ref())?;
     set_string(easy, CURLOPT_PROTOCOLS_STR, PROTOCOLS)?;
     set_string(easy, CURLOPT_REDIR_PROTOCOLS_STR, REDIRECT_PROTOCOLS)?;
     if extra.confirm_local_addresses {
-        check_addresses(easy)?;
+        match &extra.proxy {
+            None => check_addresses(easy)?,
+            // Through a proxy, the connection is to the proxy, which the user chose (PO decision
+            // on #192): only a link that names this computer or a private network itself stops.
+            Some(_) => {
+                if let Some(host) = local_host(&request.url) {
+                    let _ = easy.get_ref().local_address.set(host);
+                    stop_before_request(easy)?;
+                }
+            }
+        }
     }
     if request.own_connection {
         // A connection of its own, closed at the end, so no other fetch shares it (#47).
@@ -876,8 +941,88 @@ fn set_options(
     #[cfg(feature = "test-ca")]
     if let Some(ca_file) = &options.ca_file {
         easy.cainfo(ca_file)?;
+        // And for an HTTPS proxy's certificate (#192).
+        easy.proxy_cainfo(&ca_file.to_string_lossy())?;
     }
     Ok(())
+}
+
+/// The proxy, or explicitly none (#192, ADR-0008). An empty proxy disables proxies, those from
+/// `http_proxy` and similar variables included. Through an HTTP or HTTPS proxy every connection is
+/// a `CONNECT` tunnel, so the proxy never reads a request, its headers or a site's login, even for
+/// `http://` and FTP. The proxy's login goes only to the proxy (`CURLOPT_PROXYUSERNAME`), never as
+/// a site's `Authorization`; an HTTPS proxy's certificate is verified as a server's (#69).
+fn set_proxy(easy: &mut Easy2<Collector>, proxy: Option<&ProxyConfig>) -> Result<(), curl::Error> {
+    let Some(proxy) = proxy else {
+        return easy.proxy("");
+    };
+    easy.proxy(&proxy.url())?;
+    if proxy.kind != ProxyKind::Socks5 {
+        easy.http_proxy_tunnel(true)?;
+    }
+    if let Some((user, password)) = &proxy.login {
+        easy.proxy_username(user)?;
+        easy.proxy_password(password)?;
+        // Basic only, sent with the first CONNECT, as a site's login is (#40).
+        easy.proxy_auth(curl::easy::Auth::new().basic(true))?;
+    }
+    Ok(())
+}
+
+/// The host of `url` when it names this computer or a private network itself: `localhost`, a
+/// name under `.localhost`, or a local IP address (#67, ADR-0006). Through a proxy that is all
+/// V2 can judge, since the proxy resolves names and makes the connection (#192).
+fn local_host(url: &str) -> Option<String> {
+    let host = crate::url::origin(url)?.host;
+    let bare = host.trim_start_matches('[').trim_end_matches(']');
+    let local = host == "localhost"
+        || host.ends_with(".localhost")
+        || bare.parse::<IpAddr>().is_ok_and(is_local);
+    local.then_some(host)
+}
+
+/// Has libcurl stop the request once its connection is made, before anything is sent: through a
+/// proxy, for a link [`local_host`] judged local (#192). The address was recorded already.
+fn stop_before_request(easy: &mut Easy2<Collector>) -> Result<(), curl::Error> {
+    let callback: extern "C" fn(*mut c_void, *mut c_char, *mut c_char, c_int, c_int) -> c_int =
+        prereq_stop;
+    // SAFETY: `easy.raw()` is a live easy handle owned by `easy`. CURLOPT_PREREQFUNCTION takes a
+    // `curl_prereq_callback`, whose C signature `prereq_stop` has; it reads no data pointer.
+    let code = unsafe { curl_sys::curl_easy_setopt(easy.raw(), CURLOPT_PREREQFUNCTION, callback) };
+    if code == curl_sys::CURLE_OK {
+        Ok(())
+    } else {
+        Err(curl::Error::new(code))
+    }
+}
+
+/// The pre-request callback for a link already judged local (#192): always stops.
+extern "C" fn prereq_stop(
+    _data: *mut c_void,
+    _primary_ip: *mut c_char,
+    _local_ip: *mut c_char,
+    _primary_port: c_int,
+    _local_port: c_int,
+) -> c_int {
+    CURL_PREREQFUNC_ABORT
+}
+
+/// A proxy that refused its login or the connection onward (#192), told from the handle: an HTTP
+/// proxy's `407` to `CONNECT`, or `CURLE_PROXY` from a SOCKS proxy. Otherwise `error` as it is.
+fn proxy_refusal(
+    handle: &mut Easy2Handle<Collector>,
+    e: &curl::Error,
+    error: FetchError,
+) -> FetchError {
+    let refused = e.code() == CURLE_PROXY || handle.http_connectcode().is_ok_and(|c| c == 407);
+    match error {
+        FetchError::Curl { code, message, .. } if refused => FetchError::Curl {
+            kind: CurlFailure::ProxyRefused,
+            code,
+            message,
+        },
+        other => other,
+    }
 }
 
 /// FTP's own options (#51).
@@ -1221,7 +1366,7 @@ fn run_loop(
                     continue;
                 }
                 let collector = handle.get_ref();
-                let outcome = match result {
+                let outcome = match &result {
                     Ok(()) => Ok(()),
                     // Stopped at its limit: the range it was asked for is complete.
                     Err(_) if collector.stopped_at_limit => Ok(()),
@@ -1246,8 +1391,13 @@ fn run_loop(
                         {
                             Ok(())
                         }
-                        None => Err(curl_error(&e)),
+                        None => Err(curl_error(e)),
                     },
+                };
+                let mut handle = handle;
+                let outcome = match (outcome, &result) {
+                    (Err(error), Err(e)) => Err(proxy_refusal(&mut handle, e, error)),
+                    (outcome, _) => outcome,
                 };
                 finish(&multi, handle, outcome);
             }

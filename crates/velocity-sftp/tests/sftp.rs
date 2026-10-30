@@ -8,11 +8,12 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use velocity_curl::{
-    CurlFailure, Fetch, FetchError, FetchEvent, FetchRequest, Gate, RequestOptions, ResponseHead,
-    SshKeyFile, Transport,
+    CurlFailure, Fetch, FetchError, FetchEvent, FetchRequest, Gate, ProxyConfig, ProxyKind,
+    RequestOptions, ResponseHead, SshKeyFile, Transport,
 };
 use velocity_sftp::known_hosts::{KnownHosts, Verdict};
 use velocity_sftp::{SftpOptions, SftpTransport, TrustError};
+use velocity_test_http::proxy::{HttpProxy, Socks5Proxy};
 use velocity_test_http::seeded_bytes;
 use velocity_test_http::ssh::{HostKey, PasswordServer, SshServer, KEY_PASSPHRASE};
 
@@ -379,5 +380,77 @@ mod sha2_check {
             .find(|w| w.len() == 64 && w.bytes().all(|b| b.is_ascii_hexdigit()))
             .unwrap_or_default()
             .to_ascii_lowercase()
+    }
+}
+
+const PROXY_PASSWORD: &str = "PROXY-PASSWORD-192";
+
+fn through(kind: ProxyKind, port: u16) -> ProxyConfig {
+    ProxyConfig {
+        kind,
+        host: "127.0.0.1".to_owned(),
+        port,
+        login: Some(("proxy-user".to_owned(), PROXY_PASSWORD.to_owned())),
+    }
+}
+
+/// #192 (PO decision): russh has no proxy support, so the SFTP layer opens the connection
+/// itself, through an HTTP proxy's `CONNECT` tunnel or a SOCKS5 proxy, each with its login. The
+/// host key is checked as without a proxy, and the file is the server's.
+#[test]
+fn sftp_goes_through_an_http_or_a_socks5_proxy() {
+    let Ok((server, data)) = serve(HostKey::Ed25519) else {
+        eprintln!("NOT RUN: no sshd");
+        return;
+    };
+    let hosts = Hosts::new("proxy");
+    let sftp = trusting(&server, &hosts);
+    let target = format!("127.0.0.1:{}", server.addr().port());
+    let http = HttpProxy::start(Some(("proxy-user", PROXY_PASSWORD)));
+    let socks = Socks5Proxy::start(Some(("proxy-user", PROXY_PASSWORD)), &[]);
+    for kind in [ProxyKind::Http, ProxyKind::Socks5] {
+        let port = if kind == ProxyKind::Http {
+            http.port()
+        } else {
+            socks.port()
+        };
+        let options = RequestOptions {
+            proxy: Some(through(kind, port)),
+            ..with_key(&server)
+        };
+        let got = fetch(&sftp, FetchRequest::get(server.url("f.bin")), options);
+        assert_eq!(got.done, Ok(()), "{kind:?}");
+        assert!(got.data == data, "{kind:?}");
+    }
+    for record in [http.record(), socks.record()] {
+        assert_eq!(record.targets, std::slice::from_ref(&target), "{record:?}");
+        assert_eq!(
+            record.logins,
+            [Some(("proxy-user".to_owned(), PROXY_PASSWORD.to_owned()))]
+        );
+    }
+}
+
+/// An HTTPS proxy would need TLS in the SFTP layer: refused before anything is connected.
+#[test]
+fn an_https_proxy_is_refused_for_sftp() {
+    let hosts = Hosts::new("https-proxy");
+    let sftp = SftpTransport::start(hosts.file(), SftpOptions::default()).unwrap();
+    let options = RequestOptions {
+        login: Some(("user".to_owned(), "password".to_owned())),
+        proxy: Some(through(ProxyKind::Https, 1)),
+        ..RequestOptions::default()
+    };
+    let got = fetch(
+        &sftp,
+        FetchRequest::get("sftp://127.0.0.1:1/f.bin".to_owned()),
+        options,
+    );
+    assert_eq!(kind(&got.done), CurlFailure::Refused);
+    match &got.done {
+        Err(FetchError::Sftp { message, .. }) => {
+            assert!(message.contains("HTTPS proxy"), "{message}")
+        }
+        other => panic!("{other:?}"),
     }
 }

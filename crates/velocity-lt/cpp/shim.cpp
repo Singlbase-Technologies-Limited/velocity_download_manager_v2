@@ -47,6 +47,28 @@ lt::settings_pack make_pack(SessionConfig const& cfg) {
     p.set_int(lt::settings_pack::download_rate_limit, cfg.download_rate_limit);
     if (cfg.connections_limit > 0)
         p.set_int(lt::settings_pack::connections_limit, cfg.connections_limit);
+    // The user's proxy (#192): peers, trackers and the names they use go through it.
+    bool const login = !cfg.proxy_username.empty();
+    switch (cfg.proxy_type) {
+    case 1:
+        p.set_int(lt::settings_pack::proxy_type,
+            login ? lt::settings_pack::http_pw : lt::settings_pack::http);
+        break;
+    case 2:
+        p.set_int(lt::settings_pack::proxy_type,
+            login ? lt::settings_pack::socks5_pw : lt::settings_pack::socks5);
+        break;
+    default:
+        p.set_int(lt::settings_pack::proxy_type, lt::settings_pack::none);
+        break;
+    }
+    p.set_str(lt::settings_pack::proxy_hostname, std::string(cfg.proxy_host));
+    p.set_int(lt::settings_pack::proxy_port, cfg.proxy_port);
+    p.set_str(lt::settings_pack::proxy_username, std::string(cfg.proxy_username));
+    p.set_str(lt::settings_pack::proxy_password, std::string(cfg.proxy_password));
+    p.set_bool(lt::settings_pack::proxy_hostnames, true);
+    p.set_bool(lt::settings_pack::proxy_peer_connections, true);
+    p.set_bool(lt::settings_pack::proxy_tracker_connections, true);
     // Passed as the flag type: MSVC will not static_cast it to int.
     p.set_int(lt::settings_pack::alert_mask,
         lt::alert_category::status | lt::alert_category::error

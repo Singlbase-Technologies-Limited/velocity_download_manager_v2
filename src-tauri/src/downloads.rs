@@ -64,10 +64,16 @@ pub fn start(app: &AppHandle, paths: &Paths) -> Result<Downloads, String> {
     // The torrent helper starts with the saved settings (#30); a section that can't be read
     // leaves its defaults, which are V1's, and the Settings screen says why.
     let torrent_settings: TorrentSettings = database.section().unwrap_or_default();
-    let torrents: Box<dyn TorrentEngine> = match SupervisedTorrentEngine::start(
+    // Logins the user asked to remember are kept in the system keychain (#70), and so is the
+    // proxy's password (#192), which the torrent helper gets before anything else.
+    let keychain = velocity_core::keychain::SystemKeychain::new();
+    let proxy =
+        velocity_core::manager::saved_proxy(&database.section().unwrap_or_default(), &keychain);
+    let torrents: Box<dyn TorrentEngine> = match SupervisedTorrentEngine::start_with_proxy(
         program_beside(&exe, "velocity-torrent"),
         SupervisorOptions::default(),
         torrent_settings,
+        proxy,
     ) {
         Ok(torrents) => Box::new(torrents),
         Err(code) => {
@@ -75,9 +81,7 @@ pub fn start(app: &AppHandle, paths: &Paths) -> Result<Downloads, String> {
             Box::new(MissingTorrentEngine::new(code))
         }
     };
-    // Logins the user asked to remember are kept in the system keychain (#70).
-    let keychain = Box::new(velocity_core::keychain::SystemKeychain::new());
-    let mut manager = Manager::open_with_keychain(engine, Arc::new(database), keychain)
+    let mut manager = Manager::open_with_keychain(engine, Arc::new(database), Box::new(keychain))
         .map_err(|e| e.to_string())?
         .with_torrents(torrents)
         // `.torrent` links are fetched into the app's own folder (#60).
