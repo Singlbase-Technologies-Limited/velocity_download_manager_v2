@@ -965,7 +965,7 @@ fn run(shared: &Shared, id: TransferId, job: &Job, resume: Option<&Resume>, cont
                     "the destination file already exists; it is never replaced",
                 ));
             }
-            Err(DownloadError::Io(message)) => {
+            Err(DownloadError::Io(message) | DownloadError::Local(message)) => {
                 s.status = DownloadStatus::Failed;
                 s.error = Some(TransferError::new(FailureClass::Permanent, None, &message));
             }

@@ -6,19 +6,27 @@
 //! - finish with exactly the source's bytes;
 //! - fetch again at most what wasn't durable yet, plus what was in flight.
 //!
+//! The app itself is killed too (#74): a process running the manager over a database file, with
+//! its own child engine, dies at a random moment, and a new app on the same database brings the
+//! download back and finishes it with the source's bytes.
+//!
 //! `VELOCITY_CRASH_TRIALS` sets how many trials run: 3 by default, for CI; the full run is 100,
 //! by hand (PO decision on #43). `VELOCITY_CRASH_SEED` repeats a run; the seed is printed.
 
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{Receiver, RecvTimeoutError};
+use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime};
 
-use velocity_core::domain::DownloadStatus;
+use velocity_core::database::Database;
+use velocity_core::domain::{DownloadKind, DownloadStatus};
+use velocity_core::manager::Manager;
 use velocity_core::transfer::{
     Checkpoint, Limits, Resume, TransferEvent, TransferId, TransferSpec,
 };
-use velocity_test_http::{kill_process, seeded_bytes, ServerOptions, TestServer};
+use velocity_test_http::{kill_process, process_exists, seeded_bytes, ServerOptions, TestServer};
 use velocity_transfer::stdio::ChildProcessEngine;
+use velocity_transfer::supervisor::{SupervisedEngine, SupervisorOptions};
 
 const LEN: usize = 6_000_000;
 /// Per connection: the probe's 4 MiB take about 4 s, so most kills land in the probe and some in
@@ -262,4 +270,175 @@ fn a_killed_engine_resumes_from_its_checkpoint_and_finishes_the_right_file() {
     eprintln!(
         "crash trials: {n} passed ({killed} killed, {renamed} of them just after the rename), at most {most_twice} bytes fetched twice"
     );
+}
+
+/// Where the app process of a kill trial keeps its database and its download, and the source.
+const APP_TRIAL: &str = "VELOCITY_APP_TRIAL";
+
+fn now_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .map_or(0, |d| d.as_millis() as u64)
+}
+
+/// Where the app process writes its engine's process id: a file in its trial folder, written
+/// whole and then renamed into place, so the test never reads half of it.
+const ENGINE_PID_FILE: &str = "engine.pid";
+
+/// The app, as one process: the manager over `<dir>/velocity.sqlite3` with a supervised child
+/// engine. It adds the download if the database has none yet, writes its engine's process id to
+/// [`ENGINE_PID_FILE`], and pumps until it is killed.
+fn run_app(dir: &Path, url: &str) -> ! {
+    let db = Arc::new(Database::open(&dir.join("velocity.sqlite3")).expect("the database"));
+    let engine = SupervisedEngine::start(program(), SupervisorOptions::default()).expect("engine");
+    let partial = dir.join(format!("{ENGINE_PID_FILE}.partial"));
+    std::fs::write(
+        &partial,
+        engine.process_id().expect("an engine runs").to_string(),
+    )
+    .expect("the engine's id is written");
+    std::fs::rename(&partial, dir.join(ENGINE_PID_FILE)).expect("the engine's id is in place");
+    let mut m = Manager::open(Box::new(engine), Arc::clone(&db)).expect("the manager");
+    if m.snapshot().downloads.is_empty() {
+        m.add(
+            DownloadKind::Http,
+            spec(url.to_owned(), &dir.join("out.bin"), None),
+            now_ms(),
+        )
+        .expect("add");
+    }
+    loop {
+        m.pump(now_ms());
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+/// The app process of [`a_killed_app_brings_the_download_back_and_finishes_the_right_file`]: run
+/// only by that test, which starts this test binary again with [`APP_TRIAL`] set.
+#[test]
+#[ignore = "the app process of the app kill trials, started by them"]
+fn app_process_for_the_kill_trials() {
+    let trial = std::env::var(APP_TRIAL).expect("started by the app kill trials");
+    let (dir, url) = trial.split_once('|').expect("<dir>|<url>");
+    run_app(Path::new(dir), url);
+}
+
+/// The app process of one trial. Dropped, it is killed, so a failing trial never leaves it
+/// running (#74: the trial once waited on it with no limit).
+struct App(std::process::Child);
+
+impl App {
+    /// Kills it and waits until it is gone.
+    fn kill(&mut self) {
+        self.0.kill().expect("the app is killed");
+        self.0.wait().expect("the app is gone");
+    }
+}
+
+impl Drop for App {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
+
+/// Starts the app process for `dir` and returns it with its engine's process id, read from the
+/// file the app writes. Fails, with the app killed, if the app ends first or the file doesn't
+/// come within [`WAIT`].
+fn start_app(dir: &Path, url: &str) -> (App, u32) {
+    let child = std::process::Command::new(std::env::current_exe().unwrap())
+        .args([
+            "app_process_for_the_kill_trials",
+            "--exact",
+            "--ignored",
+            "--nocapture",
+            "--test-threads=1",
+        ])
+        .env(APP_TRIAL, format!("{}|{url}", dir.display()))
+        .stdout(std::process::Stdio::null())
+        .spawn()
+        .expect("the app starts");
+    let mut app = App(child);
+    let deadline = Instant::now() + WAIT;
+    loop {
+        if let Ok(text) = std::fs::read_to_string(dir.join(ENGINE_PID_FILE)) {
+            return (app, text.trim().parse().expect("a process id"));
+        }
+        if let Some(status) = app.0.try_wait().expect("the app's status") {
+            panic!("the app ended before naming its engine: {status}");
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the app didn't name its engine within {WAIT:?}"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+#[test]
+fn a_killed_app_brings_the_download_back_and_finishes_the_right_file() {
+    let data = seeded_bytes(LEN, 74);
+    let server = TestServer::start(
+        vec![("f.bin".into(), data.clone())],
+        ServerOptions {
+            throttle_bytes_per_sec: Some(RATE),
+            ..ServerOptions::default()
+        },
+    );
+    let (n, seed) = (trials(), seed());
+    eprintln!("app kill trials: {n}, seed {seed}");
+    let mut rng = Rng(seed | 1);
+    let mut renamed = 0;
+    for trial in 0..n {
+        let context = format!("app trial {trial} of {n}, seed {seed}");
+        let dir = Dir::new(&format!("app-{trial}"));
+        let dest = dir.0.join("out.bin");
+        let kill_at = Duration::from_millis(300 + rng.below(4_500));
+
+        let (mut app, engine_pid) = start_app(&dir.0, &server.url("f.bin"));
+        std::thread::sleep(kill_at);
+        app.kill();
+        // Its engine notices the app went away and stops; the next app starts its own.
+        let deadline = Instant::now() + WAIT;
+        while process_exists(engine_pid).expect("checked") {
+            assert!(
+                Instant::now() < deadline,
+                "{context}: the orphaned engine never stopped"
+            );
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        // The kill can land just after the rename: then the file must be the whole, right one.
+        if dest.exists() {
+            assert!(std::fs::read(&dest).unwrap() == data, "{context}");
+            renamed += 1;
+            continue;
+        }
+
+        // The app starts again on the same database.
+        let db = Arc::new(Database::open(&dir.0.join("velocity.sqlite3")).expect("reopened"));
+        let engine = SupervisedEngine::start(program(), SupervisorOptions::default()).unwrap();
+        let mut m = Manager::open(Box::new(engine), Arc::clone(&db)).expect("the manager");
+        let id = match m.snapshot().downloads.as_slice() {
+            [one] => one.id.clone(),
+            other => panic!("{context}: the download didn't come back once: {other:?}"),
+        };
+        let deadline = Instant::now() + WAIT;
+        loop {
+            m.pump(now_ms());
+            let record = m.get(&id).expect("listed");
+            match record.status {
+                DownloadStatus::Completed => break,
+                DownloadStatus::Failed => panic!("{context}: {:?}", record.error),
+                _ => {}
+            }
+            assert!(Instant::now() < deadline, "{context}: {record:?}");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        drop(m);
+        assert!(
+            std::fs::read(&dest).unwrap() == data,
+            "{context}: the file differs from the source"
+        );
+    }
+    eprintln!("app kill trials: {n} passed ({renamed} killed just after the rename)");
 }
