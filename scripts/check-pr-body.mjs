@@ -4,16 +4,14 @@
 // The agent guard runs the same check before `gh pr create` and `gh pr edit`.
 import { readFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
-import { checkPrBody, checkPrTitle } from './pr-body-lib.mjs';
+import { checkPrBody, checkPrTitle, prBodyArgs } from './pr-body-lib.mjs';
 
-const args = process.argv.slice(2);
-const at = args.indexOf('--title');
-const title = at >= 0 ? args[at + 1] : undefined;
-const file = args.find((a, i) => !a.startsWith('--') && i !== at + 1);
-if (!file || (at >= 0 && title === undefined)) {
+const parsed = prBodyArgs(process.argv.slice(2));
+if (parsed === null) {
   console.error('Usage: pnpm check:pr-body <description file> --title "<title>"');
   process.exit(2);
 }
+const { file, title } = parsed;
 
 const root = resolve(import.meta.dirname, '..');
 const template = readFileSync(join(root, '.github', 'PULL_REQUEST_TEMPLATE.md'), 'utf8');

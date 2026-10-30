@@ -142,3 +142,13 @@ export function checkPrTitle(title, body) {
   if (linked && !title.endsWith(` (#${String(linked.issue)})`)) problems.push(`The title must end with "(#${String(linked.issue)})", the linked issue.`);
   return problems;
 }
+
+/** `pnpm check:pr-body`'s arguments: the description file, and the title after `--title`, which is optional. Null when
+ * the file is missing or `--title` has no value. */
+export function prBodyArgs(args) {
+  const at = args.indexOf('--title');
+  const title = at >= 0 ? args[at + 1] : undefined;
+  if (at >= 0 && title === undefined) return null;
+  const file = args.find((a, i) => !a.startsWith('--') && (at < 0 || i !== at + 1));
+  return file === undefined ? null : { file, title };
+}
