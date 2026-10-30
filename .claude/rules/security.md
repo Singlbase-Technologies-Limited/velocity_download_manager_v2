@@ -1,5 +1,4 @@
 ---
-# pending: "browser-extension/**/*" (#64)
 paths:
   - "crates/**/*"
   - "src-tauri/**/*"

@@ -43,7 +43,7 @@ V2 is a Tauri 2 desktop app with a React UI and a Rust core. It downloads files 
 | Torrent engine and helper | `crates/velocity-torrent/` ([ADR-0014](decisions/0014-torrent-helper-child-process.md)) | What reaches libtorrent and what its state means; the helper `velocity-torrent serve`, its client and its supervisor | Downloads v1, v2-only and hybrid torrents and magnets, checks every input first (a magnet's metadata included, before any byte is written), downloads only the chosen files, and completes a torrent only after its files are flushed. A crashed helper is restarted. Seeding, trackers and port mapping too (#62). The app starts it from beside its own executable, without linking libtorrent, and the manager runs torrents beside direct downloads (#58, [TORRENTS.md](TORRENTS.md#in-the-app-58)) | #62 |
 | Torrent bridge | `crates/velocity-lt/` ([ADR-0002](decisions/0002-engine-crate-layout.md)) | The only crate that calls libtorrent: a small C++ shim over one session. It never deletes files | libtorrent 2.0.15, built with vcpkg ([BUILDING_NATIVE.md](BUILDING_NATIVE.md#libtorrent)) | #62 |
 | Native host | to be created | A short-lived process started by the browser. It validates messages and forwards them to the app over local IPC | — | #65 |
-| Browser extension | to be created | Offers browser downloads to V2 and falls back to the browser on any failure | — | #64 |
+| Browser extension | `browser-extension/` | Offers browser downloads to V2 and falls back to the browser on any failure | Since #64: interception, the rules, the popup, settings, the ask window and magnet capture, ported from V1 with V2's identity ([BROWSER_EXTENSION.md](BROWSER_EXTENSION.md)) | #64 |
 
 **Placement rules** (also in [AGENTS.md](../AGENTS.md#architecture)):
 

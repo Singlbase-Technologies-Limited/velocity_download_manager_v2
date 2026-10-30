@@ -32,9 +32,9 @@ export const NATIVE_LOCK_FILE = /(^|\/)([^/]+\.lock|vcpkg\.json|vcpkg-configurat
 export const NATIVE_PREFIXES = ['scripts/native/', 'crates/velocity-curl/', 'crates/velocity-lt/', '.cargo/'];
 /** Lockfiles that match NATIVE_LOCK_FILE but pin Rust or npm packages, not native libraries. */
 const PACKAGE_LOCK_FILES = ['Cargo.lock', 'pnpm-lock.yaml'];
-/** Frontend: TypeScript types, ESLint and Vitest. */
+/** Frontend: TypeScript types, ESLint and Vitest. The browser extension (#64) is checked with it. */
 export const FRONTEND_FILES = ['index.html', 'tsconfig.json', 'vite.config.ts', 'eslint.config.js'];
-export const FRONTEND_PREFIXES = ['src/', 'public/'];
+export const FRONTEND_PREFIXES = ['src/', 'public/', 'browser-extension/'];
 /** Documentation: no code check depends on it. */
 export const NO_CHECK_PREFIXES = ['docs/'];
 export const NO_CHECK_ROOT_EXTENSIONS = ['.md'];
@@ -195,6 +195,8 @@ export function checkCommands(selection) {
   if (selection.all || selection.frontend) {
     cmds.push(
       { id: 'tsc', name: 'TypeScript types (tsc --noEmit)', tool: 'tsc', args: ['--noEmit'] },
+      // The extension has its own types (WebExtension APIs, not the app's), so its own project.
+      { id: 'tsc-extension', name: 'Browser extension types (tsc --noEmit -p browser-extension)', tool: 'tsc', args: ['--noEmit', '-p', 'browser-extension'] },
       { id: 'eslint', name: 'ESLint (zero warnings)', tool: 'eslint', args: ['.', '--max-warnings', '0'] },
       { id: 'vitest', name: 'Vitest unit tests', tool: 'vitest', args: ['run'] },
     );
@@ -216,12 +218,12 @@ export const FULL_EXTRA_COMMANDS = [
   },
 ];
 
-const FRONTEND_AREAS = { frontend: 'src', scripts: 'scripts' };
+const FRONTEND_AREAS = { frontend: 'src', scripts: 'scripts', extension: 'browser-extension' };
 
 /**
  * `test:focused -- <area> [extra args]`: the tests of one area. A crate area runs
- * `cargo test -p <crate> [extra]` (unit and integration tests); `frontend` and `scripts` run Vitest
- * on that directory.
+ * `cargo test -p <crate> [extra]` (unit and integration tests); `frontend`, `scripts` and `extension`
+ * run Vitest on that directory.
  */
 export function focusedCommands(argv, workspace) {
   const args = argv[0] === '--' ? argv.slice(1) : argv;

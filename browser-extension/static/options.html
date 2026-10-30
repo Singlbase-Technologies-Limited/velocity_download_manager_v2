@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Velocity V2 extension settings</title><link rel="stylesheet" href="style.css"><style>body{max-width:560px;padding:20px}</style></head>
+<body>
+<h1><img src="icons/icon-32.png" alt="">Velocity V2 extension settings</h1>
+<p class="hint">Links are passed to the Velocity Download Manager V2 desktop application through the browser's native messaging. Cookies and logins from the browser are not sent; downloads that need them may fail in Velocity V2, and then you can download them in the browser.</p>
+<form id="form">
+  <label for="mode">When the browser starts a download</label>
+  <select id="mode">
+    <option value="auto">Send matching downloads to Velocity V2</option>
+    <option value="ask">Ask me first</option>
+    <option value="off">Let the browser download</option>
+  </select>
+  <label for="fileTypes">File types to send <span class="hint">(extensions, separated by spaces)</span></label>
+  <textarea id="fileTypes"></textarea>
+  <label for="minSizeMib">Also send downloads of at least <span class="hint">(MiB, 0 disables; only when the browser knows the size)</span></label>
+  <input id="minSizeMib" type="number" min="0" max="100000">
+  <label for="allowDomains">Only these sites <span class="hint">(one domain per line; empty means all)</span></label>
+  <textarea id="allowDomains"></textarea>
+  <label for="denyDomains">Never these sites <span class="hint">(one domain per line, subdomains included)</span></label>
+  <textarea id="denyDomains"></textarea>
+  <label class="check"><input id="includePrivate" type="checkbox"> Also handle downloads in private windows</label>
+  <label class="check"><input id="contextMenu" type="checkbox"> Show “Download with Velocity V2” in the right-click menu</label>
+  <label class="check"><input id="captureTorrents" type="checkbox"> Send magnet links and .torrent downloads to Velocity V2 <span class="hint">(off by default; magnet clicks need access to pages, which the browser asks for; Velocity V2 always asks before adding a torrent)</span></label>
+  <p id="torrentAccess" class="hint" role="status"></p>
+  <p class="row"><button class="primary" type="submit">Save</button><button id="reset" type="button">Restore defaults</button><span id="saved" class="ok" role="status"></span></p>
+</form>
+<script src="options.js"></script>
+</body></html>

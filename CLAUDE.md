@@ -58,7 +58,7 @@ When you read or edit a matching file, Claude Code loads the rule for that area.
 | [transfer-engine.md](.claude/rules/transfer-engine.md) | The direct-download engine, the libcurl layer and the SFTP layer (`crates/velocity-transfer`, created by #37; `crates/velocity-curl`, created by #35; `crates/velocity-sftp`, created by #53) |
 | [persistence.md](.claude/rules/persistence.md) | Database, migrations and checkpoints |
 | [frontend.md](.claude/rules/frontend.md) | `src/` |
-| [browser-integration.md](.claude/rules/browser-integration.md) | The browser extension and native host (paths pending #64, #65) |
+| [browser-integration.md](.claude/rules/browser-integration.md) | The browser extension and native host (the host's path pending #65) |
 | [security.md](.claude/rules/security.md) | Native code, scripts and configuration that cross a trust boundary |
 | [testing.md](.claude/rules/testing.md) | Test files and fixtures |
 | [ci-release.md](.claude/rules/ci-release.md) | CI workflows, scripts and packaging configuration |
