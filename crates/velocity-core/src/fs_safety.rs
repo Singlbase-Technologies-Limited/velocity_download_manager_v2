@@ -46,8 +46,8 @@ fn not_plain(path: &Path, what: &str) -> io::Error {
 }
 
 /// Whether `path` names something inside `root`, judged on the names alone: `root` followed by one
-/// or more plain names. A `..`, a `.`, a drive or a root on the way is refused, so the answer
-/// never depends on what is on disk.
+/// or more plain names. A `..`, a drive or a root on the way is refused, so the answer never
+/// depends on what is on disk. (A `.` after the start is no step: `Path` drops it.)
 pub fn inside(root: &Path, path: &Path) -> bool {
     let Ok(rest) = path.strip_prefix(root) else {
         return false;
@@ -186,7 +186,8 @@ mod tests {
             &root,
             &root.join("sub").join("..").join("..").join("a.bin")
         ));
-        assert!(!inside(&root, &root.join(".").join("a.bin")));
+        // A `.` in the middle is no step at all: `Path` drops it, so this is `root/a.bin`.
+        assert!(inside(&root, &root.join(".").join("a.bin")));
         assert!(!inside(&root, &Path::new("downloads").join("chosen-not")));
         assert!(!inside(&root, &Path::new("elsewhere").join("a.bin")));
     }
