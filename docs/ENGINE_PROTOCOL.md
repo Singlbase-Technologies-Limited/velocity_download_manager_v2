@@ -98,7 +98,7 @@ The rules below are the engine's. The helper follows them too, with its own mess
 - **An orphan the running child reports again** is the child's again: the ledger stops answering for it.
 - **Crash detection:** a crash is noticed when the engine's stdout ends or breaks the protocol. On Windows that took a median of 0.02 ms and at most 0.7 s over 22 measured kills ([measurements](research/engine-mode-costs.md#rerun-after-39)).
 - **Lost transfers:** each transfer that was unfinished is reported as Failed with a retryable error, "the transfer engine stopped unexpectedly" (PO decision on #39).
-  - Their part files stay on disk; checkpoints (#43) will resume from them.
+  - Their part files stay on disk, and the manager resumes each from its last checkpoint once an engine runs ([ENGINE_CONTRACT.md](ENGINE_CONTRACT.md#the-engine-stopping-58)).
   - The supervisor keeps answering for these transfers: `snapshot` lists them and `remove` forgets them. Other commands for them fail with `INVALID_STATE`.
 - **Restart:** it starts a new engine after a backoff of 1, 2, 4, 8 and 16 seconds, up to 32, doubling with each crash in the window. A start that fails counts as a crash.
 - **The cap:** more than 5 crashes within 5 minutes (V1's limit) leave the engine *unavailable*. Commands then fail with `ENGINE_UNAVAILABLE` until `restart()`, the "Restart transfer engine" action, clears the count and starts a new engine.

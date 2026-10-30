@@ -43,6 +43,7 @@ Every document in `docs/` is listed here. A new document is added to this map in
 | [CI_DIAGNOSTICS.md](CI_DIAGNOSTICS.md) | Read a failed CI run: the statuses, the `ci-diagnostics` report, INFRA versus FAIL, and the re-run policy |
 | [AGENT_GUIDANCE.md](AGENT_GUIDANCE.md) | See how AGENTS.md, CLAUDE.md, rules and skills are organised, what `pnpm check:guidance` checks, and the monthly prompt audit |
 | [AI_AGENT_ACCOUNT.md](AI_AGENT_ACCOUNT.md) | Find out which GitHub account an AI agent uses, and how to check it |
+| [REPOSITORY_SETTINGS.md](REPOSITORY_SETTINGS.md) | See each GitHub setting of this repository, its value, why, and a read-only command that checks it |
 
 ## Decisions and research
 
