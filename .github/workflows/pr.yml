@@ -86,10 +86,12 @@ jobs:
   code:
     name: Code checks (check:pr)
     needs: select
-    # Runs whenever the selection decided it is needed, even if the docs check in the same job
-    # failed: otherwise one broken link would hide every code failure (seen on #91's fixture A).
-    # If the selection step itself failed, there is no output, and the job is reported BLOCKED.
-    if: ${{ !cancelled() && needs.select.outputs.code == 'true' }}
+    # Runs when the selection decided it is needed. Until #76 it ran even after a failed docs check,
+    # so that one broken link wouldn't hide every code failure (#91's fixture A).
+    # Only after the selection succeeded, its docs and guidance checks included: a broken link
+    # or guidance rule, found in seconds, stops the run before the long checks (PO decision on
+    # #76, 2026-10-30; minutes are scarce, #204). The job is then reported BLOCKED by `select`.
+    if: ${{ needs.select.result == 'success' && needs.select.outputs.code == 'true' }}
     runs-on: ubuntu-latest
     # Long enough for a cold build of Boost and libtorrent (#205); a warm run takes far less.
     timeout-minutes: 90
@@ -168,7 +170,10 @@ jobs:
   native-windows:
     name: Native build and libcurl tests (Windows)
     needs: select
-    if: ${{ !cancelled() && needs.select.outputs.native == 'true' }}
+    # Only after the selection succeeded, its docs and guidance checks included: a broken link
+    # or guidance rule, found in seconds, stops the run before the long checks (PO decision on
+    # #76, 2026-10-30; minutes are scarce, #204). The job is then reported BLOCKED by `select`.
+    if: ${{ needs.select.result == 'success' && needs.select.outputs.native == 'true' }}
     runs-on: windows-latest
     # Long enough for a cold build of Boost and libtorrent (#205); a warm run takes far less.
     timeout-minutes: 90

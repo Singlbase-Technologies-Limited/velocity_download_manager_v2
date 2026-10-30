@@ -4,8 +4,9 @@
 # saves the Rust dependency caches (one per OS), which pull requests restore. A red run opens the
 # tracking issue "main is failing", and the next green run closes it (scripts/ci-main-status.mjs).
 #
-# Failure collection (#91, docs/CI_DIAGNOSTICS.md): every job runs to completion and writes a
-# report; `summary` combines them into one table and the `ci-diagnostics` artifact.
+# Failure collection (#91, docs/CI_DIAGNOSTICS.md): every job that runs completes and writes a
+# report; `summary` combines them into one table and the `ci-diagnostics` artifact. A failed `select`
+# (its docs or guidance check) stops the Linux and Windows jobs, which are reported BLOCKED (#76).
 #
 # Temporarily manual-only (#204, docs/CI.md#while-ci-runs-by-hand-only): to save Actions minutes,
 # the `push` trigger on `main` is off, and this workflow runs only when started by hand, once per
@@ -100,7 +101,10 @@ jobs:
   linux:
     name: Linux checks
     needs: select
-    if: ${{ !cancelled() && needs.select.outputs.code == 'true' }}
+    # Only after the selection succeeded, its docs and guidance checks included: a broken link
+    # or guidance rule, found in seconds, stops the run before the long checks (PO decision on
+    # #76, 2026-10-30; minutes are scarce, #204). The job is then reported BLOCKED by `select`.
+    if: ${{ needs.select.result == 'success' && needs.select.outputs.code == 'true' }}
     runs-on: ubuntu-latest
     # Long enough for a cold build of Boost and libtorrent (#205); a warm run takes far less.
     timeout-minutes: 90
@@ -196,7 +200,10 @@ jobs:
   windows:
     name: Windows checks (check:fast)
     needs: select
-    if: ${{ !cancelled() && needs.select.outputs.windows == 'true' }}
+    # Only after the selection succeeded, its docs and guidance checks included: a broken link
+    # or guidance rule, found in seconds, stops the run before the long checks (PO decision on
+    # #76, 2026-10-30; minutes are scarce, #204). The job is then reported BLOCKED by `select`.
+    if: ${{ needs.select.result == 'success' && needs.select.outputs.windows == 'true' }}
     runs-on: windows-latest
     # Long enough for a cold build of Boost and libtorrent (#205); a warm run takes far less.
     timeout-minutes: 120

@@ -154,6 +154,8 @@ GitHub's guidance is in [secure use](https://docs.github.com/en/actions/referenc
 
 Every run completes every check that can still run, and reports all failures in one place (#91). The details are in [CI_DIAGNOSTICS.md](CI_DIAGNOSTICS.md).
 
+**The quick checks come first** (PO decision on #76, 2026-10-30). The docs and guidance checks run in the `select` job and take seconds. When either fails, the Linux and Windows jobs don't start, and the summary reports them BLOCKED by `select`. The run ends in about a minute instead of 30 to 40, so a broken link costs a minute to find, not a whole run. Fix it and run again; the code checks then run. Until #76, the code jobs ran even after a failed docs check, so that one broken link wouldn't hide every code failure (#91).
+
 - **Checks run to completion:**
   - The check runner runs every check even after one fails.
   - Clippy uses `--keep-going` and `cargo test` uses `--no-fail-fast`.
