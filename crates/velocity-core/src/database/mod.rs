@@ -229,7 +229,7 @@ fn configure(conn: &Connection) -> Result<(), DatabaseError> {
 fn open_with(path: &Path, migrations: &Migrations<'_>) -> Result<Database, DatabaseError> {
     let existed = match std::fs::symlink_metadata(path) {
         // Never follow a link to somewhere else (persistence rule).
-        Ok(m) if m.file_type().is_symlink() || !m.is_file() => {
+        Ok(m) if crate::fs_safety::is_link(&m) || !m.is_file() => {
             return Err(DatabaseError::new(
                 ErrorCode::InvalidPath,
                 format!("{} is a link or not a file", path.display()),
@@ -397,6 +397,27 @@ mod tests {
             let mode = std::fs::metadata(dir.db()).unwrap().permissions().mode();
             assert_eq!(mode & 0o777, 0o600, "owner-only");
         }
+    }
+
+    /// #72: SQLite gives its WAL and shared-memory files the database file's permissions, so the
+    /// checkpoints written there are owner-only too.
+    #[cfg(unix)]
+    #[test]
+    fn the_wal_and_shared_memory_files_are_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = Dir::new("wal-mode");
+        let db = Database::open(&dir.db()).expect("opens");
+        db.insert_download(&sample("d-0001")).expect("written");
+        for suffix in ["-wal", "-shm"] {
+            let mut name = dir.db().into_os_string();
+            name.push(suffix);
+            let mode = std::fs::metadata(&name)
+                .unwrap_or_else(|e| panic!("{suffix}: {e}"))
+                .permissions()
+                .mode();
+            assert_eq!(mode & 0o777, 0o600, "{suffix} is owner-only");
+        }
+        drop(db);
     }
 
     #[cfg(unix)]

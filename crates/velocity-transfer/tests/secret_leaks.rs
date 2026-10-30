@@ -1,11 +1,13 @@
-//! #70's acceptance test: after downloads with an HTTP login and cookie, an FTP login, and SFTP key
-//! and password logins, no secret is anywhere V2 writes or shows: the database's files (WAL
-//! included), the checkpoints in it, the app's log, or a child process's arguments and
-//! environment. Real processes, real files and the local fixtures (docs/SECURITY.md#secrets-70).
+//! #70's acceptance test, on #71's shared scan: after downloads with an HTTP login and cookie, an
+//! FTP login, and SFTP key and password logins, no secret is anywhere V2 writes or shows: the
+//! database's files (WAL included), the checkpoints in it, the part and finished files, temporary
+//! files, the app's log, the diagnostics export, or a child process's arguments and environment
+//! (the running engine on Linux, the command it's started with everywhere). Real processes, real
+//! files and the local fixtures (docs/SECURITY.md#secrets-70, docs/TESTING.md).
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 use tracing_subscriber::layer::SubscriberExt;
 use velocity_core::database::Database;
@@ -14,6 +16,7 @@ use velocity_core::logs::AppLog;
 use velocity_core::manager::Manager;
 use velocity_core::transfer::{Credentials, Header, SshKey, TransferSpec};
 use velocity_test_http::ftp::{FtpOptions, FtpServer};
+use velocity_test_http::leaks::LeakScan;
 use velocity_test_http::ssh::{HostKey, PasswordServer, SshServer, KEY_PASSPHRASE};
 use velocity_test_http::{seeded_bytes, ServerOptions, TestServer};
 use velocity_transfer::engine::InProcessEngine;
@@ -91,30 +94,6 @@ fn status(m: &Manager, id: &str) -> Option<DownloadStatus> {
     m.get(id).map(|r| r.status)
 }
 
-/// Every file under `dir` that holds one of `secrets`, with the secret.
-fn files_holding(dir: &Path, secrets: &[&str]) -> Vec<String> {
-    let mut found = Vec::new();
-    let mut stack = vec![dir.to_owned()];
-    while let Some(d) = stack.pop() {
-        for entry in std::fs::read_dir(&d).unwrap().flatten() {
-            let path = entry.path();
-            if path.is_dir() {
-                stack.push(path);
-                continue;
-            }
-            let Ok(bytes) = std::fs::read(&path) else {
-                continue;
-            };
-            for secret in secrets {
-                if bytes.windows(secret.len()).any(|w| w == secret.as_bytes()) {
-                    found.push(format!("{} holds {secret}", path.display()));
-                }
-            }
-        }
-    }
-    found
-}
-
 /// Logs every download's record, one line each, the way the app logs what the manager reports:
 /// the core logs nothing while a download runs, so the log check needs these lines to read.
 fn log_records(m: &Manager) {
@@ -123,13 +102,13 @@ fn log_records(m: &Manager) {
     }
 }
 
-/// The log lines that hold one of `secrets`.
-fn log_holding(log: &AppLog, secrets: &[&str]) -> Vec<String> {
-    log.lines()
-        .into_iter()
-        .filter(|l| secrets.iter().any(|s| l.message.contains(s)))
-        .map(|l| l.message)
-        .collect()
+/// Scans the app's log and the diagnostics export, as the user would save it.
+fn scan_log_and_export(scan: &mut LeakScan, log: &AppLog, m: &Manager) {
+    for line in log.lines() {
+        scan.text("the app's log", &line.message);
+    }
+    let export = m.diagnostics(log.lines(), now()).export().unwrap();
+    scan.text("the diagnostics export", &export);
 }
 
 #[test]
@@ -137,6 +116,7 @@ fn http_and_ftp_logins_leave_no_trace_through_the_child_engine() {
     let log = AppLog::new();
     let _logging =
         tracing::subscriber::set_default(tracing_subscriber::registry().with(log.layer()));
+    let since = SystemTime::now();
     let dir = Dir::new("child");
     let data = seeded_bytes(2_000_000, 70);
     let http = TestServer::start(
@@ -153,10 +133,11 @@ fn http_and_ftp_logins_leave_no_trace_through_the_child_engine() {
             ..FtpOptions::default()
         },
     );
-    let secrets = [HTTP_PASSWORD, HTTP_COOKIE, FTP_PASSWORD];
+    let mut scan = LeakScan::new(&[HTTP_PASSWORD, HTTP_COOKIE, FTP_PASSWORD]);
     {
         let db = Arc::new(Database::open(&dir.0.join("velocity.sqlite3")).unwrap());
         let engine = SupervisedEngine::start(program(), SupervisorOptions::default()).unwrap();
+        let pid = engine.process_id().expect("the engine runs");
         let mut m = Manager::open(Box::new(engine), Arc::clone(&db)).unwrap();
         let files = dir.0.join("files");
         let http_id = m
@@ -199,11 +180,8 @@ fn http_and_ftp_logins_leave_no_trace_through_the_child_engine() {
             status(m, &http_id) == Some(DownloadStatus::Paused)
         });
         m.pump(now());
-        assert_eq!(
-            files_holding(&dir.0, &secrets),
-            Vec::<String>::new(),
-            "while paused"
-        );
+        // While the logins are in use: the files, and the engine as it runs.
+        scan.files(&dir.0).process("the running engine", pid);
         m.resume(&http_id).unwrap();
         for id in [&http_id, &ftp_id] {
             until(&mut m, id, "completed", |m| {
@@ -212,19 +190,13 @@ fn http_and_ftp_logins_leave_no_trace_through_the_child_engine() {
         }
         m.pump(now());
         log_records(&m);
-        assert_eq!(
-            files_holding(&dir.0, &secrets),
-            Vec::<String>::new(),
-            "with the WAL"
-        );
+        // With the WAL still open.
+        scan.files(&dir.0);
+        scan_log_and_export(&mut scan, &log, &m);
     }
-    // Closed: the database's files as they stay on disk.
-    assert_eq!(
-        files_holding(&dir.0, &secrets),
-        Vec::<String>::new(),
-        "after closing"
-    );
-    assert_eq!(log_holding(&log, &secrets), Vec::<String>::new());
+    // Closed: the database's files as they stay on disk, and any temporary file written meanwhile.
+    scan.files(&dir.0).temp_files(since);
+    scan.assert_clean();
     assert!(!log.lines().is_empty(), "the log was captured");
 }
 
@@ -258,6 +230,7 @@ fn sftp_key_and_password_logins_leave_no_trace() {
     let log = AppLog::new();
     let _logging =
         tracing::subscriber::set_default(tracing_subscriber::registry().with(log.layer()));
+    let since = SystemTime::now();
     let dir = Dir::new("sftp");
     let files = dir.0.join("files");
     let db = Arc::new(Database::open(&dir.0.join("velocity.sqlite3")).unwrap());
@@ -341,8 +314,8 @@ fn sftp_key_and_password_logins_leave_no_trace() {
     }
     m.pump(now());
     log_records(&m);
+    let mut scan = LeakScan::new(&secrets);
+    scan_log_and_export(&mut scan, &log, &m);
     drop(m);
-    let secrets: Vec<&str> = secrets.iter().map(String::as_str).collect();
-    assert_eq!(files_holding(&dir.0, &secrets), Vec::<String>::new());
-    assert_eq!(log_holding(&log, &secrets), Vec::<String>::new());
+    scan.files(&dir.0).temp_files(since).assert_clean();
 }

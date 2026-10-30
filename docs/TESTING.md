@@ -107,7 +107,7 @@ From most numerous and fastest to fewest and slowest. Each layer proves what the
 | Mirrors and Metalink | **Built** (#46): wrong piece hashes, as piece lists the tests supply, with a byte sent flipped once. **Built** (#54): a Metalink corpus (`crates/velocity-core/tests/fixtures/metalink/`: RFC 5854's example, Metalink 4 with subfolders and sources V2 can't use, Metalink 3) with malicious documents in the unit tests (entity bombs, external entities, unsafe and duplicate names, oversized documents), the HTTP server's `Content-Type` (`FileHeaders::content_type`), and an end-to-end test of a followed link whose file gets one bad piece. **Built** (#55): mirrors as several local servers in `crates/velocity-transfer/tests/mirrors.rs`: one missing the file, one dead (a closed port), one with other bytes of the same size, a throttled one beside a fast one, ETags that do or don't match, and the requests a mirror received (no login, no custom header) | Failover, integrity | #46, #54, #55 |
 | BitTorrent tracker and peers | Local tracker, libtorrent seeders and leechers; DHT, LPD and peer exchange off | Torrents | **#62** |
 | Fake desktop IPC and browser harness | Malformed messages, the app unavailable, wrong caller | Native host, extension | **#65**, #64 |
-| Disk and crash faults | Disk full (quota), permission denied, `kill -9` at random points | Recovery | **#74**, #43 |
+| Disk and crash faults | **Built:** a full disk and a refused write, simulated by velocity-transfer's test-only `test-faults` feature (no real small drive, PO decision on #74); the engine (#43) and the app (#74) killed at random points ([ENGINE_INTERNALS.md](ENGINE_INTERNALS.md#tests)) | Recovery | **#74**, #43 |
 | Benchmark server | Byte and request counters, throttle modes, h2 and TLS, kill and resume | V2's own benchmarks, later (ADR-0009) | #77 |
 
 ## How the engine is tested
@@ -115,7 +115,17 @@ From most numerous and fastest to fewest and slowest. Each layer proves what the
 - **Scheduler logic without a network.** `velocity-transfer` runs against a **simulated transport**: random chunk sizes, delays, splits, cancellations, retries, duplicate and late callbacks, `200` substitutions and simulated crashes (runtime state dropped, durable coverage kept). After every simulated event, a property test asserts invariants I1–I7 and byte equality with the source.
 - **Protocol behaviour with real libcurl.** `velocity-curl` and the engine run against the fixture servers above, so abort-at-boundary, HTTP/2 stream resets and libcurl's real callbacks are covered.
 - **Acceptance rows.** Each row of the research report's section 5.4 becomes at least one named fixture test, checking the final SHA-256, the status shown and the wasted bytes.
-- **Crash recovery.** `kill -9` at random points over 100 trials: always resumes; re-downloaded bytes are at most one checkpoint interval plus in-flight data (#43, #74).
+- **Crash recovery.** `kill -9` at random points over 100 trials: always resumes; re-downloaded bytes are at most one checkpoint interval plus in-flight data (#43). The app killed the same way comes back from its database and finishes the right file (#74).
+- **Disk faults.** A full disk or a refused write mid-download fails with its own message, keeps what reached the disk, and resumes once fixed (#74).
+
+## The secret-leak scan (#71)
+
+`velocity_test_http::leaks::LeakScan` looks for a test's known secrets everywhere V2 writes or shows something. A test that uses a login, a cookie, a key's passphrase or a tracker passkey runs it at the end:
+
+- **Where it looks:** every file under the folders the test gives it (the database and its WAL, checkpoints, part and finished files), files in the system's temporary folder changed since the test began (three levels deep), texts such as the app's log, the diagnostics export and what the details panel shows, and a running child process's arguments and environment.
+- **In what forms:** each secret as written, percent-encoded, and in base64 at each of its three possible alignments, so a `Basic` login or an encoded link is caught too. A secret must be at least 8 bytes, so it can't match by chance.
+- **A running child, on Linux only:** it reads `/proc/<pid>/cmdline` and `environ` of the engine and the torrent helper. On Windows that part prints NOT RUN, and `secret_leaks.rs` checks the command a child is started with instead: one fixed argument and a cleared environment (PO decision on #71).
+- **Where it runs:** `crates/velocity-transfer/tests/secret_leaks.rs` (HTTP login and cookie and FTP login through the child engine; SFTP key and password logins) and `crates/velocity-torrent/tests/manager.rs` (a private tracker's passkey, through the manager and the torrent helper). The scan's own tests plant each kind of leak and check it is found.
 
 ## How the frontend is tested
 

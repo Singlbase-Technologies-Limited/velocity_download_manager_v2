@@ -6,7 +6,7 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
-use crate::links::is_link;
+use crate::fs_safety::is_link;
 use crate::redact::redact;
 
 /// How many crash logs are kept; the oldest go first.

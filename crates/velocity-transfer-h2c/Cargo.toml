@@ -1,17 +1,17 @@
 [package]
 name = "velocity-transfer-h2c"
-description = "The direct-download engine's tests that need velocity-curl's test-only features (test-only): HTTP/2 without TLS, and TLS against a test CA"
+description = "The direct-download engine's tests that need test-only features (test-only): HTTP/2 without TLS, TLS against a test CA, and write faults"
 version.workspace = true
 edition.workspace = true
 publish.workspace = true
 rust-version.workspace = true
 
-# Only tests live here (#46). The test-h2c and test-ca features refuse an optimised build (PO
-# decisions on #47 and #69), and a dev-dependency's features reach every example of the crate that
+# Only tests live here (#46). The test-h2c and test-ca features, and velocity-transfer's
+# test-faults (#74), refuse an optimised build (PO decisions on #47, #69 and #74), and a dev-dependency's features reach every example of the crate that
 # declares it, so velocity-transfer's own examples couldn't be built for release while its tests
 # turned them on.
 [dev-dependencies]
 velocity-core = { path = "../velocity-core" }
-velocity-transfer = { path = "../velocity-transfer" }
+velocity-transfer = { path = "../velocity-transfer", features = ["test-faults"] }
 velocity-curl = { path = "../velocity-curl", features = ["test-h2c", "test-ca"] }
 velocity-test-http = { path = "../velocity-test-http" }
