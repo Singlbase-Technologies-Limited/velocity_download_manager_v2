@@ -39,6 +39,8 @@ import {
   TorrentPreviewSchema,
   TrackerStatusSchema,
   SettingsSchema,
+  BrowserIntegrationSchema,
+  BrowserRequestSchema,
 } from './contract';
 import { z } from 'zod';
 
@@ -139,6 +141,11 @@ describe('contract fixtures generated from Rust', () => {
     expect(TorrentPreviewSchema.parse(f.preview)).toEqual(f.preview);
     expect(z.array(TrackerStatusSchema).parse(f.trackers)).toEqual(f.trackers);
     expect(z.array(PeerStatusSchema).parse(f.peers)).toEqual(f.peers);
+  });
+
+  it('reads the browser integration and a link from the browser (#65)', () => {
+    expect(BrowserIntegrationSchema.parse(fixture('browser-integration.json'))).toEqual(fixture('browser-integration.json'));
+    expect(BrowserRequestSchema.parse(fixture('browser-request.json'))).toEqual(fixture('browser-request.json'));
   });
 
   it('the list columns: exactly the ids the schema knows, in order, the defaults and the width bounds (#59)', () => {

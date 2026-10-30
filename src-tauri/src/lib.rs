@@ -1,6 +1,7 @@
 //! Tauri desktop shell. Commands stay thin: they delegate to `velocity-core`.
 
 mod adding;
+mod browser;
 mod categories;
 mod diagnostics;
 mod downloads;
@@ -45,7 +46,10 @@ pub fn run() {
             // Crash logs in the app's own folder, never sent anywhere (#28).
             diagnostics::install_crash_logs(paths.crash_logs_dir());
             // The downloads (#58): the database, the engine and the manager.
-            app.manage(downloads::start(app.handle(), &paths)?);
+            let downloads = downloads::start(app.handle(), &paths)?;
+            // The browser bridge (#65): the native host reaches the app through it.
+            browser::start(app.handle(), &paths, std::sync::Arc::clone(&downloads));
+            app.manage(downloads);
             // The tray (#29). Without one, closing quits and the app never starts hidden.
             let shell = app.state::<shell::ShellState>();
             let has_tray = tray::create(app.handle()).is_ok();
@@ -88,6 +92,9 @@ pub fn run() {
             downloads::restart_engine,
             downloads::trust_host_key,
             downloads::allow_download,
+            browser::get_browser_integration,
+            browser::register_browser,
+            browser::unregister_browser,
             downloads::choose_torrent_files,
             downloads::set_torrent_seeding,
             downloads::restart_torrent_helper,

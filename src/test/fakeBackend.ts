@@ -10,6 +10,7 @@ import {
   type AddResult,
   type AppInfo,
   type BatchResult,
+  type BrowserIntegration,
   type Capabilities,
   type Category,
   type DestinationCheck,
@@ -57,6 +58,7 @@ export interface FakeState {
   history: (query: HistoryQuery) => HistoryPage;
   /** The Settings screen's settings, as `set_settings` saved them, and the helper's network (#30). */
   appSettings: Settings;
+  browser: BrowserIntegration;
   network: NetworkStatus;
   /** Commands that fail, with the code they fail with. */
   failures: Partial<Record<string, ErrorCode>>;
@@ -123,6 +125,7 @@ export function installFakeBackend(over: Partial<FakeState> = {}): FakeState {
     exportedTo: null,
     history: () => ({ entries: [], total: 0 }),
     appSettings: fixture('settings.json') as Settings,
+    browser: fixture('browser-integration.json') as BrowserIntegration,
     network: { listenPort: 6890, listenError: null, portMapping: { state: 'off' } },
     failures: {},
     programs: [],
@@ -192,6 +195,17 @@ export function installFakeBackend(over: Partial<FakeState> = {}): FakeState {
         case 'trust_host_key':
         case 'allow_download':
           return null;
+        case 'get_browser_integration':
+          return state.browser;
+        case 'register_browser':
+        case 'unregister_browser':
+          state.browser = {
+            ...state.browser,
+            registrations: state.browser.registrations.map((r) =>
+              r.browser === args.browser ? { ...r, registered: cmd === 'register_browser', hostMatches: cmd === 'register_browser' } : r,
+            ),
+          };
+          return state.browser;
         case 'pause_downloads':
         case 'resume_downloads':
         case 'cancel_downloads':

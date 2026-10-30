@@ -5,7 +5,7 @@
 import { z } from 'zod';
 
 /** Must equal `velocity_core::COMMAND_API_VERSION`; the app refuses to start on a mismatch. */
-export const COMMAND_API_VERSION = 18;
+export const COMMAND_API_VERSION = 19;
 
 const bytes = z.number().int().nonnegative();
 
@@ -709,6 +709,46 @@ export const NewTorrentSettingsSchema = z.strictObject({
   uploadLimitKib: z.number().int().nonnegative(),
 });
 
+/** What the app does with links from the browser extension (#65). */
+export const BrowserSettingsSchema = z.strictObject({
+  acceptRequests: z.boolean(),
+  confirmBeforeAdding: z.boolean(),
+});
+
+/** The browsers the native host can be registered with (#65). */
+export const BrowserSchema = z.enum(['chrome', 'chromium', 'edge', 'brave', 'firefox']);
+export type Browser = z.infer<typeof BrowserSchema>;
+
+export const RegistrationSchema = z.strictObject({
+  browser: BrowserSchema,
+  registered: z.boolean(),
+  manifestPath: z.string(),
+  /** The registered manifest starts this copy of the host; false after the app moved, until registered again. */
+  hostMatches: z.boolean(),
+});
+export type Registration = z.infer<typeof RegistrationSchema>;
+
+/** The Settings screen's Browser section (#65): the native host beside the app (`null` when missing), V2's names, and each browser's registration. */
+export const BrowserIntegrationSchema = z.strictObject({
+  hostPath: z.string().nullable(),
+  nativeHostName: z.string(),
+  chromeExtensionIds: z.array(z.string()),
+  firefoxExtensionId: z.string(),
+  registrations: z.array(RegistrationSchema),
+});
+export type BrowserIntegration = z.infer<typeof BrowserIntegrationSchema>;
+
+/** A link the browser sent, for the Add dialog (the `browser-request` event, #65). */
+export const BrowserRequestSchema = z.strictObject({
+  url: z.string().min(1),
+  fileName: z.string().nullable(),
+  referrer: z.string().nullable(),
+  fileSize: z.number().int().nonnegative().nullable(),
+  mime: z.string().nullable(),
+  source: z.enum(['intercept', 'contextMenu', 'popup']),
+});
+export type BrowserRequest = z.infer<typeof BrowserRequestSchema>;
+
 export const SettingsSchema = z.strictObject({
   general: GeneralSettingsSchema,
   notifications: NotificationSettingsSchema,
@@ -720,6 +760,7 @@ export const SettingsSchema = z.strictObject({
   torrent: TorrentSettingsSchema,
   newTorrents: NewTorrentSettingsSchema,
   storage: StorageSettingsSchema,
+  browser: BrowserSettingsSchema,
 });
 export type Settings = z.infer<typeof SettingsSchema>;
 

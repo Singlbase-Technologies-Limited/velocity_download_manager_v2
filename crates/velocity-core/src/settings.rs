@@ -10,6 +10,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::app_settings::{GeneralSettings, NotificationSettings};
+use crate::browser::BrowserSettings;
 use crate::database::settings::Section;
 use crate::destination::FolderSettings;
 use crate::domain::ErrorCode;
@@ -160,6 +161,8 @@ pub struct Settings {
     pub torrent: TorrentSettings,
     pub new_torrents: NewTorrentSettings,
     pub storage: StorageSettings,
+    /// Links from the browser extension (#65).
+    pub browser: BrowserSettings,
 }
 
 impl Settings {
@@ -176,6 +179,7 @@ impl Settings {
             torrent: self.torrent.checked()?,
             new_torrents: self.new_torrents.checked()?,
             storage: self.storage.checked()?,
+            browser: self.browser.checked()?,
         })
     }
 
@@ -200,6 +204,7 @@ impl Settings {
             json(TorrentSettings::KEY, &self.torrent)?,
             json(NewTorrentSettings::KEY, &self.new_torrents)?,
             json(StorageSettings::KEY, &self.storage)?,
+            json(BrowserSettings::KEY, &self.browser)?,
         ])
     }
 
@@ -222,6 +227,7 @@ mod tests {
         assert_eq!(s.queue.max_concurrent_downloads, 3);
         assert_eq!(s.engine, EngineSettings::DEFAULT);
         assert_eq!(s.storage.history_retention_days, 90);
+        assert!(s.browser.accept_requests && s.browser.confirm_before_adding);
     }
 
     #[test]

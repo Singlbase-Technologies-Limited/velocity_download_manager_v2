@@ -1095,6 +1095,22 @@ mod tests {
             );
         }
 
+        /// The browser bridge's types (#65): the Settings section's integration, and the link
+        /// the `browser-request` event carries.
+        #[test]
+        fn contract_browser() {
+            use crate::browser::bridge::BrowserPrompt;
+            use crate::browser::registration::BrowserIntegration;
+            check(
+                "browser-integration.json",
+                serde_json::to_value(BrowserIntegration::sample()).unwrap(),
+            );
+            check(
+                "browser-request.json",
+                serde_json::to_value(BrowserPrompt::sample()).unwrap(),
+            );
+        }
+
         /// The names `src/naming.ts` must give, from the Rust rules (#31).
         #[test]
         fn contract_naming_cases() {

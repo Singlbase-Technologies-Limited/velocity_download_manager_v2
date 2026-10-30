@@ -5,6 +5,10 @@
     "globalDownloadLimitKib": 0,
     "userAgent": null
   },
+  "browser": {
+    "acceptRequests": true,
+    "confirmBeforeAdding": true
+  },
   "downloads": {
     "autoCategorize": true,
     "categorySubfolders": true,

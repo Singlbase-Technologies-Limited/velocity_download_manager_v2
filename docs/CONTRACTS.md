@@ -118,7 +118,9 @@ The commands of [`src-tauri/src/shell.rs`](../src-tauri/src/shell.rs) (#29). A c
 | `complete_onboarding` | `directory`: an existing folder, not a link | `ShellSettings`; `INVALID_PATH`, or `DESTINATION_MISSING` when it doesn't exist |
 | `choose_directory` | `initial` (`null`, or a folder to start in) | the folder chosen with the system's chooser, or `null` when the user cancels |
 | `quit_app` | — | nothing: the app quits. The window calls it only after the user confirms |
-| `get_settings` | — | `Settings`: every section the Settings screen edits ([SETTINGS.md](SETTINGS.md#the-settings-screen)). The fixture `settings.json` has the defaults. Since contract version 17 (#30) |
+| `get_browser_integration` | — | `BrowserIntegration`: `hostPath` (the native host beside the app, `null` when missing), `nativeHostName`, `chromeExtensionIds`, `firefoxExtensionId`, and `registrations`, one `{ browser, registered, manifestPath, hostMatches }` per browser (`chrome`, `chromium`, `edge`, `brave`, `firefox`). The fixture `browser-integration.json`. Since contract version 19 (#65) |
+| `register_browser`, `unregister_browser` | `browser` | `BrowserIntegration` as it is now. Registering needs the host beside the app (`NOT_FOUND`); unregistering removes only V2's registration ([BROWSER_EXTENSION.md](BROWSER_EXTENSION.md#registering-with-each-browser)). Since contract version 19 (#65) |
+| `get_settings` | — | `Settings`: every section the Settings screen edits ([SETTINGS.md](SETTINGS.md#the-settings-screen)). The fixture `settings.json` has the defaults. Since contract version 17 (#30); the `browser` section since version 19 (#65) |
 | `set_settings` | `settings` | the `Settings` saved; `INVALID_INPUT`, with nothing saved or applied, when a section is out of bounds |
 | `reset_settings` | — | the defaults saved, keeping the download folder |
 | `get_torrent_network` | — | the torrent helper's `NetworkStatus`: `listenPort`, `listenError` and `portMapping` |
@@ -142,6 +144,8 @@ The commands of [`src-tauri/src/adding.rs`](../src-tauri/src/adding.rs) (#60). A
 - **The chosen folder** is created only with `createDirectory`, one level at a time and never through a link (`INVALID_PATH`).
 - **A torrent's category** comes from its largest file, or from a magnet link's display name.
 - **`.torrent` links** (an `http` or `https` link whose path ends in `.torrent`, as V1 told them apart) are fetched through the transfer engine into the app's `torrent-links` folder, at most 16 MiB, then added as the file. The file is kept without its trackers, which stay in memory as every torrent's do. A fetch that fails is `notFetched` with the server's or network's reason; one larger than 16 MiB, or that isn't a torrent, is `failed` with `INVALID_INPUT`.
+
+**The `browser-request` event** (#65) carries a link the browser sent for the user to check: `{ url, fileName, referrer, fileSize, mime, source }` (`source` is `intercept`, `contextMenu` or `popup`; the fixture `browser-request.json`). The window opens the Add dialog with it, marked as from the browser while its link is unchanged (`AddRequest.fromBrowser`). Since contract version 19.
 
 **The `torrents-dropped` event** carries `{ paths, ignored }`: the `.torrent` files dropped on the window (plain files, never through a link, at most 500), and how many other things were dropped. The window opens the Add dialog with the files, or says only `.torrent` files can be dropped.
 

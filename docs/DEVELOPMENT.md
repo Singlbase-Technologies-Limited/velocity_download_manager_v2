@@ -83,7 +83,7 @@ Then install Node.js and pnpm.
 |---|---|
 | `pnpm dev` | Run the desktop app with hot reload (Vite on port 1430, Rust rebuilt on change) |
 | `pnpm dev:web` | Run only the web UI in a browser (native commands are unavailable there) |
-| `pnpm dev:engine` | Build the transfer engine (`velocity-transfer`) and the torrent helper (`velocity-torrent`, which needs libtorrent built: [BUILDING_NATIVE.md](BUILDING_NATIVE.md#libtorrent)) beside the app, where the app looks for them; `pnpm dev` runs it first (#58) |
+| `pnpm dev:engine` | Build the transfer engine (`velocity-transfer`), the torrent helper (`velocity-torrent`, which needs libtorrent built: [BUILDING_NATIVE.md](BUILDING_NATIVE.md#libtorrent)) and the browser's native host (`velocity-native-host-v2`, #65) beside the app, where the app looks for them; `pnpm dev` runs it first (#58) |
 | `pnpm check:fast` | Level L1 checks: `cargo fmt --check`, clippy with `-D warnings`, `cargo test`, `tsc`, ESLint (zero warnings), Vitest. It runs every check even after a failure and prints a summary |
 | `pnpm test:focused -- <area>` | Level L2: the tests of one crate, `frontend` or `scripts` while you iterate |
 | `pnpm check:pr` | Level L3 run locally: only the checks this branch's changes need |

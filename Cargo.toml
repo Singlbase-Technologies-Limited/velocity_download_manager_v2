@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/velocity-child", "crates/velocity-core", "crates/velocity-curl", "crates/velocity-lt", "crates/velocity-sftp", "crates/velocity-test-http", "crates/velocity-torrent", "crates/velocity-transfer", "crates/velocity-transfer-h2c", "src-tauri"]
+members = ["crates/velocity-child", "crates/velocity-core", "crates/velocity-curl", "crates/velocity-lt", "crates/velocity-native-host", "crates/velocity-sftp", "crates/velocity-test-http", "crates/velocity-torrent", "crates/velocity-transfer", "crates/velocity-transfer-h2c", "src-tauri"]
 
 [workspace.package]
 version = "0.1.0"
@@ -87,6 +87,9 @@ regex = "=1.13.1"
 # host into its ASCII (punycode) form, as V1 did. The version the build already brought through
 # Tauri; idna 1.1.0 with it.
 url = "=2.5.8"
+# The browser bridge's per-launch token (PO decision on #65, 2026-10-29): 32 bytes from the
+# operating system's secure random source. The version the build already brought through uuid.
+getrandom = "=0.4.3"
 
 # Development builds: optimise dependencies once so the app runs at a usable
 # speed, while workspace crates stay unoptimised for fast incremental rebuilds.

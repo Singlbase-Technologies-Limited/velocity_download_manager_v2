@@ -1,5 +1,4 @@
 ---
-# pending: "crates/velocity-native-host/**/*" (#65)
 paths:
   - "browser-extension/**/*"
   - "crates/velocity-native-host/**/*"
