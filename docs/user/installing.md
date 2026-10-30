@@ -23,14 +23,14 @@ Two packages, for 64-bit PCs:
 | `.deb` | Ubuntu 22.04 and newer, Debian 12 and newer, and distributions based on them |
 | `.rpm` | Fedora, openSUSE and similar distributions of the same age or newer |
 
-Install it with your package manager, which also installs the WebKitGTK and GTK libraries V2 needs:
+Install it with your package manager, which also installs the WebKitGTK, GTK and AppIndicator libraries V2 needs:
 
 ```sh
-sudo apt install ./velocity-download-manager-v2_<version>_amd64.deb   # Ubuntu, Debian
-sudo dnf install ./velocity-download-manager-v2-<version>-1.x86_64.rpm # Fedora
+sudo apt install "./Velocity Download Manager V2_<version>_amd64.deb"   # Ubuntu, Debian
+sudo dnf install "./Velocity Download Manager V2-<version>-1.x86_64.rpm" # Fedora
 ```
 
-Use the file name of the package you have. V2 then appears in your applications menu as "Velocity Download Manager V2". Its data is kept in `~/.local/share/com.velocity.downloadmanager.v2`, apart from V1's, and the third-party licences are in `/usr/lib/Velocity Download Manager V2/THIRD_PARTY_NOTICES.md`.
+Use the file name of the package you have, in quotes because it has spaces. A release candidate's files have other names, such as `velocity-v2-0.1.0-rc.1-<commit>-<date>-linux-amd64.deb`. V2 then appears in your applications menu as "Velocity Download Manager V2". Its data is kept in `~/.local/share/com.velocity.downloadmanager.v2`, apart from V1's, and the third-party licences are in `/usr/lib/Velocity Download Manager V2/THIRD_PARTY_NOTICES.md`.
 
 No AppImage is made for now.
 
