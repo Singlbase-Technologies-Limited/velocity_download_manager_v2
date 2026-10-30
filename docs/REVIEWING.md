@@ -24,7 +24,7 @@ This is what a reviewer (the Product Owner today, future maintainers later) chec
 - [ ] TLS verification and other security controls are not weakened.
 - [ ] Secrets don't reach logs, the database, checkpoints, temporary files or process arguments.
 - [ ] User data survives: schema changes use versioned migrations, and nothing deletes or recreates user data to fix a problem.
-- [ ] File operations stay inside the folders the user chose, don't follow links or reparse points, and delete only files the download owns.
+- [ ] File operations stay inside the folders the user chose, don't follow links (symbolic links, junctions, mount points; `velocity_core::fs_safety`), and delete only files the download owns.
 - [ ] V2 stays separate from V1: no shared identifiers, data directories, ports or browser registrations.
 
 ## Maintainability

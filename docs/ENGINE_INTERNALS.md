@@ -164,7 +164,7 @@ A Metalink document lists files with their sources, hashes and piece hashes: Met
 
 `Manager::add_metalink` adds the selected files, all of them unless a selection names some, one download each with kind `metalink`:
 
-- **The folder:** each file goes into its subfolders inside the chosen folder (PO decision on #54: kept, as V1 did). They're created one level at a time. A folder already there is used, but a file, a link or (Windows) any reparse point in the way is refused, never followed.
+- **The folder:** each file goes into its subfolders inside the chosen folder (PO decision on #54: kept, as V1 did). They're created one level at a time. A folder already there is used, but a file or a link (a symbolic link, or on Windows a junction or mount point; [SECURITY.md](SECURITY.md#files-and-folders-72)) in the way is refused, never followed.
 - **The download:** its sources the engine can fetch, best first, in `TransferSpec::urls`; its hash in `checksum` and its piece list in `pieces`; its name in `fileName`. No login, headers or referrer: a document's sources are other servers.
 - **All or nothing:** a file with no source the engine supports refuses the lot before anything is added. A file the engine refuses after others were added takes those back (they're cancelled), and the refusal is the error.
 - **A local file:** `metalink::read_file` reads a `.metalink` or `.meta4` file the user chose, as V1's `validate_local_metadata_file` did: an absolute path to a plain file, never a link. The file chooser and its Tauri command are #58's and #60's.

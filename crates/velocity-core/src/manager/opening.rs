@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 
 use super::Manager;
 use crate::domain::{DownloadStatus, ErrorCode};
-use crate::links::is_link;
+use crate::fs_safety::is_link;
 use crate::naming::check_file_name_in_folder;
 
 /// What "Open folder" shows.
