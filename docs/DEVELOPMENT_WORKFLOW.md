@@ -129,5 +129,5 @@ gh pr create --base release/v0.5 --title "fix: backport #150 to 0.5" --body "Ref
 These are for later, and will be revisited when the situation arises. *Project judgment.*
 
 - **External contributors:** pull requests from forks, and approval required before first-time contributors' workflows run. Open-source readiness is #90.
-- **More maintainers:** a `CODEOWNERS` file per area and a second reviewer. Enforcing it needs a second reviewer ([REPOSITORY_SETTINGS.md](REPOSITORY_SETTINGS.md#rules-for-main)).
+- **More maintainers:** a `CODEOWNERS` file per area and a second reviewer. Enforcing it needs a second reviewer ([REPOSITORY_SETTINGS.md](REPOSITORY_SETTINGS.md#rules-for-the-main-branch)).
 - **Many parallel PRs:** consider a merge queue only if `main` breaks often because PRs pass separately but fail together.

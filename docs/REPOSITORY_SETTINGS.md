@@ -20,7 +20,7 @@ Set `R=repos/vincentarisawork/velocity_download_manager_v2` before running the c
 
 Source: [configuring pull request merges](https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/configuring-pull-request-merges).
 
-## Rules for `main`
+## Rules for the main branch
 
 A ruleset named **Main** targets the default branch, is *Active*, and has no bypass list (created by the PO on 2026-10-30). Rulesets are in Settings → Rules → Rulesets ([about rulesets](https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/managing-rulesets/about-rulesets), [available rules](https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/managing-rulesets/available-rules-for-rulesets)).
 

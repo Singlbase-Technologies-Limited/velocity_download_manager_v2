@@ -34,7 +34,7 @@ This page is the design. The workflows are written in #13, #14, #16 to #19 and #
 
 **No `develop` or `staging` tiers.** All work merges into `main`, and releases are tags on verified `main` commits ([DEVELOPMENT_WORKFLOW.md](DEVELOPMENT_WORKFLOW.md)).
 
-**No required checks yet.** On GitHub Free, rulesets returned HTTP 403 for this private repository (2026-10-21, #89). On Pro, the PO's *Main* ruleset blocks deleting `main` and force-pushing to it (2026-10-30), but no status check is required, because PR checks don't start on a pull request while CI runs by hand only ([REPOSITORY_SETTINGS.md](REPOSITORY_SETTINGS.md#rules-for-main)). So:
+**No required checks yet.** On GitHub Free, rulesets returned HTTP 403 for this private repository (2026-10-21, #89). On Pro, the PO's *Main* ruleset blocks deleting `main` and force-pushing to it (2026-10-30), but no status check is required, because PR checks don't start on a pull request while CI runs by hand only ([REPOSITORY_SETTINGS.md](REPOSITORY_SETTINGS.md#rules-for-the-main-branch)). So:
 
 - **"Required" means by convention:** the PO merges only when `ci-required` is green (docs/REVIEWING.md).
 - **The release gate is a person:** only the PO pushes `v*` tags or starts a release run (an ask rule in `.claude/settings.json` stops the agent from doing it unprompted). The workflow creates a *draft* release, never a published one.
