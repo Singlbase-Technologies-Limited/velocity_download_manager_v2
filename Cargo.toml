@@ -83,6 +83,10 @@ cxx-build = "=1.0.205"
 tracing = { version = "=0.1.44", default-features = false, features = ["std"] }
 tracing-subscriber = { version = "=0.3.23", default-features = false, features = ["std", "registry"] }
 regex = "=1.13.1"
+# International domain names in links (PO decision on #67, 2026-10-29): `url::Host::parse` turns a
+# host into its ASCII (punycode) form, as V1 did. The version the build already brought through
+# Tauri; idna 1.1.0 with it.
+url = "=2.5.8"
 
 # Development builds: optimise dependencies once so the app runs at a usable
 # speed, while workspace crates stay unoptimised for fast incremental rebuilds.

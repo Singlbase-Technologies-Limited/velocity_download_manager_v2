@@ -35,7 +35,7 @@ const broken = makeRecord({
   fileName: 'broken.iso',
   status: 'failed',
   createdAtMs: 3,
-  error: { class: 'permanent', httpStatus: 404, message: 'The file was not found on the server (HTTP 404).', retryable: false, hostKey: null },
+  error: { class: 'permanent', httpStatus: 404, message: 'The file was not found on the server (HTTP 404).', retryable: false, hostKey: null, confirm: null },
 });
 
 function withDownloads(downloads: DownloadRecord[], over: Partial<DownloadsSnapshot> = {}): DownloadsSnapshot {

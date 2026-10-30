@@ -4,7 +4,7 @@
 
 use super::Manager;
 use crate::database::StoredOptions;
-use crate::domain::ErrorCode;
+use crate::domain::{ConfirmKind, DownloadStatus, ErrorCode};
 use crate::transfer::{Limits, TransferId};
 
 impl Manager {
@@ -53,6 +53,31 @@ impl Manager {
         d.show_settings();
         self.store_options(id);
         Ok(applied)
+    }
+
+    /// Allows what a download stopped at for the user's confirmation, and retries it (#67): a
+    /// redirect from `https` to `http`, or a link from the browser that reaches this computer or
+    /// a private network (ADR-0006). The answer is stored with the download, so it holds after a
+    /// restart, and for this download only. `InvalidState`, with nothing changed, unless the
+    /// download failed waiting for that confirmation.
+    pub fn allow_download(&mut self, id: &str, kind: ConfirmKind) -> Result<(), ErrorCode> {
+        let d = self.downloads.get_mut(id).ok_or(ErrorCode::NotFound)?;
+        let waiting = d.record.status == DownloadStatus::Failed
+            && d.record
+                .error
+                .as_ref()
+                .and_then(|e| e.confirm.as_deref())
+                .is_some_and(|c| c.kind() == kind);
+        if !waiting {
+            return Err(ErrorCode::InvalidState);
+        }
+        let trust = &mut d.direct_mut().ok_or(ErrorCode::InvalidState)?.request.trust;
+        match kind {
+            ConfirmKind::InsecureRedirect => trust.insecure_redirect_confirmed = true,
+            ConfirmKind::LocalAddress => trust.local_address_confirmed = true,
+        }
+        self.store_options(id);
+        self.retry(id)
     }
 
     /// The transfer of an unfinished download, if the engine has it.
