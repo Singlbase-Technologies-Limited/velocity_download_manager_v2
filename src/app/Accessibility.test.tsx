@@ -189,7 +189,7 @@ describe('every control has a name, and icons stay silent', () => {
     expect(spokenIcons()).toEqual([]);
   });
 
-  it.each<SettingsSection>(['general', 'downloads', 'performance', 'bittorrent', 'notifications', 'appearance', 'storage', 'advanced', 'about'])(
+  it.each<SettingsSection>(['general', 'downloads', 'performance', 'bittorrent', 'browser', 'notifications', 'appearance', 'storage', 'advanced', 'about'])(
     'in Settings, %s',
     async (section) => {
       installFakeBackend();
