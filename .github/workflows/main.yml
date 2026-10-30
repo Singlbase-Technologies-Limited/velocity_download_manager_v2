@@ -41,7 +41,8 @@ jobs:
   select:
     name: Select jobs
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    # Most of it is check:notices fetching every target's crates (#76).
+    timeout-minutes: 10
     env:
       CI_REPORT_PATH: ${{ github.workspace }}/../ci-checks.json
     outputs:
@@ -85,11 +86,26 @@ jobs:
         name: Agent guidance (check:guidance)
         if: ${{ !cancelled() && steps.node.outcome == 'success' }}
         run: node scripts/check-guidance.mjs
+      # The third-party notices and the licence check (#76, docs/LICENSING.md): every shipped
+      # component's licence is allowed, and THIRD_PARTY_NOTICES.md matches the dependency graphs.
+      # Here, on a fresh runner and in about a minute: in the Linux job, after check:fast's build,
+      # downloading every target's crates filled the disk (run 41091551241). Once is enough: the
+      # graphs are the same on every OS (`cargo tree --target all`). The runner's stable cargo reads
+      # the graphs, as for the selection.
+      - id: notices
+        name: Third-party notices (check:notices)
+        if: ${{ !cancelled() && steps.select.outputs.rust == 'true' }}
+        env:
+          RUSTUP_TOOLCHAIN: stable
+        run: |
+          corepack enable
+          pnpm install --frozen-lockfile
+          pnpm check:notices
       - name: Write the job report
         if: ${{ !cancelled() && steps.checkout.outcome == 'success' }}
         env:
           STEPS: ${{ toJSON(steps) }}
-        run: node scripts/ci-report.mjs job --job select --infra checkout,node --step-check "select=Job selection"
+        run: node scripts/ci-report.mjs job --job select --infra checkout,node --step-check "select=Job selection" --step-check "notices=Third-party notices (check:notices)"
       - name: Upload the job report
         if: ${{ !cancelled() && steps.checkout.outcome == 'success' }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -136,13 +152,6 @@ jobs:
           if [ "$RUST" != true ]; then export RUSTUP_TOOLCHAIN=stable; fi
           # check:pr runs what the merge needs, including the native build before any Rust check.
           if [ -n "$BASE" ]; then node scripts/check-pr.mjs --base "$BASE"; else node scripts/check-fast.mjs; fi
-      # The third-party notices and the licence check (#76, docs/LICENSING.md): every shipped
-      # component's licence is allowed, and THIRD_PARTY_NOTICES.md matches the dependency graphs.
-      # Once, on Linux: the graphs are the same for every target (`cargo tree --target all`).
-      - id: notices
-        name: Third-party notices (check:notices)
-        if: ${{ !cancelled() && steps.setup.outcome == 'success' && needs.select.outputs.rust == 'true' }}
-        run: pnpm check:notices
       # The native libraries as soon as they were built, even if a later check failed (#205), so a
       # rerun doesn't build Boost and libtorrent again.
       - name: Save the native libraries
@@ -162,7 +171,7 @@ jobs:
         if: ${{ !cancelled() && steps.checkout.outcome == 'success' }}
         env:
           STEPS: ${{ toJSON(steps) }}
-        run: node scripts/ci-report.mjs job --job linux --infra checkout,setup,sftp --step-check "checks=Linux checks" --step-check "notices=Third-party notices (check:notices)"
+        run: node scripts/ci-report.mjs job --job linux --infra checkout,setup,sftp --step-check "checks=Linux checks"
       - name: Upload the job report
         if: ${{ !cancelled() && steps.checkout.outcome == 'success' }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2

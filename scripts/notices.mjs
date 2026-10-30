@@ -12,7 +12,7 @@
 import { spawnSync } from 'node:child_process';
 import { existsSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { root, toolCommand } from './checks-runner.mjs';
+import { recordCheck, root, toolCommand } from './checks-runner.mjs';
 import {
   chooseLicence,
   crateComponents,
@@ -81,6 +81,15 @@ if (check) {
   const current = existsSync(OUTPUT) ? readFileSync(OUTPUT, 'utf8').replace(/\r\n/g, '\n') : '';
   const stale = current !== notices;
   if (stale) console.error('THIRD_PARTY_NOTICES.md is out of date: run `pnpm notices` and commit the result.');
+  recordCheck({
+    id: 'notices',
+    name: 'Third-party notices (check:notices)',
+    status: problems.length || stale ? 'fail' : 'pass',
+    errors: [
+      ...problems.slice(0, 10).map((p) => ({ message: p })),
+      ...(stale ? [{ file: 'THIRD_PARTY_NOTICES.md', message: 'out of date: run `pnpm notices`' }] : []),
+    ],
+  });
   if (problems.length || stale) process.exit(1);
   console.log(`THIRD_PARTY_NOTICES.md is up to date: ${summary}.`);
 } else {
