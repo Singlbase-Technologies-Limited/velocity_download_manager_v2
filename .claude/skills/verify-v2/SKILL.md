@@ -7,6 +7,8 @@ argument-hint: "[full]"
 
 # Verify this branch
 
+> **Temporarily** (#204): no tests or `pnpm check:*` run locally; they run in the batch CI run ([CI.md](../../../docs/CI.md#while-ci-runs-by-hand-only)). Write each test first all the same.
+
 The levels and their scope are in [docs/TESTING.md](../../../docs/TESTING.md). Save logs to the session's scratch directory, never to the repository.
 
 ## 1. See what changed

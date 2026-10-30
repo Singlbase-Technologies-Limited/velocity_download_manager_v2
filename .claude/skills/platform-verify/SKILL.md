@@ -7,6 +7,8 @@ argument-hint: "[windows|linux|all]"
 
 # Platform verification
 
+> **Temporarily** (#204): no tests or `pnpm check:*` run locally; they run in the batch CI run ([CI.md](../../../docs/CI.md#while-ci-runs-by-hand-only)). Write each test first all the same.
+
 Platforms requested: `$ARGUMENTS`. Empty means all. Run on each platform that applies: `windows`, `linux` or `all`. The machine-specific setup, including paths, the WSL quirks and the GUI launch, is in [reference.md](reference.md). Read it before the Linux steps.
 
 ## Windows (native, the PO's PC)
