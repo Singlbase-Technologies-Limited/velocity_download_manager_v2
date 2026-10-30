@@ -6,17 +6,26 @@
 # Failure collection (#91, docs/CI_DIAGNOSTICS.md): every check runs to completion, each job writes
 # a report of its checks (`if: !cancelled()`), and `ci-required` turns them into one table and the
 # `ci-diagnostics` artifact. It fails unless every mandatory check passed or was deselected.
+#
+# Temporarily manual-only (#204, docs/CI.md#while-ci-runs-by-hand-only): to save Actions minutes,
+# the `pull_request` trigger is off, and this workflow runs only when started by hand on a branch,
+# against the `base` commit given. To revert, put back `pull_request: branches: [main]` as the
+# trigger, `pr-${{ github.event.pull_request.number }}` as the concurrency group, and
+# `github.event.pull_request.base.sha` as BASE_SHA.
 name: PR checks
 
 on:
-  pull_request:
-    branches: [main]
+  workflow_dispatch:
+    inputs:
+      base:
+        description: Compare with this commit, as a pull request would (for example main's)
+        required: true
 
 permissions:
   contents: read
 
 concurrency:
-  group: pr-${{ github.event.pull_request.number }}
+  group: pr-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -44,7 +53,7 @@ jobs:
       - id: select
         name: Decide which jobs run
         env:
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          BASE_SHA: ${{ inputs.base }}
           # `cargo metadata --no-deps` only reads manifests; the runner's stable toolchain is enough,
           # so this job doesn't download the pinned one.
           RUSTUP_TOOLCHAIN: stable
@@ -107,7 +116,7 @@ jobs:
       - id: checks
         name: Run the selected checks
         env:
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          BASE_SHA: ${{ inputs.base }}
           RUST: ${{ needs.select.outputs.rust }}
         run: |
           # Without Rust, check:pr only reads manifests (`cargo metadata`); the runner's stable
