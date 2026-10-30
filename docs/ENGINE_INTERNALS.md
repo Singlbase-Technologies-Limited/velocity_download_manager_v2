@@ -331,7 +331,7 @@ A failure is classified first ([`failure.rs`](../crates/velocity-transfer/src/fa
 |---|---|---|
 | Transient | No answer, or a connection broken during the request; a name that doesn't resolve; a refused connection; the 30 s connect timeout; a failed TLS handshake; `408`; other `5xx`; a stall | Retried after a wait |
 | Throttled | `429`, `503` | Retried after at least what `Retry-After` asks for (seconds or an HTTP date), up to 10 minutes. Without `Retry-After`, at least 60 s, as in V1. The download's connections are halved, down to one |
-| Permanent | `401`, `403`, `404`, `410`, other `4xx`; an untrusted certificate; too many redirects; a protocol outside the allowlist; an answer that contradicts itself; a full disk, or a folder V2 may no longer write to | Never retried. A full disk or a refused write keeps the part file and a checkpoint of what reached the disk, so the user's retry, once it is fixed, resumes (#74) |
+| Permanent | `401`, `403`, `404`, `410`, other `4xx`; an untrusted certificate; too many redirects; a protocol outside the allowlist; an answer that contradicts itself; a full disk, or a folder V2 may no longer write to | Never retried. A full disk or a refused write checkpoints what reached the disk when a sync still works, and keeps the part file whenever a checkpoint exists, so the user's retry, once it is fixed, resumes (#74) |
 
 ### Inside a download
 

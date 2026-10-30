@@ -46,7 +46,7 @@ A direct engine reports only these statuses: Queued, Connecting, Downloading, Re
 - **Stalled:** no byte has come from the network for a while. The transfer isn't failed, and goes back to Downloading when bytes come.
 - **Verifying:** every byte is in; the engine is finishing the whole-file hash before the file is renamed (#46).
 - **A failed check** (a wrong checksum, a piece still bad after it was fetched again) ends as Failed with a message. The part file is kept for inspection and isn't renamed, the engine doesn't start it again on its own, and its last checkpoint trusts no byte, so a resume from it downloads the whole file again ([ENGINE_INTERNALS.md](ENGINE_INTERNALS.md#a-failed-check)).
-- **A full disk or a refused write** (#74) ends as Failed, permanent, with "There is not enough disk space." or "Velocity isn't allowed to write to that location.". What reached the disk is checkpointed when the disk still allows a sync, and the part file is kept, so the user's retry once it is fixed resumes from that checkpoint.
+- **A full disk or a refused write** (#74) ends as Failed, permanent, with "There is not enough disk space." or "Velocity isn't allowed to write to that location.". What reached the disk is checkpointed when the disk still allows a sync, and with a checkpoint the part file is kept, so the user's retry once it is fixed resumes from it. Without any checkpoint, the part file is removed and the retry starts over.
 
 ## Checkpoints and resuming (#43)
 
