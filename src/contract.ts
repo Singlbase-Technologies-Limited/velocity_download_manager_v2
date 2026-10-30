@@ -5,7 +5,7 @@
 import { z } from 'zod';
 
 /** Must equal `velocity_core::COMMAND_API_VERSION`; the app refuses to start on a mismatch. */
-export const COMMAND_API_VERSION = 19;
+export const COMMAND_API_VERSION = 20;
 
 const bytes = z.number().int().nonnegative();
 
@@ -177,6 +177,7 @@ export const ErrorCodeSchema = z.enum([
   'INSUFFICIENT_DISK_SPACE',
   'PROTOCOL_DISABLED',
   'CONFIRMATION_REQUIRED',
+  'KEYCHAIN_UNAVAILABLE',
   'UNSUPPORTED',
   'INTERNAL',
 ]);

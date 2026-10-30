@@ -62,6 +62,7 @@ The commands of [`src-tauri/src/downloads.rs`](../src-tauri/src/downloads.rs) (#
 | `restart_engine` | — | `EngineHealth` |
 | `trust_host_key` | `host`, `port`, `fingerprint` | nothing; the UI then retries the download |
 | `allow_download` | `id`, `kind`: `insecureRedirect` or `localAddress` | nothing. Allows what the download's `error.confirm` asked for, for that download only, stores it, and retries the download. `INVALID_STATE` unless it failed waiting for that confirmation. Since contract version 18 (#67) |
+| `remember_login` | `id` | nothing. Saves the download's login, custom headers and SSH key in the system keychain, at the user's request; `INVALID_STATE` for one without any, `KEYCHAIN_UNAVAILABLE` when there is no keychain or it refused. Since contract version 20 (#70) |
 | `choose_torrent_files` | `id`, `files` (indexes, at least one), `deleteDropped` | the files kept, each a `KeptFile`. With `deleteDropped`, the torrent's own files no longer chosen are deleted, by the rules torrents use; otherwise they stay (#63) |
 | `get_torrent_details` | `id` | `TorrentDetails`; `UNSUPPORTED` for a direct download (#63) |
 | `preview_torrent_file` | `path` (absolute) | `TorrentPreview`, read as adding reads the file: never through a link, at most the size limit (#63) |

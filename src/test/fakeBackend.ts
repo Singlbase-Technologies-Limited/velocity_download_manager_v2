@@ -194,6 +194,7 @@ export function installFakeBackend(over: Partial<FakeState> = {}): FakeState {
           return state.chosenKey;
         case 'trust_host_key':
         case 'allow_download':
+        case 'remember_login':
           return null;
         case 'get_browser_integration':
           return state.browser;

@@ -40,7 +40,7 @@ A value this build doesn't know, read back from the database, is kept as `Stored
 
 ## Secrets
 
-- **Never stored:** credentials, cookies, custom header values and SSH keys. They stay in memory (#70).
+- **Never stored:** credentials, cookies, custom header values and SSH keys. They stay in memory (#70). A download's stored options say only whether the user asked to remember its login in the system keychain (`loginSaved`, #70; [ADR-0015](decisions/0015-keychain-with-consent.md)); the login itself is in the keychain, never here.
 - **By construction:** `StoredOptions` has no field for any of them.
 - **URL logins:** `without_login` removes a login from a URL (`https://user:pass@host/` becomes `https://host/`), and `insert_download` applies it again.
 - **What is kept:** `has_sensitive_options` records that a download had credentials, headers, an SSH key or a URL login. After a restart such a download comes back paused, and resumes or is retried only once they are given again (PO decision on #58).

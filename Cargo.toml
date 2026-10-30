@@ -90,6 +90,12 @@ url = "=2.5.8"
 # The browser bridge's per-launch token (PO decision on #65, 2026-10-29): 32 bytes from the
 # operating system's secure random source. The version the build already brought through uuid.
 getrandom = "=0.4.3"
+# Secrets in memory are overwritten when dropped (PO decision on #70, 2026-10-29). The version the
+# build already brought through other crates.
+zeroize = "=1.9.1"
+# Logins saved in the system keychain with the user's consent (PO decision on #70, 2026-10-29):
+# Windows Credential Manager and, on Linux, the Secret Service (its `v1` feature, the default).
+keyring = "=4.2.0"
 
 # Development builds: optimise dependencies once so the app runs at a usable
 # speed, while workspace crates stay unoptimised for fast incremental rebuilds.

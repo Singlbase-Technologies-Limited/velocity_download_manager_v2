@@ -262,16 +262,16 @@ fn with_secrets(url: String, directory: PathBuf) -> TransferSpec {
         file_name: Some("out.bin".to_owned()),
         credentials: Some(Credentials {
             user_name: "alice".to_owned(),
-            password: "hunter2".to_owned(),
+            password: "hunter2".into(),
         }),
         headers: vec![
             Header {
                 name: "Cookie".to_owned(),
-                value: "session=secret".to_owned(),
+                value: "session=secret".into(),
             },
             Header {
                 name: "X-Custom".to_owned(),
-                value: "custom-value".to_owned(),
+                value: "custom-value".into(),
             },
         ],
         referrer: Some("https://example.com/page".to_owned()),

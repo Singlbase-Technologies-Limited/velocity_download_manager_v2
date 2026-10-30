@@ -26,6 +26,7 @@ export const ERROR_MESSAGES: Record<ErrorCode, string> = {
   INSUFFICIENT_DISK_SPACE: "There isn't enough free disk space.",
   PROTOCOL_DISABLED: "This kind of download is turned off in Settings.",
   CONFIRMATION_REQUIRED: "This action needs your confirmation first.",
+  KEYCHAIN_UNAVAILABLE: "The system keychain isn't available, so the login wasn't saved.",
   UNSUPPORTED: "This isn't supported on this system yet.",
   INTERNAL: "Something went wrong inside Velocity.",
 };

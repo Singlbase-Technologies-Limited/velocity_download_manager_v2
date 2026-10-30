@@ -62,7 +62,7 @@ Each piece of state has one owner. Other components ask the owner instead of kee
 | **Transfer engine** | Active transfers: connections, leases, received bytes and rate. It also owns the durable progress of each transfer, written to its checkpoint before the record advances. Checkpoints live in the SQLite database (PO decision, 2026-10-22, on #26); their format, and how the engine's child process gets them there, are #43 |
 | **libtorrent** (in the torrent helper) | The torrent session: peers, pieces and resume data. The helper applies each torrent's seeding policy and the seeding queue, and its supervisor keeps each torrent's latest resume data in memory (PO decisions on #62). The manager owns torrent records, and stores their policies, metadata and resume data, without trackers (#58) |
 | **The user's file system** | Finished files, written atomically: download to a part file, verify, then rename without replacing anything (#43, #72) |
-| **Memory only** | Credentials, cookies and custom headers. Never written to the database, logs, checkpoints or process arguments (#70, #71) |
+| **Memory only** | Credentials, cookies and custom headers, as `Secret`s wiped when dropped. Never written to the database, logs, checkpoints or process arguments; saved in the system keychain only when the user asks, for that download ([ADR-0015](decisions/0015-keychain-with-consent.md), #70, #71) |
 
 ## Contracts
 

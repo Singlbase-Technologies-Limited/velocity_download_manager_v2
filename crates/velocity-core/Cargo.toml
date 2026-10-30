@@ -22,6 +22,9 @@ url.workspace = true
 # Unix), and its per-launch token.
 tokio.workspace = true
 getrandom.workspace = true
+# Secrets (#70): wiped from memory when dropped, and saved in the system keychain on consent.
+zeroize.workspace = true
+keyring.workspace = true
 quick-xml.workspace = true
 # Info hashes for torrents (#62): the SHA-1 and SHA-2 the engine already uses (#46).
 sha1.workspace = true

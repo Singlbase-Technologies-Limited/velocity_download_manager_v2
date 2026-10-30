@@ -17,6 +17,7 @@ All of it is in V2's own data folder ([COEXISTENCE.md](COEXISTENCE.md)):
 - **Settings and categories.**
 - **Checkpoints and torrent resume data,** so downloads resume after a restart. Torrent resume data is kept without trackers.
 - **Trusted SFTP host keys,** in V2's own `known_hosts` file.
+- **Logins you asked to remember,** in the system keychain (Windows Credential Manager, or your Linux keyring), one per download, deleted with it ([ADR-0015](decisions/0015-keychain-with-consent.md)). Nothing else about a login is kept.
 - **Crash logs:** at most 5, redacted.
 
 **Never kept:** passwords, cookies, custom headers, SSH keys and passphrases. They stay in memory for the session only, and a download that needs one asks again after a restart.

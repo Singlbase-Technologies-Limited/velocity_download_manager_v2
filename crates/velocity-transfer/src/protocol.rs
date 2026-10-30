@@ -79,12 +79,12 @@ mod tests {
         let headers: Vec<Header> = (0..MAX_HEADERS)
             .map(|i| Header {
                 name: format!("X-{i:0>width$}", width = MAX_HEADER_NAME_BYTES - 2),
-                value: quotes(MAX_HEADER_VALUE_BYTES),
+                value: quotes(MAX_HEADER_VALUE_BYTES).into(),
             })
             .collect();
         let credentials = Credentials {
             user_name: quotes(MAX_LOGIN_PART_BYTES),
-            password: quotes(MAX_LOGIN_PART_BYTES),
+            password: quotes(MAX_LOGIN_PART_BYTES).into(),
         };
         for algorithm in [Md5, Sha1, Sha224, Sha256, Sha384, Sha512] {
             let most = PieceHashes::MAX_HEX_BYTES / algorithm.hex_len();

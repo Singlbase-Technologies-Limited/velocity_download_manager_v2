@@ -855,7 +855,7 @@ mod tests {
                 "https://example.com/files/a.zip?x=1",
                 vec![Header {
                     name: "Cookie".to_owned(),
-                    value: "session=SECRET-COOKIE-1234".to_owned(),
+                    value: "session=SECRET-COOKIE-1234".into(),
                 }],
             ),
             (
@@ -873,7 +873,7 @@ mod tests {
                 file_name: Some("a.zip".to_owned()),
                 credentials: Some(Credentials {
                     user_name: "bob-the-user".to_owned(),
-                    password: "SECRET-LOGIN-9012".to_owned(),
+                    password: "SECRET-LOGIN-9012".into(),
                 }),
                 headers,
                 referrer: None,

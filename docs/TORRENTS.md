@@ -232,7 +232,7 @@ The manager runs torrents beside direct downloads, through the `TorrentEngine` c
 
 ## Not yet
 
-- **Keeping trackers across a restart** (#70).
+- **Keeping trackers across a restart:** not part of #70, whose keychain holds downloads' logins only ([ADR-0015](decisions/0015-keychain-with-consent.md)).
 
 ## Tests
 

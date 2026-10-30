@@ -95,6 +95,7 @@ pub fn run() {
             browser::get_browser_integration,
             browser::register_browser,
             browser::unregister_browser,
+            downloads::remember_login,
             downloads::choose_torrent_files,
             downloads::set_torrent_seeding,
             downloads::restart_torrent_helper,

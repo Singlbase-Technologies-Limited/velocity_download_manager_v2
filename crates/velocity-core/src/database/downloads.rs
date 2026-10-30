@@ -98,6 +98,10 @@ pub struct StoredOptions {
     /// Where the download came from, and what the user confirmed for it (#67).
     #[serde(default)]
     pub trust: Trust,
+    /// The user asked to remember the download's login in the system keychain (#70): after a
+    /// restart it is read from there instead of asked for again.
+    #[serde(default)]
+    pub login_saved: bool,
 }
 
 impl StoredOptions {
@@ -113,6 +117,7 @@ impl StoredOptions {
             checksum: spec.checksum.clone(),
             pieces: spec.pieces.clone(),
             trust: spec.trust,
+            login_saved: false,
         }
     }
 }

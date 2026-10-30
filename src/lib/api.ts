@@ -110,6 +110,8 @@ export const api = {
   unregisterBrowser: (browser: Browser) => call('unregister_browser', { browser }, BrowserIntegrationSchema),
   /** Allows what a download stopped at for the user's confirmation (#67), and retries it. */
   allowDownload: (id: string, kind: ConfirmKind) => call('allow_download', { id, kind }, nothing),
+  /** Saves a download's login in the system keychain, at the user's request (#70). */
+  rememberLogin: (id: string) => call('remember_login', { id }, nothing),
   retryDownloads: (ids: string[]) => call('retry_downloads', { ids }, BatchResultSchema),
   // The list's commands (#58, #59). Those over several downloads say what each did.
   pauseDownloads: (ids: string[]) => call('pause_downloads', { ids }, BatchResultSchema),

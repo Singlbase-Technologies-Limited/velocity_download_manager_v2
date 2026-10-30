@@ -257,6 +257,41 @@ describe('the Add download dialog', () => {
     });
   });
 
+  // PO decision on #70: the keychain only with the user's consent, asked next to the login, unticked.
+  const addWithLogin = async (user: ReturnType<typeof userEvent.setup>, remember: boolean) => {
+    const dialog = await openDialog(user);
+    await user.type(within(dialog).getByRole('textbox', { name: 'Links' }), 'https://example.com/private.zip');
+    await user.click(within(dialog).getByRole('button', { name: 'Advanced options' }));
+    expect(within(dialog).queryByRole('checkbox', { name: /Remember this login/ })).toBeNull();
+    await user.type(within(dialog).getByRole('textbox', { name: 'User name' }), 'me');
+    const box = within(dialog).getByRole<HTMLInputElement>('checkbox', { name: /Remember this login in the system keychain/ });
+    expect(box.checked).toBe(false);
+    if (remember) await user.click(box);
+    await user.click(within(dialog).getByRole('button', { name: 'Start download' }));
+  };
+
+  it('remembers a login in the keychain only when the user asks', async () => {
+    const user = userEvent.setup();
+    const state = installFakeBackend();
+    renderApp();
+    await addWithLogin(user, false);
+    await waitFor(() => { expect(requests(state)).toHaveLength(1); });
+    await waitFor(() => { expect(screen.queryByRole('dialog')).toBeNull(); });
+    expect(callsOf(state, 'remember_login')).toEqual([]);
+    await addWithLogin(user, true);
+    await waitFor(() => { expect(callsOf(state, 'remember_login')).toEqual([{ cmd: 'remember_login', args: { id: 'd-100' } }]); });
+  });
+
+  it('says when the keychain refused, and keeps the download', async () => {
+    const user = userEvent.setup();
+    const state = installFakeBackend({ failures: { remember_login: 'KEYCHAIN_UNAVAILABLE' } });
+    renderApp();
+    await addWithLogin(user, true);
+    expect(await screen.findByText(`The login wasn’t remembered: ${ERROR_MESSAGES.KEYCHAIN_UNAVAILABLE}`)).toBeTruthy();
+    expect(requests(state)).toHaveLength(1);
+    await waitFor(() => { expect(screen.queryByRole('dialog')).toBeNull(); });
+  });
+
   it('warns that a plain FTP link isn’t encrypted, and can insist on encryption', async () => {
     const user = userEvent.setup();
     const state = installFakeBackend();

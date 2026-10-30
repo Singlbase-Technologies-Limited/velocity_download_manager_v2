@@ -9,7 +9,9 @@
 //! - **Logins aren't kept** (#70): an unfinished download that had a login, custom headers or an
 //!   SSH key comes back paused with a note, and resumes only once they are given again
 //!   ([`Manager::set_login`], PO decision on #58). A finished one that had them is retried only
-//!   once they are given again too.
+//!   once they are given again too. Unless the user asked to remember them
+//!   ([`Manager::remember_login`], PO decision on #70): then they come back from the system
+//!   keychain, and the download comes back as it was.
 //! - **A record this build can't read** is listed by [`Manager::unavailable`], and never acted on
 //!   (report section 6).
 //! - **Torrents** come back as the torrent module says ([`super::torrents`]).
@@ -29,6 +31,7 @@ use crate::database::{
 use crate::domain::{
     DownloadRecord, DownloadStatus, ErrorCode, FailureClass, Progress, TransferError,
 };
+use crate::keychain::{Keychain, NoKeychain};
 use crate::transfer::{
     Credentials, DirectTransfer, Header, Limits, SshKey, TransferId, TransferSpec,
 };
@@ -36,6 +39,9 @@ use crate::transfer::{
 /// The note on a download that came back without the login it had.
 const LOGIN_NOTE: &str = "Velocity doesn't keep logins, custom headers or SSH keys after it \
                           closes. Resume this download to enter its login again.";
+/// The note on a download whose remembered login couldn't be read from the keychain (#70).
+const KEYCHAIN_NOTE: &str = "The system keychain couldn't be read, so this download's saved \
+                             login isn't available. Resume it to enter its login again.";
 
 /// What a download keeps in memory only (#70), given again by the user when a download that had
 /// it comes back after a restart: `set_download_login` (#59). Each part redacts its secrets in
@@ -84,12 +90,23 @@ fn request_of(stored: &StoredDownload, options: &StoredOptions) -> TransferSpec 
 
 impl Manager {
     /// The manager over `database`, with the downloads it kept. Nothing starts until the next
-    /// [`Manager::pump`] or settings change.
+    /// [`Manager::pump`] or settings change. Without a keychain: no login is remembered.
     pub fn open(
         engine: Box<dyn DirectTransfer>,
         database: Arc<Database>,
     ) -> Result<Self, DatabaseError> {
+        Self::open_with_keychain(engine, database, Box::new(NoKeychain))
+    }
+
+    /// [`Manager::open`], with the keychain logins are remembered in (#70): a download whose login
+    /// the user asked to remember gets it back from there, instead of waiting for it.
+    pub fn open_with_keychain(
+        engine: Box<dyn DirectTransfer>,
+        database: Arc<Database>,
+        keychain: Box<dyn Keychain>,
+    ) -> Result<Self, DatabaseError> {
         let mut m = Manager::new(engine, database);
+        m.keychain = keychain;
         let queue = m.database.queue()?;
         let places: HashMap<&str, usize> = queue
             .iter()
@@ -112,6 +129,9 @@ impl Manager {
                 continue;
             };
             let finished = status.is_terminal();
+            // A login the user asked to remember (#70), read back from the keychain.
+            let mut login_restored = false;
+            let mut keychain_failed = false;
             let job = match engine {
                 Engine::Velocity => {
                     let Some(options) = stored.options.known() else {
@@ -124,10 +144,30 @@ impl Manager {
                         let checkpoint = m.database.checkpoint(&stored.id)?;
                         Some(resume_from(&stored.source_url, checkpoint.as_ref()))
                     };
-                    Job::Direct(Box::new(DirectJob::new(
-                        request_of(&stored, options),
-                        resume,
-                    )))
+                    let mut request = request_of(&stored, options);
+                    if stored.has_sensitive_options && options.login_saved {
+                        match m.keychain.load(&stored.id) {
+                            Ok(Some(login)) => {
+                                let with = TransferSpec {
+                                    credentials: login.credentials,
+                                    ssh_key: login.ssh_key,
+                                    headers: login.headers,
+                                    ..request.clone()
+                                };
+                                // Checked as when it was added; one that no longer passes is
+                                // asked for again.
+                                if with.check_request().is_ok() {
+                                    request = with;
+                                    login_restored = true;
+                                }
+                            }
+                            Ok(None) => {}
+                            Err(_) => keychain_failed = true,
+                        }
+                    }
+                    let mut job = DirectJob::new(request, resume);
+                    job.login_saved = options.login_saved;
+                    Job::Direct(Box::new(job))
                 }
                 // A torrent comes back from its resume data, or where it came from (#58).
                 Engine::Libtorrent => match m.database.torrent(&stored.id)? {
@@ -141,7 +181,7 @@ impl Manager {
                     }
                 },
             };
-            let needs_login = stored.has_sensitive_options;
+            let needs_login = stored.has_sensitive_options && !login_restored;
             let paused = !finished && (status == DownloadStatus::Paused || needs_login);
             let scheduled = queue
                 .iter()
@@ -198,7 +238,11 @@ impl Manager {
                     download.record.error = Some(TransferError::new(
                         FailureClass::Permanent,
                         None,
-                        LOGIN_NOTE,
+                        if keychain_failed {
+                            KEYCHAIN_NOTE
+                        } else {
+                            LOGIN_NOTE
+                        },
                     ));
                 }
                 let place = places

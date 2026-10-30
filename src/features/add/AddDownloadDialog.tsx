@@ -49,6 +49,9 @@ export function AddDownloadDialog() {
   return <AddForm key={JSON.stringify(prefill)} prefill={prefill} defaults={settings.data?.newTorrents ?? null} onClose={closeAdd} />;
 }
 
+/** Whether the request carries a login, custom headers or an SSH key: what remembering saves (#70). */
+const hasLogin = (r: AddRequest) => r.credentials !== null || r.sshKey !== null || r.headers.length > 0;
+
 function AddForm({ prefill, defaults, onClose }: { prefill: AddPrefill | null; defaults: Settings['newTorrents'] | null; onClose: () => void }) {
   const { data: categories } = useCategories();
   const { data: capabilities } = useCapabilities();
@@ -74,6 +77,8 @@ function AddForm({ prefill, defaults, onClose }: { prefill: AddPrefill | null; d
   const [password, setPassword] = useState('');
   const [keyPath, setKeyPath] = useState('');
   const [passphrase, setPassphrase] = useState('');
+  // Saving the login in the system keychain needs the user's consent each time (PO decision on #70).
+  const [remember, setRemember] = useState(false);
   const [checksumText, setChecksumText] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
@@ -178,12 +183,21 @@ function AddForm({ prefill, defaults, onClose }: { prefill: AddPrefill | null; d
     ...over,
   });
 
+  /** Saves the login of each download just added in the system keychain; a refusal is said, and the downloads stay. */
+  const rememberLogins = async (results: AddResult[]) => {
+    const added = results.flatMap((r) => (r.outcome.kind === 'added' ? [r.outcome.id] : []));
+    const refused = await Promise.all(added.map((id) => api.rememberLogin(id).then(() => null, (e: unknown) => toApiError(e).message)));
+    const first = refused.find((m) => m !== null);
+    if (first) toast.error(`The login wasn’t remembered: ${first}`);
+  };
+
   /** Sends `req`; closes when everything was added, otherwise shows what happened to each. */
   const run = async (req: AddRequest, addedBefore: number) => {
     setFormError(null);
     setSubmitting(true);
     try {
       const results: AddResult[] = await api.addDownloads(req);
+      if (remember && hasLogin(req)) await rememberLogins(results);
       const next = sortOutcome(results, req, addedBefore);
       if (next.conflicts.length === 0 && next.duplicates.length === 0 && next.errors.length === 0) {
         toast.success(next.added === 1 ? 'Download added' : `${plural(next.added, 'download')} added`);
@@ -449,12 +463,12 @@ function AddForm({ prefill, defaults, onClose }: { prefill: AddPrefill | null; d
                 </Field>
               </div>
               <Field label="Referrer">{(p) => <Input {...p} value={referrer} onChange={(e) => { setReferrer(e.target.value); }} placeholder="https://example.com/page" />}</Field>
-              <Field label="Extra headers" error={headers.error} hint="One per line, like “Cookie: session=…”. Kept in memory only, never saved.">
+              <Field label="Extra headers" error={headers.error} hint="One per line, like “Cookie: session=…”. Kept in memory only, unless remembered below.">
                 {(p) => <Textarea {...p} value={headersText} onChange={(e) => { setHeadersText(e.target.value); }} rows={2} placeholder="Name: value" />}
               </Field>
               <div className="grid grid-cols-2 gap-3">
                 <Field label="User name">{(p) => <Input {...p} value={userName} onChange={(e) => { setUserName(e.target.value); }} autoComplete="off" />}</Field>
-                <Field label="Password" hint="Kept in memory only, never saved.">
+                <Field label="Password" hint="Kept in memory only, unless remembered below.">
                   {(p) => <Input {...p} type="password" value={password} onChange={(e) => { setPassword(e.target.value); }} autoComplete="off" />}
                 </Field>
               </div>
@@ -474,6 +488,14 @@ function AddForm({ prefill, defaults, onClose }: { prefill: AddPrefill | null; d
                     {(p) => <Input {...p} type="password" value={passphrase} onChange={(e) => { setPassphrase(e.target.value); }} autoComplete="off" />}
                   </Field>
                 </div>
+              ) : null}
+              {userName.trim() || headers.headers.length > 0 || keyPath.trim() ? (
+                <Checkbox checked={remember} onChange={setRemember}>
+                  <span>
+                    Remember this login in the system keychain
+                    <span className="block text-fg-muted">The login, headers and key passphrase then come back after Velocity restarts. Removing the download forgets them.</span>
+                  </span>
+                </Checkbox>
               ) : null}
               <Field label="Checksum" error={checksum.error} hint="Checked when the download finishes, like “sha-256=…”.">
                 {(p) => <Input {...p} value={checksumText} onChange={(e) => { setChecksumText(e.target.value); }} placeholder="sha-256=hexadecimal digest" className="font-mono text-xs" />}
