@@ -10,6 +10,10 @@ rust-version.workspace = true
 name = "velocity_desktop_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
+# Packaging builds the app as the released app (#81, docs/PACKAGING.md).
+[features]
+release-identity = ["velocity-core/release-identity"]
+
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 

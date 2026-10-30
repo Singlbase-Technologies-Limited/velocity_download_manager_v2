@@ -21,6 +21,7 @@ An architecture decision record (ADR) states one decision, why it was taken and 
 | [0013](0013-sftp-russh.md) | SFTP uses russh, in its own crate behind a shared transport interface | Accepted | 2026-10-24 |
 | [0014](0014-torrent-helper-child-process.md) | libtorrent runs in a supervised helper process, on a child-process layer shared with the engine | Accepted | 2026-10-26 |
 | [0015](0015-keychain-with-consent.md) | Logins are saved in the system keychain only when the user asks, one download at a time | Accepted | 2026-10-29 |
+| [0016](0016-release-product-name-v2.md) | The released app is named "Velocity Download Manager V2" | Accepted | 2026-10-30 |
 
 Decisions still open are tracked as GitHub issues titled `decision: …`, for example #38 (in-process or child process). [ARCHITECTURE.md](../ARCHITECTURE.md#open-decisions) lists the ones that shape the architecture.
 

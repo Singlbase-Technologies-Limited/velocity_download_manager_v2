@@ -30,8 +30,13 @@ pub const SNAPSHOT_EVENT: &str = "downloads-snapshot";
 /// The manager, as the commands reach it.
 pub type Downloads = Arc<ManagerService>;
 
-/// Where the program `name` is: beside the app's own executable (PO decision on #58, until #81
-/// packages the engines as sidecars). In development that is `target/debug`.
+/// The transfer engine's and the torrent helper's programs, beside the app's.
+pub const ENGINE_PROGRAM: &str = "velocity-transfer";
+pub const TORRENT_PROGRAM: &str = "velocity-torrent";
+
+/// Where the program `name` is: beside the app's own executable (PO decision on #58). In
+/// development that is `target/debug`; the Windows installer puts the engine, the torrent helper
+/// and the native host there (#81).
 pub fn program_beside(app: &Path, name: &str) -> PathBuf {
     app.with_file_name(format!("{name}{}", std::env::consts::EXE_SUFFIX))
 }
@@ -52,7 +57,7 @@ pub fn start(app: &AppHandle, paths: &Paths) -> Result<Downloads, String> {
     }
     let exe = std::env::current_exe()
         .map_err(|e| format!("{} ({e})", ErrorCode::EngineMissing.user_message()))?;
-    let program = program_beside(&exe, "velocity-transfer");
+    let program = program_beside(&exe, ENGINE_PROGRAM);
     let engine: Box<dyn DirectTransfer> =
         match SupervisedEngine::start(program.clone(), SupervisorOptions::default()) {
             Ok(engine) => Box::new(engine),
@@ -70,7 +75,7 @@ pub fn start(app: &AppHandle, paths: &Paths) -> Result<Downloads, String> {
     let proxy =
         velocity_core::manager::saved_proxy(&database.section().unwrap_or_default(), &keychain);
     let torrents: Box<dyn TorrentEngine> = match SupervisedTorrentEngine::start_with_proxy(
-        program_beside(&exe, "velocity-torrent"),
+        program_beside(&exe, TORRENT_PROGRAM),
         SupervisorOptions::default(),
         torrent_settings,
         proxy,

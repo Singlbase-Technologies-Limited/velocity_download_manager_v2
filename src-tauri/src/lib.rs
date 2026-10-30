@@ -221,4 +221,82 @@ mod tests {
         assert_eq!(c["productName"].as_str().unwrap(), name);
         assert_eq!(c["app"]["windows"][0]["title"].as_str().unwrap(), name);
     }
+
+    /// What `tauri build --config src-tauri/tauri.release.conf.json` merges over tauri.conf.json
+    /// for the Windows installer (#81).
+    fn release_config() -> serde_json::Value {
+        serde_json::from_str(include_str!("../tauri.release.conf.json"))
+            .expect("tauri.release.conf.json is valid JSON")
+    }
+
+    /// The installer runs as the release identity, which the app's code gets from the
+    /// release-identity feature: the two must agree, or the app's data folder and single-instance
+    /// key would differ.
+    #[test]
+    fn the_release_config_carries_the_release_identity() {
+        let (b, r) = (branding(), release_config());
+        assert_eq!(r["identifier"].as_str().unwrap(), b.release_identifier);
+        assert_eq!(r["productName"].as_str().unwrap(), b.release_product_name);
+        assert_eq!(
+            r["app"]["windows"][0]["title"].as_str().unwrap(),
+            b.release_product_name
+        );
+    }
+
+    /// A merge patch replaces arrays whole, so the release window repeats the development one:
+    /// it may differ only in its title.
+    #[test]
+    fn the_release_window_is_the_development_window() {
+        let mut dev = config()["app"]["windows"].clone();
+        let mut release = release_config()["app"]["windows"].clone();
+        dev[0].as_object_mut().unwrap().remove("title");
+        release[0].as_object_mut().unwrap().remove("title");
+        assert_eq!(release, dev);
+    }
+
+    /// One installer for this user, no MSI (PO decisions on #81), with the programs the app
+    /// starts from beside its own executable.
+    #[test]
+    fn the_installer_is_a_per_user_setup_with_every_program() {
+        let bundle = &release_config()["bundle"];
+        assert_eq!(bundle["targets"], serde_json::json!(["nsis"]));
+        assert_eq!(bundle["windows"]["nsis"]["installMode"], "currentUser");
+        let programs: Vec<&str> = bundle["externalBin"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|p| p.as_str().unwrap().trim_start_matches("binaries/"))
+            .collect();
+        assert_eq!(
+            programs,
+            [
+                crate::downloads::ENGINE_PROGRAM,
+                crate::downloads::TORRENT_PROGRAM,
+                crate::browser::HOST_PROGRAM
+            ]
+        );
+        assert!(
+            !programs.iter().any(|p| p.contains("aria2")),
+            "no aria2 (ADR-0001)"
+        );
+    }
+
+    /// Uninstalling removes V2's browser registrations, by the release host's name, for every
+    /// browser the app registers with, and never V1's.
+    #[test]
+    fn the_uninstaller_removes_v2s_browser_keys_only() {
+        let hooks = include_str!("../windows/installer-hooks.nsh");
+        let host = &branding().release_native_host_name;
+        for browser in velocity_core::browser::registration::Browser::ALL {
+            let key = format!(
+                r#"DeleteRegKey HKCU "Software\{}\{host}""#,
+                browser.registry_path()
+            );
+            assert!(hooks.contains(&key), "{key}");
+        }
+        assert_eq!(hooks.matches("DeleteRegKey").count(), 5);
+        assert!(!hooks.contains(&format!(r#"\{V1_NATIVE_HOST}""#)));
+        // Not on an upgrade, which runs the old uninstaller with /UPDATE.
+        assert!(hooks.contains("${If} $UpdateMode <> 1"));
+    }
 }
