@@ -13,7 +13,6 @@
 //! `VELOCITY_CRASH_TRIALS` sets how many trials run: 3 by default, for CI; the full run is 100,
 //! by hand (PO decision on #43). `VELOCITY_CRASH_SEED` repeats a run; the seed is printed.
 
-use std::io::BufRead;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{Receiver, RecvTimeoutError};
 use std::sync::Arc;
@@ -282,16 +281,23 @@ fn now_ms() -> u64 {
         .map_or(0, |d| d.as_millis() as u64)
 }
 
+/// Where the app process writes its engine's process id: a file in its trial folder, written
+/// whole and then renamed into place, so the test never reads half of it.
+const ENGINE_PID_FILE: &str = "engine.pid";
+
 /// The app, as one process: the manager over `<dir>/velocity.sqlite3` with a supervised child
-/// engine. It adds the download if the database has none yet, prints its engine's process id,
-/// and pumps until it is killed.
+/// engine. It adds the download if the database has none yet, writes its engine's process id to
+/// [`ENGINE_PID_FILE`], and pumps until it is killed.
 fn run_app(dir: &Path, url: &str) -> ! {
     let db = Arc::new(Database::open(&dir.join("velocity.sqlite3")).expect("the database"));
     let engine = SupervisedEngine::start(program(), SupervisorOptions::default()).expect("engine");
-    println!(
-        "engine pid {}",
-        engine.process_id().expect("an engine runs")
-    );
+    let partial = dir.join(format!("{ENGINE_PID_FILE}.partial"));
+    std::fs::write(
+        &partial,
+        engine.process_id().expect("an engine runs").to_string(),
+    )
+    .expect("the engine's id is written");
+    std::fs::rename(&partial, dir.join(ENGINE_PID_FILE)).expect("the engine's id is in place");
     let mut m = Manager::open(Box::new(engine), Arc::clone(&db)).expect("the manager");
     if m.snapshot().downloads.is_empty() {
         m.add(
@@ -317,9 +323,30 @@ fn app_process_for_the_kill_trials() {
     run_app(Path::new(dir), url);
 }
 
-/// Starts the app process for `dir` and returns it with its engine's process id.
-fn start_app(dir: &Path, url: &str) -> (std::process::Child, u32) {
-    let mut app = std::process::Command::new(std::env::current_exe().unwrap())
+/// The app process of one trial. Dropped, it is killed, so a failing trial never leaves it
+/// running (#74: the trial once waited on it with no limit).
+struct App(std::process::Child);
+
+impl App {
+    /// Kills it and waits until it is gone.
+    fn kill(&mut self) {
+        self.0.kill().expect("the app is killed");
+        self.0.wait().expect("the app is gone");
+    }
+}
+
+impl Drop for App {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
+
+/// Starts the app process for `dir` and returns it with its engine's process id, read from the
+/// file the app writes. Fails, with the app killed, if the app ends first or the file doesn't
+/// come within [`WAIT`].
+fn start_app(dir: &Path, url: &str) -> (App, u32) {
+    let child = std::process::Command::new(std::env::current_exe().unwrap())
         .args([
             "app_process_for_the_kill_trials",
             "--exact",
@@ -328,23 +355,24 @@ fn start_app(dir: &Path, url: &str) -> (std::process::Child, u32) {
             "--test-threads=1",
         ])
         .env(APP_TRIAL, format!("{}|{url}", dir.display()))
-        .stdout(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::null())
         .spawn()
         .expect("the app starts");
-    let stdout = app.stdout.take().expect("piped");
-    let mut lines = std::io::BufReader::new(stdout).lines();
-    let pid = loop {
-        let line = lines
-            .next()
-            .expect("the app names its engine")
-            .expect("readable");
-        if let Some(pid) = line.strip_prefix("engine pid ") {
-            break pid.trim().parse().expect("a process id");
+    let mut app = App(child);
+    let deadline = Instant::now() + WAIT;
+    loop {
+        if let Ok(text) = std::fs::read_to_string(dir.join(ENGINE_PID_FILE)) {
+            return (app, text.trim().parse().expect("a process id"));
         }
-    };
-    // The rest of its output is drained, so it never blocks on a full pipe.
-    std::thread::spawn(move || lines.for_each(drop));
-    (app, pid)
+        if let Some(status) = app.0.try_wait().expect("the app's status") {
+            panic!("the app ended before naming its engine: {status}");
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the app didn't name its engine within {WAIT:?}"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
 }
 
 #[test]
@@ -369,8 +397,7 @@ fn a_killed_app_brings_the_download_back_and_finishes_the_right_file() {
 
         let (mut app, engine_pid) = start_app(&dir.0, &server.url("f.bin"));
         std::thread::sleep(kill_at);
-        app.kill().expect("the app is killed");
-        app.wait().expect("the app is gone");
+        app.kill();
         // Its engine notices the app went away and stops; the next app starts its own.
         let deadline = Instant::now() + WAIT;
         while process_exists(engine_pid).expect("checked") {
