@@ -10,7 +10,7 @@ This page is the design. The workflows are written in #13, #14, #16 to #19 and #
 
 **Temporary** (PO decision, 2026-10-30, #204): the repository is on GitHub Pro with a limited budget of Actions minutes, and the PO wants to spend as few as possible during development. This replaces the pause of 2026-10-24 (#173). The workflows, their jobs and their checks are unchanged; only their triggers are, and each workflow's header says what to put back.
 
-- **Triggers:** `main.yml` (Main checks) and `pr.yml` (PR checks) run only when started by hand (`workflow_dispatch`). Nothing runs on a push, a pull request or a merge to `main`, and nothing on a schedule. Dependabot stays on.
+- **Triggers:** `main.yml` (Main checks) and `pr.yml` (PR checks), and the advisory check (`advisories.yml`, #75), run only when started by hand (`workflow_dispatch`). Nothing runs on a push, a pull request or a merge to `main`, and nothing on a schedule. Dependabot stays on.
 - **One run per batch of five issues,** on Linux and Windows:
   1. When the five issues are built, push a `batch/<issues>` branch, for example `batch/71-72-74-75-192`: the latest `main` with the five issue branches merged in.
   2. Start Main checks on it with no base, which checks everything on Linux and Windows: `gh workflow run main.yml --ref batch/<issues>`.
@@ -20,7 +20,7 @@ This page is the design. The workflows are written in #13, #14, #16 to #19 and #
 - **The merge gate meanwhile:** the PO's approval of the pull request, and a green batch run that included its head commit. Each check is reported from that run's `ci-diagnostics` ([CI_DIAGNOSTICS.md](CI_DIAGNOSTICS.md)); the PR's own CI and local checks are NOT RUN.
 - **Not covered meanwhile:** a run per pull request, a run of `main` after each merge (the next batch run checks it), and a recorded red run before each fix.
 - **PR checks by hand,** when a single change needs them: `gh workflow run pr.yml --ref <branch> -f base=<commit>`, with the commit the pull request would compare with.
-- **Coming back** (when there is money for minutes): put back each workflow's triggers as its header says (`push` on `main` for Main checks, `pull_request` into `main` for PR checks), then remove this section and the pointers to it in AGENTS.md, CLAUDE.md and the skills, and run Main checks on `main` once. Its first green run closes #173.
+- **Coming back** (when there is money for minutes): put back each workflow's triggers as its header says (`push` on `main` for Main checks, `pull_request` into `main` for PR checks, the weekly `schedule` for the advisory check), then remove this section and the pointers to it in AGENTS.md, CLAUDE.md and the skills, and run Main checks on `main` once. Its first green run closes #173.
 
 ## Tiers
 
