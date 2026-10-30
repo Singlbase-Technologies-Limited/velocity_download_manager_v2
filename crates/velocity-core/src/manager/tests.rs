@@ -2096,6 +2096,54 @@ mod removal {
         fs::remove_dir_all(&dir).unwrap();
     }
 
+    /// #72: a link where the download's file was is never deleted through; what it leads to is
+    /// untouched. On Windows a file link needs Developer Mode or an administrator, else NOT RUN.
+    #[test]
+    fn a_link_at_the_downloads_name_is_never_deleted_through() {
+        let dir = folder("file-link");
+        let outside = folder("file-link-outside");
+        let (mut m, _control, _db, id) = completed_in(&dir);
+        fs::write(outside.join("theirs.zip"), vec![7u8; 4096]).unwrap();
+        fs::remove_file(dir.join("a.zip")).unwrap();
+        if crate::fs_safety::test_links::file_link(&outside.join("theirs.zip"), &dir.join("a.zip"))
+        {
+            assert_eq!(
+                m.remove(&id, true),
+                Ok(vec![(dir.join("a.zip"), Kept::NotPlain)])
+            );
+            assert_eq!(
+                fs::read(outside.join("theirs.zip")).unwrap(),
+                vec![7u8; 4096]
+            );
+        }
+        fs::remove_dir_all(&dir).unwrap();
+        fs::remove_dir_all(&outside).unwrap();
+    }
+
+    /// #72: when the download's folder has become a link (a junction on Windows), nothing is
+    /// deleted through it, even a file of the right name and size.
+    #[test]
+    fn a_folder_turned_into_a_link_is_never_deleted_through() {
+        let base = folder("folder-link");
+        let dir = base.join("downloads");
+        let outside = base.join("outside");
+        fs::create_dir_all(&dir).unwrap();
+        fs::create_dir_all(&outside).unwrap();
+        let (mut m, _control, _db, id) = completed_in(&dir);
+        fs::remove_dir_all(&dir).unwrap();
+        fs::write(outside.join("a.zip"), vec![7u8; 4096]).unwrap();
+        crate::fs_safety::test_links::folder_link(&outside, &dir);
+        assert_eq!(m.remove(&id, true), Ok(vec![(dir.clone(), Kept::NotPlain)]));
+        assert!(outside.join("a.zip").exists(), "untouched");
+        // The link itself, not what it leads to.
+        if cfg!(windows) {
+            fs::remove_dir(&dir).unwrap();
+        } else {
+            fs::remove_file(&dir).unwrap();
+        }
+        fs::remove_dir_all(&base).unwrap();
+    }
+
     #[test]
     fn a_removed_unfinished_download_is_cancelled_and_never_comes_back() {
         let dir = folder("unfinished");
@@ -3044,19 +3092,7 @@ mod opening {
         let outside = folder("link-outside");
         let (m, id) = download(&dir, "album", true);
         let link = dir.join("album");
-        #[cfg(unix)]
-        std::os::unix::fs::symlink(&outside, &link).unwrap();
-        // A junction needs no administrator rights, unlike a symbolic link.
-        #[cfg(windows)]
-        {
-            let made = std::process::Command::new("cmd")
-                .args(["/C", "mklink", "/J"])
-                .arg(&link)
-                .arg(&outside)
-                .output()
-                .unwrap();
-            assert!(made.status.success(), "{made:?}");
-        }
+        crate::fs_safety::test_links::folder_link(&outside, &link);
         assert_eq!(m.file_to_open(&id, true), Err(ErrorCode::InvalidPath));
         assert_eq!(
             m.folder_to_open(&id),

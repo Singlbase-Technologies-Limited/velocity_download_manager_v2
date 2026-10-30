@@ -171,7 +171,7 @@ The helper never deletes files. Deleting is the manager's decision, through `vel
 - **Only what is verifiably the torrent's:**
   - a plain file, no larger than the torrent says;
   - inside the torrent's folder, reached through plain folders.
-  - A link or reparse point, such as a junction, is never followed, and neither is anything behind one. The torrent's folder itself must be a plain folder.
+  - A link, such as a symbolic link or a junction, is never followed, and neither is anything behind one ([SECURITY.md](SECURITY.md#files-and-folders-72)). The torrent's folder itself must be a plain folder.
 - **Windows:** a file still open can't be deleted, so each file is tried again for up to 5 s, after the helper has removed the torrent. On the development machine, libtorrent 2.0.15 had let go of a seeding torrent's files at once: the integration test passed without the wait three times out of three. A core unit test covers the wait with a file held open without delete sharing.
 - **The report:** `delete_owned` says what it deleted and what it kept, and why: a link, too large, behind a link, a folder not empty, or the error.
 

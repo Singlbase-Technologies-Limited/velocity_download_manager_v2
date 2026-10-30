@@ -465,6 +465,10 @@ pub enum DownloadError {
     FileExists,
     /// A local file operation failed.
     Io(String),
+    /// A local error the user can fix (#74): a full disk, or a folder V2 may no longer write to.
+    /// What reached the disk is checkpointed when it can be, and the part file is kept, so a retry
+    /// once it is fixed resumes.
+    Local(String),
     /// [`Control::cancel`] stopped it.
     Cancelled,
     /// [`Control::pause`] stopped it; its part file is kept.
@@ -761,7 +765,9 @@ pub fn download_from(
         }
         Err(e) => {
             let retryable = matches!(&e, DownloadError::Transfer(t) if t.retryable);
-            if matches!(e, DownloadError::Paused) || (retryable && ck.sent > 0) {
+            // A local error the user can fix keeps what a checkpoint recorded, to resume from (#74).
+            let fixable = matches!(e, DownloadError::Local(_));
+            if matches!(e, DownloadError::Paused) || ((retryable || fixable) && ck.sent > 0) {
                 part.keep = true;
             }
             if matches!(e, DownloadError::IntegrityFailed(_)) {
@@ -1392,7 +1398,25 @@ fn probe(
             let source = name_source.lock().expect("the name source lock").clone();
             part.name_from(&source.unwrap_or_default(), control)?;
         }
-        part.accept(&mut cursor, limit, chunk)?;
+        if let Err(e) = part.accept(&mut cursor, limit, chunk) {
+            if matches!(e, DownloadError::Local(_)) {
+                let resumable = match probe_verdict
+                    .lock()
+                    .expect("the probe verdict lock")
+                    .as_ref()
+                {
+                    Some(Ok(ProbeOutcome::RangesOk { total, .. })) => Some(*total),
+                    _ => None,
+                };
+                if let Some(total) = resumable {
+                    // What reached the disk before it refused more is recorded to resume from
+                    // (#74). If the sync fails too, the last checkpoint stands.
+                    ck.file = answered_file(&validators);
+                    let _ = ck.take_probe(part, total, control);
+                }
+            }
+            return Err(e);
+        }
         control.report(part.written, total);
         // With a total, ranges work, so the probe's bytes can be resumed from: checkpoint them.
         let total = match probe_verdict
@@ -2033,8 +2057,18 @@ fn fetch_ranges(
                 a.quiet = false;
                 let offset = a.position;
                 a.position += chunk.len() as u64;
-                let accepted =
-                    sched.accept(id, offset, &chunk, |at, bytes| part.write_owned(at, bytes))?;
+                let accepted = match sched
+                    .accept(id, offset, &chunk, |at, bytes| part.write_owned(at, bytes))
+                {
+                    Ok(accepted) => accepted,
+                    Err(e @ DownloadError::Local(_)) => {
+                        // What reached the disk before it refused more is recorded to resume from
+                        // (#74). If the sync fails too, the last checkpoint stands.
+                        let _ = ck.take(part, &mut sched, control);
+                        return Err(e);
+                    }
+                    Err(e) => return Err(e),
+                };
                 part.wasted += accepted.wasted;
                 sources.accepted(a.source, accepted.written);
                 if multi && accepted.written > 0 {
@@ -2552,10 +2586,10 @@ fn drain_events(
 
 fn io_error(what: &str, path: &Path, e: &io::Error) -> DownloadError {
     let detail = format!("couldn't {what} {}: {e}", path.display());
-    DownloadError::Io(match failure::disk_message(e) {
-        Some(message) => format!("{message} ({detail})"),
-        None => detail,
-    })
+    match failure::disk_message(e) {
+        Some(message) => DownloadError::Local(format!("{message} ({detail})")),
+        None => DownloadError::Io(detail),
+    }
 }
 
 /// The part file this download owns: removed on drop unless it was finished.
@@ -2925,7 +2959,8 @@ impl PartFile {
     /// Writes bytes the range scheduler accepted at `offset`. They count as covered once the write
     /// returns.
     fn write_owned(&mut self, offset: u64, bytes: &[u8]) -> Result<(), DownloadError> {
-        write_at(
+        write_part(
+            &self.path,
             self.file.as_ref().expect("the part file is open"),
             bytes,
             offset,
@@ -2945,8 +2980,13 @@ impl PartFile {
         let fresh: u64 = gaps.iter().map(|(a, b)| b - a).sum();
         for (a, b) in gaps {
             let slice = &chunk[(a - offset) as usize..(b - offset) as usize];
-            write_at(self.file.as_ref().expect("the part file is open"), slice, a)
-                .map_err(|e| io_error("write to", &self.path, &e))?;
+            write_part(
+                &self.path,
+                self.file.as_ref().expect("the part file is open"),
+                slice,
+                a,
+            )
+            .map_err(|e| io_error("write to", &self.path, &e))?;
             self.coverage.insert(a, b);
         }
         self.written += fresh;
@@ -3030,6 +3070,19 @@ impl Drop for PartFile {
             let _ = files::remove_part(&self.path);
         }
     }
+}
+
+/// Writes `buf` at `offset` to the part file at `path`. With the test-only `test-faults` feature,
+/// a planned fault can cut the write short and fail it, as a full disk would (#74).
+fn write_part(path: &Path, file: &File, buf: &[u8], offset: u64) -> io::Result<()> {
+    #[cfg(feature = "test-faults")]
+    if let (allowed, Some(e)) = crate::faults::allowed(path, buf.len()) {
+        write_at(file, &buf[..allowed], offset)?;
+        return Err(e);
+    }
+    #[cfg(not(feature = "test-faults"))]
+    let _ = path;
+    write_at(file, buf, offset)
 }
 
 #[cfg(windows)]

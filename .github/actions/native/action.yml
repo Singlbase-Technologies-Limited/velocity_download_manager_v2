@@ -1,0 +1,46 @@
+# The native libraries for a CI job (#205, docs/BUILDING_NATIVE.md): libcurl's and libtorrent's, in
+# target/native. They are cached on their own, keyed on the scripts, lock file and vcpkg manifest
+# that build them, and the workflows save them as soon as they are built, even when a later check
+# fails, so a rerun doesn't build Boost and libtorrent again. Only when the cache misses is vcpkg set
+# up, at the baseline commit the manifest pins, with its telemetry off as on a developer machine.
+# `pnpm native:build` then builds what is missing, or reuses what it finds.
+name: Native libraries for a V2 CI job
+description: Restore target/native, and set up vcpkg at the pinned baseline when it has to be built
+
+outputs:
+  cache-key:
+    description: The key target/native is cached under
+    value: ${{ steps.key.outputs.key }}
+  cache-hit:
+    description: '"true" when target/native was restored'
+    value: ${{ steps.restore.outputs.cache-hit }}
+
+runs:
+  using: composite
+  steps:
+    - id: key
+      shell: bash
+      run: echo "key=native-v1-${{ runner.os }}-${{ hashFiles('scripts/native/**') }}" >> "$GITHUB_OUTPUT"
+
+    - id: restore
+      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        key: ${{ steps.key.outputs.key }}
+        path: target/native
+
+    - name: Set up vcpkg at the pinned baseline
+      if: steps.restore.outputs.cache-hit != 'true'
+      shell: bash
+      run: |
+        baseline=$(node -p "require('./scripts/native/vcpkg/vcpkg.json')['builtin-baseline']")
+        root="$RUNNER_TEMP/vcpkg"
+        # Commits only, then the baseline's tree: small, and exactly the pinned registry.
+        git clone --quiet --filter=tree:0 https://github.com/microsoft/vcpkg "$root"
+        git -C "$root" checkout --quiet "$baseline"
+        if [ "$RUNNER_OS" = Windows ]; then
+          "$root/bootstrap-vcpkg.bat" -disableMetrics
+        else
+          "$root/bootstrap-vcpkg.sh" -disableMetrics
+        fi
+        echo "VCPKG_ROOT=$root" >> "$GITHUB_ENV"
+        echo "VCPKG_DISABLE_METRICS=1" >> "$GITHUB_ENV"

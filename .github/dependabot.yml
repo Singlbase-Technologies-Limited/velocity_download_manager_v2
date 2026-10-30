@@ -1,7 +1,8 @@
 # Keeps the SHA-pinned GitHub Actions current (docs/CI.md, "Permissions and supply chain").
 # Monthly and grouped into one PR, so updates cost one CI run, not one per action. Each update is
-# an ordinary PR that the PO reviews. Cargo and npm dependencies are not included: new or changed
-# dependencies need PO approval (#9), and their advisory process is #75.
+# an ordinary PR that the PO reviews. Cargo and npm have no version updates here: they get
+# Dependabot's security-fix PRs only, a repository setting (PO decision on #75), and other changes
+# need PO approval (#9). The advisory process is in docs/SECURITY.md.
 version: 2
 updates:
   - package-ecosystem: github-actions

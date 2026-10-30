@@ -17,6 +17,13 @@ const cargoOnPath = spawnSync('cargo', ['--version'], { windowsHide: true }).sta
 const cargo = cargoOnPath ? 'cargo' : join(homedir(), '.cargo', 'bin', `cargo${exe}`);
 const nodeBin = (pkgPath) => [process.execPath, join(root, 'node_modules', pkgPath)];
 
+/** pnpm itself, as the `pnpm <script>` that started this check: `npm_execpath` names it. */
+function pnpmBin() {
+  const execPath = process.env.npm_execpath;
+  if (!execPath) throw new Error('pnpm not found: run this check as `pnpm <script>`.');
+  return execPath.endsWith('.js') || execPath.endsWith('.cjs') ? [process.execPath, execPath] : [execPath];
+}
+
 const tools = {
   cargo: () => [cargo],
   node: () => [process.execPath],
@@ -24,6 +31,7 @@ const tools = {
   eslint: () => nodeBin('eslint/bin/eslint.js'),
   vitest: () => nodeBin('vitest/vitest.mjs'),
   vite: () => nodeBin('vite/bin/vite.js'),
+  pnpm: pnpmBin,
 };
 
 /** Stops with a hint when cargo or node_modules is missing. */

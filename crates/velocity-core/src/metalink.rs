@@ -16,7 +16,7 @@
 //!   fit the file's size when it has one. Elements in other namespaces are ignored.
 
 use crate::domain::{DownloadKind, ErrorCode};
-use crate::links::is_link;
+use crate::fs_safety::{is_link, plain_dir};
 use crate::naming::check_file_name;
 use crate::request::{split_login, MAX_URL_BYTES};
 use crate::transfer::{Checksum, HashAlgorithm, PieceHashes};
@@ -715,8 +715,8 @@ pub fn read_document(path: &Path) -> Result<Metalink, MetalinkError> {
 
 /// Creates a file's `folders` inside `directory`, one level at a time, and returns the innermost
 /// (PO decision on #54: subfolders are kept). A folder already there is used; anything else at a
-/// level is refused with `InvalidPath` and never followed: a file, a link, or on Windows any
-/// reparse point, such as a junction. So the result is always inside `directory`, which is the
+/// level is refused with `InvalidPath` and never followed: a file, or a link such as a symbolic
+/// link or a junction (`fs_safety`). So the result is always inside `directory`, which is the
 /// user's choice and must be an existing folder (`DestinationMissing` otherwise).
 pub fn create_folders(directory: &Path, folders: &[String]) -> Result<PathBuf, ErrorCode> {
     if folders.iter().any(|f| check_file_name(f).is_err()) {
@@ -731,7 +731,9 @@ pub fn create_folders(directory: &Path, folders: &[String]) -> Result<PathBuf, E
         match std::fs::create_dir(&path) {
             Ok(()) => {}
             // Made by an earlier file, or by another program: used only if it's a real folder.
-            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => plain_folder(&path)?,
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                plain_dir(&path).map_err(|_| ErrorCode::InvalidPath)?;
+            }
             Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {
                 return Err(ErrorCode::PermissionDenied)
             }
@@ -739,16 +741,6 @@ pub fn create_folders(directory: &Path, folders: &[String]) -> Result<PathBuf, E
         }
     }
     Ok(path)
-}
-
-/// `Ok` when `path` is a folder itself, not a link or reparse point to one (checked without
-/// following it).
-fn plain_folder(path: &Path) -> Result<(), ErrorCode> {
-    let meta = std::fs::symlink_metadata(path).map_err(|_| ErrorCode::Io)?;
-    if is_link(&meta) || !meta.is_dir() {
-        return Err(ErrorCode::InvalidPath);
-    }
-    Ok(())
 }
 
 #[cfg(test)]
@@ -1125,19 +1117,7 @@ mod tests {
         let base = scratch("link");
         let outside = scratch("link-outside");
         let link = base.join("disc");
-        #[cfg(unix)]
-        std::os::unix::fs::symlink(&outside, &link).unwrap();
-        // A junction needs no administrator rights, unlike a symbolic link.
-        #[cfg(windows)]
-        {
-            let made = std::process::Command::new("cmd")
-                .args(["/C", "mklink", "/J"])
-                .arg(&link)
-                .arg(&outside)
-                .output()
-                .unwrap();
-            assert!(made.status.success(), "{made:?}");
-        }
+        crate::fs_safety::test_links::folder_link(&outside, &link);
         assert_eq!(
             create_folders(&base, &names(&["disc", "inner"])),
             Err(ErrorCode::InvalidPath)

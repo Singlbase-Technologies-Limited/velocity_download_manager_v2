@@ -13,6 +13,7 @@ The rule in [AGENTS.md](../AGENTS.md#engineering) is short: **a new crate, npm p
 | Native libraries, linked or bundled | libcurl, nghttp2, zlib, a TLS library, possibly libssh2, libtorrent, Boost, OpenSSL | The native lock file [`scripts/native/deps.lock`](../scripts/native/deps.lock) (below; #35) |
 | Toolchains | Rust 1.99.1, Node.js 24.12.0, pnpm 12.14.0 | `rust-toolchain.toml`, `packageManager` in `package.json`, and the Node version in the workflows |
 | GitHub Actions | `actions/checkout`, `actions/cache` | A full commit SHA in the workflows ([CI.md](CI.md#permissions-and-supply-chain)) |
+| Developer tools, not shipped | cargo-deny 0.20.2 (MIT OR Apache-2.0, released 2026-07-09, Embark Studios; PO, #75) for `pnpm check:advisories` | The version in `scripts/check-advisories.mjs` and `.github/workflows/advisories.yml`; installed with `cargo install cargo-deny --locked --version 0.20.2` |
 | Services and background processes | none today | — |
 
 ## Approving a new dependency
@@ -53,7 +54,7 @@ The rule in [AGENTS.md](../AGENTS.md#engineering) is short: **a new crate, npm p
 - **Lockfiles are committed and authoritative.** `Cargo.lock` and `pnpm-lock.yaml` change only in a PR that says why. Changing either selects every CI check ([CI.md](CI.md#selecting-jobs)).
 - **Toolchains are pinned exactly.** A change is its own PR with a full `pnpm check:full` run.
 - **GitHub Actions are pinned to full SHAs.** Dependabot proposes updates monthly, grouped into one PR ([CI.md](CI.md#permissions-and-supply-chain)).
-- **Rust and npm updates aren't automated.** Each update is a PR stating the reason (a fix, an advisory, a needed feature), with the full check level. Advisory monitoring and response times are #75.
+- **Rust and npm updates aren't automated,** except Dependabot's security-fix PRs (PO decision on #75). Each update is a PR stating the reason (a fix, an advisory, a needed feature), with the full check level. Advisory monitoring and response times are in [SECURITY.md](SECURITY.md#dependency-advisories-75).
 - **Native libraries** are updated only by changing the native lock file, never by fetching "latest" at build time.
 
 ## Native libraries

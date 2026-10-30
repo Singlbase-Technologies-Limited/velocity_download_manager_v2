@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
-import { checkPrBody, checkPrTitle } from './pr-body-lib.mjs';
+import { checkPrBody, checkPrTitle, prBodyArgs } from './pr-body-lib.mjs';
 
 // PR descriptions follow .github/PULL_REQUEST_TEMPLATE.md (PO decision on #59). The rules come from the template itself.
 const template = readFileSync(new URL('../.github/PULL_REQUEST_TEMPLATE.md', import.meta.url), 'utf8');
@@ -81,5 +81,19 @@ describe('checkPrTitle', () => {
     expect(checkPrTitle('feat(engine): add bounded range probe', valid).join()).toMatch(/end with "\(#41\)"/);
     expect(checkPrTitle('feat(engine): add bounded range probe (closes #41)', valid).join()).toMatch(/end with "\(#41\)"/);
     expect(checkPrTitle('feat(engine): add bounded range probe (#42)', valid).join()).toMatch(/end with "\(#41\)"/);
+  });
+});
+
+describe('prBodyArgs', () => {
+  it('takes the file with or without --title, in either order', () => {
+    expect(prBodyArgs(['pr.md'])).toEqual({ file: 'pr.md', title: undefined });
+    expect(prBodyArgs(['pr.md', '--title', 'fix: x (#1)'])).toEqual({ file: 'pr.md', title: 'fix: x (#1)' });
+    expect(prBodyArgs(['--title', 'fix: x (#1)', 'pr.md'])).toEqual({ file: 'pr.md', title: 'fix: x (#1)' });
+  });
+
+  it('refuses a missing file, or --title without a value', () => {
+    expect(prBodyArgs([])).toBeNull();
+    expect(prBodyArgs(['--title', 'fix: x (#1)'])).toBeNull();
+    expect(prBodyArgs(['pr.md', '--title'])).toBeNull();
   });
 });

@@ -282,6 +282,14 @@ mod tests {
             .env("LEAKY_TOKEN", SECRET)
             .spawn()
             .unwrap();
+        // Right after the spawn the child can still be this test's copy, before `sleep` replaced
+        // it with its own arguments and environment: wait until it has.
+        let cmdline = format!("/proc/{}/cmdline", child.id());
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while !std::fs::read(&cmdline).is_ok_and(|c| c.starts_with(b"sleep")) {
+            assert!(std::time::Instant::now() < deadline, "sleep never started");
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
         let mut scan = LeakScan::new(&[SECRET]);
         scan.process("sleep", child.id());
         let _ = child.kill();

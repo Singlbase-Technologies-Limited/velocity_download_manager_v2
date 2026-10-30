@@ -26,7 +26,7 @@ use crate::destination::{Choice, OnConflict, Placement};
 use crate::domain::{
     DestinationCheck, DownloadKind, DownloadStatus, ErrorCode, FailureClass, TransferError,
 };
-use crate::links::is_link;
+use crate::fs_safety::is_link;
 use crate::metalink::{self, create_folders};
 use crate::request::{
     check_credentials, check_headers, check_referrer, normalize_link, split_login, MAX_URL_BYTES,

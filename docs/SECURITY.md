@@ -1,6 +1,6 @@
 # Security
 
-How V2 protects downloads and the people who use it. The rules every contributor follows are in [AGENTS.md](../AGENTS.md#security-and-data) and `.claude/rules/security.md`. This document records what V2 does and what was measured. It covers TLS, links and redirects, the browser bridge, FTP, SFTP host keys, secrets and the proxy.
+How V2 protects downloads and the people who use it. The rules every contributor follows are in [AGENTS.md](../AGENTS.md#security-and-data) and `.claude/rules/security.md`. This document records what V2 does and what was measured. It covers TLS, links and redirects, the browser bridge, FTP, SFTP host keys, secrets, files and folders, dependency advisories and the proxy.
 
 ## TLS verification (#69)
 
@@ -111,7 +111,7 @@ A Metalink document is untrusted input, from a file the user chose or from any l
 - **No entity can expand.** A document with a `<!DOCTYPE>` is refused, so it can't declare an entity: no "billion laughs", and no external entity that reads a local file or a URL. Only XML's five predefined entities and character references are read. The parser is quick-xml (PO decision on #54), which never expands custom entities itself.
 - **Bounded:** at most 16 MiB, 10,000 files, 256 sources per file, 32 levels of nesting and 8 KiB of text per value, read as a stream. A piece list fits the engine's limit (2 MiB of digests).
 - **Safe names:** every part of a file's name must be one safe name (`naming::check_file_name`): no `..`, no absolute path, no drive letter, no `\` or `:`, no reserved Windows name, no control character, no part file's name, at most 32 subfolders deep. Two files at one path, whatever their case, or a file where another file's folder is, refuse the document. One bad name refuses the whole document, never only its file.
-- **Folders inside the chosen folder:** created one level at a time; a file, a link or a reparse point in the way is refused, never followed (tested with a symbolic link on Linux and a junction on Windows).
+- **Folders inside the chosen folder:** created one level at a time; a file or a link in the way is refused, never followed (tested with a symbolic link on Linux and a junction on Windows).
 - **No credentials from a document:** a source with a login in it is dropped, and a Metalink download sends no login, custom header or referrer. SFTP sources are dropped, since they would need a login and a host key the user confirms.
 - **Off by default,** as in V1, so a link that turns out to be a Metalink file is just a file until the user turns Metalink on.
 
@@ -120,7 +120,7 @@ A Metalink document is untrusted input, from a file the user chose or from any l
 Everything the Add dialog sends is checked again natively (`Manager::add_request`); the dialog's own checks are for usability. What protects V2:
 
 - **A login never goes in a link.** A link with one is refused (`INVALID_URL`); the login has its own fields and stays in memory, as do custom headers and a key's passphrase.
-- **`.torrent` files are read only as plain files:** an absolute path, never a link or a reparse point, at most 16 MiB, parsed by V2's own bounded parser before the torrent helper sees it. Files dropped on the window reach Rust, which passes the page only plain `.torrent` files, at most 500; the manager checks each again when it is added.
+- **`.torrent` files are read only as plain files:** an absolute path, never a link, at most 16 MiB, parsed by V2's own bounded parser before the torrent helper sees it. Files dropped on the window reach Rust, which passes the page only plain `.torrent` files, at most 500; the manager checks each again when it is added.
 - **A chosen folder is created only when the user agrees,** inside its nearest existing parent, one level at a time, never through a link.
 - **Fetched `.torrent` links** go through the transfer engine with its usual TLS checks, into the app's own `torrent-links` folder, at most 16 MiB and 60 seconds. What arrives must parse as a torrent. It is kept without its trackers, whose addresses can carry a private tracker's passkey; they stay in memory, as every torrent's do (PO decision on #58). When the app starts, it deletes any plain file in that folder that no download comes from, and touches nothing else there.
 - **SFTP host keys** are confirmed by the user in the window, after the download stops before logging in (below). A changed key is only explained, never offered for trust.
@@ -147,6 +147,47 @@ Logins, custom header values (cookies, tokens) and SSH key passphrases are secre
 - **Never written** to the database, a checkpoint, a temporary file, the app's log, the diagnostics export, or a child process's arguments or environment. The leak test (`crates/velocity-transfer/tests/secret_leaks.rs`) adds downloads with an HTTP login and cookie and an FTP login through the real child engine, and SFTP key and password logins, pauses one so a checkpoint is stored, then runs the shared secret-leak scan (#71, [TESTING.md](TESTING.md#the-secret-leak-scan-71)) over every file the test's folders hold (WAL included, open and after closing), temporary files, the app's log and the diagnostics export, after logging each download's record (the core itself logs nothing while a download runs). On Linux it also reads the running engine's arguments and environment; everywhere it checks the child is started with only `serve` and the few kept variables. A private tracker's passkey gets the same scan through the torrent helper (`crates/velocity-torrent/tests/manager.rs`). The SFTP password part runs where a password server is provisioned (CI's Linux runner); elsewhere it says NOT RUN, as the SFTP engine tests do.
 - **The system keychain, on consent only** ([ADR-0015](decisions/0015-keychain-with-consent.md)): "Remember this login in the system keychain", unticked by default, saves that download's login, headers and key passphrase as one entry under V2's own service name (`<identifier>.logins`), through the `keyring` crate: Windows Credential Manager, or the Secret Service on Linux. After a restart the download gets them back from there; removing it deletes the entry. A keychain that is missing or refuses is said (`KEYCHAIN_UNAVAILABLE`), and nothing is saved. A saved login is checked again, as when it was added, before it is used.
 - **After a restart, without a remembered login,** a download that had one waits for it again, with a note (V1's behaviour, #58).
+
+## Files and folders (#72)
+
+Names come from links, servers (`Content-Disposition`), browsers, torrents and Metalink documents, so they are untrusted; and the folder a download writes to may hold other programs' files, V1's included. What V2 does:
+
+- **One set of checks** (`crates/velocity-core/src/fs_safety.rs`), shared by the engine's part files, Metalink folders, download removal, torrent deletion and the database: whether something is a link, a plain file or a plain folder (read without following it), whether a path is inside its folder by its names alone, and whether it is reached only through plain folders.
+- **What a link is:** a symbolic link, or on Windows a junction or a mount point, which redirect to another place. Other Windows reparse points, such as the files of a cloud-sync folder, are ordinary files (PO decision on #72).
+- **Names stay in the folder:** a name with `..`, a separator, a drive, a reserved Windows device name (`CON`, `con.txt`, `COM1` to `COM9`, `LPT1` to `LPT9`, `CONIN$`…), a control character or a part file's suffix is refused where it is given (`naming::check_file_name`; the engine checks every spec again), and renamed predictably where V2 picks the name (`CON.txt` becomes `_CON.txt`, `../../x.sh` becomes `x.sh`). A path that climbs out with `..` is never inside its folder, whatever is on disk (a regression test: torrent deletion once compared only the start of the path).
+- **Nothing through a link:** part files are created only where nothing exists (`create_new`), reopened with `O_NOFOLLOW` or `FILE_FLAG_OPEN_REPARSE_POINT` and checked again on the open handle, and folders are created one level at a time, refusing a link in the way.
+- **No overwrite:** a finished file is renamed into place without ever replacing an existing file (`renameat2` with `RENAME_NOREPLACE` on Linux, `MoveFileExW` without `MOVEFILE_REPLACE_EXISTING` on Windows), so a file that V1 or anything else wrote at that name meanwhile is kept (tested). Names that look alike but are stored differently (é as one character, or e and a combining accent) are two files, as Windows and Linux treat them; names are not normalised (PO decision on #72), and finishing one never replaces the other (tested). A name differing only in case is the same file on Windows, so it is refused there and kept.
+- **Long paths:** a folder deeper than Windows' old 260-character limit works: the finishing rename passes a verbatim path (`\\?\C:\…`), as the standard library's own calls do (tested with a path over 300 characters).
+- **Deleting only what a download owns:** removal deletes a direct download's file and part file, and a torrent's files and the folders it made, each only if it is a plain file no larger than the download says, reached through plain folders inside the download's folder. A link at a file's name, or a download folder that has become a link, deletes nothing (tested with a junction on Windows).
+- **Owner-only data:** on Linux the database, its WAL and shared-memory files (which hold the checkpoints) and its backups are `0600` (tested).
+- **How the link tests run:** junctions need no rights on Windows, so folder-link cases always run. A file symbolic link needs Developer Mode or an administrator there; without either, those cases print NOT RUN (PO decision on #72). On Linux every case runs.
+
+## Dependency advisories (#75)
+
+V2 ships native libraries and many crates and npm packages, and advisories against them are published every week. How V2 finds them and what it does (PO decisions on #75):
+
+- **The check:** `pnpm check:advisories` runs cargo-deny 0.20.2 (`cargo deny --locked check advisories`, configured in [`deny.toml`](../deny.toml)) against `Cargo.lock` and the RustSec database, and `pnpm audit --audit-level moderate` against `pnpm-lock.yaml`. It fails on a vulnerability, on unsound code anywhere in the graph, on an unmaintained crate V2 depends on directly, and on an npm advisory rated Medium (npm's "moderate") or higher, unless the advisory is accepted below. A yanked crate is a warning. cargo-deny is a developer tool, installed with `cargo install cargo-deny --locked --version 0.20.2` ([DEPENDENCIES.md](DEPENDENCIES.md)).
+- **When it runs:** by hand, in [`advisories.yml`](../.github/workflows/advisories.yml) (`gh workflow run advisories.yml`), while CI runs by hand only ([CI.md](CI.md), #204), and weekly, Mondays 04:00 UTC, once CI runs automatically again; at least before each release candidate.
+- **Native libraries** aren't in either lockfile, so they are watched by hand, at each check and before each native update ([BUILDING_NATIVE.md](BUILDING_NATIVE.md)): curl ([vulnerability table](https://curl.se/docs/vulnerabilities.html)), nghttp2, zlib and OpenSSL (the versions in [`scripts/native/deps.lock`](../scripts/native/deps.lock)), libtorrent with Boost and OpenSSL from vcpkg (#62), and SQLite, which `libsqlite3-sys` bundles (RustSec covers the crate, not every SQLite CVE). The WebView (WebView2 on Windows, WebKitGTK on Linux) is the operating system's and is updated with it. russh is a crate, so RustSec covers it.
+- **Dependabot** opens security-fix PRs for Cargo and npm, and no routine version updates. Each is an ordinary PR the PO reviews.
+- **Assessing one:** each advisory that affects a locked or native dependency gets an issue from the "Advisory assessment" template: where the dependency comes in, on which platforms, whether the affected code is built in and reachable, and whether it ships or is only a development tool. Then it is fixed, or accepted with its reason in `deny.toml` (or pnpm's audit configuration) and in the register below.
+- **Response times,** from the day the advisory is published or found, whichever is later, to a fix merged or an accepted assessment: **Critical 2 days, High 7 days, Medium 30 days, Low with the next release.**
+- **Release blocker:** an unfixed advisory rated Medium or higher that affects a feature V2 enables blocks a release or release candidate ([DEPENDENCIES.md](DEPENDENCIES.md#release-blockers-related-to-provenance)).
+
+### The register
+
+What the check found or accepts, checked 2026-10-30:
+
+| Advisory | Dependency | Where it comes from | Status |
+|---|---|---|---|
+| RUSTSEC-2026-0418 (GHSA-8p3x-q3q3-q3v5) | libz-sys 1.1.30: its build script writes the whole build environment, secrets included, under `target/` on Linux | curl-sys, for libcurl | **Fixed** in #75: libz-sys 1.1.31 |
+| RUSTSEC-2023-0071 | rsa 0.10.0-rc: a timing side channel ("Marvin") in private-key operations, no fix | russh, for SFTP RSA keys | **Accepted** (PO, #53): an SFTP client signs once per login with the user's own key; host-key checks use public keys only |
+| RUSTSEC-2024-0429 (GHSA-wrw7-89jp-8q8g) | glib 0.18.5: unsound `VariantStrIter` | Tauri's GTK 3 stack, Linux only | **Accepted** (PO, #184): V2 never calls it. Waits for a Tauri release on gtk-rs 0.20 (#184) |
+| RUSTSEC-2024-0370 | proc-macro-error 1.0.4: unmaintained | glib-macros 0.18, Tauri's GTK 3 stack, Linux only | **Listed** (PO, #75): a build-time macro crate; moves with Tauri |
+| RUSTSEC-2026-0370, RUSTSEC-2026-0371, RUSTSEC-2026-0372 | zvariant 5.15.1, zbus_names, zvariant_derive: unmaintained | zbus 5.19, for the Secret Service (keyring) and notifications (notify-rust) on Linux | **Listed** (PO, #75): moves with keyring and tauri-plugin-notification |
+| (yanked) | crypto-bigint 0.7.7: yanked by its authors | russh 0.64.1 and its elliptic-curve crates | **Listed:** a warning; moves with russh |
+
+npm: `pnpm audit` found no known vulnerabilities on 2026-10-30.
 
 ## Proxy (#192)
 

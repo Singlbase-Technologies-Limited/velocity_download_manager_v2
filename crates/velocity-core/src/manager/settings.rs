@@ -6,7 +6,7 @@ use crate::app_settings::{AppearanceSettings, OnboardingSettings, ShellSettings}
 use crate::database::settings::Section;
 use crate::destination::{check_folder, system_downloads, FolderSettings};
 use crate::domain::ErrorCode;
-use crate::links::is_link;
+use crate::fs_safety::is_link;
 
 impl Manager {
     /// A section of the saved settings, or its defaults before it was saved.

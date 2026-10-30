@@ -2,22 +2,25 @@
 
 V2's CI runs on GitHub Actions in a private repository on GitHub Free. The plan includes 2,000 runner minutes a month, and usage is **blocked**, not billed, once they run out ([billing](https://docs.github.com/en/billing/concepts/product-billing/github-actions)). Every design choice below protects two things: the checks that matter run on every change, and the monthly quota lasts the month.
 
-> **CI is paused until the end of epic #1** (PO decision, 2026-10-24, recorded in #173). See [below](#while-ci-is-paused).
+> **For now, CI runs only by hand, once per batch of five issues** (PO decision, 2026-10-30, #204), to save Actions minutes until there is money for them. It replaces the pause of 2026-10-24 (#173). The design below is unchanged and comes back as it is. See [below](#while-ci-runs-by-hand-only).
 
 This page is the design. The workflows are written in #13, #14, #16 to #19 and #91. Every figure below is labelled as **measured** or **assumed**. Assumed CI times get replaced by measured ones as the jobs start running (#14).
 
-## While CI is paused
+## While CI runs by hand only
 
-GitHub Actions stopped starting jobs on this repository (billing), and the PO decided not to depend on Actions minutes while building V2 (#173).
+**Temporary** (PO decision, 2026-10-30, #204): the repository is on GitHub Pro with a limited budget of Actions minutes, and the PO wants to spend as few as possible during development. This replaces the pause of 2026-10-24 (#173). The workflows, their jobs and their checks are unchanged; only their triggers are, and each workflow's header says what to put back.
 
-- **Workflows:** `main.yml` (Main checks) and `pr.yml` (PR checks) are disabled with `gh workflow disable`, so a push doesn't start a run that fails in seconds. Dependabot stays on.
-- **The merge gate meanwhile:** the PO's approval of the PR's head commit, plus these local checks, each marked PASS:
-  - on Windows: `pnpm check:fast`;
-  - then, not at the same time, in the WSL clean clone: `pnpm check:fast`, `pnpm check:links` and `pnpm check:guidance`, with the password-login SFTP server described ([platform-verify reference](../.claude/skills/platform-verify/reference.md#local-sftp-password-login-server)).
-
-  CI itself is reported as NOT RUN (paused).
-- **Not covered locally:** a clean machine (the WSL clone reuses tools already installed), and CI as an independent second check. Failures the final run finds are traced back with `git bisect`.
-- **Coming back:** at the end of epic #1, `gh workflow enable main.yml` and `gh workflow enable pr.yml`, then `gh workflow run main.yml --ref main` for one full run. Its first green run closes #173. Then this section is removed.
+- **Triggers:** `main.yml` (Main checks) and `pr.yml` (PR checks), and the advisory check (`advisories.yml`, #75), run only when started by hand (`workflow_dispatch`). Nothing runs on a push, a pull request or a merge to `main`, and nothing on a schedule. Dependabot stays on.
+- **One run per batch of five issues,** on Linux and Windows:
+  1. When the five issues are built, push a `batch/<issues>` branch, for example `batch/71-72-74-75-192`: the latest `main` with the five issue branches merged in.
+  2. Start Main checks on it with no base, which checks everything on Linux and Windows: `gh workflow run main.yml --ref batch/<issues>`.
+  3. A failure is fixed in its issue's own branch, never in the batch branch. The fixed branch is merged into the batch branch again, and Main checks is started again, until it is green. Only then does work go on.
+  4. The batch branch is deleted once the five pull requests are merged.
+- **No local test runs:** no `cargo test`, `pnpm test:focused`, Vitest, end-to-end, platform runs or check scripts (`check:fast` and the others). Compiling, formatting and linting while writing code stay allowed (`cargo check`, `cargo clippy`, `cargo fmt`, `tsc --noEmit`, ESLint). Tests are still written first; the batch run is where they first run.
+- **The merge gate meanwhile:** the PO's approval of the pull request, and a green batch run that included its head commit. Each check is reported from that run's `ci-diagnostics` ([CI_DIAGNOSTICS.md](CI_DIAGNOSTICS.md)); the PR's own CI and local checks are NOT RUN.
+- **Not covered meanwhile:** a run per pull request, a run of `main` after each merge (the next batch run checks it), and a recorded red run before each fix.
+- **PR checks by hand,** when a single change needs them: `gh workflow run pr.yml --ref <branch> -f base=<commit>`, with the commit the pull request would compare with.
+- **Coming back** (when there is money for minutes): put back each workflow's triggers as its header says (`push` on `main` for Main checks, `pull_request` into `main` for PR checks, the weekly `schedule` for the advisory check), then remove this section and the pointers to it in AGENTS.md, CLAUDE.md and the skills, and run Main checks on `main` once. Its first green run closes #173.
 
 ## Tiers
 
@@ -88,6 +91,7 @@ The repository gets **10 GB of Actions cache**, separate from artifact storage. 
 |---|---|---|---|---|
 | Rust (Linux) | OS + toolchain + `Cargo.lock` hash | Compiled **dependencies** only (`~/.cargo/registry`, `target/` without workspace crates) | **Measured in CI:** 319 MiB as saved (1.1 GiB of `target/` plus a 201 MiB registry before compression); locally 365 MiB with gzip | A cold build is most of a cold job (**measured:** 571 s for the clippy and test builds on 2 vCPUs). Workspace crates rebuild in seconds, so caching them would only add upload time and size |
 | Rust (Windows) | Same | Same | **Assumed:** similar to Linux (not measured) | Windows minutes cost more ($0.010 against $0.006 a minute), so a cache hit saves more |
+| Native libraries (#205), per OS | OS + hash of `scripts/native/**` (the build scripts, the lock file and the vcpkg manifest and ports) | `target/native`: libcurl and its libraries, and libtorrent, Boost and OpenSSL from vcpkg | **Not measured yet** | Building Boost and libtorrent from source takes a large part of a job, so they are kept on their own, and saved even after a red run |
 | pnpm store | — | **Not cached** | 147 MiB (Linux) | `pnpm install --frozen-lockfile` took **4 s** in CI (PR #104), less than a cache restore and save would cost (PO decision on #14) |
 
 **Caching rules:**
@@ -102,6 +106,7 @@ The repository gets **10 GB of Actions cache**, separate from artifact storage. 
 - **Action:** GitHub's own `actions/cache/restore` and `actions/cache/save`, pinned by SHA. No third-party cache action is used, because any third-party action is a dependency that needs PO approval (AGENTS.md).
 - **Setup:** the shared composite action [`.github/actions/setup`](../.github/actions/setup/action.yml) restores the cache for every job that builds Rust. When the exact key is missing, it falls back to the newest older key (`restore-keys`), so a dependency bump starts mostly warm.
 - **Saving:** only [`main.yml`](../.github/workflows/main.yml), the Linux checks after each merge to `main`, saves the cache. It does so after a fully green run, when the exact key isn't cached yet, and after removing the workspace crates' artefacts.
+- **The native libraries (#205):** a composite action of their own, [`.github/actions/native`](../.github/actions/native/action.yml), called by the setup action and by PR checks' Windows native job, restores `target/native`. Only when that misses does it set up vcpkg: a clone of `microsoft/vcpkg` at the `builtin-baseline` commit of `scripts/native/vcpkg/vcpkg.json`, bootstrapped with `-disableMetrics`, with `VCPKG_DISABLE_METRICS=1`. Every job that builds them saves them right after its checks, whatever their result, so a rerun on the same branch skips the build. A cold build of Boost and libtorrent is why the Rust jobs may run up to 90 minutes (Windows Main checks 120); a warm one takes far less. GitHub restores a cache only on the branch that saved it or from the default branch, so a new branch builds them once unless a run on `main` saved them.
 - **No incremental compilation in CI:** `CARGO_INCREMENTAL=0` keeps the cache smaller and CI builds faster.
 
 ### The post-merge tier
@@ -139,7 +144,7 @@ GitHub's guidance is in [secure use](https://docs.github.com/en/actions/referenc
 
 - **Read-only by default.** Every workflow declares `permissions: contents: read`, and a job raises only what it needs (for example `contents: write` for the draft-release job in #18).
 - **Pinned actions.** Third-party actions are pinned to a **full commit SHA**, with the version in a comment. GitHub's own `actions/*` are pinned the same way, for consistency.
-- **Dependabot** updates the pins: [`.github/dependabot.yml`](../.github/dependabot.yml) checks the workflows and the composite action **monthly**, grouped into **one PR**, so an update costs one CI run. Each update is an ordinary PR the PO reviews. Cargo and npm updates aren't automated: dependency changes need PO approval (#9, #75).
+- **Dependabot** updates the pins: [`.github/dependabot.yml`](../.github/dependabot.yml) checks the workflows and the composite action **monthly**, grouped into **one PR**, so an update costs one CI run. Each update is an ordinary PR the PO reviews. For Cargo and npm, Dependabot opens security-fix PRs only, no routine version updates (PO decision on #75); other dependency changes need PO approval (#9).
 - **No `pull_request_target`** that checks out PR code. No secrets in PR workflows.
 - **Untrusted text stays out of commands.** Titles, branch names and other user-controlled strings never go straight into `run:` scripts; they pass through environment variables.
 - **Self-hosted runners:** none. If one is ever added (PO decision), it never runs code from a fork.
@@ -165,6 +170,7 @@ Every run completes every check that can still run, and reports all failures in 
 | Weekly full | Mondays 03:00 UTC, only if `main` changed since the last run | `check:full`, all L2 suites | Linux, Windows |
 | Fuzzing, stress, extended benchmarks | Weekly, staggered, once the suites exist (#73, #77) | Time-boxed per target, with a fixed seed recorded | Linux |
 | macOS | `workflow_dispatch` only | `check:full` | macOS (#83) |
+| Advisories ([`advisories.yml`](../.github/workflows/advisories.yml), #75) | By hand (`workflow_dispatch`) while CI runs by hand only; Mondays 04:00 UTC once CI runs automatically again | `pnpm check:advisories`: cargo-deny and pnpm audit against the lockfiles ([SECURITY.md](SECURITY.md#dependency-advisories-75)) | Linux |
 
 macOS minutes cost about 10 times Linux ($0.062 against $0.006 a minute), so macOS never runs on a schedule or per change until it's an established platform and the quota allows it.
 
