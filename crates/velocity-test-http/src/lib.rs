@@ -4,11 +4,13 @@
 //! made. It can also freeze a process, for the supervisor's hang test (#48). Standard library
 //! only, plus `windows-sys` on Windows for that. [`Http2Server`] serves the same files and range
 //! modes over HTTP/2 (#47), [`ftp::FtpServer`] serves FTP and FTPS (#51), and [`ssh::SshServer`]
-//! runs the machine's OpenSSH server for SFTP (#53). Test code: it trusts its callers and isn't
+//! runs the machine's OpenSSH server for SFTP (#53). [`leaks::LeakScan`] looks for test secrets
+//! wherever V2 writes or shows something (#71). Test code: it trusts its callers and isn't
 //! hardened.
 
 pub mod ftp;
 mod http2;
+pub mod leaks;
 pub mod ssh;
 pub mod tls;
 

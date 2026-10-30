@@ -157,6 +157,7 @@ The torrent bridge (`crates/velocity-lt`) links libtorrent-rasterbar 2.0.15, Boo
 - **vcpkg itself:** `libtorrent.mjs` uses `VCPKG_ROOT` when it is set, else `C:\vcpkg` on Windows and `~/vcpkg` on Linux. The clone must contain the baseline commit. `pnpm check:prereqs` reports a missing vcpkg.
   - **Windows:** `git clone https://github.com/microsoft/vcpkg C:\vcpkg`, then `C:\vcpkg\bootstrap-vcpkg.bat -disableMetrics`.
   - **Linux:** `sudo apt install curl zip unzip tar`, then `git clone https://github.com/microsoft/vcpkg ~/vcpkg` and `~/vcpkg/bootstrap-vcpkg.sh -disableMetrics`. vcpkg downloads its own CMake and Ninja.
+- **In CI** (#205): the native libraries are cached on their own, and vcpkg is set up at the baseline commit only when they have to be built ([CI.md](CI.md#caching)).
 - **Memory:** compiling libtorrent takes up to about 1.3 GB per compiler process. On a 2 GB WSL the compiler was killed for lack of memory. Raise WSL's memory in `.wslconfig`, or set `VCPKG_MAX_CONCURRENCY` lower (this machine uses 4 with 6 GB).
 - **Measured times** (cold, 2026-10-26; Boost and OpenSSL make up most of it):
 

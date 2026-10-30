@@ -10,7 +10,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use crate::domain::ErrorCode;
-use crate::links::is_link;
+use crate::fs_safety::{is_link, reached_through_plain_folders};
 use crate::torrent::TorrentMeta;
 
 /// How often a file that can't be deleted yet is tried again.
@@ -120,16 +120,18 @@ pub fn delete_owned(owned: &OwnedPaths, wait: Duration) -> Deletion {
         .map(|f| (&f.path, f.max_len))
         .chain(parts)
     {
-        let outcome = match reached_through_plain_folders(&owned.root, path) {
-            Ok(()) => delete_file(path, max_len, wait),
-            Err(kept) => Some(Err(kept)),
+        let outcome = if reached_through_plain_folders(&owned.root, path) {
+            delete_file(path, max_len, wait)
+        } else {
+            Some(Err(Kept::BehindLink))
         };
         done.record(path, outcome);
     }
     for path in &owned.folders {
-        let outcome = match reached_through_plain_folders(&owned.root, path) {
-            Ok(()) => delete_folder(path),
-            Err(kept) => Some(Err(kept)),
+        let outcome = if reached_through_plain_folders(&owned.root, path) {
+            delete_folder(path)
+        } else {
+            Some(Err(Kept::BehindLink))
         };
         done.record(path, outcome);
     }
@@ -145,27 +147,6 @@ impl Deletion {
             None => {}
         }
     }
-}
-
-/// `Ok` when every folder between `root` and `path` is a plain folder, so `path` is inside `root`.
-/// A folder missing on the way is fine: `path` isn't there either.
-fn reached_through_plain_folders(root: &Path, path: &Path) -> Result<(), Kept> {
-    let Ok(inside) = path.strip_prefix(root) else {
-        return Err(Kept::BehindLink);
-    };
-    let mut folder = root.to_path_buf();
-    let mut levels = inside.components().peekable();
-    while let Some(level) = levels.next() {
-        if levels.peek().is_none() {
-            break;
-        }
-        folder.push(level);
-        match fs::symlink_metadata(&folder) {
-            Ok(meta) if is_link(&meta) || !meta.is_dir() => return Err(Kept::BehindLink),
-            Ok(_) | Err(_) => {}
-        }
-    }
-    Ok(())
 }
 
 fn delete_file(path: &Path, max_len: u64, wait: Duration) -> Option<Result<(), Kept>> {
@@ -392,19 +373,7 @@ mod tests {
         write(&outside.join("b.bin"), 20);
         write(&root.join("album").join("a.bin"), 10);
         let link = root.join("album").join("disc");
-        #[cfg(unix)]
-        std::os::unix::fs::symlink(&outside, &link).unwrap();
-        // A junction needs no administrator rights, unlike a symbolic link.
-        #[cfg(windows)]
-        {
-            let made = std::process::Command::new("cmd")
-                .args(["/C", "mklink", "/J"])
-                .arg(&link)
-                .arg(&outside)
-                .output()
-                .unwrap();
-            assert!(made.status.success(), "{made:?}");
-        }
+        crate::fs_safety::test_links::folder_link(&outside, &link);
 
         let done = delete_owned(&owned_paths(&root, &album(), &[1, 3]), Duration::ZERO);
 

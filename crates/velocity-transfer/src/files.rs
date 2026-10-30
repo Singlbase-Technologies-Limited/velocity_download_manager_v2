@@ -1,5 +1,6 @@
 //! The engine's file operations on part files (#43): created exclusively and sparse, reopened
-//! without following links, and renamed into place without ever replacing an existing file.
+//! without following links, and renamed into place without ever replacing an existing file. What
+//! counts as a link is the core's shared rule (`velocity_core::fs_safety`, #72).
 //!
 //! The only `unsafe` code here calls the operating system through `windows-sys` and `libc`
 //! (PO-approved on #43), with a `SAFETY` note on each call.
@@ -7,6 +8,8 @@
 use std::fs::{self, File, OpenOptions};
 use std::io;
 use std::path::Path;
+
+use velocity_core::fs_safety::plain_file;
 
 /// A new part file.
 pub struct NewPart {
@@ -38,7 +41,10 @@ pub fn open_part(path: &Path) -> io::Result<File> {
     let file = options.open(path)?;
     // Checked again on the open handle, in case the name changed in between.
     if !file.metadata()?.is_file() {
-        return Err(not_plain(path));
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("{} became a link or not a plain file", path.display()),
+        ));
     }
     Ok(file)
 }
@@ -48,22 +54,6 @@ pub fn open_part(path: &Path) -> io::Result<File> {
 pub fn remove_part(path: &Path) -> io::Result<()> {
     plain_file(path)?;
     fs::remove_file(path)
-}
-
-fn not_plain(path: &Path) -> io::Error {
-    io::Error::new(
-        io::ErrorKind::InvalidInput,
-        format!("{} is a link or not a plain file", path.display()),
-    )
-}
-
-/// `path` is a plain file, not a link (checked without following it).
-fn plain_file(path: &Path) -> io::Result<()> {
-    let meta = fs::symlink_metadata(path)?;
-    if meta.file_type().is_symlink() || !meta.is_file() {
-        return Err(not_plain(path));
-    }
-    Ok(())
 }
 
 #[cfg(windows)]
@@ -118,10 +108,8 @@ fn mark_sparse(_: &File) -> bool {
 /// afterwards, so the new name survives a power loss.
 #[cfg(windows)]
 pub fn rename_no_replace(from: &Path, to: &Path) -> io::Result<()> {
-    use std::os::windows::ffi::OsStrExt;
     use windows_sys::Win32::Storage::FileSystem::{MoveFileExW, MOVEFILE_WRITE_THROUGH};
-    let wide = |p: &Path| -> Vec<u16> { p.as_os_str().encode_wide().chain([0]).collect() };
-    let (from_w, to_w) = (wide(from), wide(to));
+    let (from_w, to_w) = (verbatim(from), verbatim(to));
     // SAFETY: both are NUL-terminated UTF-16 strings that live until the call returns. Without
     // MOVEFILE_REPLACE_EXISTING, MoveFileExW fails if `to` exists; MOVEFILE_WRITE_THROUGH makes it
     // return only once the rename is on disk.
@@ -130,6 +118,53 @@ pub fn rename_no_replace(from: &Path, to: &Path) -> io::Result<()> {
         return Err(io::Error::last_os_error());
     }
     Ok(())
+}
+
+/// `path` as a NUL-terminated UTF-16 verbatim path (`\\?\C:\…`, `\\?\UNC\server\share\…`), so
+/// `MoveFileExW` takes paths longer than `MAX_PATH` (260 characters), as the standard library's
+/// own file calls do (#72). Only an absolute path of plain names is made verbatim, since a verbatim
+/// path is taken literally; anything else is passed as it is.
+#[cfg(windows)]
+fn verbatim(path: &Path) -> Vec<u16> {
+    use std::ffi::OsString;
+    use std::os::windows::ffi::OsStrExt;
+    use std::path::{Component, Prefix};
+    let mut parts = path.components();
+    let head = match (parts.next(), parts.next()) {
+        (Some(Component::Prefix(prefix)), Some(Component::RootDir)) => match prefix.kind() {
+            Prefix::Disk(_) => {
+                let mut head = OsString::from(r"\\?\");
+                head.push(prefix.as_os_str());
+                Some(head)
+            }
+            Prefix::UNC(server, share) => {
+                let mut head = OsString::from(r"\\?\UNC\");
+                head.push(server);
+                head.push(r"\");
+                head.push(share);
+                Some(head)
+            }
+            _ => None,
+        },
+        _ => None,
+    };
+    let names: Option<Vec<_>> = parts
+        .map(|c| match c {
+            Component::Normal(name) => Some(name),
+            _ => None,
+        })
+        .collect();
+    let full = match (head, names) {
+        (Some(mut full), Some(names)) => {
+            for name in names {
+                full.push(r"\");
+                full.push(name);
+            }
+            full
+        }
+        _ => path.as_os_str().to_owned(),
+    };
+    full.encode_wide().chain([0]).collect()
 }
 
 #[cfg(unix)]
@@ -288,17 +323,79 @@ mod tests {
         );
     }
 
-    #[cfg(unix)]
+    /// On Windows a symbolic link needs Developer Mode or an administrator; without either this
+    /// says NOT RUN (PO decision on #72).
     #[test]
     fn a_link_in_place_of_a_part_file_is_never_followed() {
         let dir = Dir::new("link");
         let target = dir.0.join("someone-elses.bin");
         std::fs::write(&target, b"theirs").unwrap();
         let path = dir.0.join("a.vdmpart");
+        #[cfg(unix)]
         std::os::unix::fs::symlink(&target, &path).unwrap();
+        #[cfg(windows)]
+        if let Err(e) = std::os::windows::fs::symlink_file(&target, &path) {
+            eprintln!("a link in place of a part file: NOT RUN (no symlink rights: {e})");
+            return;
+        }
         assert!(open_part(&path).is_err());
         assert!(remove_part(&path).is_err());
         assert!(create_part(&path, true).is_err());
         assert_eq!(std::fs::read(&target).unwrap(), b"theirs", "untouched");
+    }
+
+    /// A download whose folder is deeper than Windows' old 260-character limit still finishes
+    /// (#72): the rename takes the long path, as creating and writing the part file do.
+    #[test]
+    fn a_part_file_deep_in_long_folders_is_created_and_renamed() {
+        let dir = Dir::new("long");
+        let mut folder = dir.0.clone();
+        while folder.as_os_str().len() < 300 {
+            folder.push("a-folder-name-of-forty-characters-long-x");
+        }
+        std::fs::create_dir_all(&folder).unwrap();
+        let (from, to) = (folder.join("a.vdmpart"), folder.join("a.zip"));
+        let mut part = create_part(&from, true).expect("created");
+        part.file.write_all(b"done").unwrap();
+        drop(part);
+        rename_no_replace(&from, &to).expect("renamed");
+        assert_eq!(std::fs::read(&to).unwrap(), b"done");
+    }
+
+    /// Two names that look the same but are stored differently (é as one character, and e with a
+    /// combining accent) are two files on Windows and Linux: finishing one never replaces the
+    /// other (PO decision on #72: names aren't normalised).
+    #[test]
+    fn a_look_alike_name_never_replaces_the_other() {
+        let dir = Dir::new("lookalike");
+        let composed = dir.0.join("caf\u{e9}.txt");
+        let decomposed = dir.0.join("cafe\u{301}.txt");
+        std::fs::write(&composed, b"keep me").unwrap();
+        let from = dir.0.join("a.vdmpart");
+        std::fs::write(&from, b"download").unwrap();
+        rename_no_replace(&from, &decomposed).expect("a different name");
+        assert_eq!(std::fs::read(&composed).unwrap(), b"keep me");
+        assert_eq!(std::fs::read(&decomposed).unwrap(), b"download");
+    }
+
+    /// A name that differs only in case: Windows treats it as the same file and refuses, Linux as
+    /// another file. Either way the existing file is untouched.
+    #[test]
+    fn a_name_differing_only_in_case_never_replaces_the_file() {
+        let dir = Dir::new("case");
+        let existing = dir.0.join("Report.pdf");
+        std::fs::write(&existing, b"keep me").unwrap();
+        let from = dir.0.join("a.vdmpart");
+        std::fs::write(&from, b"download").unwrap();
+        let renamed = rename_no_replace(&from, &dir.0.join("report.pdf"));
+        if cfg!(windows) {
+            assert_eq!(
+                renamed.expect_err("the same file on Windows").kind(),
+                io::ErrorKind::AlreadyExists
+            );
+        } else {
+            renamed.expect("another file on Linux");
+        }
+        assert_eq!(std::fs::read(&existing).unwrap(), b"keep me");
     }
 }

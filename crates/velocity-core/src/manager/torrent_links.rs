@@ -20,7 +20,7 @@ use super::adding::{direct_kind, AddOutcome, AddRequest};
 use super::Manager;
 use crate::database::TorrentOrigin;
 use crate::domain::{DownloadKind, DownloadStatus, ErrorCode};
-use crate::links::is_link;
+use crate::fs_safety::is_link;
 use crate::request::split_login;
 use crate::torrent::{parse_torrent, strip_torrent_trackers, MAX_TORRENT_BYTES};
 use crate::transfer::{Limits, TransferId, TransferSnapshot, TransferSpec};
