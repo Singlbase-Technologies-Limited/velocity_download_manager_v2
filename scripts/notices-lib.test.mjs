@@ -9,6 +9,7 @@ import {
   FILE_COPYLEFT,
   FONT_LICENCES,
   licenceProblems,
+  linkTarget,
   nativeComponents,
   normaliseText,
   npmComponents,
@@ -206,6 +207,23 @@ describe('pickLicenceFiles', () => {
   it('tells 0BSD from the BSD licences', () => {
     expect(pickLicenceFiles(['LICENSE-0BSD', 'LICENSE-BSD', 'LICENSE-MIT'], ['0BSD'])).toEqual(['LICENSE-0BSD']);
     expect(pickLicenceFiles(['LICENSE-0BSD', 'LICENSE-BSD'], ['BSD-3-Clause'])).toEqual(['LICENSE-BSD']);
+  });
+});
+
+describe('linkTarget', () => {
+  it('reads a link that git checked out as a file holding its target', () => {
+    expect(linkTarget('../LICENSE')).toBe('../LICENSE');
+    expect(linkTarget('../LICENSE-MIT\n')).toBe('../LICENSE-MIT');
+    expect(linkTarget('..\\COPYING')).toBe('..\\COPYING');
+  });
+
+  it('takes anything else as the text itself', () => {
+    expect(linkTarget('MIT License')).toBeNull();
+    expect(linkTarget('LICENSE')).toBeNull();
+    expect(linkTarget('../README.md')).toBeNull();
+    expect(linkTarget('/etc/LICENSE')).toBeNull();
+    expect(linkTarget('C:/LICENSE')).toBeNull();
+    expect(linkTarget('Copyright (c) 2014 Carl Lerche\n\nPermission is hereby granted')).toBeNull();
   });
 });
 

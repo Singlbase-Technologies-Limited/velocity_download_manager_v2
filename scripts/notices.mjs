@@ -11,13 +11,14 @@
 // standard texts for packages that ship none.
 import { spawnSync } from 'node:child_process';
 import { existsSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { recordCheck, root, toolCommand } from './checks-runner.mjs';
 import {
   chooseLicence,
   crateComponents,
   firstDifference,
   licenceProblems,
+  linkTarget,
   nativeComponents,
   normaliseText,
   npmComponents,
@@ -48,8 +49,18 @@ function packageTexts(component) {
   if (!choice.ok || !existsSync(component.dir)) return [];
   return pickLicenceFiles(readdirSync(component.dir), choice.ids).map((f) => ({
     licence: choice.ids.join(' AND '),
-    text: read(join(component.dir, f)),
+    text: licenceText(join(component.dir, f)),
   }));
+}
+
+/** A licence file's text, following a link that git checked out as a plain file (Windows). */
+function licenceText(path) {
+  const text = read(path);
+  const target = linkTarget(text);
+  if (target === null) return text;
+  const real = join(dirname(path), target);
+  if (!existsSync(real)) throw new Error(`${path} is a link to ${target}, which isn't there`);
+  return read(real);
 }
 
 const check = process.argv.includes('--check');

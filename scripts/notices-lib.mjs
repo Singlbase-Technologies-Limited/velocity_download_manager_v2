@@ -264,6 +264,19 @@ export function pickLicenceFiles(names, ids) {
 }
 
 /**
+ * The file a licence file stands for, when it is a symbolic link that git checked out as a plain
+ * file holding the link's target, as git does on Windows without `core.symlinks` (curl-sys's
+ * `LICENSE` is `../LICENSE`). Only a single relative path to another licence file counts;
+ * anything else is the text itself, and null is returned.
+ */
+export function linkTarget(text) {
+  const t = text.trim();
+  if (t.length > 255 || /[\n\r]/.test(t) || /^([a-z]:)?[\\/]/i.test(t)) return null;
+  const name = t.split(/[\\/]/).pop();
+  return LICENCE_FILE.test(name) && /[\\/]/.test(t) ? t : null;
+}
+
+/**
  * Where a stale THIRD_PARTY_NOTICES.md first differs from a fresh one: the line number and up to
  * `context` lines of each from there, or null when they are equal. For the check's message.
  */
