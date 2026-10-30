@@ -1,6 +1,6 @@
 # CI design
 
-V2's CI runs on GitHub Actions in a private repository on GitHub Free. The plan includes 2,000 runner minutes a month, and usage is **blocked**, not billed, once they run out ([billing](https://docs.github.com/en/billing/concepts/product-billing/github-actions)). Every design choice below protects two things: the checks that matter run on every change, and the monthly quota lasts the month.
+V2's CI runs on GitHub Actions in a private repository, now on GitHub Pro (recorded on 2026-10-30, #204; it was on Free when CI was designed). Free includes 2,000 runner minutes a month and Pro 3,000, and usage is **blocked**, not billed, once they run out ([billing](https://docs.github.com/en/billing/concepts/product-billing/github-actions)). Every design choice below protects two things: the checks that matter run on every change, and the monthly quota lasts the month.
 
 > **For now, CI runs only by hand, once per batch of five issues** (PO decision, 2026-10-30, #204), to save Actions minutes until there is money for them. It replaces the pause of 2026-10-24 (#173). The design below is unchanged and comes back as it is. See [below](#while-ci-runs-by-hand-only).
 
@@ -34,11 +34,11 @@ This page is the design. The workflows are written in #13, #14, #16 to #19 and #
 
 **No `develop` or `staging` tiers.** All work merges into `main`, and releases are tags on verified `main` commits ([DEVELOPMENT_WORKFLOW.md](DEVELOPMENT_WORKFLOW.md)).
 
-**There is no server-side gate on GitHub Free for a private repository.** Branch protection, required status checks and rulesets return HTTP 403 (verified 2026-10-21, #89). Environment *required reviewers* are only available for public repositories on Free ([environments](https://docs.github.com/en/actions/reference/workflows-and-actions/deployments-and-environments)). So:
+**No required checks yet.** On GitHub Free, rulesets returned HTTP 403 for this private repository (2026-10-21, #89). On Pro, the PO's *Main* ruleset blocks deleting `main` and force-pushing to it (2026-10-30), but no status check is required, because PR checks don't start on a pull request while CI runs by hand only ([REPOSITORY_SETTINGS.md](REPOSITORY_SETTINGS.md#rules-for-main)). So:
 
 - **"Required" means by convention:** the PO merges only when `ci-required` is green (docs/REVIEWING.md).
 - **The release gate is a person:** only the PO pushes `v*` tags or starts a release run (an ask rule in `.claude/settings.json` stops the agent from doing it unprompted). The workflow creates a *draft* release, never a published one.
-- **Revisit when the repository goes public or the plan changes** (#7, #90): rulesets, required checks and environment reviewers become available.
+- **Revisit when the automatic triggers come back:** make `ci-required` a required check in the Main ruleset ([REPOSITORY_SETTINGS.md](REPOSITORY_SETTINGS.md#when-something-changes)).
 
 ## Selecting jobs
 
