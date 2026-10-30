@@ -1,0 +1,59 @@
+# The Windows installer (#81, docs/PACKAGING.md): `pnpm package:windows`, the same command as
+# locally, on a Windows runner. It builds the per-user NSIS setup as the release identity, checks
+# what it holds (every program and file, no aria2), and uploads it with its SHA-256 for the PO to
+# test. Unsigned: signing readiness is in docs/PACKAGING.md.
+#
+# Started by hand only (`workflow_dispatch`), on the branch to package. It isn't a check: it runs
+# on no push, pull request or schedule, and a release workflow (#17, #18) will build from verified
+# `main` commits.
+name: Windows installer
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: package-windows-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  package:
+    name: Windows installer
+    runs-on: windows-latest
+    # A cold build of Boost and libtorrent takes about 15 minutes (#205), the release builds more.
+    timeout-minutes: 120
+    defaults:
+      run:
+        shell: bash
+    env:
+      CARGO_INCREMENTAL: 0
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - id: setup
+        uses: ./.github/actions/setup
+        with:
+          rust: 'true'
+      - name: Native libraries
+        run: pnpm native:build
+      # As the checks' jobs do (#205), so a rerun doesn't build Boost and libtorrent again.
+      - name: Save the native libraries
+        if: ${{ !cancelled() && steps.setup.outputs.native-cache-hit != 'true' && hashFiles('target/native/*/libtorrent-info.json') != '' }}
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          key: ${{ steps.setup.outputs.native-cache-key }}
+          path: target/native
+      - name: Build the installer
+        run: pnpm package:windows --require-listing
+      - name: Upload the installer
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: velocity-v2-windows-installer
+          path: |
+            target/release/bundle/nsis/*-setup.exe
+            target/release/bundle/nsis/*-setup.exe.sha256
+          if-no-files-found: error
+          retention-days: 14

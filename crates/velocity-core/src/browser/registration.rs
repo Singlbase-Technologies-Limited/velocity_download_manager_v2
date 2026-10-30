@@ -51,8 +51,8 @@ impl Browser {
     }
 
     /// Where the browser looks for hosts in the registry, under `HKEY_CURRENT_USER\Software`.
-    #[cfg_attr(not(windows), allow(dead_code))]
-    fn registry_path(self) -> &'static str {
+    /// The Windows uninstaller removes V2's key there too (#81).
+    pub fn registry_path(self) -> &'static str {
         match self {
             Self::Chrome => r"Google\Chrome\NativeMessagingHosts",
             Self::Chromium => r"Chromium\NativeMessagingHosts",
@@ -222,7 +222,7 @@ impl Locations {
     /// Where V2's manifest for `browser` goes. On Windows each browser gets its own file, since
     /// they all live in V2's folder.
     pub fn manifest_path(&self, browser: Browser) -> PathBuf {
-        let name = &branding().native_host_name;
+        let name = branding().app_native_host_name();
         let file = if cfg!(windows) {
             format!("{name}.{}.json", browser.key())
         } else {
@@ -238,7 +238,7 @@ impl Locations {
             r"{}\{}\{}",
             self.registry_root,
             browser.registry_path(),
-            branding().native_host_name
+            branding().app_native_host_name()
         )
     }
 
@@ -284,7 +284,7 @@ impl Locations {
             return None;
         }
         let value: Value = serde_json::from_slice(&std::fs::read(&path).ok()?).ok()?;
-        (value["name"].as_str() == Some(branding().native_host_name.as_str())).then_some(value)
+        (value["name"].as_str() == Some(branding().app_native_host_name())).then_some(value)
     }
 
     /// Whether the host is registered with each browser, and whether as `host`.
@@ -475,7 +475,7 @@ mod tests {
                 v2.file_name()
                     .unwrap()
                     .to_string_lossy()
-                    .replace(&branding().native_host_name, V1_HOST),
+                    .replace(branding().app_native_host_name(), V1_HOST),
             );
             std::fs::create_dir_all(v1.parent().unwrap()).unwrap();
             let body =
@@ -512,7 +512,7 @@ mod tests {
     #[test]
     fn manifests_let_only_v2s_extensions_start_the_host() {
         let c = manifest(Browser::Chrome, Path::new("/opt/v/host"));
-        assert_eq!(c["name"], branding().native_host_name);
+        assert_eq!(c["name"], branding().app_native_host_name());
         assert_eq!(c["type"], "stdio");
         assert_eq!(c["allowed_origins"], json!(chrome_origins()));
         assert_eq!(
@@ -529,7 +529,7 @@ mod tests {
             json!([branding().firefox_extension_id])
         );
         assert!(f.get("allowed_origins").is_none());
-        assert_ne!(branding().native_host_name, V1_HOST);
+        assert_ne!(branding().app_native_host_name(), V1_HOST);
     }
 
     #[test]
@@ -641,7 +641,7 @@ mod tests {
     #[test]
     fn manifests_go_where_each_browser_reads_them_on_linux() {
         let f = Fixture::new("places");
-        let name = format!("{}.json", branding().native_host_name);
+        let name = format!("{}.json", branding().app_native_host_name());
         let expect = [
             (Browser::Chrome, "config/google-chrome/NativeMessagingHosts"),
             (Browser::Chromium, "config/chromium/NativeMessagingHosts"),

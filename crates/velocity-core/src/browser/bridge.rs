@@ -174,7 +174,7 @@ pub fn route(
     let reply = |result| Route::Reply(BrowserResponse::ok(&id, result));
     match message.command {
         BrowserCommand::Ping => reply(json!({
-            "app": branding().product_name,
+            "app": branding().app_product_name(),
             "version": status.version,
             "protocol": PROTOCOL_VERSION,
         })),

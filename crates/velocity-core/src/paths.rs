@@ -24,7 +24,7 @@ impl Paths {
         Self::resolve_with(
             std::env::var_os(DATA_DIR_ENV),
             dirs::data_dir(),
-            &branding().identifier,
+            branding().app_identifier(),
         )
     }
 
@@ -87,7 +87,7 @@ impl Paths {
     pub fn ipc_endpoint(&self) -> String {
         if cfg!(windows) {
             let user = std::env::var("USERNAME").unwrap_or_else(|_| "user".into());
-            windows_pipe_name(&branding().identifier, &user, &self.data_dir)
+            windows_pipe_name(branding().app_identifier(), &user, &self.data_dir)
         } else {
             self.data_dir
                 .join("ipc.sock")

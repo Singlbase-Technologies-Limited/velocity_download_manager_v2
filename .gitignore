@@ -12,6 +12,9 @@ coverage/
 
 # Tauri generated
 /src-tauri/gen/schemas/
+# What `pnpm package:windows` stages for the installer (#81).
+/src-tauri/binaries/
+/src-tauri/staging/
 
 # Local environment and secrets
 .env

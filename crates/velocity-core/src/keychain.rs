@@ -52,7 +52,7 @@ impl SystemKeychain {
     /// V2's: `<identifier>.logins`, so V1's and V2's, and development and release builds, never
     /// share an entry.
     pub fn new() -> Self {
-        Self::with_service(&format!("{}.logins", branding().identifier))
+        Self::with_service(&format!("{}.logins", branding().app_identifier()))
     }
 
     /// Under another service name, for tests.
@@ -187,7 +187,7 @@ mod tests {
     #[test]
     fn v2s_service_name_is_its_own() {
         let k = SystemKeychain::new();
-        assert_eq!(k.service, format!("{}.logins", branding().identifier));
+        assert_eq!(k.service, format!("{}.logins", branding().app_identifier()));
         assert!(!k.service.starts_with("com.velocity.downloadmanager."));
         assert_ne!(k.service, "com.velocity.downloadmanager.logins");
     }
@@ -199,7 +199,7 @@ mod tests {
     fn the_system_keychain_keeps_a_login_whole_or_says_it_cant() {
         let k = SystemKeychain::with_service(&format!(
             "{}.tests.{}",
-            branding().identifier,
+            branding().app_identifier(),
             std::process::id()
         ));
         let id = "d-test-70";

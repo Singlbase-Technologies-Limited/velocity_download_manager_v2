@@ -34,3 +34,8 @@ sha2.workspace = true
 # windows-sys rather than winreg).
 [target.'cfg(windows)'.dependencies]
 windows-sys = { workspace = true, features = ["Win32_System_Registry", "Win32_Security"] }
+
+# The identity this build runs as (#81): development by default; packaging turns this on so the
+# build runs as the release identity in branding.json (docs/PACKAGING.md).
+[features]
+release-identity = []

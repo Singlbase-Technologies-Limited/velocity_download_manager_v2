@@ -74,7 +74,7 @@ pub fn app_info() -> AppInfo {
     AppInfo {
         // V2 replaces V1 under the name "Velocity Download Manager" (#11); development builds
         // add "(dev)" (branding.json, ADR-0003).
-        name: branding::branding().product_name.as_str(),
+        name: branding::branding().app_product_name(),
         version: env!("CARGO_PKG_VERSION"),
         command_api_version: COMMAND_API_VERSION,
     }

@@ -25,7 +25,7 @@ use crate::shell;
 pub const BROWSER_REQUEST_EVENT: &str = "browser-request";
 
 /// The native host's program name: V2's own, beside the app (V1's is `velocity-native-host`).
-const HOST_PROGRAM: &str = "velocity-native-host-v2";
+pub(crate) const HOST_PROGRAM: &str = "velocity-native-host-v2";
 
 /// Writes this launch's token and starts serving the native host. A failure leaves the app
 /// running without the bridge, and is logged: the browser then says the app isn't running.

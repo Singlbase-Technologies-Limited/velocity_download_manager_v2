@@ -37,6 +37,7 @@ Every document in `docs/` is listed here. A new document is added to this map in
 | [TESTING.md](TESTING.md) | The test strategy: levels L1–L5 with durations, the test pyramid, fixture policy and servers, and how `check:pr` selects checks |
 | [DEPENDENCIES.md](DEPENDENCIES.md) | Propose, approve, pin and verify a dependency; the allowed licences and the provenance release blockers |
 | [LICENSING.md](LICENSING.md) | Read the licensing assessment: today's third-party licences, planned native libraries, notices |
+| [PACKAGING.md](PACKAGING.md) | Build the Windows installer, see what it installs and how it lives beside V1, and test install, upgrade and uninstall |
 | [BUILDING_NATIVE.md](BUILDING_NATIVE.md) | Build the native libraries (libcurl, nghttp2, zlib, OpenSSL) from verified sources, read `build-info.json`, update a pin, and build libtorrent with vcpkg |
 | [CI.md](CI.md) | See what CI runs on each event, how jobs are selected, cached and secured, and the monthly cost model |
 | [CI_DIAGNOSTICS.md](CI_DIAGNOSTICS.md) | Read a failed CI run: the statuses, the `ci-diagnostics` report, INFRA versus FAIL, and the re-run policy |

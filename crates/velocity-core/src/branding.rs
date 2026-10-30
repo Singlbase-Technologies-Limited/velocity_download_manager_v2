@@ -2,9 +2,11 @@
 //! product name, the Tauri identifier (which decides the data directory and single-instance
 //! key), IPC names and the browser integration's names.
 //!
-//! Development builds use the plain fields; packaging (#81–#83) switches to the `release*`
-//! fields. `src-tauri/tauri.conf.json` must carry the same identifier and product name, which a
-//! test in `src-tauri` checks.
+//! Development builds use the plain fields. A packaged build turns on the `release-identity`
+//! feature (#81), and then runs as the `release*` fields: read them through [`Branding::app_identifier`]
+//! and its siblings, never the fields themselves. `src-tauri/tauri.conf.json` carries the
+//! development identifier and product name, `src-tauri/tauri.release.conf.json` the release ones,
+//! which tests in `src-tauri` check.
 
 use serde::Deserialize;
 use std::sync::OnceLock;
@@ -35,6 +37,40 @@ pub struct Branding {
     pub chrome_extension_ids: Vec<String>,
 }
 
+impl Branding {
+    /// Whether this build runs as the released app: only packaging turns the feature on (#81), so
+    /// a development build never uses an installed copy's data folder, pipe or keychain entries.
+    pub const RELEASE: bool = cfg!(feature = "release-identity");
+
+    /// The product name this build shows.
+    pub fn app_product_name(&self) -> &str {
+        if Self::RELEASE {
+            &self.release_product_name
+        } else {
+            &self.product_name
+        }
+    }
+
+    /// The identifier this build runs as: its data folder, single-instance key, pipe and
+    /// keychain service derive from it.
+    pub fn app_identifier(&self) -> &str {
+        if Self::RELEASE {
+            &self.release_identifier
+        } else {
+            &self.identifier
+        }
+    }
+
+    /// The native-messaging host name this build registers and answers to.
+    pub fn app_native_host_name(&self) -> &str {
+        if Self::RELEASE {
+            &self.release_native_host_name
+        } else {
+            &self.native_host_name
+        }
+    }
+}
+
 const RAW: &str = include_str!("../../../branding.json");
 
 /// V2's identity, parsed once. `branding.json` is compiled in and covered by tests, so a parse
@@ -53,6 +89,8 @@ mod tests {
     const V1_NATIVE_HOST: &str = "com.velocity.download_manager";
     const V1_FIREFOX_ID: &str = "velocity-download-manager@velocity.local";
     const V1_CHROME_ID: &str = "eecopkgfiffjgmngfmjmdaejbkbbippo";
+    /// V1's product name, which names its install folder and its Apps & features entry.
+    const V1_PRODUCT_NAME: &str = "Velocity Download Manager";
     /// V1's extension name and Chrome key (V1 `branding.json`, `chromeExtensionKey`).
     const V1_EXTENSION_NAME: &str = "Velocity Download Manager";
     const V1_CHROME_KEY: &str = "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAo15wOoNApvSfuGVevsk7fqI3qo1KYF24IG1NWijAmrFWo0FtL1fVRXq5LZsVyQN1bkuobZufFxPArf0B+CmXOfqkOzAeBAp/ZZPTRjFoIT5kOMtx/0MH63N1/+r5kpAYkmFqWTtukdjCiD3mKZGrinSpjbg2bOYV3RbvyIlH94MsQt8ANDWOx7ffQ+h8eGLYUNhrIWjtPT+tOnKnRPXxyQJjb+j3IiNINZ6PfSKpOiWTILdLdmOyg5QQdgXTFwPQ+YPMAsQ8Bf+TlvlaDgzGnEsvwKek0O2m2VdZ9dtBo/tP+t6VBGO4CkU+zi0SHGO2ZjM8yrPkGe81jbmFQ1/EnwIDAQAB";
@@ -129,6 +167,24 @@ mod tests {
         assert!(b.extension_short_name.contains("V2"));
     }
 
+    /// Windows installers name the install folder and the uninstall entry after the product
+    /// name, so a release named like V1 would install over it (PO decision on #81).
+    #[test]
+    fn the_release_product_name_is_not_v1s() {
+        let b = branding();
+        assert_ne!(b.release_product_name, V1_PRODUCT_NAME);
+        assert!(b.release_product_name.contains("V2"));
+    }
+
+    /// Tests run without the release-identity feature, as every build but packaging does.
+    #[test]
+    fn a_development_build_runs_as_development() {
+        let b = branding();
+        assert_eq!(b.app_identifier(), b.identifier);
+        assert_eq!(b.app_product_name(), b.product_name);
+        assert_eq!(b.app_native_host_name(), b.native_host_name);
+    }
+
     #[test]
     fn the_extension_has_a_chrome_id_and_key() {
         let b = branding();
@@ -149,7 +205,7 @@ mod tests {
     }
 
     #[test]
-    fn release_values_are_the_ones_adr_0003_records() {
+    fn release_values_are_the_ones_the_adrs_record() {
         let b = branding();
         assert_eq!(b.release_identifier, "com.velocity.downloadmanager.v2");
         assert_eq!(
@@ -161,6 +217,7 @@ mod tests {
             "velocity-download-manager-v2@velocity.local"
         );
         assert_eq!(b.identifier, "dev.velocity.downloadmanager.v2");
-        assert_eq!(b.release_product_name, "Velocity Download Manager");
+        // ADR-0016 replaced ADR-0003's "Velocity Download Manager" (PO decision on #81).
+        assert_eq!(b.release_product_name, "Velocity Download Manager V2");
     }
 }
