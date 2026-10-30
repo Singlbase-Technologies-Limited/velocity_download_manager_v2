@@ -109,6 +109,8 @@ The repository gets **10 GB of Actions cache**, separate from artifact storage. 
 - **The native libraries (#205):** a composite action of their own, [`.github/actions/native`](../.github/actions/native/action.yml), called by the setup action and by PR checks' Windows native job, restores `target/native`. Only when that misses does it set up vcpkg: a clone of `microsoft/vcpkg` at the `builtin-baseline` commit of `scripts/native/vcpkg/vcpkg.json`, bootstrapped with `-disableMetrics`, with `VCPKG_DISABLE_METRICS=1`. Every job that builds them saves them right after its checks, whatever their result, so a rerun on the same branch skips the build. A cold build of Boost and libtorrent is why the Rust jobs may run up to 90 minutes (Windows Main checks 120); a warm one takes far less. GitHub restores a cache only on the branch that saved it or from the default branch, so a new branch builds them once unless a run on `main` saved them.
 - **No incremental compilation in CI:** `CARGO_INCREMENTAL=0` keeps the cache smaller and CI builds faster.
 
+**Runner disk.** A hosted Linux runner has about 14 GB free. A cold build of Boost and libtorrent plus `check:fast`'s debug build filled it twice (#76), so the Linux jobs that build Rust first delete toolchains V2 never uses (.NET, the Android SDK, GHC and CodeQL), about 20 GB.
+
 ### The post-merge tier
 
 [`main.yml`](../.github/workflows/main.yml) has four jobs (#16):

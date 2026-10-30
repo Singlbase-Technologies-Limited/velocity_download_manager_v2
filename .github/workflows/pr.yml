@@ -121,6 +121,16 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
+      # The hosted runner has about 14 GB free, and a cold build of Boost and libtorrent plus
+      # check:fast's debug build filled it twice, the second time while saving the Rust cache
+      # (runs 41091551241 and 41101400776, #76). Toolchains V2 never uses go first: .NET, the
+      # Android SDK, GHC and CodeQL, about 20 GB.
+      - name: Free disk space
+        if: ${{ needs.select.outputs.rust == 'true' }}
+        run: |
+          df -h /
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache/CodeQL
+          df -h /
       - id: setup
         uses: ./.github/actions/setup
         with:
