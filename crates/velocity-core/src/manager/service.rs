@@ -194,6 +194,30 @@ mod tests {
         got
     }
 
+    /// The snapshots sent until one matches `last`, that one included, or until `deadline`. The
+    /// deadline only bounds a stalled machine: the wait ends as soon as the match arrives (#188).
+    fn collect_until(
+        rx: &Receiver<DownloadsSnapshot>,
+        deadline: Duration,
+        last: impl Fn(&DownloadsSnapshot) -> bool,
+    ) -> Vec<DownloadsSnapshot> {
+        let until = Instant::now() + deadline;
+        let mut got = Vec::new();
+        while let Some(left) = until.checked_duration_since(Instant::now()) {
+            match rx.recv_timeout(left) {
+                Ok(s) => {
+                    let done = last(&s);
+                    got.push(s);
+                    if done {
+                        break;
+                    }
+                }
+                Err(_) => break,
+            }
+        }
+        got
+    }
+
     #[test]
     fn calls_run_on_the_managers_thread_and_answer() {
         let (service, control, _rx) = service();
@@ -236,7 +260,11 @@ mod tests {
             control.progress(TransferId(1), n * 100, Some(10_000));
             std::thread::sleep(Duration::from_millis(10));
         }
-        let mut seen = collect(&rx, Duration::from_millis(600));
+        // Waiting for the last change, rather than for a fixed time, keeps a paused machine from
+        // ending the wait before it arrives (#188).
+        let mut seen = collect_until(&rx, Duration::from_secs(10), |s| {
+            s.downloads.first().map(|r| r.progress.completed_bytes) == Some(4000)
+        });
         let elapsed = started.elapsed();
         // One for the add, then at most one per 250 ms of changes.
         let most = 2 + (elapsed.as_millis() / SNAPSHOT_EVERY.as_millis()) as usize;
@@ -250,6 +278,8 @@ mod tests {
             last.downloads[0].progress.completed_bytes, 4000,
             "the last change is sent"
         );
+        // The channel keeps the order, so every snapshot before the last change has been read,
+        // and anything sent from here on is one that shouldn't be.
         assert!(
             collect(&rx, Duration::from_millis(600)).is_empty(),
             "nothing changed, nothing sent"
