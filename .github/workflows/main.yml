@@ -98,7 +98,8 @@ jobs:
     needs: select
     if: ${{ !cancelled() && needs.select.outputs.code == 'true' }}
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    # Long enough for a cold build of Boost and libtorrent (#205); a warm run takes far less.
+    timeout-minutes: 90
     env:
       CARGO_INCREMENTAL: 0
       CI_REPORT_PATH: ${{ github.workspace }}/../ci-checks.json
@@ -127,6 +128,14 @@ jobs:
           if [ "$RUST" != true ]; then export RUSTUP_TOOLCHAIN=stable; fi
           # check:pr runs what the merge needs, including the native build before any Rust check.
           if [ -n "$BASE" ]; then node scripts/check-pr.mjs --base "$BASE"; else node scripts/check-fast.mjs; fi
+      # The native libraries as soon as they were built, even if a later check failed (#205), so a
+      # rerun doesn't build Boost and libtorrent again.
+      - name: Save the native libraries
+        if: ${{ !cancelled() && needs.select.outputs.rust == 'true' && steps.setup.outputs.native-cache-hit != 'true' && hashFiles('target/native/*/libtorrent-info.json') != '' }}
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          key: ${{ steps.setup.outputs.native-cache-key }}
+          path: target/native
       - name: Upload build-info.json
         if: ${{ !cancelled() && hashFiles('target/native/x86_64-unknown-linux-gnu/build-info.json') != '' }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -178,7 +187,8 @@ jobs:
     needs: select
     if: ${{ !cancelled() && needs.select.outputs.windows == 'true' }}
     runs-on: windows-latest
-    timeout-minutes: 60
+    # Long enough for a cold build of Boost and libtorrent (#205); a warm run takes far less.
+    timeout-minutes: 120
     defaults:
       run:
         shell: bash
@@ -211,6 +221,14 @@ jobs:
       - id: checks
         name: All L1 checks
         run: node scripts/check-fast.mjs
+      # The native libraries as soon as they were built, even if a later check failed (#205), so a
+      # rerun doesn't build Boost and libtorrent again.
+      - name: Save the native libraries
+        if: ${{ !cancelled() && steps.setup.outputs.native-cache-hit != 'true' && hashFiles('target/native/*/libtorrent-info.json') != '' }}
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          key: ${{ steps.setup.outputs.native-cache-key }}
+          path: target/native
       - name: Upload build-info.json
         if: ${{ !cancelled() && hashFiles('target/native/x86_64-pc-windows-msvc/build-info.json') != '' }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2

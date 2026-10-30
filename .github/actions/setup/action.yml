@@ -4,7 +4,7 @@
 # The cache is only restored here. Workflows on `main` save it (see main.yml), so pull requests
 # never fill the 10 GB cache with per-branch copies.
 name: Set up a V2 CI job
-description: Node, optional Rust toolchain, Tauri packages and Rust dependency cache, and pnpm install
+description: Node, optional Rust toolchain, Tauri packages, Rust dependency and native caches, and pnpm install
 
 inputs:
   rust:
@@ -18,6 +18,12 @@ outputs:
   rust-cache-hit:
     description: '"true" when the exact key was restored'
     value: ${{ steps.restore.outputs.cache-hit }}
+  native-cache-key:
+    description: The key target/native is cached under (#205)
+    value: ${{ steps.native.outputs.cache-key }}
+  native-cache-hit:
+    description: '"true" when target/native was restored'
+    value: ${{ steps.native.outputs.cache-hit }}
 
 runs:
   using: composite
@@ -76,6 +82,12 @@ runs:
           ~/.cargo/registry/cache/
           ~/.cargo/git/db/
           target/
+
+    # The native libraries on their own, after the Rust cache so they take its place, and vcpkg
+    # when they have to be built (#205).
+    - id: native
+      if: inputs.rust == 'true'
+      uses: ./.github/actions/native
 
     # No pnpm store cache: `pnpm install --frozen-lockfile` took 4 s in CI (PR #104), less than a
     # cache restore and save would cost (PO decision on #14).
