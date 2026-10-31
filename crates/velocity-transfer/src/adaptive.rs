@@ -177,7 +177,11 @@ impl Ramp {
         }
         let rate = received.saturating_sub(bytes) as f64 / elapsed.as_secs_f64();
         self.window = Some((now, received));
-        self.best = Some(self.best.map_or(rate, |b| b.max(rate)));
+        if !self.warming {
+            // A window that isn't measured isn't the fastest either: a burst at the start would
+            // set the bar HTTP/2's trial of connections of their own must beat (#221).
+            self.best = Some(self.best.map_or(rate, |b| b.max(rate)));
+        }
         self.judge(rate);
     }
 
@@ -354,6 +358,9 @@ mod tests {
         );
         assert_eq!(targets.last(), Some(&1), "{targets:?}");
         assert_eq!(ramp.why(8), Some(Tuning::NoGain));
+        // Nor is the burst the fastest window, which HTTP/2's trial has to beat.
+        let best = ramp.best_rate().expect("measured");
+        assert!((best - 1_000_000.0).abs() < 1.0, "{best}");
     }
 
     #[test]

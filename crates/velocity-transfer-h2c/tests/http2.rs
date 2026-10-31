@@ -213,10 +213,11 @@ const ADAPTIVE: DownloadOptions = DownloadOptions {
 #[test]
 fn a_server_that_throttles_each_connection_gets_separate_connections() {
     // 1 MiB/s per TCP connection, however many streams share it: more streams don't help, so the
-    // downloader tries connections of their own, which do. 64 MiB, so the trial of its own
-    // connections settles before the file ends (#168).
+    // downloader tries connections of their own, which do. 128 MiB, so the trial of its own
+    // connections settles before the file ends (#168): at 64 MiB, the slower start of #221's ramp
+    // left the trial unfinished when the file ended, on both platforms (batch run 41180516439).
     let (s, data) = serve(
-        64 * MIB,
+        128 * MIB,
         Http2Options {
             throttle_connection_bytes_per_sec: Some(MIB as u64),
             ..Http2Options::default()
