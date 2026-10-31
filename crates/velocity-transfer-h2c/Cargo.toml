@@ -2,6 +2,7 @@
 name = "velocity-transfer-h2c"
 description = "The direct-download engine's tests that need test-only features (test-only): HTTP/2 without TLS, TLS against a test CA, and write faults"
 version.workspace = true
+license.workspace = true
 edition.workspace = true
 publish.workspace = true
 rust-version.workspace = true

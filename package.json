@@ -2,7 +2,7 @@
   "name": "velocity-download-manager-v2",
   "private": true,
   "version": "0.1.0",
-  "license": "UNLICENSED",
+  "license": "GPL-3.0-only",
   "type": "module",
   "engines": {
     "node": "^22.13.0 || ^24.0.0 || >=26.0.0"
