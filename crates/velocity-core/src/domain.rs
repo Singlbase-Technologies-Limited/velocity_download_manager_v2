@@ -210,7 +210,8 @@ pub enum ConnectionLimit {
     SharedBudget,
     /// The server answered `429` or `503`, so the download uses fewer connections.
     ServerThrottling,
-    /// Adaptive connections: it is still adding one at a time while each makes it faster.
+    /// Adaptive connections: it is still finding how many help, by trying fewer (#221; #47
+    /// added them one at a time, hence the name).
     RampingUp,
     /// Adaptive connections: more connections stopped making it faster.
     NoGain,
