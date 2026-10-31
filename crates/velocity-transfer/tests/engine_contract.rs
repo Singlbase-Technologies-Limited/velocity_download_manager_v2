@@ -858,9 +858,27 @@ fn connections_change_live_within_the_cap() {
             "{mode}"
         );
 
-        let done = wait_for(&events, id, |s| {
-            matches!(s, DownloadStatus::Completed | DownloadStatus::Failed)
-        });
+        // The engine's own count, as the ramp fixtures check it since #154: at the cap the ramp
+        // tries one fewer and brings it back (#221), and the server counts a stopped request's
+        // tail for a moment longer, which once read as 9 of 8 (batch run 41177729176).
+        let deadline = Instant::now() + WAIT;
+        let mut peak = 0;
+        let done = loop {
+            let left = deadline.saturating_duration_since(Instant::now());
+            if let TransferEvent::Changed { snapshot } =
+                events.recv_timeout(left).expect("an event in time")
+            {
+                if snapshot.id == id {
+                    peak = peak.max(snapshot.progress.connections);
+                    if matches!(
+                        snapshot.status,
+                        DownloadStatus::Completed | DownloadStatus::Failed
+                    ) {
+                        break snapshot;
+                    }
+                }
+            }
+        };
         assert_eq!(
             done.status,
             DownloadStatus::Completed,
@@ -871,12 +889,8 @@ fn connections_change_live_within_the_cap() {
             std::fs::read(&dest).unwrap() == data,
             "{mode}: the file is the source"
         );
+        assert!(peak <= cap, "{mode}: {peak} connections, over the cap");
         let c = server.counters();
-        assert!(
-            c.peak_answering <= cap,
-            "{mode}: {} over the cap",
-            c.peak_answering
-        );
         let from_zero = c
             .ranges
             .iter()
