@@ -1,6 +1,6 @@
-//! Adding downloads (#60): the Add dialog's command, what the engine can do, the `.torrent` and
-//! SSH key choosers, and `.torrent` files dropped on the window. Commands stay thin: the manager
-//! checks every value.
+//! Adding downloads (#60): the Add dialog's command, what the engine can do, the `.torrent`,
+//! Metalink (#222) and SSH key choosers, and `.torrent` files dropped on the window. Commands stay
+//! thin: the manager checks every value.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -100,6 +100,25 @@ pub async fn choose_torrents(app: AppHandle) -> Result<Vec<String>, ErrorCode> {
         .set_title("Choose .torrent files")
         .add_filter("Torrent files", &["torrent"]);
     // The chooser waits for the user: off the command runtime's threads.
+    let picked = tauri::async_runtime::spawn_blocking(move || dialog.blocking_pick_files())
+        .await
+        .map_err(|_| ErrorCode::Internal)?;
+    let paths = picked_paths(picked.unwrap_or_default())?;
+    if paths.len() > MAX_ADD {
+        return Err(ErrorCode::InvalidInput);
+    }
+    Ok(paths)
+}
+
+/// Asks the user for Metalink files (`.metalink`, `.meta4`) with the system's chooser (#222).
+/// Empty when they cancel. The manager reads and checks each one when it is added.
+#[tauri::command]
+pub async fn choose_metalinks(app: AppHandle) -> Result<Vec<String>, ErrorCode> {
+    let dialog = app
+        .dialog()
+        .file()
+        .set_title("Choose Metalink files")
+        .add_filter("Metalink files", &["metalink", "meta4"]);
     let picked = tauri::async_runtime::spawn_blocking(move || dialog.blocking_pick_files())
         .await
         .map_err(|_| ErrorCode::Internal)?;

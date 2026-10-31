@@ -35,7 +35,7 @@ What the columns mean:
 
 A Metalink file lists one or more files, with their mirrors and checksums. When the Metalink switch is on (Settings, Advanced; off by default, as in V1), a link to a `.metalink` or `.meta4` file adds the files it describes, and V2 downloads each from its mirrors and checks it against the checksums the Metalink file gives.
 
-**Not yet:** adding a Metalink file that is already on your computer. Only a link to one works (#222).
+**A Metalink file on your computer:** in the Add dialog, **Choose Metalink files…** adds every file each one lists, in the folder you choose, or the default one (#222).
 
 ## BitTorrent
 

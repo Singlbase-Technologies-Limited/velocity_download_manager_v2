@@ -1123,6 +1123,77 @@ mod metalink {
         );
         std::fs::remove_dir_all(&dir).unwrap();
     }
+
+    /// A request for the Metalink file at `path`, into `dir` (#222).
+    fn local(path: &std::path::Path, dir: &std::path::Path) -> crate::manager::adding::AddRequest {
+        crate::manager::adding::AddRequest {
+            metalink_files: vec![path.to_string_lossy().into_owned()],
+            directory: Some(dir.to_string_lossy().into_owned()),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn a_metalink_file_on_this_computer_adds_every_file_it_lists() {
+        use crate::manager::adding::AddOutcome;
+        let dir = folder("local");
+        let file = dir.join("release.meta4");
+        std::fs::write(&file, xml()).unwrap();
+        let (mut m, _control) = manager(with_metalink(), true);
+        let results = m.add_request(&local(&file, &dir), T0).unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].source, file.to_string_lossy());
+        let AddOutcome::MetalinkAdded { ids } = &results[0].outcome else {
+            panic!("{:?}", results[0].outcome);
+        };
+        let names: Vec<_> = ids
+            .iter()
+            .map(|id| m.get(id).unwrap().file_name.clone().unwrap())
+            .collect();
+        assert_eq!(names, ["image.iso", "readme.txt"], "in the file's order");
+        assert_eq!(
+            PathBuf::from(&m.get(&ids[0]).unwrap().directory),
+            dir.join("disc"),
+            "in the subfolder it names, inside the chosen folder"
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_metalink_file_on_this_computer_is_refused_while_metalink_is_off() {
+        use crate::manager::adding::AddOutcome;
+        let dir = folder("local-off");
+        let file = dir.join("release.meta4");
+        std::fs::write(&file, xml()).unwrap();
+        let (mut m, control) = manager(with_metalink(), false);
+        let results = m.add_request(&local(&file, &dir), T0).unwrap();
+        assert_eq!(
+            results[0].outcome,
+            AddOutcome::Failed {
+                code: ErrorCode::ProtocolDisabled
+            }
+        );
+        assert!(control.log().is_empty());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn only_a_metalink_or_meta4_file_is_read_as_one() {
+        use crate::manager::adding::AddOutcome;
+        let dir = folder("local-name");
+        let file = dir.join("release.xml");
+        std::fs::write(&file, xml()).unwrap();
+        let (mut m, control) = manager(with_metalink(), true);
+        let results = m.add_request(&local(&file, &dir), T0).unwrap();
+        assert_eq!(
+            results[0].outcome,
+            AddOutcome::Failed {
+                code: ErrorCode::InvalidInput
+            }
+        );
+        assert!(control.log().is_empty());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
 }
 
 /// The records the manager keeps in the database (#58): what a restart brings back.

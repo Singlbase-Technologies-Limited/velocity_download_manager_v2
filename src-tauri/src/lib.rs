@@ -117,6 +117,7 @@ pub fn run() {
             adding::add_downloads,
             adding::get_capabilities,
             adding::choose_torrents,
+            adding::choose_metalinks,
             adding::choose_ssh_key,
             categories::list_categories,
             categories::create_category,

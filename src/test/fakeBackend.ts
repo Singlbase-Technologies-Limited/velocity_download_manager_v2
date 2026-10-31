@@ -40,6 +40,7 @@ export interface FakeState {
   chosenDirectory: string | null;
   /** What the `.torrent` chooser returns; empty is a cancel. */
   chosenTorrents: string[];
+  chosenMetalinks: string[];
   /** What the SSH key chooser returns; `null` is a cancel. */
   chosenKey: string | null;
   capabilities: Capabilities;
@@ -107,6 +108,7 @@ export function installFakeBackend(over: Partial<FakeState> = {}): FakeState {
     categories: [fixture('category.json') as Category],
     chosenDirectory: null,
     chosenTorrents: [],
+    chosenMetalinks: [],
     chosenKey: null,
     capabilities: withSftp(fixture('capabilities.json') as Capabilities),
     destination: ({ directory, fileName, categoryId }) => ({
@@ -120,7 +122,10 @@ export function installFakeBackend(over: Partial<FakeState> = {}): FakeState {
       suggestedName: null,
     }),
     addResults: (request) =>
-      [...request.links, ...request.torrentFiles].map((source, i) => ({ source, outcome: { kind: 'added', id: `d-${String(100 + i)}` } })),
+      [
+        ...[...request.links, ...request.torrentFiles].map((source, i) => ({ source, outcome: { kind: 'added' as const, id: `d-${String(100 + i)}` } })),
+        ...request.metalinkFiles.map((source, i) => ({ source, outcome: { kind: 'metalinkAdded' as const, ids: [`d-${String(200 + 2 * i)}`, `d-${String(201 + 2 * i)}`] } })),
+      ],
     batch: (_cmd, ids) => ({ done: ids, failed: [], kept: [] }),
     hold: {},
     diagnostics: () => fixture('diagnostics.json') as DiagnosticReport,
@@ -193,6 +198,8 @@ export function installFakeBackend(over: Partial<FakeState> = {}): FakeState {
           return state.capabilities;
         case 'choose_torrents':
           return state.chosenTorrents;
+        case 'choose_metalinks':
+          return state.chosenMetalinks;
         case 'choose_ssh_key':
           return state.chosenKey;
         case 'trust_host_key':

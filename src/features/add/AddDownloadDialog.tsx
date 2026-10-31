@@ -2,7 +2,7 @@ import { useQuery } from '@tanstack/react-query';
 import { ChevronDown, ChevronRight, FileUp, FolderOpen, Globe, KeyRound, TriangleAlert } from 'lucide-react';
 import { useEffect, useMemo, useState } from 'react';
 import { toast } from 'sonner';
-import { cleartextWarning } from '../../capabilities';
+import { availability, cleartextWarning } from '../../capabilities';
 import { Button } from '../../components/Button';
 import { Checkbox } from '../../components/Checkbox';
 import { Dialog } from '../../components/Dialog';
@@ -58,6 +58,8 @@ function AddForm({ prefill, defaults, onClose }: { prefill: AddPrefill | null; d
 
   const [text, setText] = useState(prefill?.links ?? '');
   const [torrentFiles, setTorrentFiles] = useState<string[]>(prefill?.torrentFiles ?? []);
+  // Metalink files on this computer (#222): each adds every file it lists.
+  const [metalinkFiles, setMetalinkFiles] = useState<string[]>([]);
   const [fileName, setFileName] = useState(prefill?.fileName ?? '');
   const [directory, setDirectory] = useState('');
   const [categoryId, setCategoryId] = useState(AUTOMATIC);
@@ -84,11 +86,12 @@ function AddForm({ prefill, defaults, onClose }: { prefill: AddPrefill | null; d
   const [formError, setFormError] = useState<string | null>(null);
   const [outcome, setOutcome] = useState<Outcome | null>(null);
 
-  const links = useMemo(() => (torrentFiles.length > 0 ? [] : splitLinks(text)), [text, torrentFiles]);
+  const files = torrentFiles.length + metalinkFiles.length;
+  const links = useMemo(() => (files > 0 ? [] : splitLinks(text)), [text, files]);
   const kinds = links.map(linkKind);
   const invalid = links.filter((l) => linkProblem(l, capabilities) !== null);
   const firstInvalid = invalid[0];
-  const single = links.length === 1 && torrentFiles.length === 0 ? links[0] : undefined;
+  const single = links.length === 1 && files === 0 ? links[0] : undefined;
   const singleDirect = single !== undefined && (kinds[0] === 'http' || kinds[0] === 'ftp' || kinds[0] === 'sftp') ? single : undefined;
   const torrentMode = torrentFiles.length > 0 || kinds.some((k) => k === 'magnet' || k === 'torrentLink');
   const hasSftp = kinds.includes('sftp');
@@ -98,7 +101,9 @@ function AddForm({ prefill, defaults, onClose }: { prefill: AddPrefill | null; d
   const typedName = singleDirect === undefined || fileName.trim() === '' ? null : nameForDownload(singleDirect, fileName, knownExtensions);
   const headers = parseHeaders(headersText);
   const checksum = parseChecksum(checksumText);
-  const tooMany = links.length + torrentFiles.length > MAX_ADD;
+  const tooMany = links.length + files > MAX_ADD;
+  // Until the engine has said what it can do, Metalink files aren't offered.
+  const metalink = capabilities ? availability(capabilities, 'metalink') : { available: false, reason: null };
 
   // What adding would do: the folder, the category, and whether the name is taken (#31).
   // Debounced as one string, so an unchanged question is the same value between renders.
@@ -128,7 +133,7 @@ function AddForm({ prefill, defaults, onClose }: { prefill: AddPrefill | null; d
   const chosen = chosenFiles ?? new Set(torrentFilesOf.map((f) => f.index));
   const choice = fileChoice(torrentFilesOf, chosen);
 
-  const nothing = links.length === 0 && torrentFiles.length === 0;
+  const nothing = links.length === 0 && files === 0;
   const blocked = nothing || invalid.length > 0 || tooMany || headers.error !== null || checksum.error !== null || (missingChosen && !createDirectory);
 
   const browse = async () => {
@@ -147,6 +152,14 @@ function AddForm({ prefill, defaults, onClose }: { prefill: AddPrefill | null; d
       toast.error(toApiError(e).message);
     }
   };
+  const pickMetalinks = async () => {
+    try {
+      const picked = await api.chooseMetalinks();
+      if (picked.length > 0) setMetalinkFiles(picked);
+    } catch (e) {
+      toast.error(toApiError(e).message);
+    }
+  };
   const pickKey = async () => {
     try {
       const picked = await api.chooseSshKey();
@@ -159,6 +172,7 @@ function AddForm({ prefill, defaults, onClose }: { prefill: AddPrefill | null; d
   const request = (over: Partial<AddRequest>): AddRequest => ({
     links,
     torrentFiles,
+    metalinkFiles,
     directory: directory.trim() || null,
     fileName: singleDirect !== undefined && fileName.trim() !== '' ? fileName.trim() : null,
     categoryId: categoryId || null,
@@ -279,7 +293,23 @@ function AddForm({ prefill, defaults, onClose }: { prefill: AddPrefill | null; d
             </div>
           ) : null}
 
-          {torrentFiles.length > 0 ? (
+          {metalinkFiles.length > 0 ? (
+            <div className="space-y-2 rounded-lg border border-border p-3">
+              <div className="flex items-center justify-between gap-2">
+                <p className="text-xs text-fg-muted">{metalinkFiles.length === 1 ? 'One Metalink file. Every file it lists is added.' : `${String(metalinkFiles.length)} Metalink files. Every file each lists is added.`}</p>
+                <Button size="sm" variant="ghost" onClick={() => { setMetalinkFiles([]); }}>
+                  Use links instead
+                </Button>
+              </div>
+              <ul aria-label="Metalink files" className="max-h-40 space-y-1 overflow-y-auto text-xs">
+                {metalinkFiles.map((f) => (
+                  <li key={f} className="truncate" title={f}>
+                    {baseName(f)}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          ) : torrentFiles.length > 0 ? (
             <div className="space-y-2 rounded-lg border border-border p-3">
               <div className="flex items-center justify-between gap-2">
                 <p className="text-xs text-fg-muted">{torrentFiles.length === 1 ? 'One .torrent file. Choose its files below.' : `${String(torrentFiles.length)} .torrent files. Each is added with all its files.`}</p>
@@ -345,7 +375,10 @@ function AddForm({ prefill, defaults, onClose }: { prefill: AddPrefill | null; d
                 <Button size="sm" onClick={() => void pickTorrents()}>
                   <FileUp aria-hidden /> Choose .torrent files…
                 </Button>
-                <span>or drop them on the window.</span>
+                <Button size="sm" disabled={!metalink.available} title={metalink.available ? undefined : (metalink.reason ?? undefined)} onClick={() => void pickMetalinks()}>
+                  <FileUp aria-hidden /> Choose Metalink files…
+                </Button>
+                <span>or drop .torrent files on the window.</span>
               </div>
             </>
           )}
