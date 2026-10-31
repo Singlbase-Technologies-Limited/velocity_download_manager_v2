@@ -20,10 +20,13 @@
     "active": true,
     "targets": ["nsis", "deb", "rpm"],
     "publisher": "Velocity Project",
+    "copyright": "Copyright (C) 2026 Singlbase Technologies Limited",
+    "license": "GPL-3.0-only",
     "category": "Utility",
     "shortDescription": "A desktop download manager.",
     "externalBin": ["binaries/velocity-transfer", "binaries/velocity-torrent", "binaries/velocity-native-host-v2"],
     "resources": {
+      "staging/LICENSE": "LICENSE",
       "staging/THIRD_PARTY_NOTICES.md": "THIRD_PARTY_NOTICES.md",
       "staging/build-info.json": "build-info.json"
     },

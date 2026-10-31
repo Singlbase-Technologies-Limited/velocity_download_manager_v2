@@ -22,4 +22,8 @@ Work is planned as issues on the [project board](https://github.com/users/vincen
 
 ## Licence
 
-Not yet chosen (issue #86). All rights reserved until then. The third-party components V2 contains, and their licences, are in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+Copyright (C) 2026 Singlbase Technologies Limited.
+
+Velocity Download Manager V2 is free software: you can redistribute it and change it under the terms of the [GNU General Public License, version 3 only](LICENSE) (`GPL-3.0-only`). It is distributed without any warranty; see the licence for details. The decision is [ADR-0017](docs/decisions/0017-gpl-3-licence.md).
+
+The third-party components V2 contains, and their licences, are in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).

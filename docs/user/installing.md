@@ -12,7 +12,7 @@ The installer is `Velocity Download Manager V2_<version>_x64-setup.exe`.
 - **Unsigned:** Windows SmartScreen warns the first time ("Windows protected your PC"). Choose **More info**, then **Run anyway**.
 - **WebView2:** if the PC lacks Microsoft's WebView2, the installer downloads it. Windows 10 and 11 normally have it.
 - **Your data** is kept in `%APPDATA%\com.velocity.downloadmanager.v2`, apart from V1's.
-- **Third-party licences** are listed in `THIRD_PARTY_NOTICES.md` in the install folder.
+- **Licences:** V2 is free software under the GNU General Public License, version 3 only, in `LICENSE` in the install folder. The third-party licences are in `THIRD_PARTY_NOTICES.md` beside it.
 
 ## Linux
 
@@ -30,7 +30,7 @@ sudo apt install "./Velocity Download Manager V2_<version>_amd64.deb"   # Ubuntu
 sudo dnf install "./Velocity Download Manager V2-<version>-1.x86_64.rpm" # Fedora
 ```
 
-Use the file name of the package you have, in quotes because it has spaces. A release candidate's files have other names, such as `velocity-v2-0.1.0-rc.1-<commit>-<date>-linux-amd64.deb`. V2 then appears in your applications menu as "Velocity Download Manager V2". Its data is kept in `~/.local/share/com.velocity.downloadmanager.v2`, apart from V1's, and the third-party licences are in `/usr/lib/Velocity Download Manager V2/THIRD_PARTY_NOTICES.md`.
+Use the file name of the package you have, in quotes because it has spaces. A release candidate's files have other names, such as `velocity-v2-0.1.0-rc.1-<commit>-<date>-linux-amd64.deb`. V2 then appears in your applications menu as "Velocity Download Manager V2". Its data is kept in `~/.local/share/com.velocity.downloadmanager.v2`, apart from V1's, and its licence and the third-party licences are in `/usr/lib/Velocity Download Manager V2/` (`LICENSE`, `THIRD_PARTY_NOTICES.md`).
 
 No AppImage is made for now.
 
