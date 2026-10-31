@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { checkGuidance, globToRegExp } from './guidance-lib.mjs';
+import { checkGuidance, globToRegExp, pnpmWords } from './guidance-lib.mjs';
 
 const AGENTS = '# Rules\n\n- **Tests:** run `pnpm check:fast` before a pull request.\n';
 const CLAUDE = '# Claude Code instructions\n\n@AGENTS.md\n\nRun `pnpm test:focused -- <area>` while iterating.\n';
@@ -163,5 +163,22 @@ describe('globToRegExp', () => {
     ['package.json', 'src/package.json', false],
   ])('%s matches %s: %s', (glob, path, expected) => {
     expect(globToRegExp(glob).test(path)).toBe(expected);
+  });
+});
+
+describe('pnpmWords', () => {
+  it("finds each pnpm command's word, after its options", () => {
+    expect(pnpmWords('pnpm -s test:focused -- scripts && pnpm --recursive build; (pnpm dev)')).toEqual(['test:focused', 'build', 'dev']);
+    expect(pnpmWords('pnpm install --frozen-lockfile')).toEqual(['install']);
+  });
+
+  it('ignores pnpm inside another word, and pnpm with no command', () => {
+    expect(pnpmWords('mypnpm run x; pnpm --version')).toEqual([]);
+  });
+
+  it('stays fast on a long run of spaces (CodeQL js/redos, #233)', () => {
+    const start = performance.now();
+    expect(pnpmWords(`pnpm${' '.repeat(50_000)}!`)).toEqual([]);
+    expect(performance.now() - start).toBeLessThan(500);
   });
 });

@@ -170,6 +170,14 @@ jobs:
     expect(text).not.toMatch(/^\s+git fetch\b/m);
   });
 
+  it("builds a candidate's packages from nothing: no cache an earlier run saved (#233)", () => {
+    const text = readFileSync(join(import.meta.dirname, '..', '.github', 'workflows', 'release-candidate.yml'), 'utf8');
+    for (const platform of ['windows', 'linux']) {
+      const job = new RegExp(String.raw`uses: \./\.github/workflows/package-${platform}\.yml\n\s+with:\n(?:\s+(?:#.*|[\w-]+: .*)\n)*?\s+cold: true\n`);
+      expect(text, platform).toMatch(job);
+    }
+  });
+
   it('holds for the release-candidate workflow and the packaging workflows it calls', () => {
     for (const file of ['release-candidate.yml', 'package-windows.yml', 'package-linux.yml']) {
       const text = readFileSync(join(import.meta.dirname, '..', '.github', 'workflows', file), 'utf8');

@@ -166,10 +166,10 @@ describe('contract fixtures generated from Rust', () => {
     expect(AddRequestSchema.parse(fixture('add-request.json'))).toEqual(fixture('add-request.json'));
   });
 
-  it('add results: one of each outcome (#60)', () => {
+  it('add results: one of each outcome (#60, #222)', () => {
     const results = fixture('add-results.json') as unknown[];
     expect(results.map((r) => AddResultSchema.parse(r))).toEqual(results);
-    expect(results.map((r) => AddResultSchema.parse(r).outcome.kind)).toEqual(['added', 'conflict', 'duplicate', 'failed', 'notFetched']);
+    expect(results.map((r) => AddResultSchema.parse(r).outcome.kind)).toEqual(['added', 'conflict', 'duplicate', 'failed', 'metalinkAdded', 'notFetched']);
   });
 
   it('app info carries the same contract version as this UI', () => {
