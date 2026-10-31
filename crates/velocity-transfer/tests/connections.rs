@@ -276,32 +276,31 @@ fn run(
 }
 
 #[test]
-fn adaptive_connections_ramp_up_while_each_helps() {
+fn adaptive_connections_start_with_all_asked_for_and_keep_each_that_helps() {
     let _serial = one_at_a_time();
-    // Per-connection throttle: every connection adds 1 MiB/s, so the ramp reaches the 4 asked
-    // for. 4, so each added connection adds at least 33%, well clear of the 10% threshold and of
-    // measurement noise on a loaded machine; the 8th would add only 14%.
-    let data = seeded_bytes(48 * MIB, 52);
+    // Per-connection throttle: every connection adds 1 MiB/s, so losing one of the 4 asked for
+    // costs 25%, well clear of the 10% threshold and of measurement noise on a loaded machine.
+    // 64 MiB, about 17 s: still running after the 4th is judged, at about 9 s.
+    let data = seeded_bytes(64 * MIB, 52);
     let server = throttled_server(&data, MIB as u64, None);
-    let dir = Dir::new("ramp-up");
+    let dir = Dir::new("start-at-four");
     let control = Arc::new(Control::default());
     let four = DownloadOptions {
         connections: 4,
         ..ADAPTIVE
     };
     let download = run(&server, &dir, four, &control);
-    wait_until(Duration::from_secs(10), "a range follows the probe", || {
-        server.counters().gets >= 2
-    });
-    assert_eq!(
-        control.connections_now().tuned,
-        Some((1, Tuning::RampingUp)),
-        "it starts with one connection"
-    );
-    wait_until(Duration::from_secs(30), "4 responses run", || {
+    // All 4 from the start (PO decision on #221). #47's climb took at least 6 s to reach them.
+    wait_until(Duration::from_secs(5), "4 responses run", || {
         server.counters().answering == 4
     });
-    assert_eq!(control.connections_now().tuned, None, "at the 4 asked for");
+    // After 2 windows it tries 3, and the 4th, which helped, comes back.
+    wait_until(Duration::from_secs(20), "it tries without the 4th", || {
+        control.connections_now().tuned == Some((3, Tuning::RampingUp))
+    });
+    wait_until(Duration::from_secs(20), "it keeps the 4 asked for", || {
+        control.connections_now().tuned.is_none() && server.counters().answering == 4
+    });
     let (dest, report) = download.join().unwrap();
     // Counted by the engine: the server may count a stopped request's tail as one more (#154).
     assert_eq!(report.peak_requests, 4, "never more than asked");
@@ -315,35 +314,38 @@ fn adaptive_connections_ramp_up_while_each_helps() {
 fn adaptive_connections_stop_below_the_cap_when_more_stop_helping() {
     let _serial = one_at_a_time();
     // Per-IP throttle: 1 MiB/s per connection but 1.5 MiB/s in all, so 2 connections fill it and
-    // a 3rd brings nothing. A correct ramp keeps 2 and peaks at 3, the one it tried. The checks
-    // below allow 4, one window's headroom: on CI's 2-vCPU runners, noise sometimes passes for a
-    // 10% gain once, which with 2.5 MiB/s in all (3 that help) took the peak to 5 (#159). Two
-    // noisy windows in a row would still fail it. 24 MiB, about 16 s, so the download is still
-    // running when the ramp decides, however slowly a loaded machine lets it measure (#154).
-    let data = seeded_bytes(24 * MIB, 53);
+    // more bring nothing. 4 asked for: the ramp starts at 4 (#221), drops to 3, 2 and 1, and
+    // brings the 2nd back, since 1 loses a third of the speed. Each count takes 2 windows, so it
+    // decides at about 18 s, after a first window that isn't measured; 40 MiB, about 27 s, so the
+    // download is still running then, however
+    // slowly a loaded machine lets it measure (#154).
+    let data = seeded_bytes(40 * MIB, 53);
     let server = throttled_server(&data, MIB as u64, Some(3 * MIB as u64 / 2));
     let dir = Dir::new("per-ip");
     let control = Arc::new(Control::default());
-    let download = run(&server, &dir, ADAPTIVE, &control);
+    let four = DownloadOptions {
+        connections: 4,
+        ..ADAPTIVE
+    };
+    let download = run(&server, &dir, four, &control);
     wait_until(
-        Duration::from_secs(30),
+        Duration::from_secs(40),
         "more connections stop helping",
         || matches!(control.connections_now().tuned, Some((_, Tuning::NoGain))),
     );
+    // Noise only ever keeps a connection (#221): a noisy count stops the ramp above 2, at 3. It
+    // never loses the 2 that help.
     let (kept, _) = control.connections_now().tuned.unwrap();
     assert!(
-        kept <= 4,
-        "kept {kept}, more than the 2 that help, one to try and one noisy window"
+        (2..=3).contains(&kept),
+        "kept {kept}: the 2 that help, or one more after a noisy count"
     );
     let (dest, report) = download.join().unwrap();
     // Counted by the engine over the whole download: the server may count a stopped request's
     // tail as one more (#154).
     let peak = report.peak_requests;
     eprintln!("per-IP: kept {kept} connections, at most {peak} requests at once");
-    assert!(
-        peak <= 4,
-        "{peak} requests at once, well below the 8 asked for"
-    );
+    assert!(peak <= 4, "{peak} requests at once, never more than asked");
     assert!(
         std::fs::read(dest).unwrap() == data,
         "the file is the source"

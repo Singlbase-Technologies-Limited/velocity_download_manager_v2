@@ -12,7 +12,7 @@ export function limitReason(limit: ConnectionLimit): string {
     case 'serverThrottling':
       return 'the server asked Velocity to slow down';
     case 'rampingUp':
-      return 'Velocity is still adding connections while each one helps';
+      return 'Velocity is still finding how many connections help';
     case 'noGain':
       return 'more connections stopped making it faster';
     case 'fileSize':
