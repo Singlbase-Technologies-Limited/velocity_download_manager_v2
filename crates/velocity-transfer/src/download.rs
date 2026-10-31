@@ -1754,8 +1754,8 @@ fn request(
 ///   connections this download uses;
 /// - the connections asked for may change while it runs ([`Control::set_connections`], #47): more
 ///   take new leases at once, and fewer stop the newest requests, whose rest is leased again;
-/// - with [`DownloadOptions::adaptive`], it starts with one connection and adds one per window
-///   while each helps, up to what it may use ([`Ramp`], #47).
+/// - with [`DownloadOptions::adaptive`], it starts with every connection it may use and drops
+///   the ones that don't help ([`Ramp`], #47, #221).
 ///
 /// Returns the fetches made, the splits and the mode.
 #[allow(clippy::too_many_arguments)] // The download's parts; grouping them would add a type for one call.
@@ -1855,13 +1855,13 @@ fn fetch_ranges(
                     *r = Ramp::new(adaptive);
                     restart = true;
                 }
-                Multiplex::Trying { best, count } if r.settled(ceiling) => {
-                    let enough = 1.0 + f64::from(adaptive.add_gain_percent) / 100.0;
+                Multiplex::Trying { best, count } if r.settled() => {
+                    let enough = 1.0 + f64::from(adaptive.switch_gain_percent) / 100.0;
                     let better = r.best_rate().is_some_and(|b| b > best * enough);
                     multiplex = Multiplex::Chosen(better);
                     control.own_connections.store(better, Ordering::Release);
                     if !better {
-                        *r = Ramp::holding_at(adaptive, count);
+                        *r = Ramp::holding_at(adaptive, count, ceiling);
                         restart = true;
                     }
                 }
