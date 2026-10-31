@@ -18,6 +18,7 @@ import {
   crateComponents,
   firstDifference,
   licenceProblems,
+  licenceReport,
   linkTarget,
   nativeComponents,
   normaliseText,
@@ -64,9 +65,14 @@ function licenceText(path) {
 }
 
 const check = process.argv.includes('--check');
+// `--report <target triple> <file>`: one platform's licence report for a release candidate (#17),
+// instead of THIRD_PARTY_NOTICES.md.
+const reportAt = process.argv.indexOf('--report');
+const report = reportAt === -1 ? null : { platform: process.argv[reportAt + 1], file: process.argv[reportAt + 2] };
+if (report && (!report.platform || !report.file)) throw new Error('usage: notices.mjs --report <target triple> <file>');
 
 const metadata = JSON.parse(run('cargo', ['metadata', '--format-version', '1', '--locked']));
-const tree = run('cargo', ['tree', '--locked', '-e', 'normal', '--target', 'all', '--prefix', 'none', '-f', '{p}', ...SHIPPED.flatMap((p) => ['-p', p])]);
+const tree = run('cargo', ['tree', '--locked', '-e', 'normal', '--target', report ? report.platform : 'all', '--prefix', 'none', '-f', '{p}', ...SHIPPED.flatMap((p) => ['-p', p])]);
 const crates = crateComponents(metadata, tree).map((c) => ({ ...c, texts: packageTexts(c) }));
 const npm = npmComponents(JSON.parse(run('pnpm', ['licenses', 'list', '--prod', '--json']))).map((c) => ({ ...c, texts: packageTexts(c) }));
 
@@ -79,6 +85,14 @@ const native = nativeComponents(parseDepsLock(readFileSync(join(NATIVE, 'deps.lo
   if (!existsSync(file)) throw new Error(`${c.name} has no licence text in scripts/notices/native/`);
   return { ...c, authors: [], texts: [{ licence: c.licence, text: read(file) }] };
 });
+
+if (report) {
+  const result = licenceReport({ platform: report.platform, native, crates, npm });
+  writeFileSync(report.file, `${JSON.stringify(result, null, 2)}\n`);
+  console.log(`${report.file}: ${result.components.length} components for ${report.platform}, ${result.problems.length} problem(s).`);
+  for (const p of result.problems) console.error(`- ${p}`);
+  process.exit(result.problems.length ? 1 : 0);
+}
 
 const standardTexts = Object.fromEntries(readdirSync(STANDARD).map((f) => [f.replace(/\.txt$/, ''), read(join(STANDARD, f))]));
 

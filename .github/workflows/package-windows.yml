@@ -10,12 +10,19 @@ name: Windows installer
 
 on:
   workflow_dispatch:
+  # The release-candidate workflow (#17) calls it for the commit it verified.
+  workflow_call:
+    inputs:
+      ref:
+        description: The commit to package
+        type: string
+        required: true
 
 permissions:
   contents: read
 
 concurrency:
-  group: package-windows-${{ github.ref }}
+  group: package-windows-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -32,6 +39,8 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          # Empty when started by hand: the branch it was started on.
+          ref: ${{ inputs.ref }}
           persist-credentials: false
       - id: setup
         uses: ./.github/actions/setup
@@ -55,5 +64,6 @@ jobs:
           path: |
             target/release/bundle/nsis/*-setup.exe
             target/release/bundle/nsis/*-setup.exe.sha256
+            target/release/bundle/*-windows.json
           if-no-files-found: error
           retention-days: 14

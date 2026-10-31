@@ -1,7 +1,8 @@
 // The steps `pnpm package:windows` and `pnpm package:linux` share (docs/PACKAGING.md): build the
 // sidecars for release as the release identity, stage them and the files the packages carry, run
-// `tauri build` for the platform's packages, and write each package's SHA-256 beside it. Tools run
-// directly, never through a shell. The rules are in package-lib.mjs.
+// `tauri build` for the platform's packages, write the platform's records for a release candidate
+// (#17), and write each package's SHA-256 beside it. Tools run directly, never through a shell.
+// The rules are in package-lib.mjs.
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
@@ -43,6 +44,16 @@ export function buildPackages(platform) {
   }
 
   run(process.execPath, [join(root, 'node_modules', '@tauri-apps', 'cli', 'tauri.js'), ...tauriBuildArgs(platform)]);
+
+  // The records a release candidate carries for this platform (#17): the native libraries' and
+  // libtorrent's build records, and the licence report of what this platform's build ships.
+  const bundle = join(root, 'target', 'release', 'bundle');
+  for (const record of ['build-info.json', 'libtorrent-info.json']) {
+    const from = join(root, 'target', 'native', triple, record);
+    if (!existsSync(from)) throw new Error(`${from} is missing: run \`pnpm native:build\` first`);
+    copyFileSync(from, join(bundle, `${record === 'build-info.json' ? 'native-build-info' : 'libtorrent-info'}-${platform}.json`));
+  }
+  run(process.execPath, [join(root, 'scripts', 'notices.mjs'), '--report', triple, join(bundle, `licence-report-${platform}.json`)]);
   return triple;
 }
 

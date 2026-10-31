@@ -9,6 +9,7 @@ import {
   FILE_COPYLEFT,
   FONT_LICENCES,
   licenceProblems,
+  licenceReport,
   linkTarget,
   nativeComponents,
   normaliseText,
@@ -282,5 +283,35 @@ describe('renderNotices', () => {
 
   it('is the same for the same input', () => {
     expect(renderNotices(input)).toBe(out);
+  });
+});
+
+describe('licenceReport', () => {
+  const native = [{ name: 'curl', version: '8.23.0', licence: 'curl', source: 'https://curl.se/' }];
+  const crates = [
+    { name: 'zeta', version: '1.0.0', licence: 'MIT OR Apache-2.0', source: 'https://crates.io/crates/zeta/1.0.0' },
+    { name: 'alpha', version: '2.0.0', licence: 'Apache-2.0', source: 'https://crates.io/crates/alpha/2.0.0' },
+  ];
+  const npm = [{ name: 'react', version: '19.0.0', licence: 'MIT', source: 'https://react.dev/' }];
+
+  it("lists one platform's components with the licence each is used under", () => {
+    expect(licenceReport({ platform: 'x86_64-unknown-linux-gnu', native, crates, npm })).toEqual({
+      schema: 1,
+      platform: 'x86_64-unknown-linux-gnu',
+      components: [
+        { kind: 'native', name: 'curl', version: '8.23.0', licence: 'curl', usedUnder: 'curl', source: 'https://curl.se/' },
+        { kind: 'crate', name: 'alpha', version: '2.0.0', licence: 'Apache-2.0', usedUnder: 'Apache-2.0', source: 'https://crates.io/crates/alpha/2.0.0' },
+        { kind: 'crate', name: 'zeta', version: '1.0.0', licence: 'MIT OR Apache-2.0', usedUnder: 'MIT', source: 'https://crates.io/crates/zeta/1.0.0' },
+        { kind: 'npm', name: 'react', version: '19.0.0', licence: 'MIT', usedUnder: 'MIT', source: 'https://react.dev/' },
+      ],
+      problems: [],
+    });
+  });
+
+  it('says which components may not ship', () => {
+    const report = licenceReport({ platform: 'p', native: [], crates: [{ name: 'gpl', version: '1.0.0', licence: 'GPL-3.0-only', source: 's' }], npm: [] });
+    expect(report.components[0].usedUnder).toBeNull();
+    expect(report.problems).toEqual(licenceProblems([{ name: 'gpl', version: '1.0.0', licence: 'GPL-3.0-only' }]));
+    expect(report.problems).toHaveLength(1);
   });
 });
