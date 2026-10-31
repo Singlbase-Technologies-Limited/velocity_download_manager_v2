@@ -16,10 +16,11 @@ The levels and their scope are in [docs/TESTING.md](../../../docs/TESTING.md). S
 
 ## 2. Run the levels
 
-1. **`pnpm check:pr`.** It prints which paths selected which checks, then runs them. Lockfiles, shared configuration, `scripts/`, `.claude/` and unknown paths select everything.
-2. **`pnpm test:focused -- <area>`** for every area with new behaviour, to show those tests ran by name.
-3. **`pnpm check:full`,** when `$ARGUMENTS` is `full` or the change touches build settings, the release profile or packaging. It includes the release build, which takes about 4 minutes on Windows.
-4. **`pnpm check:fast`** before every PR. When `check:pr` selected everything, its run counts.
+Locally, only the fast tests (PO decision, 2026-10-31); the heavy levels run in the pull request's CI.
+
+1. **`pnpm test:focused -- <area>`** for every area with new behaviour, to show those tests ran by name. A single test file or test when that is enough.
+2. **Formatting and lint** for what changed: `cargo fmt --check`, `cargo clippy -p <crate> --all-targets -- -D warnings`, `tsc --noEmit`, ESLint on the changed files.
+3. **In CI, not here:** `check:pr`'s selection and `check:fast` run on the pull request (PR checks), and the Windows checks after merge (Main checks). Report them from that run. `pnpm check:full`, the end-to-end runs and packaging run only when the PO asks, or in their workflows.
 
 ## 3. Report
 

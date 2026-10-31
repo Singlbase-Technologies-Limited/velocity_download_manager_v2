@@ -104,7 +104,7 @@ pnpm check:notices             # every shipped licence is allowed and THIRD_PART
 pnpm native:build              # build libcurl and its libraries from verified sources (docs/BUILDING_NATIVE.md)
 ```
 
-Run `pnpm check:fast` before opening a pull request. Use pnpm only; `package.json` pins its version. The levels and selection rules are in [docs/TESTING.md](docs/TESTING.md).
+**Locally, run only the fast, focused tests** for what you change (`pnpm test:focused -- <area>`, or one test file), with formatting and lint. The heavy runs, `pnpm check:fast` and above, the end-to-end and platform runs and packaging, run in CI on every pull request (PO decision, 2026-10-31). Use pnpm only; `package.json` pins its version. The levels and selection rules are in [docs/TESTING.md](docs/TESTING.md).
 
 ## Documentation
 

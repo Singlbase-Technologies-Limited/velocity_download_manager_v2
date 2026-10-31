@@ -37,7 +37,7 @@ Work is planned as issues on the [project board](https://github.com/orgs/Singlba
 1. **Branch from the latest `main`** as `<type>/<issue>-<slug>`, following [docs/DEVELOPMENT_WORKFLOW.md](docs/DEVELOPMENT_WORKFLOW.md).
 2. **Write a failing test first,** make it pass, then refactor ([docs/TESTING.md](docs/TESTING.md)). Iterate with `pnpm test:focused -- <area>`.
 3. **Update the docs** that describe what you changed, in the same branch.
-4. **Run `pnpm check:fast`.** It must pass with zero warnings.
+4. **Run the focused tests** for what you changed (`pnpm test:focused -- <area>`). The pull request's CI runs `pnpm check:fast` and everything else; it must pass with zero warnings.
 
 ## 5. Open a pull request
 

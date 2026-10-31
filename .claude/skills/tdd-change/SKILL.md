@@ -33,7 +33,7 @@ The crate names are in `cargo metadata --no-deps`; `test:focused` lists them whe
 ## 3. Refactor
 
 - **Improve names, duplication and structure,** with the test still green. Never weaken, skip or loosen a test to get there.
-- **Rerun the focused command** before moving to the next behaviour. Run `pnpm check:fast` (fmt, clippy `-D warnings`, cargo test, tsc, ESLint, Vitest) once, before opening the PR (CLAUDE.md, "Long runs").
+- **Rerun the focused command** before moving to the next behaviour. Leave `pnpm check:fast` (fmt, clippy `-D warnings`, cargo test, tsc, ESLint, Vitest) to the pull request's CI: locally, only the fast focused tests (PO decision, 2026-10-31).
 
 ## When it won't go green
 

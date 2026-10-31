@@ -26,7 +26,7 @@ The skills in the table below hold the details of each step.
 2. **Branch.** Create `<type>/<issue>-<slug>` from the latest `main`, and set the issue to *In progress* on the project board.
 3. **Test first** (`/tdd-change`). Red, green, refactor, one behaviour at a time, with `pnpm test:focused -- <area>`.
 4. **When something fails, stop.** Report the actual error. Don't weaken a test, a lint, a check or a security control to get past it.
-5. **Verify** (`/verify-v2`). Add `/platform-verify` and `/security-check` when the change calls for them.
+5. **Verify** (`/verify-v2`). Locally only the focused tests; the pull request's CI runs `check:fast` and the rest (PO decision, 2026-10-31). Add `/platform-verify` and `/security-check` when the change calls for them.
 6. **Pull request** (`/prepare-pr <N>`).
    - The description is [the PR template](.github/PULL_REQUEST_TEMPLATE.md) filled in, never an earlier PR's shape. Check it with `pnpm check:pr-body <file> --title "…"`, and pass it with `--body-file`.
    - Run `gh` for this repository as `GH_TOKEN="$(gh auth token -u velocity-claude-agent)" gh …`. Never run `gh auth switch`.
