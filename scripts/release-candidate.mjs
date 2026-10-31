@@ -16,9 +16,10 @@
 // Tools run directly, never through a shell.
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { appendFileSync, copyFileSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
+import { copyFileSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { basename, join } from 'node:path';
 import { root } from './checks-runner.mjs';
+import { repoApi, writeOutputs } from './github-api.mjs';
 import { candidateBuildInfo, candidateName, MAIN_CHECKS_WORKFLOW, mainChecksRun, packageNames, refusal, sha256sums } from './release-candidate-lib.mjs';
 
 const [command, ...args] = process.argv.slice(2);
@@ -31,11 +32,6 @@ function git(...gitArgs) {
   return r;
 }
 
-function output(values) {
-  for (const [key, value] of Object.entries(values)) console.log(`${key}=${value}`);
-  if (process.env.GITHUB_OUTPUT) appendFileSync(process.env.GITHUB_OUTPUT, Object.entries(values).map(([k, v]) => `${k}=${v}\n`).join(''));
-}
-
 async function verify(ref) {
   if (!ref) throw new Error('usage: release-candidate.mjs verify <commit>');
   const parsed = git('rev-parse', '--verify', `${ref}^{commit}`);
@@ -44,13 +40,8 @@ async function verify(ref) {
   const ancestor = git('merge-base', '--is-ancestor', commit, 'origin/main');
   if (ancestor.status > 1) throw new Error(`git merge-base failed: ${ancestor.stderr.trim()}`);
 
-  const repo = process.env.GITHUB_REPOSITORY;
-  const token = process.env.GITHUB_TOKEN;
-  if (!repo || !token) throw new Error('GITHUB_REPOSITORY and GITHUB_TOKEN are needed to find the Main checks run');
-  const url = `https://api.github.com/repos/${repo}/actions/workflows/${MAIN_CHECKS_WORKFLOW}/runs?head_sha=${commit}&per_page=100`;
-  const res = await fetch(url, { headers: { accept: 'application/vnd.github+json', authorization: `Bearer ${token}`, 'x-github-api-version': '2022-11-28' } });
-  if (!res.ok) throw new Error(`${url} answered ${res.status}: ${await res.text()}`);
-  const mainChecks = mainChecksRun((await res.json()).workflow_runs, commit);
+  const runs = await repoApi(`actions/workflows/${MAIN_CHECKS_WORKFLOW}/runs?head_sha=${commit}&per_page=100`);
+  const mainChecks = mainChecksRun(runs.workflow_runs, commit);
 
   const why = refusal({ commit, onMain: ancestor.status === 0, mainChecks, tag, version });
   if (why) {
@@ -58,7 +49,7 @@ async function verify(ref) {
     process.exit(1);
   }
   console.log(`Main checks: ${mainChecks.html_url}`);
-  output({ commit, name: candidateName({ version, tag, commit, date: new Date() }) });
+  await writeOutputs({ commit, name: candidateName({ version, tag, commit, date: new Date() }) });
 }
 
 /** Every file under `dir`, as paths. */
