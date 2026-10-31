@@ -197,7 +197,7 @@ fn a_split_over_http2_resets_only_the_stream() {
 }
 
 /// The engine's ramp with shorter windows, so a test runs in seconds. 4 asked for, so losing a
-/// connection that helps costs at least 25%, well clear of the 5% threshold and of measurement
+/// connection that helps costs at least 25%, well clear of the 10% threshold and of measurement
 /// noise on a loaded machine.
 const ADAPTIVE: DownloadOptions = DownloadOptions {
     connections: 4,
@@ -225,7 +225,8 @@ fn a_server_that_throttles_each_connection_gets_separate_connections() {
     let dir = Dir::new("per-tcp");
     // 8 asked for (#168): the streams start at 8 and step down while the speed holds, so they stop
     // below 8 and the trial, which starts only on "no gain", runs. Each count takes 2 windows, so
-    // the streams settle by about 16 s and the trial's own connections by about 20 s (#221).
+    // after a first window that isn't measured, the streams settle by about 17 s and the trial's own
+    // connections by about 22 s (#221).
     let options = DownloadOptions {
         connections: 8,
         ..ADAPTIVE

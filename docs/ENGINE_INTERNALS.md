@@ -441,9 +441,9 @@ Snapshots carry the connections in use now (`Progress::connections`) and `connec
 The asked-for count is the most a download may use, not a must (PO decision on #47). A download starts with every connection it may use, as V1 does, and drops the ones that don't help (PO decision on #221):
 
 - **Windows:** the ramp measures the body bytes received over a window of max(2 s, 4 × RTT). RTT is the shortest wait seen between a request and its answer.
-- **Each count is measured for 2 windows,** and judged by their average speed.
-- **Drop while the speed holds:** the first count measured sets the speed to keep. The ramp then drops one connection, and if the speed without it stays within 5% of the best average at a higher count, it drops the next.
-- **Bring back the one that helped:** when the speed without a connection falls by 5% or more, that connection comes back and the ramp stops (`noGain`). At one connection it stops too.
+- **Each count is measured for 2 windows,** and judged by their average speed. The first window after the count is set from outside (a new download, a ceiling that rose or fell) isn't measured: it holds the connections' start, and a test server's first burst once made every drop look like a loss (batch run 41178941474).
+- **Drop while the speed holds:** the first count measured sets the speed to keep. The ramp then drops one connection, and if the speed without it stays within 10% of the best average at a higher count, it drops the next.
+- **Bring back the one that helped:** when the speed without a connection falls by 10% or more, that connection comes back and the ramp stops (`noGain`). At one connection it stops too.
 - **Noise keeps connections:** a slow measurement can only make the ramp keep one more, never lose one that helps.
 - **Why it changed:** #47 started with one connection and added one per window while each added 10%, and stopped for good at the first window that didn't. Normal internet variation could stop it below the count asked for. On 2026-10-30 the app took 319 s for the 2.9 GB Ubuntu 26.04.1 server image, the engine with a fixed 8 connections 294 s, and V1 286 s (one run each, #221).
 - **No decision** while fewer requests run than the ramp wants, at a file's tail for example: that speed says nothing about the count.
@@ -472,7 +472,8 @@ All are starting values to tune by measurement (#77); the user can change them (
 | Shared budget (`CONNECTION_BUDGET`) | 48 | V1's `connection_budget`; PO decision on #47 |
 | Window | max(2 s, 4 × RTT) | Report section 5.5 |
 | Windows per count | 2, averaged | #47's 2 flat windows (report section 5.5); #221 |
-| Loss that brings a connection back | 5% | #221: between #47's 2% flat and 10% gain thresholds; one connection of 8 that carries its share is worth 12.5% |
+| Loss that brings a connection back | 10% | #221: the gain #47 needed to add one; one connection of 8 that carries its share is worth 12.5%. 5% let noise keep a connection that didn't help on CI's Windows runner |
+| Windows not measured after the count is set from outside | 1 | #221 |
 | HTTP/2: gain that keeps connections of their own | 10% | Report section 5.5 |
 
 **Measured** on the local test servers (Windows 11), with #47's climbing ramp. These check behaviour, not speed: no speed claim is made until #77 (PO decision on #47). #221 changed the ramp and its fixtures, and these rows haven't been measured again:

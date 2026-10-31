@@ -279,7 +279,7 @@ fn run(
 fn adaptive_connections_start_with_all_asked_for_and_keep_each_that_helps() {
     let _serial = one_at_a_time();
     // Per-connection throttle: every connection adds 1 MiB/s, so losing one of the 4 asked for
-    // costs 25%, well clear of the 5% threshold and of measurement noise on a loaded machine.
+    // costs 25%, well clear of the 10% threshold and of measurement noise on a loaded machine.
     // 64 MiB, about 17 s: still running after the 4th is judged, at about 9 s.
     let data = seeded_bytes(64 * MIB, 52);
     let server = throttled_server(&data, MIB as u64, None);
@@ -316,7 +316,8 @@ fn adaptive_connections_stop_below_the_cap_when_more_stop_helping() {
     // Per-IP throttle: 1 MiB/s per connection but 1.5 MiB/s in all, so 2 connections fill it and
     // more bring nothing. 4 asked for: the ramp starts at 4 (#221), drops to 3, 2 and 1, and
     // brings the 2nd back, since 1 loses a third of the speed. Each count takes 2 windows, so it
-    // decides at about 16 s; 40 MiB, about 27 s, so the download is still running then, however
+    // decides at about 18 s, after a first window that isn't measured; 40 MiB, about 27 s, so the
+    // download is still running then, however
     // slowly a loaded machine lets it measure (#154).
     let data = seeded_bytes(40 * MIB, 53);
     let server = throttled_server(&data, MIB as u64, Some(3 * MIB as u64 / 2));

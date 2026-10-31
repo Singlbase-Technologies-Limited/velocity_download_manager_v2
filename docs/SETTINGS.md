@@ -87,7 +87,7 @@ The torrent helper's own settings are the `torrent` section, `TorrentSettings` (
 | Maximum | 16 | 1 MiB | V1's connections. More than 8 only helps a server that gives each connection its own speed |
 | Custom | The user's: 1 to 16 | The user's: 1 to 1024 MiB | V1's `max_connection_per_server` and `min_split_size_mib`. aria2's `split` count is gone, as V2 splits by itself |
 
-- **All profiles keep a connection at the same 5% loss** for now: one whose loss would slow the download by 5% or more stays (#221; #57 set one threshold for every profile). Whether Conservative and Maximum should use other thresholds is for #77's measurements.
+- **All profiles keep a connection at the same 10% loss** for now: one whose loss would slow the download by 10% or more stays (#221; #57 set one threshold for every profile). Whether Conservative and Maximum should use other thresholds is for #77's measurements.
 - **The smallest piece** applies to downloads that start after the profile changes. The connection cap applies at once: a lower one holds running downloads back, which their details then say ("the performance profile allows no more to one server").
 - **The shared budget** for all downloads together stays 48 connections, V1's `connection_budget` (#47).
 - **In code:** `PerformanceSettings` in [`crates/velocity-core/src/performance.rs`](../crates/velocity-core/src/performance.rs) maps a profile to `EngineLimits`. `Manager::set_performance` applies it, and new downloads ask for at most its connections (`Manager::connections_for_new_downloads`). The engine takes the limits through `set_engine_limits` ([ENGINE_CONTRACT.md](ENGINE_CONTRACT.md)).
