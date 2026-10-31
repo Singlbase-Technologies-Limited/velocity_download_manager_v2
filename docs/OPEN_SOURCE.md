@@ -4,9 +4,10 @@ How V2 is run as an open-source project, and the checklist for making the reposi
 
 ## Governance
 
-- **Owner:** Singlbase Technologies Limited owns V2 and its name.
+- **Owner:** Singlbase Technologies Limited owns V2 and its name, and the repository: `Singlbase-Technologies-Limited/velocity_download_manager_v2`, public since 2026-10-31, with its board as the organisation's [project 4](https://github.com/orgs/Singlbase-Technologies-Limited/projects/4).
+- **V1's code:** V2 ports parts of the original Velocity Download Manager (the browser extension and native host, naming and request rules, test servers). Singlbase wrote V1 and owns it, so those parts are published under V2's licence by Singlbase's own decision (PO, 2026-10-31).
 - **Decisions:** the Product Owner decides scope, architecture, dependencies, licensing, security trade-offs, repository settings, merges and releases ([AGENTS.md](../AGENTS.md#project-and-authority)). Accepted decisions are in [decisions/](decisions/README.md).
-- **Maintainers:** the Product Owner (`vincentarisawork`), and the machine account `velocity-claude-agent` for AI-agent work, which never approves, releases or changes settings ([AI_AGENT_ACCOUNT.md](AI_AGENT_ACCOUNT.md)).
+- **Maintainers:** the Product Owner (`vincentarisawork`), and the machine account `velocity-claude-agent` for AI-agent work, an outside collaborator that never approves, releases or changes settings ([AI_AGENT_ACCOUNT.md](AI_AGENT_ACCOUNT.md)).
 - **Contributions:** anyone may propose a change. Outside contributors agree to the [CLA](../CLA.md) once, on their first pull request ([CONTRIBUTING.md](../CONTRIBUTING.md#licence-and-the-contributor-licence-agreement)).
 
 ## The community files
@@ -37,7 +38,9 @@ The audit run for #90 on 2026-10-31, on every branch's history (102 commits) and
 
 ### The checklist
 
-The PO does these, in this order, and ticks each in #90:
+**Done on 2026-10-31:** the PO made the repository public, transferred it to Singlbase, copied the board, and applied steps 3 to 5 and 7, as [REPOSITORY_SETTINGS.md](REPOSITORY_SETTINGS.md) records. Steps 6 and 8 remain.
+
+The PO does these, in this order:
 
 1. **Merge #90** and everything before it, so `main` has the licence and these files.
 2. **Make the repository public:** Settings, General, Danger Zone, **Change visibility**.

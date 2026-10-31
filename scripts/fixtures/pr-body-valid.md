@@ -86,6 +86,6 @@ Verification level reached (docs/TESTING.md): L3
 
 ---
 
-The reviewer checks this PR against [docs/REVIEWING.md](https://github.com/vincentarisawork/velocity_download_manager_v2/blob/main/docs/REVIEWING.md). Only the Product Owner decides the merge.
+The reviewer checks this PR against [docs/REVIEWING.md](https://github.com/Singlbase-Technologies-Limited/velocity_download_manager_v2/blob/main/docs/REVIEWING.md). Only the Product Owner decides the merge.
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

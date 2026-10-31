@@ -81,7 +81,7 @@ The full procedure is in [docs/DEVELOPMENT_WORKFLOW.md](docs/DEVELOPMENT_WORKFLO
   - Agents pass the agent's token explicitly.
   - The git remote uses the `github-velocity-agent` SSH alias.
 - **Before pushing:** check the identity as described in [docs/AI_AGENT_ACCOUNT.md](docs/AI_AGENT_ACCOUNT.md). If it isn't the agent, stop and ask the PO.
-- **Organisation repositories,** including V1, use the PO's account. The agent is not an organisation member.
+- **This repository belongs to Singlbase Technologies Limited** (public since 2026-10-31). The agent works on it as an outside collaborator, not an organisation member. **Other organisation repositories,** V1 included, use the PO's account.
 
 ## Commands
 

@@ -26,7 +26,7 @@ If something fails, see [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md).
 
 ## 3. Pick an issue
 
-Work is planned as issues on the [project board](https://github.com/users/vincentarisawork/projects/2).
+Work is planned as issues on the [project board](https://github.com/orgs/Singlbase-Technologies-Limited/projects/4).
 
 1. **Choose an issue** in *Ready* whose dependencies are closed.
 2. **Read the issue in full,** including its acceptance criteria, non-goals and comments.
