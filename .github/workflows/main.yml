@@ -8,15 +8,14 @@
 # report; `summary` combines them into one table and the `ci-diagnostics` artifact. A failed `select`
 # (its docs or guidance check) stops the Linux and Windows jobs, which are reported BLOCKED (#76).
 #
-# Temporarily manual-only (#204, docs/CI.md#while-ci-runs-by-hand-only): to save Actions minutes,
-# the `push` trigger on `main` is off, and this workflow runs only when started by hand, once per
-# batch of five issues on its `batch/` branch. To revert, put back:
-#   push:
-#     branches: [main]
+# Runs on every push to `main`, that is after each merge (#204's manual-only arrangement ended on
+# 2026-10-31, when the repository went public and its minutes became free, #236).
 name: Main checks
 
 on:
-  # Manual runs: the batch run, or a branch to try a change to this workflow. Without a base they
+  push:
+    branches: [main]
+  # Manual runs: a branch to try a change to this workflow. Without a base they
   # check everything. A tracking title is for test runs only: on main the title is fixed.
   workflow_dispatch:
     inputs:
@@ -119,7 +118,7 @@ jobs:
     needs: select
     # Only after the selection succeeded, its docs and guidance checks included: a broken link
     # or guidance rule, found in seconds, stops the run before the long checks (PO decision on
-    # #76, 2026-10-30; minutes are scarce, #204). The job is then reported BLOCKED by `select`.
+    # #76, 2026-10-30): a red run costs a minute, not half an hour. The job is then reported BLOCKED by `select`.
     if: ${{ needs.select.result == 'success' && needs.select.outputs.code == 'true' }}
     runs-on: ubuntu-latest
     # Long enough for a cold build of Boost and libtorrent (#205); a warm run takes far less.
@@ -221,7 +220,7 @@ jobs:
     needs: select
     # Only after the selection succeeded, its docs and guidance checks included: a broken link
     # or guidance rule, found in seconds, stops the run before the long checks (PO decision on
-    # #76, 2026-10-30; minutes are scarce, #204). The job is then reported BLOCKED by `select`.
+    # #76, 2026-10-30): a red run costs a minute, not half an hour. The job is then reported BLOCKED by `select`.
     if: ${{ needs.select.result == 'success' && needs.select.outputs.windows == 'true' }}
     runs-on: windows-latest
     # Long enough for a cold build of Boost and libtorrent (#205); a warm run takes far less.

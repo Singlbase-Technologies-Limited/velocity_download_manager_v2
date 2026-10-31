@@ -14,7 +14,7 @@ This is what a reviewer (the Product Owner today, future maintainers later) chec
 
 - [ ] The tests were written first. The PR shows the failing test (red) before the change, for meaningful behaviour.
 - [ ] The commands actually run are listed with their results. Every platform and check is marked PASS, FAIL, BLOCKED or NOT RUN, and nothing unrun is described as passing.
-- [ ] `pnpm check:fast` passed, and the selected CI checks passed. Temporarily, the batch CI run that included the PR's head commit passed instead ([CI.md](CI.md#while-ci-runs-by-hand-only), #204).
+- [ ] The pull request's CI checks passed (`check:fast` and the selected levels), and the description names the focused tests run locally.
 - [ ] No test was deleted, skipped or weakened, and no lint rule was relaxed, just to get a pass. Any changed assertion is explained.
 
 ## Correctness and safety

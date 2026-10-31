@@ -12,7 +12,7 @@ The procedure is [docs/RELEASE_PROCESS.md](../../../docs/RELEASE_PROCESS.md), an
 ## 1. The commit
 
 - **Which:** `git fetch origin main`, then `git rev-parse origin/main`. That is the candidate's commit unless the PO names an earlier one on `main` (`git merge-base --is-ancestor <commit> origin/main`).
-- **Green:** its *Main checks* run on `main` passed: `GH_TOKEN="$(gh auth token -u velocity-claude-agent)" gh run list --workflow main.yml --branch main --commit <commit> --json conclusion,url`. Without a green run, stop: the workflow would refuse it. Starting one needs the PO's go-ahead (docs/CI.md, "While CI runs by hand only").
+- **Green:** its *Main checks* run on `main` passed: `GH_TOKEN="$(gh auth token -u velocity-claude-agent)" gh run list --workflow main.yml --branch main --commit <commit> --json conclusion,url`. Main checks runs after every merge; without a green run, stop: the workflow would refuse it. A missing one can be started by hand: `gh workflow run main.yml --ref main`.
 
 ## 2. The version
 
@@ -30,7 +30,6 @@ The procedure is [docs/RELEASE_PROCESS.md](../../../docs/RELEASE_PROCESS.md), an
 Summarise the commit, its Main checks run, the version, the tag, and the changelog section. Then ask, as a multiple-choice question, which step to take:
 
 - the PO pushes the tag `v<version>-rc.<N>` themselves;
-- the PO approves that the agent pushes that one tag (`git tag v<version>-rc.<N> <commit>` and `git push origin v<version>-rc.<N>`, as the agent account);
 - the PO approves a hand-started build without a tag: `gh workflow run release-candidate.yml --ref main -f commit=<commit>`.
 
 ## 5. After the build

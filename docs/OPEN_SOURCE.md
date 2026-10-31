@@ -47,7 +47,7 @@ The PO does these, in this order:
 3. **Turn on, in Settings, Advanced Security** (free for public repositories): **Private vulnerability reporting** (`SECURITY.md` relies on it), **Dependabot alerts**, **Secret scanning** and **Push protection**, **Code scanning** with the default CodeQL setup. *Check:* the Security tab shows "Report a vulnerability".
 4. **Actions, General:** "Require approval for first-time contributors" for fork pull requests; workflow permissions "Read repository contents". *Check:* a fork's pull request waits for approval before any workflow runs.
 5. **Branch rules for `main`** as in [REPOSITORY_SETTINGS.md](REPOSITORY_SETTINGS.md): a pull request, linear history, no force push.
-6. **Turn the pull-request checks back on,** now that minutes are free: CI runs by hand only today (#204). *Check:* a pull request starts PR checks.
+6. **Turn the pull-request checks back on,** now that minutes are free (#236). *Check:* a pull request starts PR checks.
 7. **The `release` environment,** for releases (#18): Settings, Environments, `release`, with the PO as its required reviewer, as `docs/RELEASE_PROCESS.md` describes once #18 merges. It needs the repository public on the current plan. *Check:* a release run waits for approval before its `draft` job.
 8. **Optional:** an [OpenSSF Scorecard](https://github.com/ossf/scorecard) run, as an outside check of the repository's practices.
 

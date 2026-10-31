@@ -24,9 +24,9 @@ The skills in the table below hold the details of each step.
    - Plan multi-file or architecture work before editing.
    - PO decisions are asked, not assumed: use multiple-choice questions in plain words.
 2. **Branch.** Create `<type>/<issue>-<slug>` from the latest `main`, and set the issue to *In progress* on the project board.
-3. **Test first** (`/tdd-change`). Red, green, refactor, one behaviour at a time, with `pnpm test:focused -- <area>`. Temporarily, tests run only in the batch CI run, never locally ([docs/CI.md](docs/CI.md#while-ci-runs-by-hand-only), #204).
+3. **Test first** (`/tdd-change`). Red, green, refactor, one behaviour at a time, with `pnpm test:focused -- <area>`.
 4. **When something fails, stop.** Report the actual error. Don't weaken a test, a lint, a check or a security control to get past it.
-5. **Verify** (`/verify-v2`). Add `/platform-verify` and `/security-check` when the change calls for them. Temporarily, verification is the batch CI run (#204).
+5. **Verify** (`/verify-v2`). Locally only the focused tests; the pull request's CI runs `check:fast` and the rest (PO decision, 2026-10-31). Add `/platform-verify` and `/security-check` when the change calls for them.
 6. **Pull request** (`/prepare-pr <N>`).
    - The description is [the PR template](.github/PULL_REQUEST_TEMPLATE.md) filled in, never an earlier PR's shape. Check it with `pnpm check:pr-body <file> --title "…"`, and pass it with `--body-file`.
    - Run `gh` for this repository as `GH_TOKEN="$(gh auth token -u velocity-claude-agent)" gh …`. Never run `gh auth switch`.

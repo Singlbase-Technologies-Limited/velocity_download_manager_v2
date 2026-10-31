@@ -19,7 +19,7 @@ Check every item. Report anything that fails, and fix it or ask; don't skip it. 
 
 - **Each acceptance criterion** has its evidence: a command and its real output, a transcript, or a file and line.
 - **Red first:** for meaningful behaviour, the failing test output was recorded (`/tdd-change`).
-- **Verification ran** (`/verify-v2`). Every check is PASS, FAIL, BLOCKED or NOT RUN, per platform. Temporarily, from the batch CI run ([CI.md](../../../docs/CI.md#while-ci-runs-by-hand-only), #204).
+- **Verification ran** (`/verify-v2`). Every check is PASS, FAIL, BLOCKED or NOT RUN, per platform.
 - **No test** was deleted, skipped or weakened, and no lint was relaxed.
 
 ## 3. Documentation
