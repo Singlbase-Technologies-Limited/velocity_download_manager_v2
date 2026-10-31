@@ -69,6 +69,8 @@ jobs:
     uses: ./.github/workflows/package-windows.yml
     with:
       ref: ${{ needs.verify.outputs.commit }}
+      # From nothing: no cache an earlier run saved reaches a release candidate (#233).
+      cold: true
 
   linux:
     name: Linux
@@ -76,6 +78,7 @@ jobs:
     uses: ./.github/workflows/package-linux.yml
     with:
       ref: ${{ needs.verify.outputs.commit }}
+      cold: true
 
   assemble:
     name: Assemble the candidate

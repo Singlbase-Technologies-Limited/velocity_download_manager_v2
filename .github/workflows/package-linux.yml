@@ -17,6 +17,11 @@ on:
         description: The commit to package
         type: string
         required: true
+      cold:
+        description: Restore and save no cache (release builds, #233)
+        type: boolean
+        required: false
+        default: false
 
 permissions:
   contents: read
@@ -50,6 +55,8 @@ jobs:
         uses: ./.github/actions/setup
         with:
           rust: 'true'
+          # A release candidate builds from nothing: no earlier run's cache reaches it (#233).
+          cold: ${{ inputs.cold && 'true' || 'false' }}
           # Built on 22.04: never mixed with the checks' caches from the newer ubuntu-latest.
           cache-scope: '-ubuntu22.04'
       # `rpm -qlp` lists the rpm's files for the contents check.
@@ -58,7 +65,7 @@ jobs:
       - name: Native libraries
         run: pnpm native:build
       - name: Save the native libraries
-        if: ${{ !cancelled() && steps.setup.outputs.native-cache-hit != 'true' && hashFiles('target/native/*/libtorrent-info.json') != '' }}
+        if: ${{ !cancelled() && !inputs.cold && steps.setup.outputs.native-cache-hit != 'true' && hashFiles('target/native/*/libtorrent-info.json') != '' }}
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           key: ${{ steps.setup.outputs.native-cache-key }}

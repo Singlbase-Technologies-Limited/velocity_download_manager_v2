@@ -10,6 +10,12 @@ inputs:
   rust:
     description: Whether the job builds Rust ("true" or "false")
     required: true
+  cold:
+    description: >-
+      "true" restores no cache: a release candidate's or a release's build starts from nothing, so
+      nothing an earlier run saved can reach an installer (#233, CodeQL's cache-poisoning rules).
+    required: false
+    default: 'false'
   cache-scope:
     description: >-
       Added to the cache keys after the OS, for a job whose builds mustn't mix with the checks'. The
@@ -79,7 +85,7 @@ runs:
       run: echo "key=rust-v1-${{ runner.os }}${{ inputs.cache-scope }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock') }}" >> "$GITHUB_OUTPUT"
 
     - id: restore
-      if: inputs.rust == 'true'
+      if: inputs.rust == 'true' && inputs.cold != 'true'
       uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
       with:
         key: ${{ steps.key.outputs.key }}
@@ -97,6 +103,7 @@ runs:
       uses: ./.github/actions/native
       with:
         cache-scope: ${{ inputs.cache-scope }}
+        cold: ${{ inputs.cold }}
 
     # No pnpm store cache: `pnpm install --frozen-lockfile` took 4 s in CI (PR #104), less than a
     # cache restore and save would cost (PO decision on #14).

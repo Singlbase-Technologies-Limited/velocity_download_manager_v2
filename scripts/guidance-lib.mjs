@@ -156,12 +156,27 @@ function codeOf(text) {
   return code;
 }
 
+/**
+ * The command word after each `pnpm` in `code`, skipping its options: `pnpm -s test:focused -- x`
+ * gives `test:focused`. A token walk, not one regular expression: a pattern with optional options
+ * and the spaces around them backtracked over long runs of spaces (CodeQL js/redos, #233).
+ */
+export function pnpmWords(code) {
+  const words = [];
+  for (const m of code.matchAll(/(?:^|[\s;&|(])pnpm(?=\s)/g)) {
+    const tokens = code.slice(m.index + m[0].length).trimStart().split(/\s+/);
+    const command = tokens.find((t) => !t.startsWith('-'));
+    const word = command === undefined ? null : /^[A-Za-z0-9][\w:.-]*/.exec(command)?.[0];
+    if (word) words.push(word);
+  }
+  return words;
+}
+
 function checkPnpmCommands(path, text, scripts) {
   const problems = [];
   const seen = new Set();
   for (const code of codeOf(text)) {
-    for (const m of code.matchAll(/(?:^|[\s;&|(])pnpm((?:\s+--?[\w.-]+)*)\s+([A-Za-z0-9][\w:.-]*)/g)) {
-      const word = m[2];
+    for (const word of pnpmWords(code)) {
       if (seen.has(word) || scripts.includes(word) || PNPM_COMMANDS.has(word)) continue;
       seen.add(word);
       problems.push(`${path}: \`pnpm ${word}\` is neither a package.json script nor a pnpm command`);

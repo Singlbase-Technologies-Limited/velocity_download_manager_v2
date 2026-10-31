@@ -17,6 +17,11 @@ on:
         description: The commit to package
         type: string
         required: true
+      cold:
+        description: Restore and save no cache (release builds, #233)
+        type: boolean
+        required: false
+        default: false
 
 permissions:
   contents: read
@@ -46,11 +51,13 @@ jobs:
         uses: ./.github/actions/setup
         with:
           rust: 'true'
+          # A release candidate builds from nothing: no earlier run's cache reaches it (#233).
+          cold: ${{ inputs.cold && 'true' || 'false' }}
       - name: Native libraries
         run: pnpm native:build
       # As the checks' jobs do (#205), so a rerun doesn't build Boost and libtorrent again.
       - name: Save the native libraries
-        if: ${{ !cancelled() && steps.setup.outputs.native-cache-hit != 'true' && hashFiles('target/native/*/libtorrent-info.json') != '' }}
+        if: ${{ !cancelled() && !inputs.cold && steps.setup.outputs.native-cache-hit != 'true' && hashFiles('target/native/*/libtorrent-info.json') != '' }}
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           key: ${{ steps.setup.outputs.native-cache-key }}
