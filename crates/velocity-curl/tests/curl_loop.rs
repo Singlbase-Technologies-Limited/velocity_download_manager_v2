@@ -546,11 +546,11 @@ fn a_redirect_to_another_origin_drops_the_login_cookie_and_custom_headers() {
     let sent = &first.counters().requests[0];
     assert_eq!(sent.header("Authorization"), Some(BASIC));
     let seen = &other.counters().requests[0];
-    for secret in ["Authorization", "Cookie", "X-Custom", "X-Empty"] {
+    for header in ["Authorization", "Cookie", "X-Custom", "X-Empty"] {
         assert_eq!(
-            seen.header(secret),
+            seen.header(header),
             None,
-            "{secret} reached the other origin"
+            "{header} reached the other origin"
         );
     }
     // Not secrets: they still go.

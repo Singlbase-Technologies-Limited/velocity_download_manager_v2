@@ -28,7 +28,7 @@ Only from a commit on `main` whose *Main checks* run on `main` passed. The workf
 
 - **From a tag,** for a numbered candidate: the PO pushes `vX.Y.Z-rc.N` on a verified `main` commit (or tells an agent to, for that tag). Tags are never moved; a failed candidate is followed by `-rc.N+1` ([DEVELOPMENT_WORKFLOW.md](DEVELOPMENT_WORKFLOW.md#releases)).
 
-**What runs:** the same packaging workflows as by hand, from exactly the verified commit, with their own checks: the Windows installer's contents, the Linux packages' contents, libraries and glibc, and their install, check and removal in Ubuntu 22.04, Ubuntu 24.04, Debian 12 and Fedora 42 containers. The tests themselves (L1 to L3) are the green *Main checks* run the commit needed. Every job runs only when every job it needs succeeded, which a test checks for this workflow and both packaging workflows.
+**What runs:** the same packaging workflows as by hand, from exactly the verified commit, built from nothing: no cache is restored, so nothing an earlier run saved reaches the installers (#233), with their own checks: the Windows installer's contents, the Linux packages' contents, libraries and glibc, and their install, check and removal in Ubuntu 22.04, Ubuntu 24.04, Debian 12 and Fedora 42 containers. The tests themselves (L1 to L3) are the green *Main checks* run the commit needed. Every job runs only when every job it needs succeeded, which a test checks for this workflow and both packaging workflows.
 
 ## Checking a download
 
