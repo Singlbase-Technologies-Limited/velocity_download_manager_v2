@@ -14,7 +14,7 @@ The full setup for Windows, Linux and macOS is in [docs/DEVELOPMENT.md](docs/DEV
 
 ## Documentation
 
-[docs/README.md](docs/README.md) maps every document. The architecture is in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md), and accepted decisions are in [docs/decisions/](docs/decisions/README.md).
+The [user guide](docs/user/README.md) is for people who use V2. [docs/README.md](docs/README.md) maps every document. The architecture is in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md), and accepted decisions are in [docs/decisions/](docs/decisions/README.md).
 
 ## Contributing
 

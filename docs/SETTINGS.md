@@ -11,7 +11,7 @@ The screen (#30, `src/features/settings/SettingsView.tsx`) edits every section b
 - **Read with defaults:** a section is read merged over its defaults, so settings an older V2 saved get the newer fields' defaults (V1's `migrate_settings_json`). A field this build doesn't know is refused, never dropped.
 - **When the app starts:** the saved settings are applied (`Manager::apply_saved_settings`), and the torrent helper starts with its own. A failure is logged, and the defaults hold for what couldn't be read.
 - **Reset to defaults** asks first, and keeps the download folder (V1's).
-- **What the build can't do** is disabled with the reason ([below](#what-a-build-can-do)): Metalink, today.
+- **What the build can't do** is disabled with the reason ([below](#what-a-build-can-do)). Today's engine does everything the screen offers, Metalink included (#54).
 
 ## Engine
 
@@ -40,7 +40,7 @@ The screen (#30, `src/features/settings/SettingsView.tsx`) edits every section b
 |---|---|---|---|
 | `advanced` | `globalDownloadLimitKib` | 0: none | 0, or at least 1 KiB/s (#49) |
 | | `enableBittorrent` | on (V1's) | Off refuses torrents and magnet links with `PROTOCOL_DISABLED` |
-| | `enableMetalink` | off (V1's) | Only when the engine reads Metalink (#54) |
+| | `enableMetalink` | off (V1's) | Offered when the engine reads Metalink, as it does since #54 |
 | | `userAgent` | `null`: `VelocityDownloadManager/<version>` | At most 256 bytes, no control characters; for downloads added after it |
 | `newTorrents` | `chooseFilesForMagnets` | off | The Add dialog's "Choose files before downloading" |
 | | `seeding` | never | As a torrent's seeding policy ([TORRENTS.md](TORRENTS.md)) |
@@ -161,4 +161,4 @@ V1's `general`, `notifications` and `appearance` settings and its first-run flag
 
 ## What a build can do
 
-Settings and details never offer what the build can't do. The engine reports its capabilities per protocol (`ProtocolCapabilities`, [CONTRACTS.md](CONTRACTS.md)): whether it downloads the protocol at all, and whether it segments, resumes, checks validators, uses HTTP/2 and can encrypt it. In the UI, `availability` ([`src/capabilities.ts`](../src/capabilities.ts)) turns that into "available" or a reason, and `CapabilityOption` shows a control that is disabled, with the reason beside it, when the build lacks something; the Settings screen's Metalink switch is one (#30).
+Settings and details never offer what the build can't do. The engine reports its capabilities per protocol (`ProtocolCapabilities`, [CONTRACTS.md](CONTRACTS.md)): whether it downloads the protocol at all, and whether it segments, resumes, checks validators, uses HTTP/2 and can encrypt it. In the UI, `availability` ([`src/capabilities.ts`](../src/capabilities.ts)) turns that into "available" or a reason, and `CapabilityOption` shows a control that is disabled, with the reason beside it, when the build lacks something; the Settings screen's Metalink switch is one, disabled only with an engine that can't read Metalink (#30).

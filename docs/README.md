@@ -4,6 +4,8 @@ Every document in `docs/` is listed here. A new document is added to this map in
 
 ## Start here
 
+**Using V2?** The [user guide](user/README.md) covers installing, downloads, protocols and their limits, torrents, categories, settings, browser integration, troubleshooting, and using V2 beside V1 (#79). The documents below are for people who build V2.
+
 | Document | Read it to |
 |---|---|
 | [DEVELOPMENT.md](DEVELOPMENT.md) | Set up a clean clone, run the app, and see the commands and build times |
