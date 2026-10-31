@@ -1,6 +1,6 @@
 # Release candidates
 
-A release candidate is a set of installers built from one verified commit on `main`, for the PO to install and test before a release (#17). It isn't a release: nothing is signed, tagged or published by it. Releases are #18; versions, tags and the changelog are #84.
+A release candidate is a set of installers built from one verified commit on `main`, for the PO to install and test before a release (#17). It isn't a release: nothing is signed, tagged or published by it. An accepted candidate's files become the release ([RELEASE_PROCESS.md](RELEASE_PROCESS.md#making-the-release)); versions, tags and the changelog are there too.
 
 ## What one holds
 

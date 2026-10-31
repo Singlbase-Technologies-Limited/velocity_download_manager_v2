@@ -129,11 +129,12 @@ A docs-only merge runs only `select` and `summary`.
 
 ### Packaging and release candidates
 
-Three workflows are started by hand only, and run on no push or pull request:
+Three workflows are started by hand only, and run on no push or pull request, and a fourth by a release tag:
 
 - **Windows installer** ([`package-windows.yml`](../.github/workflows/package-windows.yml)) and **Linux packages** ([`package-linux.yml`](../.github/workflows/package-linux.yml)) build and check the packages of the branch they are started on ([PACKAGING.md](PACKAGING.md)).
 - **Release candidate** ([`release-candidate.yml`](../.github/workflows/release-candidate.yml)) verifies a `main` commit, calls both packaging workflows for it (`workflow_call`, with the commit as `ref`), and assembles the candidate ([RELEASE_CANDIDATES.md](RELEASE_CANDIDATES.md)). A `vX.Y.Z-rc.N` tag starts it too. It needs `actions: read`, to find the commit's Main checks run.
-- **Strict needs** (#91): in these three, a job runs only when every job it needs succeeded. No job condition uses `always()`, `!cancelled()`, `failure()` or `cancelled()`, and nothing uses `continue-on-error`; a test reads the three files (`scripts/release-candidate-lib.test.mjs`). A step may still save a cache after a failed step, as the native libraries' does.
+- **Release** ([`release.yml`](../.github/workflows/release.yml)), on a `vX.Y.Z` tag: publishes an accepted candidate's files as a draft release, after the PO's approval in the `release` environment ([RELEASE_PROCESS.md](RELEASE_PROCESS.md#making-the-release)). Only its `draft` job may write (`contents: write`); `assemble` signs a provenance attestation (`id-token: write`, `attestations: write`).
+- **Strict needs** (#91): in these four, a job runs only when every job it needs succeeded. No job condition uses `always()`, `!cancelled()`, `failure()` or `cancelled()`, and nothing uses `continue-on-error`; tests read the four files (`scripts/release-candidate-lib.test.mjs`, `scripts/release-lib.test.mjs`). A step may still save a cache after a failed step, as the native libraries' does.
 - **A new one can't be tried on a branch:** GitHub starts a hand-started workflow only from a file already on `main`, so each is first run after it merges.
 
 ## When main breaks
