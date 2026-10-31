@@ -5,7 +5,7 @@
 import { z } from 'zod';
 
 /** Must equal `velocity_core::COMMAND_API_VERSION`; the app refuses to start on a mismatch. */
-export const COMMAND_API_VERSION = 21;
+export const COMMAND_API_VERSION = 22;
 
 const bytes = z.number().int().nonnegative();
 
@@ -336,6 +336,8 @@ export type FileChoice = z.infer<typeof FileChoiceSchema>;
 export const AddRequestSchema = z.strictObject({
   links: z.array(z.string()),
   torrentFiles: z.array(z.string()),
+  /** Metalink files on this computer (#222): each adds every file it lists. */
+  metalinkFiles: z.array(z.string()),
   directory: z.string().nullable(),
   /** For a single direct link only. */
   fileName: z.string().nullable(),
@@ -382,6 +384,8 @@ export type Duplicate = z.infer<typeof DuplicateSchema>;
 /** What adding one link or `.torrent` file did (#60). */
 export const AddOutcomeSchema = z.discriminatedUnion('kind', [
   z.strictObject({ kind: z.literal('added'), id: z.string().min(1) }),
+  /** A Metalink file added every file it lists (#222), in its order. */
+  z.strictObject({ kind: z.literal('metalinkAdded'), ids: z.array(z.string().min(1)) }),
   /** The name is taken: nothing was added. */
   z.strictObject({ kind: z.literal('conflict'), check: DestinationCheckSchema }),
   /** It was added before: nothing was added. */

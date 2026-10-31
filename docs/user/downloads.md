@@ -11,6 +11,7 @@ Open the Add dialog with **Add download** at the top of the navigation, or **Ctr
 - **Links,** one per line, up to 500 at once: `http://`, `https://`, `ftp://`, `ftps://` and `sftp://` ([Protocols and limits](protocols.md)).
 - **Magnet links,** and **links to `.torrent` files**: Velocity downloads the `.torrent` file first, for up to 60 seconds, then adds the torrent.
 - **`.torrent` files** on your computer, with **Choose .torrent files…**.
+- **Metalink files** (`.metalink`, `.meta4`) on your computer, with **Choose Metalink files…**: each adds every file it lists, in its subfolders inside the chosen folder. Metalink must be on in Settings, Advanced; while it's off, the file is refused with the reason ([Protocols and limits](protocols.md#metalink)).
 
 A link Velocity can't download is refused in the dialog, with the reason, for example "Only http, https, ftp, ftps, sftp and magnet links are supported." Links with spaces or control characters are refused too.
 
