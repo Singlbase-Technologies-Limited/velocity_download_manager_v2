@@ -52,7 +52,7 @@ Each rule below is marked as **GitHub-documented** (with a link to the source) o
 - **Releases:** a tag `vX.Y.Z` on the commit of an accepted release candidate. The release workflow stops at a PO approval gate and creates only a draft release (#18). *Project judgment.*
 - **Tags are never moved or deleted** once pushed. If a candidate fails, the next one is `-rc.N+1`. *Project judgment.*
 - **Who tags:** the PO, or an agent on the PO's explicit instruction for that specific tag. *Project judgment.*
-- The changelog and version synchronisation are defined in #84.
+- **Versions, the changelog and tags** in detail: [RELEASE_PROCESS.md](RELEASE_PROCESS.md) (#84).
 
 ## Exceptions, each with a lifecycle
 

@@ -45,8 +45,9 @@ The skills in the table below hold the details of each step.
 | [`/security-check`](.claude/skills/security-check/SKILL.md) | You only | V2-specific security review of the diff, alongside the built-in `/security-review` |
 | [`/prepare-pr <N>`](.claude/skills/prepare-pr/SKILL.md) | You only | The pre-PR checklist and description draft; it stops before pushing |
 | [`/ci-triage [run or PR]`](.claude/skills/ci-triage/SKILL.md) | You or Claude | Read a failed run's `ci-diagnostics.json`, group the failures by cause, and propose one fix plan (read-only) |
+| [`/release-candidate <version> [rc]`](.claude/skills/release-candidate/SKILL.md) | You only | Check the commit, version and changelog for a release candidate, and ask the PO which step to take; it tags and starts nothing without approval |
 
-Skills for release candidates (#17, #84) and for benchmarks (later, ADR-0009) come once the procedures they wrap exist.
+A skill for benchmarks (later, ADR-0009) comes once the procedure it wraps exists.
 
 ## Path-scoped rules
 

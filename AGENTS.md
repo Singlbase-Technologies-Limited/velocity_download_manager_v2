@@ -98,6 +98,8 @@ pnpm check:guidance            # AGENTS.md, CLAUDE.md, rules and skills (docs/AG
 pnpm check:pr-body <file> --title "…"  # a PR description and title against the PR template
 pnpm check:advisories          # known advisories in Cargo.lock and pnpm-lock.yaml (needs cargo-deny)
 pnpm notices                   # regenerate THIRD_PARTY_NOTICES.md after a dependency change (docs/LICENSING.md)
+pnpm version:set <X.Y.Z>       # set V2's version in package.json and Cargo.toml (docs/RELEASE_PROCESS.md)
+pnpm changelog <from>          # draft a CHANGELOG.md section from the merged PR titles
 pnpm check:notices             # every shipped licence is allowed and THIRD_PARTY_NOTICES.md is current
 pnpm native:build              # build libcurl and its libraries from verified sources (docs/BUILDING_NATIVE.md)
 ```
