@@ -1,26 +1,12 @@
 # CI design
 
-V2's CI runs on GitHub Actions in a private repository, now on GitHub Pro (recorded on 2026-10-30, #204; it was on Free when CI was designed). Free includes 2,000 runner minutes a month and Pro 3,000, and usage is **blocked**, not billed, once they run out ([billing](https://docs.github.com/en/billing/concepts/product-billing/github-actions)). Every design choice below protects two things: the checks that matter run on every change, and the monthly quota lasts the month.
-
-> **For now, CI runs only by hand, once per batch of five issues** (PO decision, 2026-10-30, #204), to save Actions minutes until there is money for them. It replaces the pause of 2026-10-24 (#173). The design below is unchanged and comes back as it is. See [below](#while-ci-runs-by-hand-only).
+V2's CI runs on GitHub Actions. Since 2026-10-31 the repository is public, owned by Singlbase Technologies Limited, and GitHub's standard runners are free for public repositories ([billing](https://docs.github.com/en/billing/concepts/product-billing/github-actions)). It was designed for a private repository with a monthly quota of minutes, so every design choice below still keeps runs short: the checks that matter run on every change, and nothing runs twice. The cost figures below are from those private months.
 
 This page is the design. The workflows are written in #13, #14, #16 to #19 and #91. Every figure below is labelled as **measured** or **assumed**. Assumed CI times get replaced by measured ones as the jobs start running (#14).
 
-## While CI runs by hand only
+## History: CI by hand only (2026-10-24 to 2026-10-31)
 
-**Temporary** (PO decision, 2026-10-30, #204): the repository is on GitHub Pro with a limited budget of Actions minutes, and the PO wants to spend as few as possible during development. This replaces the pause of 2026-10-24 (#173). The workflows, their jobs and their checks are unchanged; only their triggers are, and each workflow's header says what to put back.
-
-- **Triggers:** `main.yml` (Main checks) and `pr.yml` (PR checks), and the advisory check (`advisories.yml`, #75), run only when started by hand (`workflow_dispatch`). Nothing runs on a push, a pull request or a merge to `main`, and nothing on a schedule. Dependabot stays on.
-- **One run per batch of five issues,** on Linux and Windows:
-  1. When the five issues are built, push a `batch/<issues>` branch, for example `batch/71-72-74-75-192`: the latest `main` with the five issue branches merged in.
-  2. Start Main checks on it with no base, which checks everything on Linux and Windows: `gh workflow run main.yml --ref batch/<issues>`.
-  3. A failure is fixed in its issue's own branch, never in the batch branch. The fixed branch is merged into the batch branch again, and Main checks is started again, until it is green. Only then does work go on.
-  4. The batch branch is deleted once the five pull requests are merged.
-- **No local test runs:** no `cargo test`, `pnpm test:focused`, Vitest, end-to-end, platform runs or check scripts (`check:fast` and the others). Compiling, formatting and linting while writing code stay allowed (`cargo check`, `cargo clippy`, `cargo fmt`, `tsc --noEmit`, ESLint). Tests are still written first; the batch run is where they first run.
-- **The merge gate meanwhile:** the PO's approval of the pull request, and a green batch run that included its head commit. Each check is reported from that run's `ci-diagnostics` ([CI_DIAGNOSTICS.md](CI_DIAGNOSTICS.md)); the PR's own CI and local checks are NOT RUN.
-- **Not covered meanwhile:** a run per pull request, a run of `main` after each merge (the next batch run checks it), and a recorded red run before each fix.
-- **PR checks by hand,** when a single change needs them: `gh workflow run pr.yml --ref <branch> -f base=<commit>`, with the commit the pull request would compare with.
-- **Coming back** (when there is money for minutes): put back each workflow's triggers as its header says (`push` on `main` for Main checks, `pull_request` into `main` for PR checks, the weekly `schedule` for the advisory check), then remove this section and the pointers to it in AGENTS.md, CLAUDE.md and the skills, and run Main checks on `main` once. Its first green run closes #173.
+To save Actions minutes while the repository was private, CI was paused (2026-10-24, #173), then run only by hand, once per batch of five issues on a `batch/` branch, with no tests on the developer's machine (2026-10-30, #204), then not at all while V2 was made ready to publish (2026-10-31). On 2026-10-31 the repository went public, so its minutes are free, and the triggers below came back (#236). The batch runs are cited in some PRs and code comments by their run numbers.
 
 ## Tiers
 
@@ -34,11 +20,11 @@ This page is the design. The workflows are written in #13, #14, #16 to #19 and #
 
 **No `develop` or `staging` tiers.** All work merges into `main`, and releases are tags on verified `main` commits ([DEVELOPMENT_WORKFLOW.md](DEVELOPMENT_WORKFLOW.md)).
 
-**No required checks yet.** On GitHub Free, rulesets returned HTTP 403 for this private repository (2026-10-21, #89). On Pro, the PO's *Main* ruleset blocks deleting `main` and force-pushing to it (2026-10-30), but no status check is required, because PR checks don't start on a pull request while CI runs by hand only ([REPOSITORY_SETTINGS.md](REPOSITORY_SETTINGS.md#rules-for-the-main-branch)). So:
+**Required checks.** The *Main* ruleset requires a pull request and linear history, and blocks deleting `main` and force-pushing to it ([REPOSITORY_SETTINGS.md](REPOSITORY_SETTINGS.md#rules-for-the-main-branch)). `ci-required` becomes a required status check once PR checks have run on a pull request since they came back (#236): GitHub only offers a check it has seen. Until then:
 
 - **"Required" means by convention:** the PO merges only when `ci-required` is green (docs/REVIEWING.md).
 - **The release gate is a person:** only the PO pushes `v*` tags or starts a release run (an ask rule in `.claude/settings.json` stops the agent from doing it unprompted). The workflow creates a *draft* release, never a published one.
-- **Revisit when the automatic triggers come back:** make `ci-required` a required check in the Main ruleset ([REPOSITORY_SETTINGS.md](REPOSITORY_SETTINGS.md#when-something-changes)).
+- **Next:** the PO adds `ci-required` as a required status check in the Main ruleset ([REPOSITORY_SETTINGS.md](REPOSITORY_SETTINGS.md#when-something-changes)).
 
 ## Selecting jobs
 
@@ -129,7 +115,7 @@ A docs-only merge runs only `select` and `summary`.
 
 ### Packaging and release candidates
 
-Three workflows are started by hand only, and run on no push or pull request, and a fourth by a release tag:
+Three workflows are started by hand only, and run on no push or pull request, and a fourth by a release tag. They aren't checks:
 
 - **Windows installer** ([`package-windows.yml`](../.github/workflows/package-windows.yml)) and **Linux packages** ([`package-linux.yml`](../.github/workflows/package-linux.yml)) build and check the packages of the branch they are started on ([PACKAGING.md](PACKAGING.md)).
 - **Release candidate** ([`release-candidate.yml`](../.github/workflows/release-candidate.yml)) verifies a `main` commit, calls both packaging workflows for it (`workflow_call`, with the commit as `ref`), and assembles the candidate ([RELEASE_CANDIDATES.md](RELEASE_CANDIDATES.md)). A `vX.Y.Z-rc.N` tag starts it too. It needs `actions: read`, to find the commit's Main checks run.
@@ -186,7 +172,7 @@ Every run completes every check that can still run, and reports all failures in 
 | Weekly full | Mondays 03:00 UTC, only if `main` changed since the last run | `check:full`, all L2 suites | Linux, Windows |
 | Fuzzing, stress, extended benchmarks | Weekly, staggered, once the suites exist (#73, #77) | Time-boxed per target, with a fixed seed recorded | Linux |
 | macOS | `workflow_dispatch` only | `check:full` | macOS (#83) |
-| Advisories ([`advisories.yml`](../.github/workflows/advisories.yml), #75) | By hand (`workflow_dispatch`) while CI runs by hand only; Mondays 04:00 UTC once CI runs automatically again | `pnpm check:advisories`: cargo-deny and pnpm audit against the lockfiles ([SECURITY.md](SECURITY.md#dependency-advisories-75)) | Linux |
+| Advisories ([`advisories.yml`](../.github/workflows/advisories.yml), #75) | Mondays 04:00 UTC, and by hand (`workflow_dispatch`) | `pnpm check:advisories`: cargo-deny and pnpm audit against the lockfiles ([SECURITY.md](SECURITY.md#dependency-advisories-75)) | Linux |
 
 macOS minutes cost about 10 times Linux ($0.062 against $0.006 a minute), so macOS never runs on a schedule or per change until it's an established platform and the quota allows it.
 

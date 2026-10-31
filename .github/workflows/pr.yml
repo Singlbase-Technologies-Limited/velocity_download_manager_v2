@@ -7,14 +7,14 @@
 # a report of its checks (`if: !cancelled()`), and `ci-required` turns them into one table and the
 # `ci-diagnostics` artifact. It fails unless every mandatory check passed or was deselected.
 #
-# Temporarily manual-only (#204, docs/CI.md#while-ci-runs-by-hand-only): to save Actions minutes,
-# the `pull_request` trigger is off, and this workflow runs only when started by hand on a branch,
-# against the `base` commit given. To revert, put back `pull_request: branches: [main]` as the
-# trigger, `pr-${{ github.event.pull_request.number }}` as the concurrency group, and
-# `github.event.pull_request.base.sha` as BASE_SHA.
+# Runs on every pull request into `main`, against its base commit. It can also be started by hand
+# on a branch, against a `base` commit given (#204's manual-only arrangement ended on 2026-10-31,
+# when the repository went public and its minutes became free, #236).
 name: PR checks
 
 on:
+  pull_request:
+    branches: [main]
   workflow_dispatch:
     inputs:
       base:
@@ -25,7 +25,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: pr-${{ github.ref }}
+  group: pr-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -54,7 +54,7 @@ jobs:
       - id: select
         name: Decide which jobs run
         env:
-          BASE_SHA: ${{ inputs.base }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha || inputs.base }}
           # `cargo metadata --no-deps` only reads manifests; the runner's stable toolchain is enough,
           # so this job doesn't download the pinned one.
           RUSTUP_TOOLCHAIN: stable
@@ -106,7 +106,7 @@ jobs:
     # so that one broken link wouldn't hide every code failure (#91's fixture A).
     # Only after the selection succeeded, its docs and guidance checks included: a broken link
     # or guidance rule, found in seconds, stops the run before the long checks (PO decision on
-    # #76, 2026-10-30; minutes are scarce, #204). The job is then reported BLOCKED by `select`.
+    # #76, 2026-10-30): a red run costs a minute, not half an hour. The job is then reported BLOCKED by `select`.
     if: ${{ needs.select.result == 'success' && needs.select.outputs.code == 'true' }}
     runs-on: ubuntu-latest
     # Long enough for a cold build of Boost and libtorrent (#205); a warm run takes far less.
@@ -144,7 +144,7 @@ jobs:
       - id: checks
         name: Run the selected checks
         env:
-          BASE_SHA: ${{ inputs.base }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha || inputs.base }}
           RUST: ${{ needs.select.outputs.rust }}
         run: |
           # Without Rust, check:pr only reads manifests (`cargo metadata`); the runner's stable
@@ -191,7 +191,7 @@ jobs:
     needs: select
     # Only after the selection succeeded, its docs and guidance checks included: a broken link
     # or guidance rule, found in seconds, stops the run before the long checks (PO decision on
-    # #76, 2026-10-30; minutes are scarce, #204). The job is then reported BLOCKED by `select`.
+    # #76, 2026-10-30): a red run costs a minute, not half an hour. The job is then reported BLOCKED by `select`.
     if: ${{ needs.select.result == 'success' && needs.select.outputs.native == 'true' }}
     runs-on: windows-latest
     # Long enough for a cold build of Boost and libtorrent (#205); a warm run takes far less.

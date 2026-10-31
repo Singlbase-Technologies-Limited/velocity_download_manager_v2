@@ -3,14 +3,13 @@
 # means an advisory affects a locked dependency: assess it within the response time its severity
 # sets, with the advisory-assessment issue template.
 #
-# For now it runs only when started by hand, as every workflow does while CI runs by hand only
-# (docs/CI.md, #204). To make it weekly again, put back as a trigger:
-#   schedule:
-#     # Mondays 04:00 UTC, an hour after the L4 slot in docs/CI.md.
-#     - cron: '0 4 * * 1'
+# Weekly, and by hand (`gh workflow run advisories.yml`); weekly again since #236 (2026-10-31).
 name: Advisories
 
 on:
+  schedule:
+    # Mondays 04:00 UTC, an hour after the L4 slot in docs/CI.md.
+    - cron: '0 4 * * 1'
   workflow_dispatch:
 
 permissions:

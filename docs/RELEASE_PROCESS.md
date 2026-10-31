@@ -28,7 +28,7 @@ How V2 is versioned, how a version's changelog is written, how candidates and re
 - **`vX.Y.Z-rc.N`** for a release candidate. Pushing one starts the *Release candidate* workflow ([RELEASE_CANDIDATES.md](RELEASE_CANDIDATES.md)).
 - **`vX.Y.Z`** for a release, on the commit of the candidate the PO accepted (#18).
 - **Never moved or deleted.** A failed candidate is followed by `-rc.N+1`.
-- **Who:** the PO, or an agent on the PO's explicit instruction for that tag.
+- **Who:** the PO only. The *Release Tags* ruleset lets only admins create, move or delete `v*` tags ([REPOSITORY_SETTINGS.md](REPOSITORY_SETTINGS.md#rules-for-the-main-branch)), so an agent prepares the exact command and the PO runs it.
 
 ## Before a candidate
 
