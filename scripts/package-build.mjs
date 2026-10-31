@@ -37,7 +37,7 @@ export function buildPackages(platform) {
   }
   const staging = join(root, 'src-tauri', 'staging');
   mkdirSync(staging, { recursive: true });
-  const stagedFrom = { 'THIRD_PARTY_NOTICES.md': join(root, 'THIRD_PARTY_NOTICES.md'), 'build-info.json': join(root, 'target', 'native', triple, 'build-info.json') };
+  const stagedFrom = { LICENSE: join(root, 'LICENSE'), 'THIRD_PARTY_NOTICES.md': join(root, 'THIRD_PARTY_NOTICES.md'), 'build-info.json': join(root, 'target', 'native', triple, 'build-info.json') };
   for (const file of STAGED_FILES) {
     if (!existsSync(stagedFrom[file])) throw new Error(`${stagedFrom[file]} is missing${file === 'build-info.json' ? ': run `pnpm native:build` first' : ''}`);
     copyFileSync(stagedFrom[file], join(staging, file));

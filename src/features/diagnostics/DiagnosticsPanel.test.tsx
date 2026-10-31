@@ -33,6 +33,10 @@ describe('the diagnostics panel (#28)', () => {
     expect(app.textContent).toContain('Version 0.1.0');
     expect(app.textContent).toContain('linux x86_64');
     expect(app.textContent).toContain('no analytics or telemetry');
+    // GPL-3.0's Appropriate Legal Notices (ADR-0017): the copyright, the licence, no warranty.
+    expect(app.textContent).toContain('Copyright (C) 2026 Singlbase Technologies Limited');
+    expect(app.textContent).toContain('GNU General Public License, version 3 only');
+    expect(app.textContent).toContain('no warranty');
     const engines = screen.getByRole('region', { name: 'Engines' });
     expect(engines.textContent).toContain('libcurl 8.23.0');
     expect(engines.textContent).toContain('OpenSSL/3.5.9');

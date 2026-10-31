@@ -91,12 +91,13 @@ describe('Linux packages', () => {
   const files = linuxPackageFiles();
   const icon = 'usr/share/icons/hicolor/32x32/apps/velocity-desktop-v2.png';
 
-  it('carry the app, its three programs, the notices, build-info.json and the desktop entry', () => {
+  it('carry the app, its three programs, the licence, the notices, build-info.json and the desktop entry', () => {
     expect(files).toEqual([
       'usr/bin/velocity-desktop-v2',
       'usr/bin/velocity-transfer',
       'usr/bin/velocity-torrent',
       'usr/bin/velocity-native-host-v2',
+      'usr/lib/Velocity Download Manager V2/LICENSE',
       'usr/lib/Velocity Download Manager V2/THIRD_PARTY_NOTICES.md',
       'usr/lib/Velocity Download Manager V2/build-info.json',
       'usr/share/applications/Velocity Download Manager V2.desktop',
