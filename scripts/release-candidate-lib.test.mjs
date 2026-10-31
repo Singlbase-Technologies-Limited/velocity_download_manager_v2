@@ -162,6 +162,14 @@ jobs:
     expect(strictNeedsProblems(loose)).toEqual(['line 9: continue-on-error lets the workflow pass with a failed step']);
   });
 
+  it('verifies from the checkout, which keeps no credentials, so it never fetches', () => {
+    // Runs 41184389337 and 41184399701 failed before verifying: `git fetch origin main` needed
+    // the credentials the checkout doesn't keep. fetch-depth 0 brings origin/main already.
+    const text = readFileSync(join(import.meta.dirname, '..', '.github', 'workflows', 'release-candidate.yml'), 'utf8');
+    expect(text).toMatch(/fetch-depth: 0/);
+    expect(text).not.toMatch(/^\s+git fetch\b/m);
+  });
+
   it('holds for the release-candidate workflow and the packaging workflows it calls', () => {
     for (const file of ['release-candidate.yml', 'package-windows.yml', 'package-linux.yml']) {
       const text = readFileSync(join(import.meta.dirname, '..', '.github', 'workflows', file), 'utf8');
