@@ -225,11 +225,11 @@ mod tests {
     fn the_windows_pipe_name_embeds_the_identifier_user_and_data_dir() {
         let a = windows_pipe_name(
             "dev.velocity.downloadmanager.v2",
-            "Vincent Work",
+            "Jane Doe",
             Path::new("C:\\Data\\dev.velocity.downloadmanager.v2"),
         );
         assert!(
-            a.starts_with(r"\\.\pipe\dev.velocity.downloadmanager.v2.ipc.VincentWork."),
+            a.starts_with(r"\\.\pipe\dev.velocity.downloadmanager.v2.ipc.JaneDoe."),
             "{a}"
         );
         // The same folder in another case gives the same pipe (Windows paths are case-insensitive).
@@ -237,7 +237,7 @@ mod tests {
             a,
             windows_pipe_name(
                 "dev.velocity.downloadmanager.v2",
-                "Vincent Work",
+                "Jane Doe",
                 Path::new("c:\\data\\DEV.velocity.downloadmanager.v2")
             )
         );
@@ -246,7 +246,7 @@ mod tests {
             a,
             windows_pipe_name(
                 "dev.velocity.downloadmanager.v2",
-                "Vincent Work",
+                "Jane Doe",
                 Path::new("C:\\tmp\\t1")
             )
         );

@@ -40,6 +40,7 @@ Every document in `docs/` is listed here. A new document is added to this map in
 | [DEPENDENCIES.md](DEPENDENCIES.md) | Propose, approve, pin and verify a dependency; the allowed licences and the provenance release blockers |
 | [LICENSING.md](LICENSING.md) | Read the licensing assessment: today's third-party licences, planned native libraries, notices |
 | [PACKAGING.md](PACKAGING.md) | Build the Windows installer and the Linux packages, see what they install and how they live beside V1, and test install, upgrade and uninstall |
+| [OPEN_SOURCE.md](OPEN_SOURCE.md) | See who decides, the community files, the audit before going public and the checklist for it |
 | [RELEASE_PROCESS.md](RELEASE_PROCESS.md) | Change V2's version, draft and edit the changelog ([`CHANGELOG.md`](../CHANGELOG.md)), and tag a candidate or a release |
 | [RELEASE_CANDIDATES.md](RELEASE_CANDIDATES.md) | Build a release candidate from a verified `main` commit, see what it holds, check it, install it beside V1, and go back to an earlier version |
 | [BUILDING_NATIVE.md](BUILDING_NATIVE.md) | Build the native libraries (libcurl, nghttp2, zlib, OpenSSL) from verified sources, read `build-info.json`, update a pin, and build libtorrent with vcpkg |
