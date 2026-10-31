@@ -57,8 +57,9 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
           # The input, through the environment: never expanded into the script (docs/CI.md).
           COMMIT: ${{ github.event_name == 'push' && github.sha || inputs.commit }}
+        # The checkout fetched every branch, so origin/main is here. No `git fetch`: the checkout
+        # keeps no credentials, and a fetch without them fails (runs 41184389337, 41184399701).
         run: |
-          git fetch --quiet origin main
           case "$COMMIT" in main) COMMIT=origin/main ;; esac
           node scripts/release-candidate.mjs verify "$COMMIT"
 
