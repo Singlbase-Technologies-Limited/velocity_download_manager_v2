@@ -74,9 +74,11 @@ From the research report, section 8.2. Versions are proposals until #35 records 
 - **Per-platform reports** (#17): `node scripts/notices.mjs --report <target triple> <file>` writes, as JSON, the components one platform's build ships, with the licence each is used under and any problem. The crates are `cargo tree --target <triple>`'s instead of every target's; the native libraries and npm packages are the same on every platform. The packaging scripts write one for their platform, and every release candidate carries both ([RELEASE_CANDIDATES.md](RELEASE_CANDIDATES.md)).
 - **AppImage:** none is built (PO decision on #82), so there is no AppImage content inventory.
 
-## Choosing V2's licence
+## V2's own licence
 
-Decided by the PO in #86. The inputs from this assessment:
+**GPL-3.0-only,** `Copyright (C) 2026 Singlbase Technologies Limited` (PO decision on #86, [ADR-0017](decisions/0017-gpl-3-licence.md)).
 
-- **Third-party components:** with the components above, the choice of V2's own licence is unconstrained. They're permissive or file-level copyleft (MPL-2.0, unmodified), and none forces a licence on V2's own code.
-- **Once chosen,** set it in `LICENSE`, in `license` in `package.json` and in the workspace `Cargo.toml`, and in the README and the app's About text.
+- **Compatible with everything V2 ships:** the components above are permissive, or MPL-2.0 used unmodified, and OpenSSL 3.5's Apache-2.0 is one GPL-3.0 accepts. A component added later must be too ([DEPENDENCIES.md](DEPENDENCIES.md#allowed-licences)).
+- **Where it is stated:** [`LICENSE`](../LICENSE), the full text from gnu.org; `license` in `package.json` and in the workspace `Cargo.toml`, which every crate takes; `license` and `copyright` in `src-tauri/tauri.release.conf.json`, for the packages' metadata; the installers and packages, which install `LICENSE` beside the notices ([PACKAGING.md](PACKAGING.md)); the app's About section, with the notice GPL-3.0's section 5(d) asks an interactive program to show; and the README.
+- **Contributions** come under a Contributor Licence Agreement with Singlbase (#90).
+- **No legal review** was done for this decision.

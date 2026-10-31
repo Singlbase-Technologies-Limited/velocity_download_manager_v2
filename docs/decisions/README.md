@@ -22,6 +22,7 @@ An architecture decision record (ADR) states one decision, why it was taken and 
 | [0014](0014-torrent-helper-child-process.md) | libtorrent runs in a supervised helper process, on a child-process layer shared with the engine | Accepted | 2026-10-26 |
 | [0015](0015-keychain-with-consent.md) | Logins are saved in the system keychain only when the user asks, one download at a time | Accepted | 2026-10-29 |
 | [0016](0016-release-product-name-v2.md) | The released app is named "Velocity Download Manager V2" | Accepted | 2026-10-30 |
+| [0017](0017-gpl-3-licence.md) | V2 is licensed GPL-3.0-only, owned by Singlbase Technologies Limited, with contributions under a CLA | Accepted | 2026-10-31 |
 
 Decisions still open are tracked as GitHub issues titled `decision: …`, for example #38 (in-process or child process). [ARCHITECTURE.md](../ARCHITECTURE.md#open-decisions) lists the ones that shape the architecture.
 

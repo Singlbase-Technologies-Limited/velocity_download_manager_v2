@@ -15,8 +15,12 @@ export const SIDECARS = [
   { program: 'velocity-native-host-v2', package: 'velocity-native-host' },
 ];
 
-/** Files installed beside the programs, from `src-tauri/staging/` (tauri.release.conf.json). */
-export const STAGED_FILES = ['THIRD_PARTY_NOTICES.md', 'build-info.json'];
+/**
+ * Files installed beside the programs, from `src-tauri/staging/` (tauri.release.conf.json): V2's
+ * licence, which GPL-3.0 requires giving with every copy (ADR-0017), the third-party notices, and
+ * the native libraries' build record.
+ */
+export const STAGED_FILES = ['LICENSE', 'THIRD_PARTY_NOTICES.md', 'build-info.json'];
 
 /** The Cargo feature that makes a build run as the release identity (branding.json, #81). */
 export const RELEASE_FEATURE = 'velocity-core/release-identity';

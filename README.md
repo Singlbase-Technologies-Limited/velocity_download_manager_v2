@@ -18,8 +18,12 @@ The [user guide](docs/user/README.md) is for people who use V2. [docs/README.md]
 
 ## Contributing
 
-Work is planned as issues on the [project board](https://github.com/users/vincentarisawork/projects/2). Start with [CONTRIBUTING.md](CONTRIBUTING.md). Contributor and AI-agent rules are in [AGENTS.md](AGENTS.md); Claude Code reads them through [CLAUDE.md](CLAUDE.md). AI agents work as the machine account `velocity-claude-agent`; see [docs/AI_AGENT_ACCOUNT.md](docs/AI_AGENT_ACCOUNT.md). The branch, pull-request, merge and release workflow is in [docs/DEVELOPMENT_WORKFLOW.md](docs/DEVELOPMENT_WORKFLOW.md), and the review checklist is in [docs/REVIEWING.md](docs/REVIEWING.md).
+Work is planned as issues on the [project board](https://github.com/users/vincentarisawork/projects/2). Start with [CONTRIBUTING.md](CONTRIBUTING.md); contributors agree to the [Contributor Licence Agreement](CLA.md) and the [Code of Conduct](CODE_OF_CONDUCT.md). Report security problems privately ([SECURITY.md](SECURITY.md)); for help, see [SUPPORT.md](SUPPORT.md). Contributor and AI-agent rules are in [AGENTS.md](AGENTS.md); Claude Code reads them through [CLAUDE.md](CLAUDE.md). AI agents work as the machine account `velocity-claude-agent`; see [docs/AI_AGENT_ACCOUNT.md](docs/AI_AGENT_ACCOUNT.md). The branch, pull-request, merge and release workflow is in [docs/DEVELOPMENT_WORKFLOW.md](docs/DEVELOPMENT_WORKFLOW.md), and the review checklist is in [docs/REVIEWING.md](docs/REVIEWING.md).
 
 ## Licence
 
-Not yet chosen (issue #86). All rights reserved until then. The third-party components V2 contains, and their licences, are in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+Copyright (C) 2026 Singlbase Technologies Limited.
+
+Velocity Download Manager V2 is free software: you can redistribute it and change it under the terms of the [GNU General Public License, version 3 only](LICENSE) (`GPL-3.0-only`). It is distributed without any warranty; see the licence for details. The decision is [ADR-0017](docs/decisions/0017-gpl-3-licence.md).
+
+The third-party components V2 contains, and their licences, are in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).

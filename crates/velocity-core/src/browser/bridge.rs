@@ -253,7 +253,8 @@ pub fn answer_added(
         Some(AddOutcome::NotFetched { error }) => {
             Some(BrowserResponse::err(id, "NOT_FETCHED", &error.message))
         }
-        None => failed(ErrorCode::Internal),
+        // The browser sends links only (`request_for`), never a Metalink file (#222).
+        Some(AddOutcome::MetalinkAdded { .. }) | None => failed(ErrorCode::Internal),
     }
 }
 

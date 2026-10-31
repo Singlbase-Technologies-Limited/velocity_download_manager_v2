@@ -7,7 +7,7 @@ How V2 becomes an installer: Windows (#81) and Linux (#82) are built; macOS is #
 One installer, a per-user NSIS setup (`Velocity Download Manager V2_<version>_x64-setup.exe`), made by Tauri from [`src-tauri/tauri.release.conf.json`](../src-tauri/tauri.release.conf.json). No MSI (PO decision on #81).
 
 - **For this user only:** it installs without an administrator prompt, into `%LOCALAPPDATA%\Velocity Download Manager V2`.
-- **What it installs:** the app, and beside it the three programs the app starts: the transfer engine (`velocity-transfer.exe`), the torrent helper (`velocity-torrent.exe`) and the browser's native host (`velocity-native-host-v2.exe`). Also [`THIRD_PARTY_NOTICES.md`](../THIRD_PARTY_NOTICES.md) and the native libraries' `build-info.json` ([BUILDING_NATIVE.md](BUILDING_NATIVE.md#build-infojson)). No aria2 (ADR-0001): the build checks the installer's contents for it.
+- **What it installs:** the app, and beside it the three programs the app starts: the transfer engine (`velocity-transfer.exe`), the torrent helper (`velocity-torrent.exe`) and the browser's native host (`velocity-native-host-v2.exe`). Also V2's [`LICENSE`](../LICENSE) (GPL-3.0 requires giving it with every copy, ADR-0017), [`THIRD_PARTY_NOTICES.md`](../THIRD_PARTY_NOTICES.md) and the native libraries' `build-info.json` ([BUILDING_NATIVE.md](BUILDING_NATIVE.md#build-infojson)). No aria2 (ADR-0001): the build checks the installer's contents for it.
 - **The release identity:** every program in it is built with the `release-identity` feature, so it runs as `com.velocity.downloadmanager.v2`, with its data in `%APPDATA%\com.velocity.downloadmanager.v2`. A development build never uses that folder ([COEXISTENCE.md](COEXISTENCE.md)).
 - **WebView2:** the installer downloads Microsoft's WebView2 bootstrapper if the machine lacks WebView2, as Tauri does by default. Windows 10 and 11 normally have it already.
 
@@ -71,7 +71,7 @@ A deb, for Ubuntu and Debian, and an rpm, for Fedora and openSUSE, made by Tauri
   |---|---|
   | `/usr/bin/velocity-desktop-v2` | The app |
   | `/usr/bin/velocity-transfer`, `/usr/bin/velocity-torrent`, `/usr/bin/velocity-native-host-v2` | The transfer engine, the torrent helper and the browser's native host, beside the app as it expects |
-  | `/usr/lib/Velocity Download Manager V2/` | `THIRD_PARTY_NOTICES.md` and the native libraries' `build-info.json` |
+  | `/usr/lib/Velocity Download Manager V2/` | `LICENSE`, `THIRD_PARTY_NOTICES.md` and the native libraries' `build-info.json` |
   | `/usr/share/applications/Velocity Download Manager V2.desktop` | The menu entry |
   | `/usr/share/icons/hicolor/<size>/apps/velocity-desktop-v2.png` | The icons |
 

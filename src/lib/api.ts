@@ -104,6 +104,7 @@ export const api = {
   capabilities: () => call('get_capabilities', undefined, CapabilitiesSchema),
   /** The system's chooser for `.torrent` files; empty when the user cancels. */
   chooseTorrents: () => call('choose_torrents', undefined, z.array(z.string().min(1))),
+  chooseMetalinks: () => call('choose_metalinks', undefined, z.array(z.string().min(1))),
   /** The system's chooser for an SSH private key; `null` when the user cancels. */
   chooseSshKey: () => call('choose_ssh_key', undefined, z.string().min(1).nullable()),
   /** Trusts the SFTP host key the user confirmed (#53); the download is then retried. */

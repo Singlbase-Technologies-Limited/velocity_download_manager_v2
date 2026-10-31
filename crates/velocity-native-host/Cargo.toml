@@ -2,6 +2,7 @@
 name = "velocity-native-host"
 description = "The native messaging host of Velocity Download Manager V2: checks the browser extension's messages and passes them to the running app"
 version.workspace = true
+license.workspace = true
 edition.workspace = true
 publish.workspace = true
 rust-version.workspace = true
