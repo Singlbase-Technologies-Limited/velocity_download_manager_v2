@@ -10,6 +10,13 @@ inputs:
   rust:
     description: Whether the job builds Rust ("true" or "false")
     required: true
+  cache-scope:
+    description: >-
+      Added to the cache keys after the OS, for a job whose builds mustn't mix with the checks'. The
+      Linux packages are built on Ubuntu 22.04 (#82): libraries built on the checks' newer Ubuntu
+      can need a newer glibc.
+    required: false
+    default: ''
 
 outputs:
   rust-cache-key:
@@ -69,14 +76,14 @@ runs:
     - id: key
       if: inputs.rust == 'true'
       shell: bash
-      run: echo "key=rust-v1-${{ runner.os }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock') }}" >> "$GITHUB_OUTPUT"
+      run: echo "key=rust-v1-${{ runner.os }}${{ inputs.cache-scope }}-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock') }}" >> "$GITHUB_OUTPUT"
 
     - id: restore
       if: inputs.rust == 'true'
       uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
       with:
         key: ${{ steps.key.outputs.key }}
-        restore-keys: rust-v1-${{ runner.os }}-
+        restore-keys: rust-v1-${{ runner.os }}${{ inputs.cache-scope }}-
         path: |
           ~/.cargo/registry/index/
           ~/.cargo/registry/cache/
@@ -88,6 +95,8 @@ runs:
     - id: native
       if: inputs.rust == 'true'
       uses: ./.github/actions/native
+      with:
+        cache-scope: ${{ inputs.cache-scope }}
 
     # No pnpm store cache: `pnpm install --frozen-lockfile` took 4 s in CI (PR #104), less than a
     # cache restore and save would cost (PO decision on #14).

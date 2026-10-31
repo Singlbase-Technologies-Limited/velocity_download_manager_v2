@@ -6,7 +6,7 @@ V2 and the original Velocity Download Manager (V1) can be installed and run at t
 
 `branding.json` at the repository root holds V2's identity. The core reads it (`velocity_core::branding`), and `src-tauri/tauri.conf.json` must carry the same identifier and product name, which a test checks. A build runs as the development identity unless it is built with the `release-identity` feature, as packaging does; then the app, the engine, the torrent helper and the native host all run as the release identity, and `src-tauri/tauri.release.conf.json` carries it ([PACKAGING.md](PACKAGING.md), #81).
 
-| Field | Development builds | Release builds (packaging: Windows since #81; Linux and macOS are #82, #83) | V1, for comparison |
+| Field | Development builds | Release builds (packaging: Windows since #81, Linux since #82; macOS is #83) | V1, for comparison |
 |---|---|---|---|
 | Product name: window title, install folder, Apps & features entry | Velocity Download Manager (dev) | Velocity Download Manager V2 ([ADR-0016](decisions/0016-release-product-name-v2.md)) | Velocity Download Manager |
 | Identifier: data folder, single-instance key, pipe name | `dev.velocity.downloadmanager.v2` | `com.velocity.downloadmanager.v2` | `com.velocity.downloadmanager` |

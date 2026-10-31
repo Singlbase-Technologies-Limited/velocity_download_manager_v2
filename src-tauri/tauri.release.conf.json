@@ -18,7 +18,7 @@
   },
   "bundle": {
     "active": true,
-    "targets": ["nsis"],
+    "targets": ["nsis", "deb", "rpm"],
     "publisher": "Velocity Project",
     "category": "Utility",
     "shortDescription": "A desktop download manager.",
@@ -26,6 +26,11 @@
     "resources": {
       "staging/THIRD_PARTY_NOTICES.md": "THIRD_PARTY_NOTICES.md",
       "staging/build-info.json": "build-info.json"
+    },
+    "linux": {
+      "deb": {
+        "section": "net"
+      }
     },
     "windows": {
       "nsis": {

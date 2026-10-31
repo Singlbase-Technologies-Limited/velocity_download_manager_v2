@@ -7,6 +7,12 @@
 name: Native libraries for a V2 CI job
 description: Restore target/native, and set up vcpkg at the pinned baseline when it has to be built
 
+inputs:
+  cache-scope:
+    description: Added to the key after the OS, as in the setup action
+    required: false
+    default: ''
+
 outputs:
   cache-key:
     description: The key target/native is cached under
@@ -20,7 +26,7 @@ runs:
   steps:
     - id: key
       shell: bash
-      run: echo "key=native-v1-${{ runner.os }}-${{ hashFiles('scripts/native/**') }}" >> "$GITHUB_OUTPUT"
+      run: echo "key=native-v1-${{ runner.os }}${{ inputs.cache-scope }}-${{ hashFiles('scripts/native/**') }}" >> "$GITHUB_OUTPUT"
 
     - id: restore
       uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0

@@ -12,7 +12,7 @@ coverage/
 
 # Tauri generated
 /src-tauri/gen/schemas/
-# What `pnpm package:windows` stages for the installer (#81).
+# What `pnpm package:windows` and `pnpm package:linux` stage for the packages (#81, #82).
 /src-tauri/binaries/
 /src-tauri/staging/
 

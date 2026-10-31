@@ -38,6 +38,7 @@
     "native:fetch": "node scripts/native/fetch.mjs",
     "native:build": "node scripts/native/build.mjs",
     "native:verify": "node scripts/native/verify.mjs",
+    "package:linux": "node scripts/package-linux.mjs",
     "package:windows": "node scripts/package-windows.mjs"
   },
   "dependencies": {
