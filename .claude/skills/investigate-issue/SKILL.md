@@ -21,7 +21,7 @@ Run every `gh` command for this repository with the agent's token, `GH_TOKEN="$(
 
 - `git status`, the current branch, and `git fetch -q origin && git log --oneline -1 origin/main`. The work must start from the latest `main`, with a clean tree.
 - **Open pull requests:** `gh pr list`. Look for one that already covers this issue or touches the same files.
-- **Board:** `gh project item-list 2 --owner vincentarisawork --format json` shows the item's status. Look up field and option ids; never hard-code them from memory.
+- **Board:** `gh project item-list 4 --owner Singlbase-Technologies-Limited --format json` shows the item's status (the organisation's board; new issues aren't added to it automatically, so add them). Look up field and option ids; never hard-code them from memory.
 
 ## 3. Find what already exists
 

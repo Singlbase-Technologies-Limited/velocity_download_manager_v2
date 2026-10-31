@@ -198,13 +198,13 @@ macOS minutes cost about 10 times Linux ($0.062 against $0.006 a minute), so mac
 
 | Run | Change | Cache | Wall time | Jobs (s) | Billed |
 |---|---|---|---|---|---|
-| [39657529808](https://github.com/vincentarisawork/velocity_download_manager_v2/actions/runs/39657529808) | PR #104, everything | none | 542 s | select 14, code 519, docs 31, ci-required 4 | 12 min |
-| [39663435122](https://github.com/vincentarisawork/velocity_download_manager_v2/actions/runs/39663435122) | PR #104, everything | none | 566 s | select 21, code 536, ci-required 4 | 11 min |
-| [39666333757](https://github.com/vincentarisawork/velocity_download_manager_v2/actions/runs/39666333757) | PR #105, everything | none | 505 s | select 21, code 476, ci-required 3 | 10 min |
-| [39669208703](https://github.com/vincentarisawork/velocity_download_manager_v2/actions/runs/39669208703) | `main` after #105, all L1, **saved the cache** | none | 453 s | linux 453 | 8 min |
-| [39670447026](https://github.com/vincentarisawork/velocity_download_manager_v2/actions/runs/39670447026) | demo #106, docs only | — | 32 s | select 25, ci-required 4 (`code` skipped) | 2 min |
-| [39670571690](https://github.com/vincentarisawork/velocity_download_manager_v2/actions/runs/39670571690) | demo #107, one crate | warm | 113 s | select 12, code 92, ci-required 4 | 4 min |
-| [39670483912](https://github.com/vincentarisawork/velocity_download_manager_v2/actions/runs/39670483912) | demo #108, `Cargo.lock` (everything) | warm, via the fallback key | 181 s | select 22, code 150, ci-required 4 | 5 min |
+| [39657529808](https://github.com/Singlbase-Technologies-Limited/velocity_download_manager_v2/actions/runs/39657529808) | PR #104, everything | none | 542 s | select 14, code 519, docs 31, ci-required 4 | 12 min |
+| [39663435122](https://github.com/Singlbase-Technologies-Limited/velocity_download_manager_v2/actions/runs/39663435122) | PR #104, everything | none | 566 s | select 21, code 536, ci-required 4 | 11 min |
+| [39666333757](https://github.com/Singlbase-Technologies-Limited/velocity_download_manager_v2/actions/runs/39666333757) | PR #105, everything | none | 505 s | select 21, code 476, ci-required 3 | 10 min |
+| [39669208703](https://github.com/Singlbase-Technologies-Limited/velocity_download_manager_v2/actions/runs/39669208703) | `main` after #105, all L1, **saved the cache** | none | 453 s | linux 453 | 8 min |
+| [39670447026](https://github.com/Singlbase-Technologies-Limited/velocity_download_manager_v2/actions/runs/39670447026) | demo #106, docs only | — | 32 s | select 25, ci-required 4 (`code` skipped) | 2 min |
+| [39670571690](https://github.com/Singlbase-Technologies-Limited/velocity_download_manager_v2/actions/runs/39670571690) | demo #107, one crate | warm | 113 s | select 12, code 92, ci-required 4 | 4 min |
+| [39670483912](https://github.com/Singlbase-Technologies-Limited/velocity_download_manager_v2/actions/runs/39670483912) | demo #108, `Cargo.lock` (everything) | warm, via the fallback key | 181 s | select 22, code 150, ci-required 4 | 5 min |
 
 - **Medians:**
   - Successful PR runs: **343 s** (6 runs).
@@ -213,14 +213,14 @@ macOS minutes cost about 10 times Linux ($0.062 against $0.006 a minute), so mac
 - **A cold `code` job:** about 1 min of setup (Node 7 s, Tauri packages 35 s, toolchain 9 s, `pnpm install` 4 s), then about 7.5 min of compiling (clippy about 280 s, tests about 140 s).
 - **With the cache restored:** clippy takes 2–3 s and the tests 3–6 s. The cache is **319 MiB** (key `rust-v1-Linux-<hash>`, saved by `main`).
 - **The rest is the 3 billed minutes** of fixed cost per code run: `select`, the setup inside `code`, and `ci-required`.
-- **Failure collection (#91) adds no billed minutes.** A warm run with everything selected cost 4 billed minutes before and after it: [39671582041](https://github.com/vincentarisawork/velocity_download_manager_v2/actions/runs/39671582041) (PR #109) against [39676944320](https://github.com/vincentarisawork/velocity_download_manager_v2/actions/runs/39676944320) (PR #110). `ci-required` grew from 5 s to 17–19 s (checkout, Node, downloading the reports), still within its one billed minute.
+- **Failure collection (#91) adds no billed minutes.** A warm run with everything selected cost 4 billed minutes before and after it: [39671582041](https://github.com/Singlbase-Technologies-Limited/velocity_download_manager_v2/actions/runs/39671582041) (PR #109) against [39676944320](https://github.com/Singlbase-Technologies-Limited/velocity_download_manager_v2/actions/runs/39676944320) (PR #110). `ci-required` grew from 5 s to 17–19 s (checkout, Node, downloading the reports), still within its one billed minute.
 
 **Measured on the post-merge tier** (#16, 2026-10-22; manual runs of `main.yml` on demo branches; Windows minutes count double):
 
 | Run | Change | Jobs (s) | Billed |
 |---|---|---|---|
-| [39775990305](https://github.com/vincentarisawork/velocity_download_manager_v2/actions/runs/39775990305) | One crate, with a deliberate Linux-only test failure | select 24, linux 96 (failed), **windows 1084 (cold, no Windows cache yet)**, summary 23 | 42 min (Windows 38) |
-| [39778706769](https://github.com/vincentarisawork/velocity_download_manager_v2/actions/runs/39778706769) | Docs only | select 28, summary 25 (`linux` and `windows` skipped) | 2 min |
+| [39775990305](https://github.com/Singlbase-Technologies-Limited/velocity_download_manager_v2/actions/runs/39775990305) | One crate, with a deliberate Linux-only test failure | select 24, linux 96 (failed), **windows 1084 (cold, no Windows cache yet)**, summary 23 | 42 min (Windows 38) |
+| [39778706769](https://github.com/Singlbase-Technologies-Limited/velocity_download_manager_v2/actions/runs/39778706769) | Docs only | select 28, summary 25 (`linux` and `windows` skipped) | 2 min |
 
 **Still assumed** (no runs yet):
 

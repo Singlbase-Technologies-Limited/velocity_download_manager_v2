@@ -55,4 +55,4 @@ Once the PO accepts a candidate, its installers are the release: the release wor
 
 The PO creates it once, in Settings, Environments: named `release`, with the PO as its **required reviewer** (self-review allowed, since the PO approves their own release), and deployments limited to tags `v*`. On GitHub Free, Pro and Team plans, required reviewers are only available for public repositories ([deployments and environments](https://docs.github.com/en/actions/reference/workflows-and-actions/deployments-and-environments)), so it is set up once the repository is public. Without it, the `draft` job would run without waiting.
 
-Anyone can check a downloaded file's provenance: `gh attestation verify <file> --repo vincentarisawork/velocity_download_manager_v2`. The rules are in [`scripts/release-lib.mjs`](../scripts/release-lib.mjs).
+Anyone can check a downloaded file's provenance: `gh attestation verify <file> --repo Singlbase-Technologies-Limited/velocity_download_manager_v2`. The rules are in [`scripts/release-lib.mjs`](../scripts/release-lib.mjs).
