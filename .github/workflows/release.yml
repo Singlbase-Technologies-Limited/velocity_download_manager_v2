@@ -1,0 +1,114 @@
+# Releases (#18, docs/RELEASE_PROCESS.md): a draft GitHub release of an accepted release candidate,
+# published only by the PO. Started by pushing a `vX.Y.Z` tag, which only the PO does, on the commit
+# of the candidate the PO accepted (`vX.Y.Z-rc.N`, docs/RELEASE_CANDIDATES.md).
+#
+# 1. `verify` refuses a tag that isn't v<package.json version>, isn't on main, has no green Main
+#    checks run, or isn't on a release candidate's commit, and finds that candidate's files
+#    (scripts/release.mjs).
+# 2. `assemble` checks every file against the candidate's SHA256SUMS, so the release is exactly
+#    what was tested, names them for the release, attests their build provenance, and takes the
+#    notes from CHANGELOG.md.
+# 3. `draft` waits in the `release` environment for the PO's approval, then creates a draft release.
+#    Publishing the draft is the PO's, by hand. Nothing is signed (docs/PACKAGING.md, "Signing").
+#
+# Every job runs only when each job it needs succeeded (#91; release-lib.test.mjs checks it).
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v[0-9]+.[0-9]+.[0-9]+'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    name: Verify the tag
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      # To find the Main checks run and the candidate's run and files.
+      actions: read
+    outputs:
+      candidate: ${{ steps.verify.outputs.candidate }}
+      run_id: ${{ steps.verify.outputs.run_id }}
+      artifact: ${{ steps.verify.outputs.artifact }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # Every commit and tag, so the tag's place on main and its candidate tags can be read.
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24.12.0
+      - id: verify
+        name: Is it an accepted candidate on main?
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: node scripts/release.mjs verify
+
+  assemble:
+    name: Assemble the release
+    needs: verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      actions: read
+      # Build provenance: an attestation signed with the workflow's identity.
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24.12.0
+      - name: Download the candidate
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: ${{ needs.verify.outputs.artifact }}
+          path: candidate
+          run-id: ${{ needs.verify.outputs.run_id }}
+          github-token: ${{ github.token }}
+      - name: Check it, name it, and take the notes
+        run: node scripts/release.mjs assemble candidate release/files
+      - name: Attest the build provenance
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: release/files/*
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-${{ github.ref_name }}
+          path: release
+          if-no-files-found: error
+          retention-days: 14
+
+  draft:
+    name: Draft the release (after the PO's approval)
+    needs: [verify, assemble]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    # Waits for the PO, the environment's required reviewer (docs/OPEN_SOURCE.md).
+    environment: release
+    permissions:
+      # The only job that writes: it creates the draft release.
+      contents: write
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: release-${{ github.ref_name }}
+          path: release
+      - name: Create the draft
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --draft --verify-tag --title "Velocity Download Manager V2 ${TAG#v}" --notes-file release/notes.md release/files/*

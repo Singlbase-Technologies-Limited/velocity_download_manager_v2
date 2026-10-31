@@ -33,10 +33,9 @@ You can install and run V1 and V2 at the same time. They share nothing:
 - **Proxy:** new in V2. V2 can send every download through an HTTP, HTTPS or SOCKS5 proxy ([Settings](settings.md#proxy)).
 - **Remembered logins:** new in V2, in the system keychain, and only when you tick it ([Downloads](downloads.md#logins-headers-and-keys)).
 - **Safer by default:** V2 asks before following a redirect from `https://` to `http://`, before downloading a browser link to your local network, and before trusting an SFTP server. It never replaces an existing file.
-- **Metalink:** as in V1, behind a switch that is off by default. A Metalink file on your computer can't be added yet (#222).
+- **Metalink:** as in V1, behind a switch that is off by default: a link to a Metalink file, or a Metalink file on your computer.
 
 ## Not in V2 yet
 
 - **Signed installers,** and the extension in the browsers' stores.
 - **macOS.**
-- **Adding a Metalink file from your computer** (#222).

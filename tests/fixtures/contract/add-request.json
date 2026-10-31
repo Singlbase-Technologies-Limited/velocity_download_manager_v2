@@ -33,6 +33,9 @@
   "links": [
     "https://example.com/files/archive.zip"
   ],
+  "metalinkFiles": [
+    "/home/user/release.meta4"
+  ],
   "onConflict": "rename",
   "referrer": "https://example.com/page",
   "requireEncryption": true,

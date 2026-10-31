@@ -1,6 +1,6 @@
 # Release process
 
-How V2 is versioned, how a version's changelog is written, and how candidates and releases are tagged (#84). Who may tag, and the branch rules around releases, are in [DEVELOPMENT_WORKFLOW.md](DEVELOPMENT_WORKFLOW.md#releases). Building a candidate is [RELEASE_CANDIDATES.md](RELEASE_CANDIDATES.md); publishing a release is #18.
+How V2 is versioned, how a version's changelog is written, how candidates and releases are tagged (#84), and how a release is made (#18). Who may tag, and the branch rules around releases, are in [DEVELOPMENT_WORKFLOW.md](DEVELOPMENT_WORKFLOW.md#releases). Building a candidate is [RELEASE_CANDIDATES.md](RELEASE_CANDIDATES.md).
 
 ## The version
 
@@ -39,3 +39,20 @@ The [`/release-candidate`](../.claude/skills/release-candidate/SKILL.md) skill w
 3. `CHANGELOG.md`'s section for it is written: `pnpm changelog <last tag or start> --heading "<version> - <date>"`, edited.
 4. The PO tags `v<version>-rc.<N>` on that commit, or starts the workflow by hand ([RELEASE_CANDIDATES.md](RELEASE_CANDIDATES.md#starting-one)).
 5. The candidate's `build-info.json` and `SHA256SUMS` match the commit, and the PO tests it beside V1.
+
+## Making the release
+
+Once the PO accepts a candidate, its installers are the release: the release workflow publishes them as they are, rather than build again, so what was tested is what is released (#18). Tauri's builds aren't byte-for-byte reproducible, so a rebuild couldn't match the candidate's checksums.
+
+1. **The PO tags `vX.Y.Z`** on the accepted candidate's commit, within 14 days of its build, while its files are kept.
+2. **The *Release* workflow** ([`release.yml`](../.github/workflows/release.yml)) starts on the tag:
+   - **`verify`** refuses a tag that isn't `v<package.json version>`, isn't on `main`, has no green *Main checks* run, or isn't on a candidate's commit (a `v<version>-rc.N` tag; the highest N is the one released). It finds the candidate's run and artifact. Its files gone, it refuses: tag a new candidate.
+   - **`assemble`** downloads the candidate, checks every file against its `SHA256SUMS`, and names them `velocity-v2-<version>-<what>`, such as `velocity-v2-0.1.0-windows-x64-setup.exe`, with a new `SHA256SUMS`. It attests their build provenance with GitHub's [artifact attestations](https://docs.github.com/en/actions/security-for-github-actions/using-artifact-attestations), and takes the notes from `CHANGELOG.md`'s `## <version>` section; without one it refuses.
+   - **`draft`** waits in the `release` environment for the PO's approval ([below](#the-release-environment)), then creates a **draft** GitHub release with the files and the notes. It is the only job that may write.
+3. **The PO publishes the draft,** on GitHub, after a last look. Nothing publishes it automatically.
+
+### The release environment
+
+The PO creates it once, in Settings, Environments: named `release`, with the PO as its **required reviewer** (self-review allowed, since the PO approves their own release), and deployments limited to tags `v*`. On GitHub Free, Pro and Team plans, required reviewers are only available for public repositories ([deployments and environments](https://docs.github.com/en/actions/reference/workflows-and-actions/deployments-and-environments)), so it is set up once the repository is public. Without it, the `draft` job would run without waiting.
+
+Anyone can check a downloaded file's provenance: `gh attestation verify <file> --repo vincentarisawork/velocity_download_manager_v2`. The rules are in [`scripts/release-lib.mjs`](../scripts/release-lib.mjs).

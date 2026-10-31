@@ -20,7 +20,7 @@ use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 
-use super::{now_ms, AddOptions, Manager, ManagerService, TorrentRequest};
+use super::{now_ms, AddOptions, Manager, ManagerService, MetalinkSelection, TorrentRequest};
 use crate::database::TorrentOrigin;
 use crate::destination::{Choice, OnConflict, Placement};
 use crate::domain::{
@@ -39,8 +39,8 @@ use crate::transfer::{Checksum, Credentials, Header, Limits, SshKey, TransferSpe
 /// The most links and `.torrent` files one request adds (V1's `MAX_SOURCES`).
 pub const MAX_ADD: usize = 500;
 
-/// What the Add dialog asks for: the links and `.torrent` files, and the choices that apply to
-/// each of them. Secrets in it (the login, the headers, the key's passphrase) stay in memory.
+/// What the Add dialog asks for: the links, `.torrent` files and Metalink files, and the choices
+/// that apply to each of them. Secrets in it (the login, the headers, the key's passphrase) stay in memory.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AddRequest {
@@ -48,6 +48,9 @@ pub struct AddRequest {
     pub links: Vec<String>,
     /// Absolute paths of `.torrent` files.
     pub torrent_files: Vec<String>,
+    /// Absolute paths of Metalink files, `.metalink` or `.meta4` (#222): each adds every file it
+    /// lists, in the chosen or default folder.
+    pub metalink_files: Vec<String>,
     /// The chosen folder; `None` for the automatic one.
     pub directory: Option<String>,
     /// The file's name, for a single direct link only; `None` to take the link's or the server's.
@@ -97,7 +100,7 @@ pub struct FileChoice {
     pub files: Vec<u32>,
 }
 
-/// What adding one link or `.torrent` file did.
+/// What adding one link, `.torrent` file or Metalink file did.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AddResult {
@@ -111,6 +114,10 @@ pub struct AddResult {
 pub enum AddOutcome {
     Added {
         id: String,
+    },
+    /// A Metalink file added every file it lists (#222): their downloads, in its order.
+    MetalinkAdded {
+        ids: Vec<String>,
     },
     /// The name is taken: nothing was added, and the check says what is there.
     Conflict {
@@ -148,6 +155,7 @@ impl AddRequest {
         AddRequest {
             links: vec!["https://example.com/files/archive.zip".to_owned()],
             torrent_files: vec!["/home/user/album.torrent".to_owned()],
+            metalink_files: vec!["/home/user/release.meta4".to_owned()],
             directory: Some("/home/user/Downloads".to_owned()),
             file_name: None,
             category_id: Some("compressed".to_owned()),
@@ -223,6 +231,12 @@ impl AddResult {
                 "file:///etc/passwd",
                 AddOutcome::Failed {
                     code: ErrorCode::UnsupportedScheme,
+                },
+            ),
+            result(
+                "/home/user/release.meta4",
+                AddOutcome::MetalinkAdded {
+                    ids: vec!["d-0003".to_owned(), "d-0004".to_owned()],
                 },
             ),
             result(
@@ -363,15 +377,15 @@ fn create_chosen_folder(directory: &Path) -> Result<(), ErrorCode> {
 }
 
 impl Manager {
-    /// Adds every link and `.torrent` file of `request`, in order, and returns a result for each.
-    /// The request is refused whole, with nothing added, when it is empty or larger than
-    /// [`MAX_ADD`], names a file for more than one, or has an option outside its rules.
+    /// Adds every link, `.torrent` file and Metalink file of `request`, in that order, and returns
+    /// a result for each. The request is refused whole, with nothing added, when it is empty or
+    /// larger than [`MAX_ADD`], names a file for more than one, or has an option outside its rules.
     pub fn add_request(
         &mut self,
         request: &AddRequest,
         now_ms: u64,
     ) -> Result<Vec<AddResult>, ErrorCode> {
-        let count = request.links.len() + request.torrent_files.len();
+        let count = request_count(request);
         if count == 0
             || count > MAX_ADD
             || (request.file_name.is_some() && count != 1)
@@ -438,6 +452,15 @@ impl Manager {
                     &mut known,
                     now_ms,
                 )
+                .unwrap_or_else(|code| AddOutcome::Failed { code });
+            results.push(AddResult {
+                source: file.clone(),
+                outcome,
+            });
+        }
+        for file in &request.metalink_files {
+            let outcome = self
+                .add_metalink_file(Path::new(file.trim()), request, &shared, now_ms)
                 .unwrap_or_else(|code| AddOutcome::Failed { code });
             results.push(AddResult {
                 source: file.clone(),
@@ -586,6 +609,42 @@ impl Manager {
         self.add_new_torrent(torrent, request, shared, known, now_ms)
     }
 
+    /// Adds every file a Metalink file on this computer lists (#222), as a downloaded one is
+    /// followed ([`Manager::add_metalink`]): in the chosen folder, or the default one with its
+    /// category subfolder, each in the subfolders the file names. `ProtocolDisabled` while
+    /// Metalink is off (V1's `advanced.enable_metalink`); the file is read only through
+    /// [`metalink::read_file`], so it must be a plain `.metalink` or `.meta4` file, never a link.
+    fn add_metalink_file(
+        &mut self,
+        path: &Path,
+        request: &AddRequest,
+        shared: &Shared,
+        now_ms: u64,
+    ) -> Result<AddOutcome, ErrorCode> {
+        if !self.metalink_enabled {
+            return Err(ErrorCode::ProtocolDisabled);
+        }
+        let document = metalink::read_file(path).map_err(|e| e.code())?;
+        // Its files have names of their own, so nothing is asked about a taken one here; each
+        // download is placed by the engine without replacing a file.
+        let choice = Choice {
+            file_name: None,
+            ..Self::choice(request)
+        };
+        let place = match self.place_torrent(&choice, None)? {
+            Placement::Placed(place) => place,
+            Placement::Conflict(check) => return Ok(AddOutcome::Conflict { check }),
+        };
+        let selection = MetalinkSelection {
+            directory: place.directory,
+            files: None,
+            limits: shared.limits,
+        };
+        let options = Self::options(request, place.category_id);
+        let ids = self.add_metalink(&document, &selection, options, now_ms)?;
+        Ok(AddOutcome::MetalinkAdded { ids })
+    }
+
     /// `ProtocolDisabled` while BitTorrent is off (#30).
     fn add_new_torrent(
         &mut self,
@@ -710,7 +769,7 @@ impl ManagerService {
     /// then is cancelled. The results are in the request's order, a fetched link's under the
     /// link.
     pub fn add(&self, request: AddRequest, wait: Duration) -> Result<Vec<AddResult>, ErrorCode> {
-        let count = request.links.len() + request.torrent_files.len();
+        let count = request_count(&request);
         if count == 0 || count > MAX_ADD {
             return Err(ErrorCode::InvalidInput);
         }
@@ -741,7 +800,8 @@ impl ManagerService {
                 }
             }
         }
-        // The rest in one request: the other links, the user's files, then the fetched ones.
+        // The rest in one request: the other links, the user's `.torrent` files, the fetched
+        // ones, then the Metalink files.
         let direct: Vec<usize> = (0..request.links.len())
             .filter(|&i| !is_torrent_link(&request.links[i]))
             .collect();
@@ -759,7 +819,10 @@ impl ManagerService {
                 .collect(),
             ..request.clone()
         };
-        let added = if rest.links.is_empty() && rest.torrent_files.is_empty() {
+        let added = if rest.links.is_empty()
+            && rest.torrent_files.is_empty()
+            && rest.metalink_files.is_empty()
+        {
             Vec::new()
         } else {
             self.call(move |m| m.add_request(&rest, now_ms()))??
@@ -780,6 +843,15 @@ impl ManagerService {
         for (i, _) in &fetched {
             outcomes[*i] = added.next();
         }
+        let metalinks: Vec<AddResult> = request
+            .metalink_files
+            .iter()
+            .zip(added)
+            .map(|(source, outcome)| AddResult {
+                source: source.clone(),
+                outcome,
+            })
+            .collect();
         let mut results = Vec::with_capacity(count);
         for (source, outcome) in request.links.into_iter().zip(outcomes) {
             results.push(AddResult {
@@ -788,8 +860,14 @@ impl ManagerService {
             });
         }
         results.extend(files);
+        results.extend(metalinks);
         Ok(results)
     }
+}
+
+/// The links and files a request adds.
+fn request_count(request: &AddRequest) -> usize {
+    request.links.len() + request.torrent_files.len() + request.metalink_files.len()
 }
 
 /// Reads and checks the `.torrent` file at `path`, an absolute path: never through a link, and at

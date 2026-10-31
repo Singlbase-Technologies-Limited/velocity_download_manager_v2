@@ -116,6 +116,7 @@ export function DiagnosticsPanel() {
     <div className="space-y-4">
       <Section title={d.app.name} description={`Version ${d.app.version} · ${d.os} ${d.arch} · command contract ${String(d.app.commandApiVersion)}`}>
         <p className="text-xs leading-relaxed text-fg-muted">Velocity collects no analytics or telemetry, and sends nothing about you or your downloads anywhere. Diagnostics leave this computer only as a file you export and choose to share.</p>
+        <p className="mt-2 text-xs leading-relaxed text-fg-muted">Copyright (C) 2026 Singlbase Technologies Limited. Velocity is free software: you may share and change it under the GNU General Public License, version 3 only. It comes with no warranty, to the extent the law allows. The licence is in the LICENSE file installed with Velocity, and at https://www.gnu.org/licenses/gpl-3.0.html.</p>
       </Section>
 
       <Section title="Engines">

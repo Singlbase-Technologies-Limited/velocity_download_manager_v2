@@ -426,6 +426,29 @@ describe('torrents', () => {
     expect(requests(state)[0]).toMatchObject({ links: [], torrentFiles: ['/t/album.torrent', '/t/other.torrent'], chooseFiles: true });
   });
 
+  it('adds Metalink files chosen in the dialog, counting every file each lists (#222)', async () => {
+    const user = userEvent.setup();
+    const state = installFakeBackend({ chosenMetalinks: ['/m/release.meta4'], capabilities: { ...(fixture('capabilities.json') as Capabilities), metalink: true } });
+    renderApp();
+    const dialog = await openDialog(user);
+    await user.click(within(dialog).getByRole('button', { name: 'Choose Metalink files…' }));
+    const files = await within(dialog).findByRole('list', { name: 'Metalink files' });
+    expect(within(files).getByText('release.meta4')).toBeTruthy();
+    await user.click(within(dialog).getByRole('button', { name: 'Start download' }));
+    await waitFor(() => { expect(requests(state)).toHaveLength(1); });
+    expect(requests(state)[0]).toMatchObject({ links: [], torrentFiles: [], metalinkFiles: ['/m/release.meta4'] });
+  });
+
+  it('offers Metalink files only when this version can read them, and says why not', async () => {
+    const user = userEvent.setup();
+    installFakeBackend({ capabilities: { ...(fixture('capabilities.json') as Capabilities), metalink: false } });
+    renderApp();
+    const dialog = await openDialog(user);
+    const button = within(dialog).getByRole<HTMLButtonElement>('button', { name: 'Choose Metalink files…' });
+    expect(button.disabled).toBe(true);
+    expect(button.title).toBe('This version of Velocity can’t open Metalink files yet.');
+  });
+
   it('accepts magnet links and .torrent links, and sends no torrent choice for ordinary links', async () => {
     const user = userEvent.setup();
     const state = installFakeBackend();

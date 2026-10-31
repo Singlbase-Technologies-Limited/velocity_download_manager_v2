@@ -1,6 +1,6 @@
 # Contributing
 
-Thanks for helping with Velocity Download Manager V2. No licence has been chosen yet (#86), so contributions can't be accepted under clear terms. Please open an issue to discuss before you start.
+Thanks for helping with Velocity Download Manager V2. It is free software under the GNU General Public License, version 3 only, owned by Singlbase Technologies Limited ([LICENSE](LICENSE)). Please open an issue to discuss a change before you start, read the [Code of Conduct](CODE_OF_CONDUCT.md), and report security problems privately ([SECURITY.md](SECURITY.md)).
 
 This page is the path from a fresh clone to a merged pull request. The rules behind each step are in [AGENTS.md](AGENTS.md), which applies to people and AI agents alike.
 
@@ -47,6 +47,16 @@ New issues use the forms in `.github/ISSUE_TEMPLATE/`: bug, feature, Product Own
 - **Describe the change:** what changed, the commands you ran with their results, and every check marked PASS, FAIL, BLOCKED or NOT RUN.
 - **CI:** when a check fails, the run's summary and its `ci-diagnostics` artifact list every failure at once ([docs/CI_DIAGNOSTICS.md](docs/CI_DIAGNOSTICS.md)).
 - **Review:** the Product Owner reviews against [docs/REVIEWING.md](docs/REVIEWING.md) and decides the merge.
+
+## Licence and the Contributor Licence Agreement
+
+- **Your contribution is under the project's licence,** GPL-3.0-only, and you keep the copyright in it.
+- **Before your first pull request is merged,** you agree to the [Contributor Licence Agreement](CLA.md) with Singlbase Technologies Limited, once. It lets Singlbase also offer the project under other terms, and confirms the contribution is yours to give. Agree by adding this comment to your pull request, word for word:
+
+  > I have read the CLA Document and I hereby sign the CLA
+
+- **Maintainers check for it** before merging a contribution from outside Singlbase, and link the comment in the pull request. Work by Singlbase's staff and its AI-agent account is Singlbase's already.
+- **Code from elsewhere** needs its licence and author named in the pull request, and must be under a licence [docs/DEPENDENCIES.md](docs/DEPENDENCIES.md#allowed-licences) allows.
 
 ## AI contributors
 

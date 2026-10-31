@@ -24,6 +24,9 @@ export function sortOutcome(results: AddResult[], request: AddRequest, addedBefo
       case 'added':
         outcome.added += 1;
         break;
+      case 'metalinkAdded':
+        outcome.added += o.ids.length;
+        break;
       case 'conflict': {
         const kind = linkKind(source);
         const torrent = request.torrentFiles.includes(source) || kind === 'magnet' || kind === 'torrentLink';
@@ -44,10 +47,11 @@ export function sortOutcome(results: AddResult[], request: AddRequest, addedBefo
   return outcome;
 }
 
-/** `sources` as a request's links and `.torrent` files, as they were in `request`. */
-export function only(sources: string[], request: AddRequest): Pick<AddRequest, 'links' | 'torrentFiles'> {
+/** `sources` as a request's links, `.torrent` files and Metalink files, as they were in `request`. */
+export function only(sources: string[], request: AddRequest): Pick<AddRequest, 'links' | 'torrentFiles' | 'metalinkFiles'> {
   return {
     links: request.links.filter((l) => sources.includes(l)),
     torrentFiles: request.torrentFiles.filter((f) => sources.includes(f)),
+    metalinkFiles: request.metalinkFiles.filter((f) => sources.includes(f)),
   };
 }

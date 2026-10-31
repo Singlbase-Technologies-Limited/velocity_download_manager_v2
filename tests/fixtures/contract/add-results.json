@@ -44,6 +44,16 @@
   },
   {
     "outcome": {
+      "ids": [
+        "d-0003",
+        "d-0004"
+      ],
+      "kind": "metalinkAdded"
+    },
+    "source": "/home/user/release.meta4"
+  },
+  {
+    "outcome": {
       "error": {
         "class": "permanent",
         "confirm": null,
