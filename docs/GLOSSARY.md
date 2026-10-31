@@ -4,7 +4,7 @@ Terms used across V2's documents, issues and code, in alphabetical order. Where 
 
 | Term | Meaning |
 |---|---|
-| **Adaptive connections (ramp)** | Starting a download with one connection and adding one per window while the last one made it faster, then keeping the count that stopped helping. The asked-for count is the most it may use, not a must ([ENGINE_INTERNALS.md](ENGINE_INTERNALS.md#adaptive-connections); #47) |
+| **Adaptive connections (ramp)** | Starting a download with every connection it may use, then dropping one at a time while the speed holds, and bringing back the last one whose loss made it slower. The asked-for count is the most it may use, not a must ([ENGINE_INTERNALS.md](ENGINE_INTERNALS.md#adaptive-connections); #47, #221) |
 | **ADR** | Architecture decision record: one numbered, accepted decision with its context and consequences. See [decisions/](decisions/README.md) |
 | **Anomaly** | An answer that contradicts its request: a wrong or malformed `Content-Range`, a length that disagrees with it, a multipart body, or a body that stops short of or runs past its range. The first is retried; a second on the same download ends ranges for it ([ENGINE_INTERNALS.md](ENGINE_INTERNALS.md); report §5.1; #41) |
 | **Automatic category** | The category a download gets from its file name's extension: the first category that lists it. Also when the server names the file after the download started ([FILE_NAMING.md](FILE_NAMING.md); #31) |
@@ -37,7 +37,7 @@ Terms used across V2's documents, issues and code, in alphabetical order. Where 
 | **No-clobber finalisation** | Completing a download by renaming its part file to the final name without replacing an existing file (report §5.3; #43) |
 | **Origin** | A URL's scheme, host and port (RFC 6454), as libcurl reads the URL. A download's login and custom headers go only to its first URL's origin; once a redirect leaves it, no request carries them ([ENGINE_INTERNALS.md](ENGINE_INTERNALS.md#redirects-40); #40) |
 | **Part file** | The file being downloaded, `<destination>.vdmpart`, until it is complete and renamed into place without replacing an existing file. Sparse on Windows (#43) |
-| **Performance profile** | Conservative, Balanced (the default), Maximum or Custom: limits for the adaptive engine, the most connections per server and the smallest piece. Within them the engine still adds connections only while each helps ([SETTINGS.md](SETTINGS.md#performance); ADR-0005; #57) |
+| **Performance profile** | Conservative, Balanced (the default), Maximum or Custom: limits for the adaptive engine, the most connections per server and the smallest piece. Within them the engine keeps only the connections that help ([SETTINGS.md](SETTINGS.md#performance); ADR-0005; #57) |
 | **Piece hashes** | Trusted digests of a file's fixed-size pieces, such as a Metalink file's `<pieces>`. Each piece is checked once it is covered, and a bad one is fetched again on its own (report §5.3; #46, #54) |
 | **PO** | The Product Owner, who decides scope, architecture, dependencies, licensing, security, repository settings, merges and releases |
 | **Probe** | The first request of a download: a bounded range request whose bytes are kept. Its response decides between ranges, sequential ranges and a single stream, without a wasted full transfer. V2 doesn't use HEAD as proof of range support (report §5.1; #41) |

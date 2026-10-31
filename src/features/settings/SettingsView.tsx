@@ -398,7 +398,7 @@ function PerformanceSection({ s, patch }: { s: Settings; patch: Patch }) {
           ))}
         </div>
       </Group>
-      <Group title="Performance" description="A profile caps the connections; within it, Velocity adds connections only while each one helps.">
+      <Group title="Performance" description="A profile caps the connections; within it, Velocity keeps only the connections that help.">
         <Choice<PerformanceProfile>
           title="Profile"
           description={PROFILE_TEXT[s.performance.profile]}

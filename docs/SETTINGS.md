@@ -11,7 +11,7 @@ The screen (#30, `src/features/settings/SettingsView.tsx`) edits every section b
 - **Read with defaults:** a section is read merged over its defaults, so settings an older V2 saved get the newer fields' defaults (V1's `migrate_settings_json`). A field this build doesn't know is refused, never dropped.
 - **When the app starts:** the saved settings are applied (`Manager::apply_saved_settings`), and the torrent helper starts with its own. A failure is logged, and the defaults hold for what couldn't be read.
 - **Reset to defaults** asks first, and keeps the download folder (V1's).
-- **What the build can't do** is disabled with the reason ([below](#what-a-build-can-do)): Metalink, today.
+- **What the build can't do** is disabled with the reason ([below](#what-a-build-can-do)). Today's engine does everything the screen offers, Metalink included (#54).
 
 ## Engine
 
@@ -40,7 +40,7 @@ The screen (#30, `src/features/settings/SettingsView.tsx`) edits every section b
 |---|---|---|---|
 | `advanced` | `globalDownloadLimitKib` | 0: none | 0, or at least 1 KiB/s (#49) |
 | | `enableBittorrent` | on (V1's) | Off refuses torrents and magnet links with `PROTOCOL_DISABLED` |
-| | `enableMetalink` | off (V1's) | Only when the engine reads Metalink (#54) |
+| | `enableMetalink` | off (V1's) | Offered when the engine reads Metalink, as it does since #54 |
 | | `userAgent` | `null`: `VelocityDownloadManager/<version>` | At most 256 bytes, no control characters; for downloads added after it |
 | `newTorrents` | `chooseFilesForMagnets` | off | The Add dialog's "Choose files before downloading" |
 | | `seeding` | never | As a torrent's seeding policy ([TORRENTS.md](TORRENTS.md)) |
@@ -78,7 +78,7 @@ The torrent helper's own settings are the `torrent` section, `TorrentSettings` (
 
 ## Performance
 
-**Performance profiles are limits for the adaptive engine** ([ADR-0005](decisions/0005-v1-features-without-aria2.md), #57), not V1's aria2 option sets. Within a profile's limits, the engine still adds connections one at a time, only while each one makes the download faster ([ENGINE_INTERNALS.md](ENGINE_INTERNALS.md#adaptive-connections), #47). A server that gains nothing from more connections gets fewer.
+**Performance profiles are limits for the adaptive engine** ([ADR-0005](decisions/0005-v1-features-without-aria2.md), #57), not V1's aria2 option sets. Within a profile's limits, a download starts with every connection it may use, and the engine drops those that don't make it faster ([ENGINE_INTERNALS.md](ENGINE_INTERNALS.md#adaptive-connections), #47, #221). A server that gains nothing from more connections gets fewer.
 
 | Profile | Connections, per download and per server | Smallest piece | Notes |
 |---|---|---|---|
@@ -87,7 +87,7 @@ The torrent helper's own settings are the `torrent` section, `TorrentSettings` (
 | Maximum | 16 | 1 MiB | V1's connections. More than 8 only helps a server that gives each connection its own speed |
 | Custom | The user's: 1 to 16 | The user's: 1 to 1024 MiB | V1's `max_connection_per_server` and `min_split_size_mib`. aria2's `split` count is gone, as V2 splits by itself |
 
-- **All profiles add a connection at the same 10% gain** for now (PO decision on #57). Whether Conservative and Maximum should use other thresholds is for #77's measurements.
+- **All profiles keep a connection at the same 10% loss** for now: one whose loss would slow the download by 10% or more stays (#221; #57 set one threshold for every profile). Whether Conservative and Maximum should use other thresholds is for #77's measurements.
 - **The smallest piece** applies to downloads that start after the profile changes. The connection cap applies at once: a lower one holds running downloads back, which their details then say ("the performance profile allows no more to one server").
 - **The shared budget** for all downloads together stays 48 connections, V1's `connection_budget` (#47).
 - **In code:** `PerformanceSettings` in [`crates/velocity-core/src/performance.rs`](../crates/velocity-core/src/performance.rs) maps a profile to `EngineLimits`. `Manager::set_performance` applies it, and new downloads ask for at most its connections (`Manager::connections_for_new_downloads`). The engine takes the limits through `set_engine_limits` ([ENGINE_CONTRACT.md](ENGINE_CONTRACT.md)).
@@ -161,4 +161,4 @@ V1's `general`, `notifications` and `appearance` settings and its first-run flag
 
 ## What a build can do
 
-Settings and details never offer what the build can't do. The engine reports its capabilities per protocol (`ProtocolCapabilities`, [CONTRACTS.md](CONTRACTS.md)): whether it downloads the protocol at all, and whether it segments, resumes, checks validators, uses HTTP/2 and can encrypt it. In the UI, `availability` ([`src/capabilities.ts`](../src/capabilities.ts)) turns that into "available" or a reason, and `CapabilityOption` shows a control that is disabled, with the reason beside it, when the build lacks something; the Settings screen's Metalink switch is one (#30).
+Settings and details never offer what the build can't do. The engine reports its capabilities per protocol (`ProtocolCapabilities`, [CONTRACTS.md](CONTRACTS.md)): whether it downloads the protocol at all, and whether it segments, resumes, checks validators, uses HTTP/2 and can encrypt it. In the UI, `availability` ([`src/capabilities.ts`](../src/capabilities.ts)) turns that into "available" or a reason, and `CapabilityOption` shows a control that is disabled, with the reason beside it, when the build lacks something; the Settings screen's Metalink switch is one, disabled only with an engine that can't read Metalink (#30).

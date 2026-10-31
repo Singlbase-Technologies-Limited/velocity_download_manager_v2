@@ -511,54 +511,64 @@ fn progress_reporter(
     }
 }
 
+/// #54: the manager reads Metalink documents; this engine downloads their files, with their
+/// checksums and piece hashes (#46), and their mirrors in the spec's URLs. The user guide's protocol
+/// page is checked against it (`tests/user_guide.rs`, #79).
+pub const METALINK: bool = true;
+
+/// What this engine does for each protocol it downloads (#57), as `capabilities` reports it.
+/// A protocol not listed isn't downloaded. The user guide's protocol page is checked against it
+/// (`tests/user_guide.rs`, #79).
+pub fn protocols() -> Vec<ProtocolCapabilities> {
+    vec![
+        ProtocolCapabilities {
+            kind: DownloadKind::Http,
+            // Ranges as leases over several connections (#42).
+            segmented: true,
+            // From a checkpoint (#43), with the strong validator in If-Range (#45).
+            resume: true,
+            validator_resume: true,
+            // libcurl is refused at start without HTTP/2 (velocity-curl's capability
+            // check).
+            http2: true,
+            // https://, verified with the platform's trust store (#69).
+            encryption: true,
+        },
+        ProtocolCapabilities {
+            kind: DownloadKind::Ftp,
+            // One connection until #77 measures more (PO decision on #51).
+            segmented: false,
+            // From a checkpoint, with REST, checked against MDTM when the server gives
+            // it, as a strong Last-Modified (#51, ADR-0010).
+            resume: true,
+            validator_resume: true,
+            http2: false,
+            // FTPS, explicit and implicit, verified as for HTTPS; libcurl is refused at
+            // start without ftps (velocity-curl's capability check).
+            encryption: true,
+        },
+        ProtocolCapabilities {
+            kind: DownloadKind::Sftp,
+            // One connection, as for FTP, until #77 measures more.
+            segmented: false,
+            // From a checkpoint, at an offset, checked against the file's time as a
+            // strong Last-Modified (#53, ADR-0010).
+            resume: true,
+            validator_resume: true,
+            http2: false,
+            // SSH is always encrypted, and the host key is checked against V2's own
+            // known_hosts file (#53).
+            encryption: true,
+        },
+    ]
+}
+
 impl DirectTransfer for InProcessEngine {
     fn capabilities(&self) -> Capabilities {
         Capabilities {
-            protocols: vec![
-                ProtocolCapabilities {
-                    kind: DownloadKind::Http,
-                    // Ranges as leases over several connections (#42).
-                    segmented: true,
-                    // From a checkpoint (#43), with the strong validator in If-Range (#45).
-                    resume: true,
-                    validator_resume: true,
-                    // libcurl is refused at start without HTTP/2 (velocity-curl's capability
-                    // check).
-                    http2: true,
-                    // https://, verified with the platform's trust store (#69).
-                    encryption: true,
-                },
-                ProtocolCapabilities {
-                    kind: DownloadKind::Ftp,
-                    // One connection until #77 measures more (PO decision on #51).
-                    segmented: false,
-                    // From a checkpoint, with REST, checked against MDTM when the server gives
-                    // it, as a strong Last-Modified (#51, ADR-0010).
-                    resume: true,
-                    validator_resume: true,
-                    http2: false,
-                    // FTPS, explicit and implicit, verified as for HTTPS; libcurl is refused at
-                    // start without ftps (velocity-curl's capability check).
-                    encryption: true,
-                },
-                ProtocolCapabilities {
-                    kind: DownloadKind::Sftp,
-                    // One connection, as for FTP, until #77 measures more.
-                    segmented: false,
-                    // From a checkpoint, at an offset, checked against the file's time as a
-                    // strong Last-Modified (#53, ADR-0010).
-                    resume: true,
-                    validator_resume: true,
-                    http2: false,
-                    // SSH is always encrypted, and the host key is checked against V2's own
-                    // known_hosts file (#53).
-                    encryption: true,
-                },
-            ],
+            protocols: protocols(),
             live_connection_changes: true,
-            // #54: the manager reads Metalink documents; this engine downloads their files, with
-            // their checksums and piece hashes (#46), and their mirrors in the spec's URLs.
-            metalink: true,
+            metalink: METALINK,
             max_connections_per_host: lock(&self.shared.state).limits.max_connections_per_host,
             libcurl: Some(self.shared.libcurl.clone()),
         }
