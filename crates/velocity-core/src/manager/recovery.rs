@@ -230,6 +230,7 @@ impl Manager {
                 saved_at_ms: None,
                 needs_login,
                 activity,
+                logged: None,
             };
             download.show_settings();
             if !finished {

@@ -6001,3 +6001,103 @@ mod remembered_logins {
         assert_eq!(m.remember_login("d-missing"), Err(ErrorCode::NotFound));
     }
 }
+
+/// #251: what a download does reaches the app's log, from the engine's events and from the
+/// user's actions. A retry the engine gets past before the next pump is still logged.
+#[test]
+fn a_download_s_life_reaches_the_app_log() {
+    use tracing_subscriber::layer::SubscriberExt;
+    let log = crate::logs::AppLog::new();
+    let _default =
+        tracing::subscriber::set_default(tracing_subscriber::registry().with(log.layer()));
+    let (mut m, control, id) = setup();
+    control.progress(TransferId(1), 1024, Some(4096));
+    m.pump(T0 + 1);
+    control.emit(TransferEvent::Changed {
+        snapshot: TransferSnapshot {
+            status: DownloadStatus::Retrying,
+            retry_at_ms: Some(T0 + 11_000),
+            error: Some(TransferError::new(
+                FailureClass::Transient,
+                Some(503),
+                "The server is busy",
+            )),
+            ..control.snapshot(TransferId(1))
+        },
+    });
+    control.progress(TransferId(1), 2048, Some(4096));
+    m.pump(T0 + 1_000);
+    m.pause(&id).unwrap();
+    m.pump(T0 + 2_000);
+    m.resume(&id).unwrap();
+    m.pump(T0 + 3_000);
+    control.progress(TransferId(1), 3072, Some(4096));
+    m.pump(T0 + 4_000);
+    control.complete(TransferId(1));
+    m.pump(T0 + 5_000);
+    let lines: Vec<_> = log
+        .lines()
+        .into_iter()
+        .filter(|l| l.target.ends_with("lifecycle"))
+        .map(|l| (l.level, l.message))
+        .collect();
+    use crate::logs::LogLevel::{Info, Warn};
+    let line = |level, text: &str| (level, format!("download {id} {text}"));
+    assert_eq!(
+        lines,
+        [
+            line(Info, "added (https, example.com)"),
+            line(Info, "started at 1024 of 4096 bytes"),
+            line(
+                Warn,
+                "retry 1 in 10 s at 1024 of 4096 bytes: The server is busy [transient, HTTP 503]"
+            ),
+            line(Info, "paused at 2048 of 4096 bytes"),
+            line(Info, "queued"),
+            line(Info, "started at 3072 of 4096 bytes"),
+            line(Info, "completed: 4096 bytes"),
+        ]
+    );
+}
+
+/// #251, as the PO's tokenised link: a secret in the link's path, query or login reaches no line
+/// of the app's log. Redaction catches a named token in a query but not one in a path, so the
+/// lines never hold the link, only its host.
+#[test]
+fn a_link_s_secrets_reach_no_line_of_the_app_log() {
+    use tracing_subscriber::layer::SubscriberExt;
+    let log = crate::logs::AppLog::new();
+    let _default =
+        tracing::subscriber::set_default(tracing_subscriber::registry().with(log.layer()));
+    let fake = FakeTransfer::new();
+    let control = fake.control();
+    let mut m = in_memory(fake);
+    let mut spec = spec();
+    spec.urls = vec![
+        "https://me:LEAK-PASSWORD-251@ts.example.net/LEAK-PATH-TOKEN-251/a.zip?q=LEAK-QUERY-251"
+            .to_owned(),
+    ];
+    let id = m.add(DownloadKind::Http, spec, T0).unwrap();
+    control.progress(TransferId(1), 1024, Some(4096));
+    m.pump(T0 + 1);
+    control.fail(
+        TransferId(1),
+        TransferError::new(FailureClass::Permanent, Some(403), "The link has expired"),
+    );
+    m.pump(T0 + 2);
+    let lines = log.lines();
+    assert!(
+        lines
+            .iter()
+            .any(|l| l.message == format!("download {id} added (https, ts.example.net)")),
+        "{lines:?}"
+    );
+    // The failure message shows the lines, not the planted value: CodeQL's cleartext-logging
+    // rule reads a panic message that names a secret as logging it.
+    for planted in ["LEAK-PASSWORD-251", "LEAK-PATH-TOKEN-251", "LEAK-QUERY-251"] {
+        assert!(
+            lines.iter().all(|l| !l.message.contains(planted)),
+            "a part of the link reached the log: {lines:?}"
+        );
+    }
+}
