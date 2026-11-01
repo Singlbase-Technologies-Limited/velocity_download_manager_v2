@@ -557,21 +557,12 @@ fn the_probe_checkpoints_its_bytes_too() {
         .all(|c| c.durable.first().map(|r| r.0) == Some(0) && c.total == 300_000));
 }
 
-#[test]
-fn a_paused_download_keeps_its_part_file_and_resumes_from_its_last_checkpoint() {
-    const LEN: usize = 2_000_000;
-    let (s, data) = throttled(LEN, 43, 400_000);
-    let dir = Dir::new("pause");
-    let dest = dir.file("out.bin");
+/// Downloads `url` to `dest` until a checkpoint holds 300,000 durable bytes, then pauses, and
+/// returns the last checkpoint.
+fn pause_midway(lp: &CurlLoop, url: &str, dest: &Path, options: DownloadOptions) -> Checkpoint {
     let (control, points) = recording();
-    let options = DownloadOptions {
-        checkpoints: FAST,
-        ..OPTIONS
-    };
-    let url = s.url("f.bin");
-    let lp = curl_loop();
     let paused = std::thread::scope(|scope| {
-        let run = scope.spawn(|| download_with(&lp, &url, &dest, options, &control));
+        let run = scope.spawn(|| download_with(lp, url, dest, options, &control));
         let deadline = std::time::Instant::now() + Duration::from_secs(30);
         while points.lock().unwrap().last().map_or(0, durable_len) < 300_000 {
             assert!(
@@ -584,14 +575,25 @@ fn a_paused_download_keeps_its_part_file_and_resumes_from_its_last_checkpoint() 
         run.join().unwrap()
     });
     assert!(matches!(paused, Err(DownloadError::Paused)), "{paused:?}");
-    assert!(part_of(&dest).exists(), "a pause keeps the part file");
+    assert!(part_of(dest).exists(), "a pause keeps the part file");
     assert!(!dest.exists(), "and nothing looks finished");
-    let checkpoint = points
-        .lock()
-        .unwrap()
-        .last()
-        .cloned()
-        .expect("a final checkpoint");
+    let checkpoint = points.lock().unwrap().last().cloned();
+    checkpoint.expect("a final checkpoint")
+}
+
+#[test]
+fn a_paused_download_keeps_its_part_file_and_resumes_from_its_last_checkpoint() {
+    const LEN: usize = 2_000_000;
+    let (s, data) = throttled(LEN, 43, 400_000);
+    let dir = Dir::new("pause");
+    let dest = dir.file("out.bin");
+    let options = DownloadOptions {
+        checkpoints: FAST,
+        ..OPTIONS
+    };
+    let url = s.url("f.bin");
+    let lp = curl_loop();
+    let checkpoint = pause_midway(&lp, &url, &dest, options);
     let kept = durable_len(&checkpoint);
 
     let sent_before = s.counters().body_bytes_sent;
@@ -618,6 +620,51 @@ fn a_paused_download_keeps_its_part_file_and_resumes_from_its_last_checkpoint() 
         "the resume fetched {sent} bytes for {} missing",
         LEN as u64 - kept
     );
+}
+
+/// #257: a resumed download reports the bytes it resumed from, not only those since the resume.
+/// The field test (#262) saw 748,861,163 bytes paused and 7,870 shown after the resume.
+#[test]
+fn a_resumed_download_reports_progress_from_what_it_resumed() {
+    const LEN: usize = 2_000_000;
+    let (s, data) = throttled(LEN, 44, 400_000);
+    let dir = Dir::new("resume-progress");
+    let dest = dir.file("out.bin");
+    let options = DownloadOptions {
+        checkpoints: FAST,
+        ..OPTIONS
+    };
+    let url = s.url("f.bin");
+    let lp = curl_loop();
+    let checkpoint = pause_midway(&lp, &url, &dest, options);
+    let kept = durable_len(&checkpoint);
+
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let s2 = Arc::clone(&seen);
+    let control = Control::with_progress(move |written, _| s2.lock().unwrap().push(written));
+    let resume = Resume::Checkpoint { checkpoint };
+    download_resumable(
+        &lp,
+        &url,
+        &dest,
+        options,
+        Some(&resume),
+        &Expected::default(),
+        &control,
+    )
+    .expect("the download resumes");
+    assert!(std::fs::read(&dest).unwrap() == data);
+    let seen = seen.lock().unwrap();
+    let first = *seen.first().expect("progress while resuming");
+    assert!(
+        first >= kept,
+        "the first progress after the resume was {first} bytes, below the {kept} it resumed from"
+    );
+    assert!(
+        seen.windows(2).all(|w| w[0] <= w[1]),
+        "progress never goes backwards: {seen:?}"
+    );
+    assert_eq!(*seen.last().unwrap(), LEN as u64);
 }
 
 #[test]

@@ -175,6 +175,8 @@ impl TransferError {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Progress {
+    /// The bytes of the file the download holds. A resumed download counts what it resumed from
+    /// as well as what arrived since (#257).
     pub completed_bytes: u64,
     /// `None` while the size is unknown (a chunked response, a magnet before metadata).
     pub total_bytes: Option<u64>,

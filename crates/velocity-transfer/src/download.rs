@@ -1417,7 +1417,7 @@ fn probe(
             }
             return Err(e);
         }
-        control.report(part.written, total);
+        control.report(part.covered(), total);
         // With a total, ranges work, so the probe's bytes can be resumed from: checkpoint them.
         let total = match probe_verdict
             .lock()
@@ -2080,7 +2080,7 @@ fn fetch_ranges(
                     a.overran = true;
                     anomalies += 1;
                 }
-                control.report(part.written, Some(total));
+                control.report(part.covered(), Some(total));
                 if ck.due(part) {
                     ck.take(part, &mut sched, control)?;
                 }
@@ -2306,7 +2306,7 @@ fn fetch_sequential(
                 _ => from,
             };
             overran |= part.accept(&mut cursor, Some(limit), chunk)? > 0;
-            control.report(part.written, None);
+            control.report(part.covered(), None);
             Ok(())
         })?;
         let result = verdict
@@ -2441,7 +2441,7 @@ fn stream_gaps(
         let done = drain(&fetch, control, policy, |chunk| {
             part.accept_gaps(offset, chunk)?;
             offset += chunk.len() as u64;
-            control.report(part.written, total);
+            control.report(part.covered(), total);
             Ok(())
         })?;
         let refused = refusal.lock().expect("the refusal lock").take();
@@ -2954,6 +2954,12 @@ impl PartFile {
         self.wasted += excess;
         *cursor += take;
         Ok(excess)
+    }
+
+    /// The bytes of the file it holds: what a resume kept plus what was written since. Progress
+    /// counts these, so a resumed download doesn't show only its new bytes (#257).
+    fn covered(&self) -> u64 {
+        self.coverage.len()
     }
 
     /// Writes bytes the range scheduler accepted at `offset`. They count as covered once the write
