@@ -341,6 +341,40 @@ describe('the Add download dialog', () => {
 });
 
 describe('duplicates', () => {
+  // #266: a link added before whose name is also taken asked both questions in turn, forever:
+  // each answer was sent without the other one.
+  const takenAndAddedBefore = (nameFirst: boolean) => {
+    const check = { ...(fixture('destination-check.json') as object), fileName: 'a.zip', suggestedName: 'a (1).zip' };
+    const duplicate = { existingId: 'd-0001', name: 'a.zip', status: 'completed', inList: true, canAddAnyway: true };
+    return installFakeBackend({
+      addResults: (request) =>
+        request.links.map((source): AddResult => {
+          const conflict = request.onConflict === 'ask';
+          const again = !request.allowDuplicate;
+          if (nameFirst ? conflict : conflict && !again) return { source, outcome: { kind: 'conflict', check } } as AddResult;
+          if (again) return { source, outcome: { kind: 'duplicate', duplicate } } as AddResult;
+          return { source, outcome: { kind: 'added', id: 'd-0009' } };
+        }),
+    });
+  };
+
+  for (const nameFirst of [true, false]) {
+    it(`keeps each answer when a taken name and a link added before are both asked about (${nameFirst ? 'name' : 'duplicate'} first)`, async () => {
+      const user = userEvent.setup();
+      const state = takenAndAddedBefore(nameFirst);
+      renderApp();
+      const dialog = await openDialog(user);
+      await user.type(within(dialog).getByRole('textbox', { name: 'Links' }), 'https://example.com/a.zip');
+      await user.click(within(dialog).getByRole('button', { name: 'Start download' }));
+      const [first, second] = nameFirst ? ['Keep both (rename)', 'Add anyway'] : ['Add anyway', 'Keep both (rename)'];
+      await user.click(await within(dialog).findByRole('button', { name: first }));
+      await user.click(await within(dialog).findByRole('button', { name: second }));
+      await waitFor(() => { expect(requests(state)).toHaveLength(3); });
+      expect(requests(state)[2]).toMatchObject({ links: ['https://example.com/a.zip'], onConflict: 'rename', allowDuplicate: true });
+      await waitFor(() => { expect(screen.queryByRole('dialog')).toBeNull(); });
+    });
+  }
+
   it('warns about a link added before, and can add it anyway', async () => {
     const user = userEvent.setup();
     const state = installFakeBackend({
