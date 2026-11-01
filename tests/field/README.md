@@ -13,7 +13,7 @@ The installed app, used the way a person uses it, with real downloads from real 
 ```sh
 pnpm field start                       # the installed app, with WebView2's debugging port on 127.0.0.1
 pnpm field onboard [folder]            # the first-run setup, after a clean install
-pnpm field add <link> [--connections N] [--folder DIR]
+pnpm field add <link> [<link>…] [--connections N] [--checksum sha-256=HEX] [--folder DIR]
 pnpm field watch --every 5 --for 600   # one line per download every 5 s, and samples.jsonl
 pnpm field pause|resume|cancel|retry|remove <name>
 pnpm field click <role> "<name>"       # any other control, by its accessible role and name

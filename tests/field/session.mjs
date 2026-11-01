@@ -5,7 +5,7 @@
 //
 //   pnpm field start                      start the installed app with the port
 //   pnpm field onboard [folder]           finish the first-run setup
-//   pnpm field add <link> [--connections N] [--folder DIR]
+//   pnpm field add <link> [<link>…] [--connections N] [--checksum sha-256=HEX] [--folder DIR]   (several: one per line, as pasted)
 //   pnpm field pause|resume|cancel|retry|remove <name>
 //   pnpm field click <role> <name>        any other control, by its accessible role and name
 //   pnpm field watch [--every S] [--for S] [--until done]
@@ -186,20 +186,21 @@ async function main() {
     case 'add':
       return withPage(async (page) => {
         await page.getByRole('button', { name: /^Add download/ }).click();
-        await page.getByRole('textbox', { name: 'Links' }).fill(rest[0]);
+        // Several links are pasted one per line; a shell can't pass a line break in one argument.
+        await page.getByRole('textbox', { name: 'Links' }).fill(rest.join('\n'));
         if (named.folder) await page.getByRole('textbox', { name: 'Save to' }).fill(named.folder);
-        if (named.connections) {
-          await page.getByRole('button', { name: 'Advanced options' }).click();
-          await page.getByRole('spinbutton', { name: 'Connections' }).fill(named.connections);
-        }
+        if (named.connections || named.checksum) await page.getByRole('button', { name: 'Advanced options' }).click();
+        if (named.connections) await page.getByRole('spinbutton', { name: 'Connections' }).fill(named.connections);
+        if (named.checksum) await page.getByRole('textbox', { name: 'Checksum' }).fill(named.checksum);
         await page.getByRole('button', { name: 'Start download' }).click();
         await sleep(1500);
         const done = page.getByRole('button', { name: 'Done' });
         if (await done.isVisible()) await done.click();
+        else await dialog(page);
         mkdirSync(out, { recursive: true });
         const shot = join(out, `added-${Date.now()}.png`);
         await page.screenshot({ path: shot });
-        console.log(`Added a link to ${hideLinks(rest[0])}; screenshot ${shot}`);
+        console.log(`Added ${rest.length} link(s): ${rest.map(hideLinks).join(' ')}; screenshot ${shot}`);
       });
     case 'pause':
     case 'resume':
@@ -211,6 +212,26 @@ async function main() {
         await page.getByRole('button', { name: ACTIONS[command] }).click();
         console.log(`${clock()} ${command}: ${rest[0]}`);
         await dialog(page);
+      });
+    case 'delete':
+      // The app's "Delete files of selected…", confirmed: the files the downloads own, and the rows.
+      return withPage(async (page) => {
+        if (named.all !== undefined || rest[0] === '--all') {
+          // A list refresh can clear the selection, so it's checked again before the menu.
+          const all = page.getByRole('checkbox', { name: 'Select all shown downloads' });
+          await all.check();
+          await sleep(300);
+          if (!(await all.isChecked())) await all.check();
+          await page.getByRole('button', { name: 'More actions' }).click();
+          await page.getByRole('menuitem', { name: /Delete files of selected/ }).click();
+        } else {
+          await page.getByRole('row').filter({ hasText: rest[0] }).first().click({ button: 'right' });
+          await page.getByRole('menuitem', { name: /^Delete files/ }).click();
+        }
+        await dialog(page);
+        await page.getByRole('button', { name: 'Delete files' }).click();
+        await sleep(2000);
+        console.log(`${clock()} deleted the files of ${rest[0] ?? 'every download shown'}`);
       });
     case 'click':
       return withPage(async (page) => {
@@ -253,7 +274,7 @@ async function main() {
       return;
     }
     default:
-      console.log('Commands: start, onboard, add, pause, resume, cancel, retry, remove, click, watch, status, log, export, shot, quit, kill. See tests/field/README.md.');
+      console.log('Commands: start, onboard, add, pause, resume, cancel, retry, remove, delete, click, watch, status, log, export, shot, quit, kill. See tests/field/README.md.');
   }
 }
 
