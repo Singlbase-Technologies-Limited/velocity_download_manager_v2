@@ -63,7 +63,7 @@ The components and who owns what state are in [docs/ARCHITECTURE.md](docs/ARCHIT
 
 The full procedure is in [docs/DEVELOPMENT_WORKFLOW.md](docs/DEVELOPMENT_WORKFLOW.md), and what reviewers check is in [docs/REVIEWING.md](docs/REVIEWING.md). The rules:
 
-- **Follow the roadmap:** epic #1 lists every issue by phase, and the milestones R1 to R10 set the order. Take the next issue from the earliest milestone that has open, unblocked work, and confirm the choice with the PO.
+- **Follow the roadmap:** epic #1 lists every issue by phase. The version milestones (such as `v0.1.1`) come first, then R1 to R10. Take the next issue from the earliest milestone that has open, unblocked work, and confirm the choice with the PO. How versions are chosen is in [docs/RELEASE_PROCESS.md](docs/RELEASE_PROCESS.md#choosing-the-next-version).
 - **Issues and branches:**
   - Every change starts from a GitHub issue.
   - Branch from the latest `main` as `<type>/<issue>-<slug>`, for example `feat/41-range-probe`.

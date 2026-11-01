@@ -8,7 +8,7 @@ Each rule below is marked as **GitHub-documented** (with a link to the source) o
 
 - **`main` is the only long-lived branch, and it is always releasable.** *Project judgment* (PO decision, 2026-10-21). The model is [GitHub flow](https://docs.github.com/en/get-started/using-github/github-flow): branch from the default branch, open a pull request, review it, merge it, delete the branch (*GitHub-documented*).
 - **Every change starts from an issue.** *Project judgment.* No issue, no branch.
-- **Work follows the roadmap.** *Project judgment* (PO decision, 2026-10-22). Epic #1 lists every issue by phase (A to H), and the milestones R1 to R10 set the order of work. The next issue comes from the earliest milestone that still has open, unblocked work. An agent proposes it and the PO confirms it, or picks another.
+- **Work follows the roadmap.** *Project judgment* (PO decision, 2026-10-22). Epic #1 lists every issue by phase (A to I). The version milestones, such as `v0.1.1`, come first, then R1 to R10 (PO decision on #258, 2026-11-01; [RELEASE_PROCESS.md](RELEASE_PROCESS.md#choosing-the-next-version)). The next issue comes from the earliest milestone that still has open, unblocked work. An agent proposes it and the PO confirms it, or picks another.
 - **The Product Owner decides merges, releases and repository settings.** *Project judgment.* Agents and contributors prepare work. They never merge their own pull requests, tag releases or change settings without the PO's explicit go-ahead.
 
 ## Branches
