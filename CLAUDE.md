@@ -32,7 +32,7 @@ The skills in the table below hold the details of each step.
    - Run `gh` for this repository as `GH_TOKEN="$(gh auth token -u velocity-claude-agent)" gh …`. Never run `gh auth switch`.
    - Set the issue to *In review*.
 7. **Merge only on the PO's explicit approval of that PR,** with `gh pr merge <N> --squash --delete-branch`. It prompts once more by design. Then update local `main`, check that the issue's state is right, tick its box in epic #1, and report.
-8. **Next issue:** propose the next one in roadmap order (epic #1, milestones R1 to R10) and let the PO confirm it.
+8. **Next issue:** propose the next one in roadmap order (epic #1; the version milestones first, then R1 to R10) and let the PO confirm it.
 
 ## Skills
 

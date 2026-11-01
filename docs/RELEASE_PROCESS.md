@@ -13,6 +13,32 @@ How V2 is versioned, how a version's changelog is written, how candidates and re
 - **Changing it:** `pnpm version:set <MAJOR.MINOR.PATCH>` sets `package.json` and `Cargo.toml`, then updates only V2's own crates in `Cargo.lock` (`cargo update --workspace`). Commit the three files in one pull request with the changelog section, such as `chore: version 0.2.0 (#N)`.
 - **A pre-release is a tag, not a version:** the files say `0.2.0`, and its candidates are the tags `v0.2.0-rc.1`, `v0.2.0-rc.2`.
 
+## Choosing the next version
+
+The PO decides each version, from what the release contains (PO decisions on #258, 2026-11-01).
+
+- **The biggest change sets it:**
+
+  | The release contains | From 0.1.0 it becomes | Part raised |
+  |---|---|---|
+  | Bug fixes only | 0.1.1 | PATCH |
+  | At least one new feature, with or without fixes | 0.2.0 | MINOR. PATCH goes back to 0 |
+  | A change that breaks something for users | 0.2.0 below 1.0.0; from 1.0.0, the next MAJOR | MINOR below 1.0.0, then MAJOR |
+
+- **Releases are built from `main`.** Once a feature is merged, the next release can only be a MINOR one. So while a PATCH release is planned, only fixes are merged into `main` until it's tagged, and features wait.
+- **Checking before a candidate:** `pnpm changelog <last tag>` groups the merged pull requests by their title's type. A `feat:` pull request means a MINOR release at least. If every title is `fix:`, `docs:`, `test:`, `ci:`, `build:` or `chore:`, a PATCH is enough.
+- **Version milestones:** each planned release has a GitHub milestone named after it, such as `v0.1.1`, holding the issues it's planned to contain. The milestones R1 to R10 hold the rest of the roadmap (epic #1).
+- **The plan** (PO decisions, 2026-11-01):
+
+  | Version | What it contains | Status |
+  |---|---|---|
+  | 0.1.0 | The first release, Windows and Linux | Released 2026-10-31, as a pre-release |
+  | 0.1.1 | Fixes only: the download log (#251), connections (#221), the battle test (#77) and the bugs it and the PO's testing find | Next |
+  | 0.2.0 | Features: a local `.metalink` file (#222), the login window (#249), plain error messages (#252) | After 0.1.1 |
+  | 1.0.0 | The first production release, after the comparison with V1 (#85), fuzzing (#73) and the release-readiness review (#78) | Later |
+
+  Every release before 1.0.0 is published as a pre-release.
+
 ## The changelog
 
 [`CHANGELOG.md`](../CHANGELOG.md) has one section a version, newest first, under an `Unreleased` section for what has merged since the last one.
