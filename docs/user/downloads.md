@@ -85,7 +85,7 @@ The right-click menu needs a pointer, as in V1. Its actions are also on the tool
 | Needs its login | After Velocity restarts, a download that had a login, headers or a key it didn't remember waits for them. **Resume** or **Retry** asks for them again |
 | Choose files | A torrent waiting for you to choose its files ([Torrents](torrents.md)) |
 
-Speed and time left show only while data arrives. **Avg. speed** is the average while the download ran, and **Started** is when it first ran. A notice above the list says when the transfer engine isn't running, so waiting downloads aren't mistaken for stuck ones.
+Speed and time left show only while data arrives. **Avg. speed** is the average while the download ran, shown once data has arrived, and **Started** is when it first ran. A notice above the list says when the transfer engine isn't running, so waiting downloads aren't mistaken for stuck ones.
 
 ## The details panel
 

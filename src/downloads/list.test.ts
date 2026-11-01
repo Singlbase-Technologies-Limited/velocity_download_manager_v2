@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { makeRecord } from '../test/records';
-import { STATUS_LABEL, actionsFor, actionsForSelection, displayName, etaSeconds, matchesSearch, percentOf, sortDownloads, statusLabel, visibleDownloads } from './list';
+import { STATUS_LABEL, actionsFor, actionsForSelection, averageSpeedOf, displayName, etaSeconds, matchesSearch, nextTry, percentOf, sortDownloads, statusLabel, visibleDownloads } from './list';
 import { countByView, matchesView } from './views';
 
 const progress = makeRecord().progress;
@@ -124,6 +124,26 @@ describe('what the list shows (#59)', () => {
     expect(etaSeconds(at('downloading', 0, 3000))).toBeNull();
     expect(etaSeconds(at('downloading', 100, null))).toBeNull();
     expect(etaSeconds(at('stalled', 100, 3000))).toBeNull();
+  });
+
+  // #245: the field test saw "Next try: 11s ago" while the status read Retrying now.
+  it('gives the next try as a time to come, and now once it has passed', () => {
+    const now = 1_000_000;
+    const retrying = (retryAtMs: number | null) => makeRecord({ status: 'retrying', retryAtMs });
+    expect(nextTry(retrying(now + 30_500), now)).toBe('in 30s');
+    expect(nextTry(retrying(now + 500), now)).toBe('now');
+    expect(nextTry(retrying(now - 11_000), now)).toBe('now');
+    expect(nextTry(retrying(null), now)).toBeNull();
+    expect(nextTry(makeRecord({ status: 'downloading', retryAtMs: now + 5_000 }), now)).toBeNull();
+  });
+
+  // #245: "Average speed: 209.5 KiB/s" beside "0 B of unknown size" while a download started over.
+  it('gives no average speed while no byte has arrived', () => {
+    const at = (completedBytes: number, status: 'retrying' | 'completed' = 'retrying') =>
+      makeRecord({ status, averageSpeedBps: 214_528, progress: { ...progress, completedBytes } });
+    expect(averageSpeedOf(at(0))).toBeNull();
+    expect(averageSpeedOf(at(1))).toBe(214_528);
+    expect(averageSpeedOf(at(0, 'completed'))).toBe(214_528);
   });
 
   it('names a download by its file, or by its link until the server names it', () => {

@@ -75,7 +75,8 @@ type ProgressFn = Box<dyn Fn(u64, Option<u64>) + Send + Sync>;
 type CheckpointFn = Box<dyn Fn(Checkpoint) + Send + Sync>;
 /// Called when the download starts waiting to retry, with when it tries again, stalls, or
 /// receives bytes again.
-type StatusFn = Box<dyn Fn(DownloadStatus, Option<SystemTime>) + Send + Sync>;
+type StatusFn =
+    Box<dyn Fn(DownloadStatus, Option<SystemTime>, Option<&TransferError>) + Send + Sync>;
 /// Called with the name a download into a folder chose, once its part file has it (#40).
 type NamedFn = Box<dyn Fn(&str) + Send + Sync>;
 /// Called with the file's media type, once the server answered with the file (#54).
@@ -176,10 +177,14 @@ impl Control {
     /// `status` is called with [`DownloadStatus::Retrying`] and when the next attempt starts
     /// while the download waits to retry (#59), [`DownloadStatus::Stalled`] when no byte has come
     /// from the network for a while, and [`DownloadStatus::Downloading`] when bytes come again
-    /// (#48). The time is `None` for every status but Retrying.
+    /// (#48). The time is `None` for every status but Retrying, and so is the failure the
+    /// download retries after (#245).
     pub fn with_status(
         mut self,
-        status: impl Fn(DownloadStatus, Option<SystemTime>) + Send + Sync + 'static,
+        status: impl Fn(DownloadStatus, Option<SystemTime>, Option<&TransferError>)
+            + Send
+            + Sync
+            + 'static,
     ) -> Self {
         self.status = Some(Box::new(status));
         self
@@ -308,16 +313,26 @@ impl Control {
 
     /// Reports `status`, if it isn't the one reported last.
     fn show(&self, status: DownloadStatus) {
-        self.report_status(status, None);
+        self.report_status(status, None, None);
     }
 
-    /// Reports Retrying until `at`, the next attempt (#59), unless that was reported last.
-    fn retrying_until(&self, at: Instant) {
+    /// Reports Retrying until `at`, the next attempt (#59), after `why` (#245), unless that was
+    /// reported last.
+    fn retrying_until(&self, at: Instant, why: Option<&TransferError>) {
         let left = at.saturating_duration_since(Instant::now());
-        self.report_status(DownloadStatus::Retrying, Some(SystemTime::now() + left));
+        self.report_status(
+            DownloadStatus::Retrying,
+            Some(SystemTime::now() + left),
+            why,
+        );
     }
 
-    fn report_status(&self, status: DownloadStatus, retry_at: Option<SystemTime>) {
+    fn report_status(
+        &self,
+        status: DownloadStatus,
+        retry_at: Option<SystemTime>,
+        why: Option<&TransferError>,
+    ) {
         let Some(s) = &self.status else { return };
         let now = Some((status, retry_at));
         let changed = {
@@ -326,7 +341,7 @@ impl Control {
         };
         // Called outside the lock, so a callback may take its time.
         if changed {
-            s(status, retry_at);
+            s(status, retry_at, why);
         }
     }
 
@@ -492,6 +507,10 @@ pub enum DownloadError {
     /// after it was fetched again. The part file is kept for inspection and not renamed, and the
     /// engine doesn't restart the download on its own.
     IntegrityFailed(TransferError),
+    /// No try of this start reached the server: the name didn't resolve, or the connection was
+    /// refused or timed out. The engine doesn't start the download again on its own (PO decision
+    /// on #245); the user may retry.
+    Unreachable(TransferError),
 }
 
 impl From<TransferError> for DownloadError {
@@ -772,7 +791,10 @@ pub fn download_from(
             })
         }
         Err(e) => {
-            let retryable = matches!(&e, DownloadError::Transfer(t) if t.retryable);
+            let retryable = matches!(
+                &e,
+                DownloadError::Transfer(t) | DownloadError::Unreachable(t) if t.retryable
+            );
             // A local error the user can fix keeps what a checkpoint recorded, to resume from (#74).
             let fixable = matches!(e, DownloadError::Local(_));
             if matches!(e, DownloadError::Paused) || ((retryable || fixable) && ck.sent > 0) {
@@ -934,7 +956,8 @@ fn fresh_from_any(
     loop {
         let lead = sources.lead();
         let result = fetch_fresh(lp, sources, lead, options, part, ck, control);
-        let Err(DownloadError::Transfer(t)) = &result else {
+        // A source that can't be reached hands over too (#245).
+        let Err(DownloadError::Transfer(t) | DownloadError::Unreachable(t)) = &result else {
             return result;
         };
         if sources.len() < 2 {
@@ -1224,6 +1247,9 @@ struct Retryable {
     retry_after: Option<Duration>,
     /// What the failed probe's answer said, if it answered with the file.
     answered: Option<Answered>,
+    /// It never reached the server: the name didn't resolve, or the connection was refused or
+    /// timed out (#245).
+    unreachable: bool,
 }
 
 /// What a probe's answer said about the file: a retry that writes after its bytes must agree
@@ -1267,6 +1293,7 @@ fn retryable(
             error,
             retry_after: retry_after.get(),
             answered,
+            unreachable: false,
         }))
     } else {
         Err(error.into())
@@ -1288,6 +1315,8 @@ fn probe_retrying(
     let mut retries = 0;
     // The answer whose bytes were kept: every retry must be about the same file (#45).
     let mut earlier: Option<Answered> = None;
+    // Whether any try reached the server: one that never did isn't started again (#245).
+    let mut reached = false;
     loop {
         let ask = ProbeAsk {
             request: request.clone(),
@@ -1301,10 +1330,16 @@ fn probe_retrying(
                 if earlier.is_none() && part.written > 0 {
                     earlier = failed.answered;
                 }
-                let wait = retrier
-                    .wait(&failed.error, failed.retry_after, part.written)
-                    .ok_or(failed.error)?;
-                wait_out(control, wait)?;
+                reached |= !failed.unreachable || part.written > 0;
+                let Some(wait) = retrier.wait(&failed.error, failed.retry_after, part.written)
+                else {
+                    return Err(if reached {
+                        failed.error.into()
+                    } else {
+                        DownloadError::Unreachable(failed.error)
+                    });
+                };
+                wait_out(control, wait, &retrier.why(&failed.error))?;
                 retries += 1;
             }
         }
@@ -1464,8 +1499,13 @@ fn probe(
         Some(Ok(o)) => o,
         Some(Err(e)) => return retryable(e, &retry_after, answered),
         None => {
+            let unreachable = probe_done.unreachable();
             let e = probe_done.failure(policy).unwrap_or_else(loop_stopped);
-            return retryable(e, &retry_after, answered);
+            let mut result = retryable(e, &retry_after, answered)?;
+            if let Err(failed) = &mut result {
+                failed.unreachable = unreachable;
+            }
+            return Ok(result);
         }
     };
     if let Some(e) = probe_done.failure(policy) {
@@ -1538,6 +1578,19 @@ impl Retrier {
         }
     }
 
+    /// `error` as the reason for the wait [`Retrier::wait`] just gave: which try comes next, of
+    /// the ones a start makes before it gives up (#245).
+    fn why(&self, error: &TransferError) -> TransferError {
+        let mut why = error.clone();
+        why.message = format!(
+            "{} Trying again ({} of {}).",
+            error.message,
+            self.failures + 1,
+            self.policy.failures_in_a_row
+        );
+        why
+    }
+
     /// The wait before retrying after `error`, with `written` bytes written so far, or `None` to
     /// give up. New bytes since the last failure start the count again.
     fn wait(
@@ -1559,11 +1612,15 @@ impl Retrier {
     }
 }
 
-/// Waits `wait` before a retry, showing Retrying and when it ends, and stops early for a pause
-/// or a cancel.
-pub(crate) fn wait_out(control: &Control, wait: Duration) -> Result<(), DownloadError> {
+/// Waits `wait` before a retry after `why`, showing Retrying, why and when it ends, and stops
+/// early for a pause or a cancel.
+pub(crate) fn wait_out(
+    control: &Control,
+    wait: Duration,
+    why: &TransferError,
+) -> Result<(), DownloadError> {
     let until = Instant::now() + wait;
-    control.retrying_until(until);
+    control.retrying_until(until, Some(why));
     loop {
         if control.is_cancelled() {
             return Err(DownloadError::Cancelled);
@@ -1826,8 +1883,8 @@ fn fetch_ranges(
         options.disk.queued_per_segment.max(1) * options.connections.max(1) as usize,
     );
     let mut active: HashMap<LeaseId, Active> = HashMap::new();
-    // Connections waiting out a retry wait, by when each may be used again.
-    let mut waiting: Vec<Instant> = Vec::new();
+    // Connections waiting out a retry wait, by when each may be used again, and why (#245).
+    let mut waiting: Vec<(Instant, Option<TransferError>)> = Vec::new();
     let mut retrier = Retrier::new(*policy);
     let (mut fetches, mut splits, mut anomalies) = (0u32, 0u32, 0u32);
     let mut ranges_ignored = false;
@@ -1844,7 +1901,7 @@ fn fetch_ranges(
     let mut rtt: Option<Duration> = None;
     loop {
         let now = Instant::now();
-        waiting.retain(|until| *until > now);
+        waiting.retain(|(until, _)| *until > now);
         if failure.is_some() || changed.is_some() || encoding_changed.is_some() {
             // The download ends; nothing waits to be retried.
             waiting.clear();
@@ -1933,7 +1990,7 @@ fn fetch_ranges(
                 // Every source is busy, cooling down or gone.
                 if multi && active.is_empty() && waiting.is_empty() {
                     match sources.next_ready(now) {
-                        Some(at) => waiting.push(at),
+                        Some(at) => waiting.push((at, last_source_error.clone())),
                         None => {
                             failure = failure
                                 .take()
@@ -2007,10 +2064,10 @@ fn fetch_ranges(
         if active.is_empty() {
             // Every connection waits to retry; the first to try again is the download's next
             // attempt.
-            let Some(&next) = waiting.iter().min() else {
+            let Some((next, why)) = waiting.iter().min_by_key(|(at, _)| *at) else {
                 break;
             };
-            control.retrying_until(next);
+            control.retrying_until(*next, why.as_ref());
         }
         if control.is_cancelled() {
             // Dropping `rx` ends the forwarders, and dropping their fetches cancels them.
@@ -2039,7 +2096,7 @@ fn fetch_ranges(
                 written,
             ) {
                 Some(wait) => {
-                    waiting.push(Instant::now() + wait);
+                    waiting.push((Instant::now() + wait, Some(retrier.why(&t))));
                     if t.class == FailureClass::Throttled {
                         throttled_to = retry::after_throttling(connections, serving);
                         control.throttled_to.store(throttled_to, Ordering::Release);
@@ -2359,8 +2416,10 @@ fn fetch_sequential(
             .take();
         // A failure worth retrying, after a wait; or the download's end.
         let mut retry = |t: TransferError, retry_after: Option<Duration>| {
-            let wait = retrier.wait(&t, retry_after, part.written).ok_or(t)?;
-            wait_out(control, wait)
+            let Some(wait) = retrier.wait(&t, retry_after, part.written) else {
+                return Err(t.into());
+            };
+            wait_out(control, wait, &retrier.why(&t))
         };
         match (result, done) {
             (Some(Ok(Continuation::End)), _) => {
@@ -2497,10 +2556,10 @@ fn stream_gaps(
                 Some(e) => e,
             },
         };
-        let wait = retrier
-            .wait(&failed, retry_after.get(), part.written)
-            .ok_or(failed)?;
-        wait_out(control, wait)?;
+        let Some(wait) = retrier.wait(&failed, retry_after.get(), part.written) else {
+            return Err(failed.into());
+        };
+        wait_out(control, wait, &retrier.why(&failed))?;
     }
 }
 
@@ -2565,6 +2624,23 @@ enum Drained {
 }
 
 impl Drained {
+    /// It failed before it reached the server (#245).
+    fn unreachable(&self) -> bool {
+        use velocity_curl::CurlFailure::{Connect, Resolve, Timeout};
+        matches!(
+            self,
+            Drained::Failed(
+                FetchError::Curl {
+                    kind: Resolve | Connect | Timeout,
+                    ..
+                } | FetchError::Sftp {
+                    kind: Resolve | Connect | Timeout,
+                    ..
+                }
+            )
+        )
+    }
+
     /// The failure it stands for, if it didn't complete.
     fn failure(self, policy: &RetryPolicy) -> Option<TransferError> {
         match self {
