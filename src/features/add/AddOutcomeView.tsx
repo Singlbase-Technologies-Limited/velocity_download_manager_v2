@@ -112,7 +112,7 @@ export function AddOutcomeFooter({
   );
 }
 
-/** The choices left: rename, add anyway, or skip; or only Done. */
+/** The choices left: rename, add anyway, or skip; or only Done. Each answer keeps the ones given before it, so a link whose name is taken and that was added before isn't asked about again (#266). */
 function OutcomeChoices({
   outcome,
   submitting,
@@ -133,7 +133,7 @@ function OutcomeChoices({
         <Button variant="ghost" onClick={onClose}>
           Skip
         </Button>
-        <Button variant="primary" busy={submitting} onClick={() => { onRetry({ ...only(direct, outcome.request), onConflict: 'rename' }); }}>
+        <Button variant="primary" busy={submitting} onClick={() => { onRetry({ ...only(direct, outcome.request), onConflict: 'rename', allowDuplicate: outcome.request.allowDuplicate }); }}>
           Keep both (rename)
         </Button>
       </>
@@ -145,7 +145,7 @@ function OutcomeChoices({
         <Button variant="ghost" onClick={onClose}>
           Skip
         </Button>
-        <Button variant="primary" busy={submitting} onClick={() => { onRetry({ ...only(again, outcome.request), allowDuplicate: true }); }}>
+        <Button variant="primary" busy={submitting} onClick={() => { onRetry({ ...only(again, outcome.request), allowDuplicate: true, onConflict: outcome.request.onConflict }); }}>
           Add anyway
         </Button>
       </>
