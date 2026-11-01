@@ -55,6 +55,8 @@ struct Download {
     needs_login: bool,
     /// When it started and how fast it went while it ran (#59).
     activity: activity::Tracker,
+    /// What the app's log last said about it (#251); `None` until it is first looked at.
+    logged: Option<lifecycle::Logged>,
 }
 
 /// What a download's engine needs: the direct-download engine's or the torrent helper's.
@@ -389,6 +391,7 @@ impl Manager {
             saved_at_ms: None,
             needs_login: false,
             activity: activity::Tracker::default(),
+            logged: None,
         };
         download.record.status = download.waiting_status();
         download.show_settings();
@@ -409,6 +412,7 @@ impl Manager {
                 return Err(code);
             }
         }
+        self.downloads.get_mut(&id).expect("added").note_added();
         self.flush();
         Ok(id)
     }
@@ -766,6 +770,10 @@ impl Manager {
             self.follow_metalink(&id, now_ms);
         }
         self.fill();
+        // What the user's actions and the queue changed (#251).
+        for download in self.downloads.values_mut() {
+            download.note(now_ms);
+        }
         applied
     }
 
@@ -1072,7 +1080,10 @@ impl Manager {
                 let due = download
                     .saved_at_ms
                     .is_none_or(|at| now_ms.saturating_sub(at) >= persist::PROGRESS_SAVE_MS);
-                if changed || (record.progress != before.progress && due) {
+                let progressed = record.progress != before.progress;
+                // Each event, so a retry the engine gets past before the next pump is logged.
+                download.note(now_ms);
+                if changed || (progressed && due) {
                     download.saved_at_ms = Some(now_ms);
                     self.mark(&app_id);
                 }
@@ -1111,6 +1122,7 @@ mod batch;
 mod categories;
 mod finished;
 mod history;
+mod lifecycle;
 mod opening;
 mod options;
 mod persist;

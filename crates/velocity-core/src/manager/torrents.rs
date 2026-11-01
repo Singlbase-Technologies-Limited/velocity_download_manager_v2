@@ -205,6 +205,7 @@ impl Manager {
             saved_at_ms: None,
             needs_login: false,
             activity: super::activity::Tracker::default(),
+            logged: None,
         };
         download.record.status = download.waiting_status();
         download.show_settings();
@@ -239,6 +240,7 @@ impl Manager {
                 }
             }
         }
+        self.downloads.get_mut(&id).expect("added").note_added();
         self.flush();
         Ok(id)
     }
@@ -567,7 +569,10 @@ impl Manager {
         let due = d
             .saved_at_ms
             .is_none_or(|at| now_ms.saturating_sub(at) >= super::persist::PROGRESS_SAVE_MS);
-        if changed || (record.progress != before.progress && due) {
+        let progressed = record.progress != before.progress;
+        // Each event, as for direct downloads (#251).
+        self.downloads.get_mut(id).expect("known").note(now_ms);
+        if changed || (progressed && due) {
             self.downloads.get_mut(id).expect("known").saved_at_ms = Some(now_ms);
             self.mark(id);
         }
