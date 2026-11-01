@@ -34,7 +34,8 @@ export default defineConfig({
           setupFiles: ['src/test/setup.ts'],
         },
       },
-      { extends: true, test: { name: 'scripts', environment: 'node', include: ['scripts/**/*.test.mjs'] } },
+      // The field test's tools (#262) are checked with the scripts; the field test itself runs by hand.
+      { extends: true, test: { name: 'scripts', environment: 'node', include: ['scripts/**/*.test.mjs', 'tests/field/**/*.test.mjs'] } },
       // The browser extension's logic runs against fakes of the WebExtension APIs (#64).
       { extends: true, test: { name: 'extension', environment: 'node', include: ['browser-extension/tests/**/*.test.ts'] } },
     ],

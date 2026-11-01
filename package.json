@@ -41,6 +41,7 @@
     "changelog": "node scripts/changelog.mjs",
     "package:linux": "node scripts/package-linux.mjs",
     "package:windows": "node scripts/package-windows.mjs",
+    "field": "node tests/field/session.mjs",
     "version:set": "node scripts/version.mjs set"
   },
   "dependencies": {
