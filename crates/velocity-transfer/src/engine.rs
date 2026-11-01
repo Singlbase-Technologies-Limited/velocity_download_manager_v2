@@ -977,10 +977,10 @@ fn run(shared: &Shared, id: TransferId, job: &Job, resume: Option<&Resume>, cont
             s.status = DownloadStatus::Retrying;
             // The restart's own time, never the last request's wait, which is over.
             s.retry_at_ms = Some(epoch_ms(SystemTime::now() + wait));
-            s.error = Some(waiting);
+            s.error = Some(waiting.clone());
             s.progress.download_speed_bps = 0;
         });
-        if let Err(stopped) = wait_out(control, wait) {
+        if let Err(stopped) = wait_out(control, wait, &waiting) {
             if matches!(stopped, DownloadError::Cancelled) {
                 // A failure that had a checkpoint kept the part file for this restart.
                 let destination = destination_of(shared, id).or_else(|| job.destination.clone());
@@ -1014,7 +1014,8 @@ fn run(shared: &Shared, id: TransferId, job: &Job, resume: Option<&Resume>, cont
                 DownloadError::Transfer(e)
                 | DownloadError::Changed(e)
                 | DownloadError::EncodingChanged(e)
-                | DownloadError::IntegrityFailed(e),
+                | DownloadError::IntegrityFailed(e)
+                | DownloadError::Unreachable(e),
             ) => {
                 s.status = DownloadStatus::Failed;
                 s.error = Some(e);
@@ -1070,12 +1071,16 @@ fn discard_part(destination: &std::path::Path) -> Result<(), DownloadError> {
 fn status_reporter(
     shared: &Arc<Shared>,
     id: TransferId,
-) -> impl Fn(DownloadStatus, Option<SystemTime>) + Send + Sync + 'static {
+) -> impl Fn(DownloadStatus, Option<SystemTime>, Option<&TransferError>) + Send + Sync + 'static {
     let shared = Arc::clone(shared);
-    move |status, retry_at| {
+    move |status, retry_at, why| {
         update(&shared, id, |s| {
             s.status = status;
             s.retry_at_ms = retry_at.map(epoch_ms);
+            // A retry says why (#245).
+            if let Some(why) = why {
+                s.error = Some(why.clone());
+            }
             if status == DownloadStatus::Downloading {
                 s.error = None;
             } else {

@@ -170,6 +170,92 @@ fn a_server_that_refused_extra_requests_gets_no_more_from_later_downloads() {
 }
 
 #[test]
+fn every_retry_says_why() {
+    // The field test saw retries 1 to 9 with no reason (#245): a request's retry inside a start
+    // showed Retrying with an empty error, and only a restart of the whole download had one.
+    let (s, data) = serve(ServerOptions {
+        drop_first: 2,
+        ..ServerOptions::default()
+    });
+    let dir = Dir::new("why");
+    let dest = dir.0.join("out.bin");
+    let mut engine = engine(FAST);
+    let events = engine.subscribe();
+    let id = engine.add(spec(s.url("f.bin"), dest.clone(), 1)).unwrap();
+    let seen = snapshots_until(&events, id, finished);
+    assert_eq!(seen.last().unwrap().status, DownloadStatus::Completed);
+    assert!(std::fs::read(&dest).unwrap() == data);
+    let retrying: Vec<_> = seen
+        .iter()
+        .filter(|s| s.status == DownloadStatus::Retrying)
+        .collect();
+    assert!(!retrying.is_empty(), "no retry in {seen:?}");
+    let mut messages = Vec::new();
+    for s in retrying {
+        let error = s
+            .error
+            .as_ref()
+            .unwrap_or_else(|| panic!("a retry without a reason: {s:?}"));
+        assert_eq!(error.class, FailureClass::Transient);
+        if messages.last() != Some(&error.message) {
+            messages.push(error.message.clone());
+        }
+    }
+    // Each says which try comes next, of the 5 a start makes; the field test's log counted
+    // retries one way and the engine's message another (#245).
+    assert_eq!(messages.len(), 2, "{messages:?}");
+    assert!(
+        messages[0].ends_with(" Trying again (2 of 5)."),
+        "{messages:?}"
+    );
+    assert!(
+        messages[1].ends_with(" Trying again (3 of 5)."),
+        "{messages:?}"
+    );
+}
+
+#[test]
+fn a_server_that_is_never_reached_is_not_started_again() {
+    // A host that didn't resolve was tried 14 times in 30 s: 5 tries in each of 3 starts (#245).
+    // A start that never reached the server isn't started again (PO decision on #245): a refused
+    // connection is tried 5 times, and the download fails.
+    let port = {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.local_addr().unwrap().port()
+    };
+    let dir = Dir::new("unreachable");
+    let dest = dir.0.join("out.bin");
+    let mut engine = engine(FAST);
+    let events = engine.subscribe();
+    let url = format!("http://127.0.0.1:{port}/f.bin");
+    let id = engine.add(spec(url, dest.clone(), 4)).unwrap();
+    let seen = snapshots_until(&events, id, finished);
+    let last = seen.last().unwrap();
+    assert_eq!(last.status, DownloadStatus::Failed);
+    let error = last.error.as_ref().expect("an error");
+    assert!(error.retryable, "the user may still retry by hand");
+    let waits: Vec<_> = seen
+        .iter()
+        .filter(|s| s.status == DownloadStatus::Retrying)
+        .map(|s| (s.retry_at_ms, s.error.as_ref().map(|e| e.message.clone())))
+        .collect();
+    assert!(
+        waits
+            .iter()
+            .all(|(_, why)| !why.as_deref().unwrap_or("").contains("automatically")),
+        "started again: {waits:?}"
+    );
+    let mut times: Vec<_> = waits.iter().map(|(at, _)| *at).collect();
+    times.dedup();
+    assert_eq!(
+        times.len(),
+        FAST.failures_in_a_row as usize - 1,
+        "one wait between each of the 5 tries: {waits:?}"
+    );
+    assert!(!dest.exists() && !part_of(&dest).exists());
+}
+
+#[test]
 fn a_failed_download_is_started_again_and_finishes() {
     // The first run fails after its 5 tries; the restart gets through.
     let (s, data) = serve(ServerOptions {
@@ -393,5 +479,36 @@ fn a_stall_shows_in_the_snapshot() {
         seen.iter().any(|s| s.status == DownloadStatus::Stalled),
         "{:?}",
         seen.iter().map(|s| s.status).collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn a_retry_never_takes_progress_back() {
+    // The field test saw 8.5 % become "0 B of unknown size" while a download retried (#245). A
+    // range that freezes is reset and retried; the bytes already written stay counted.
+    let dir = Dir::new("no-step-back");
+    let dest = dir.0.join("out.bin");
+    let mut engine = engine(FAST);
+    let events = engine.subscribe();
+    let big = seeded_bytes(8 << 20, 245);
+    let s = TestServer::start(
+        vec![("f.bin".into(), big.clone())],
+        ServerOptions {
+            freeze_later_range: Some(Freeze {
+                after: 16 * 1024,
+                hold: Duration::from_secs(20),
+            }),
+            ..ServerOptions::default()
+        },
+    );
+    let id = engine.add(spec(s.url("f.bin"), dest.clone(), 2)).unwrap();
+    let seen = snapshots_until(&events, id, finished);
+    assert_eq!(seen.last().unwrap().status, DownloadStatus::Completed);
+    assert!(std::fs::read(&dest).unwrap() == big);
+    assert!(s.counters().frozen, "the range froze, so it was retried");
+    let bytes: Vec<u64> = seen.iter().map(|s| s.progress.completed_bytes).collect();
+    assert!(
+        bytes.windows(2).all(|w| w[0] <= w[1]),
+        "progress went back: {bytes:?}"
     );
 }

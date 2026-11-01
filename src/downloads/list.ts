@@ -30,6 +30,25 @@ export function etaSeconds(d: DownloadRecord): number | null {
   return Math.max(0, totalBytes - completedBytes) / downloadSpeedBps;
 }
 
+/** The average speed while it ran, but none while no byte has arrived: beside "0 B" it would read as a fault (#245). */
+export function averageSpeedOf(d: DownloadRecord): number | null {
+  if (d.progress.completedBytes === 0 && d.status !== 'completed' && d.status !== 'seeding') return null;
+  return d.averageSpeedBps;
+}
+
+/** Whole seconds until the next try, rounded down: the window's clock ticks in whole seconds (`useNow`), so `now` can be up
+ * to a second behind and rounding would show 31s with 30.5s left. */
+function secondsToRetry(retryAtMs: number, now: number): number {
+  return Math.floor((retryAtMs - now) / 1000);
+}
+
+/** When a retrying download tries again: a time to come, or now once it has passed (#245); `null` when it isn't waiting. */
+export function nextTry(d: DownloadRecord, now: number): string | null {
+  if (d.status !== 'retrying' || d.retryAtMs === null) return null;
+  const left = secondsToRetry(d.retryAtMs, now);
+  return left > 0 ? `in ${formatDuration(left)}` : 'now';
+}
+
 export function matchesSearch(d: DownloadRecord, query: string): boolean {
   const q = query.trim().toLowerCase();
   if (!q) return true;
@@ -176,9 +195,7 @@ export const STATUS_LABEL: Record<DownloadStatus, string> = {
 export function statusLabel(d: DownloadRecord, now: number, opts: { needsLogin?: boolean } = {}): string {
   if (opts.needsLogin) return 'Needs its login';
   if (d.status === 'retrying' && d.retryAtMs !== null) {
-    // Down, never up: the window's clock ticks in whole seconds (`useNow`), so `now` can be up to a second behind and
-    // rounding would show 31s with 30.5s left.
-    const left = Math.floor((d.retryAtMs - now) / 1000);
+    const left = secondsToRetry(d.retryAtMs, now);
     return left > 0 ? `Retrying in ${formatDuration(left)}` : 'Retrying now';
   }
   // Completed, and waiting for a free seeding slot (#63).

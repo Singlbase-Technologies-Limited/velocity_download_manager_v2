@@ -87,7 +87,8 @@ fn serve(options: ServerOptions) -> (TestServer, Vec<u8>) {
 fn recording() -> (Control, Arc<Mutex<Vec<DownloadStatus>>>) {
     let seen = Arc::new(Mutex::new(Vec::new()));
     let s = Arc::clone(&seen);
-    let control = Control::default().with_status(move |status, _| s.lock().unwrap().push(status));
+    let control =
+        Control::default().with_status(move |status, _, _| s.lock().unwrap().push(status));
     (control, seen)
 }
 
@@ -304,7 +305,8 @@ fn a_host_that_does_not_resolve_fails_as_transient() {
         options,
         &Control::default(),
     ) {
-        Err(DownloadError::Transfer(e)) => {
+        // It never reached the server, so the engine won't start it again (PO decision on #245).
+        Err(DownloadError::Unreachable(e)) => {
             assert_eq!(e.class, FailureClass::Transient, "{e:?}");
             assert!(e.retryable);
             assert!(e.message.contains("could not be resolved"), "{}", e.message);

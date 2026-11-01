@@ -80,7 +80,7 @@ stateDiagram-v2
 
 Cancel works from every unfinished status; the diagram shows three of them. Retrying a failed or removed download is the manager's: it adds the transfer again ([below](#retrying-removing-and-clearing-58)).
 
-- **Retrying:** the transfer waits before trying again (#48), and `retryAtMs` says until when (#59). When the engine starts a failed download again, `error` holds the failure it waits after, with "Retrying automatically (n of 2)." The error is cleared once bytes come again.
+- **Retrying:** the transfer waits before trying again (#48), and `retryAtMs` says until when (#59). `error` holds the failure it waits after, every time (#245): a request tried again within a start ends with "Trying again (n of 5).", and a failed download the engine starts again with "Retrying automatically (n of 2)." The error is cleared once bytes come again.
 - **Stalled:** no byte has come from the network for a while. The transfer isn't failed, and goes back to Downloading when bytes come.
 - **Verifying:** every byte is in; the engine is finishing the whole-file hash before the file is renamed (#46).
 - **A failed check** (a wrong checksum, a piece still bad after it was fetched again) ends as Failed with a message. The part file is kept for inspection and isn't renamed, the engine doesn't start it again on its own, and its last checkpoint trusts no byte, so a resume from it downloads the whole file again ([ENGINE_INTERNALS.md](ENGINE_INTERNALS.md#a-failed-check)).

@@ -4,7 +4,7 @@ import { Badge } from '../../components/Badge';
 import { CategoryGlyph } from '../../components/CategoryGlyph';
 import { ProgressBar } from '../../components/ProgressBar';
 import { COLUMN_MAX_WIDTH, COLUMN_MIN_WIDTH, type Category, type ColumnId, type DownloadRecord } from '../../contract';
-import { STATUS_TONE, displayName, etaSeconds, percentOf, statusLabel, type SortKey } from '../../downloads/list';
+import { STATUS_TONE, averageSpeedOf, displayName, etaSeconds, percentOf, statusLabel, type SortKey } from '../../downloads/list';
 import { formatBytes, formatDuration, formatPercent, formatShortDate, formatSpeed, formatTransferredBytes } from '../../lib/format';
 
 /** What a cell needs besides its download. */
@@ -83,7 +83,7 @@ export const ALL_COLUMNS: readonly ColumnDef[] = [
     sort: 'speed',
     render: (d) => (moving(d) ? formatSpeed(d.progress.downloadSpeedBps) : d.status === 'seeding' ? `↑ ${formatSpeed(d.progress.uploadSpeedBps)}` : '—'),
   },
-  { id: 'avgSpeed', label: 'Avg. speed', width: '88px', minWidth: 88, align: 'right', render: (d) => formatSpeed(d.averageSpeedBps) },
+  { id: 'avgSpeed', label: 'Avg. speed', width: '88px', minWidth: 88, align: 'right', render: (d) => formatSpeed(averageSpeedOf(d)) },
   {
     id: 'eta',
     label: 'Time left',

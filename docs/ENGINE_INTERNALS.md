@@ -352,11 +352,12 @@ A failure is classified first ([`failure.rs`](../crates/velocity-transfer/src/fa
 ### The whole download
 
 A download that still fails in a way worth retrying is started again by the engine (V1's `app_retries`):
+- unless no try of that start reached the server: a name that didn't resolve, or a connection refused or timed out. Those 5 tries are all, and the download fails (`DownloadError::Unreachable`, PO decision on #245). A server that accepts the connection and doesn't answer is still started again;
 - at most 2 times;
 - after 5 s and then 10 s, or 60 s and then 120 s when the server was throttling, never more than 15 minutes;
 - from its last checkpoint when it has one (its part file was kept), otherwise from the start.
 
-While it waits, the snapshot shows Retrying, with the failure's message and "Retrying automatically (1 of 2).". Once bytes come again, the error is cleared. A cancel during the wait removes the kept part file. A permanent failure is never started again. Retrying by hand is the manager's, and never a second automatic retry ([ENGINE_CONTRACT.md](ENGINE_CONTRACT.md#retrying-removing-and-clearing-58)).
+While it waits, the snapshot shows Retrying, with the failure's message and "Retrying automatically (1 of 2).". A request's own retry within a start shows its failure too, with "Trying again (2 of 5).": the try that comes next, of the 5 a start makes (#245). Once bytes come again, the error is cleared. A cancel during the wait removes the kept part file. A permanent failure is never started again. Retrying by hand is the manager's, and never a second automatic retry ([ENGINE_CONTRACT.md](ENGINE_CONTRACT.md#retrying-removing-and-clearing-58)).
 
 ### The values
 

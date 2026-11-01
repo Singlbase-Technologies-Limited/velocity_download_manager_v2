@@ -7,8 +7,8 @@ import { ProgressBar } from '../../components/ProgressBar';
 import { Select } from '../../components/Select';
 import { ConnectionLine } from '../../ConnectionLine';
 import type { Verification } from '../../contract';
-import { actionsFor, canOpenFile, displayName, etaSeconds, percentOf, RUNNING, STATUS_TONE, statusLabel } from '../../downloads/list';
-import { formatDuration, formatPercent, formatShortDate, formatSpeed, formatTransferred, relativeFromNow } from '../../lib/format';
+import { actionsFor, averageSpeedOf, canOpenFile, displayName, etaSeconds, nextTry, percentOf, RUNNING, STATUS_TONE, statusLabel } from '../../downloads/list';
+import { formatDuration, formatPercent, formatShortDate, formatSpeed, formatTransferred } from '../../lib/format';
 import { useCategories } from '../../lib/queries';
 import { useDownloadsStore } from '../../stores/downloads';
 import { TorrentSection } from '../torrents/TorrentSection';
@@ -147,7 +147,7 @@ export function DetailsPanel({ id, hidden, actions, busy, needsLogin, now, onClo
 
         <DetailsGroup title="Transfer">
           <Row label="Speed">{d.status === 'downloading' ? formatSpeed(d.progress.downloadSpeedBps) : '—'}</Row>
-          <Row label="Average speed">{formatSpeed(d.averageSpeedBps)}</Row>
+          <Row label="Average speed">{formatSpeed(averageSpeedOf(d))}</Row>
           <Row label="Time left">{d.status === 'downloading' ? formatDuration(etaSeconds(d)) : '—'}</Row>
           {torrent ? null : (
             <Row label="Connections">
@@ -155,7 +155,7 @@ export function DetailsPanel({ id, hidden, actions, busy, needsLogin, now, onClo
               {RUNNING.includes(d.status) ? <ConnectionLine active={d.progress.connections} detail={d.progress.connectionDetail} /> : <ConnectionLine active={0} detail={null} />}
             </Row>
           )}
-          {d.status === 'retrying' && d.retryAtMs !== null ? <Row label="Next try">{relativeFromNow(d.retryAtMs, now)}</Row> : null}
+          {nextTry(d, now) !== null ? <Row label="Next try">{nextTry(d, now)}</Row> : null}
           {d.verification ? <Row label="Verification">{VERIFICATION[d.verification]}</Row> : null}
         </DetailsGroup>
 

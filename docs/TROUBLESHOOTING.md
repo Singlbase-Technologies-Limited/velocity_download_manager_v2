@@ -22,6 +22,7 @@ These are the messages the engine reports when a download waits or fails. The ap
 
 | Message or status | Cause | What to do |
 |---|---|---|
+| Retrying, with "Trying again (2 of 5)." | A request failed, for the reason shown, and is tried again after a wait; a start gives up after 5 tries | Nothing. If the server can't be reached at all (the name doesn't resolve, or the connection is refused or times out), the download fails after those 5 tries: check the link and your connection, then retry |
 | Retrying, with "Retrying automatically (1 of 2)." | The download failed in a way worth retrying, and the engine waits before starting it again | Nothing. If it ends as Failed, the message says why |
 | Stalled | No data has come from the server for 15 seconds | Nothing at first: after 30 seconds the connection is reset and tried again. If it keeps stalling, check the network connection |
 | "The server is rate limiting requests (429)." or "The server is temporarily unavailable or overloaded (503)." | The server asked clients to slow down | Velocity waits as long as the server asks, up to 10 minutes, and uses fewer connections. It remembers that for the server until the app quits, so later downloads from it don't ask for more. If it still fails, try again later |
