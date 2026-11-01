@@ -523,6 +523,8 @@ The app hands back what it saved, in `TransferSpec::resume`:
 | `discardPartFile` | The part file is the download's own but has no usable checkpoint: it is deleted and the download starts over (PO decision). A link, or anything that isn't a plain file, is refused and never touched |
 | none | A new download. An existing part file is never reused: the download fails |
 
+A resumed download's progress counts the bytes it holds: D plus what arrived since, not only the new bytes (#257). So the list shows where it really is from its first report, and progress never drops after a pause, a crash or an engine restart, unless the download started over.
+
 `StoredDownload::resume` in the database layer makes the choice from a record and its saved checkpoint. It picks the checkpoint if it's known and of this record's source, `discardPartFile` otherwise, and nothing for a finished record. A record this build can't route is never resumed.
 
 ### Pausing, stopping and crashing
