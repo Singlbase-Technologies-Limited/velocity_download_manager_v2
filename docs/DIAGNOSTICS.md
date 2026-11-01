@@ -23,6 +23,18 @@ What V2 records about itself, how secrets are kept out of it, and what the user 
 
 The transfer engine and the torrent helper are child processes ([ENGINE_PROTOCOL.md](ENGINE_PROTOCOL.md)). Their stderr is kept in memory by `velocity_child::log::ChildLog`: the last 500 lines, each cut at 2,000 characters, and each redacted before it is kept. The manager reads them through `DirectTransfer::recent_log` and `TorrentEngine::recent_log`.
 
+The transfer engine writes one line for each HTTP, HTTPS or FTP request when it ends (#263, `velocity_transfer::request_log`). `INFO` marks a request that completed or that the engine stopped (a pause, a split, a reset after a stall). `WARN` marks one that failed. Each line holds:
+
+- **Where:** the scheme and host only, never the path or the query, which may hold a token redaction can't recognise.
+- **What it asked for:** the byte range, or the whole file.
+- **The connection:** whether it was new or reused.
+- **How it ended:** the HTTP status, and for a failure the same message the app shows, with libcurl's error and detail.
+- **How much and how long:** the bytes received and the time taken.
+
+For example: `WARN https://example.com bytes 0-4194303, new connection: failed: The connection was interrupted. (libcurl error 56: …), after 0 bytes in 667 ms`.
+
+Requests to the same host that end the same way as the one before are counted rather than written: `… 50 more requests ended the same way`, a note every 50 repeats and when the outcome changes. A download stuck in a retry loop therefore takes a few lines, not the whole log. `velocity-transfer get` writes the same lines to its stderr. SFTP requests aren't logged here yet.
+
 ## Redaction
 
 `velocity_core::redact::redact`, ported from V1's `redact.rs` and extended, hides:

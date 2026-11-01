@@ -407,3 +407,39 @@ fn the_global_limit_survives_an_engine_restart() {
     let took = started.elapsed();
     assert!(took >= Duration::from_millis(1700), "{took:?}");
 }
+
+/// #263: the engine logs each request when it ends, and the app keeps it as the engine's log:
+/// the host, what it asked for, how it ended, never the file's path.
+#[test]
+fn the_engine_s_log_holds_a_line_for_each_request_with_its_host_but_not_its_path() {
+    let server = TestServer::start(
+        vec![("secret-path-263.bin".into(), seeded_bytes(1_000_000, 40))],
+        ServerOptions::default(),
+    );
+    let dir = Dir::new("request-log");
+    let dest = dir.0.join("out.bin");
+    let mut engine = SupervisedEngine::start(program(), fast(5)).expect("the engine starts");
+    let events = engine.subscribe();
+    let id = engine
+        .add(spec(server.url("secret-path-263.bin"), dest))
+        .expect("add");
+    wait_for(&events, id, |s| s == DownloadStatus::Completed);
+    let deadline = Instant::now() + WAIT;
+    let log = loop {
+        let log = engine.recent_log();
+        if log.iter().any(|l| l.contains("HTTP 20")) || Instant::now() > deadline {
+            break log;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    };
+    assert!(
+        log.iter().any(|l| l.contains("http://127.0.0.1")
+            && l.contains("HTTP 20")
+            && l.contains("bytes")),
+        "{log:?}"
+    );
+    assert!(
+        log.iter().all(|l| !l.contains("secret-path-263")),
+        "a path never reaches the log: {log:?}"
+    );
+}
