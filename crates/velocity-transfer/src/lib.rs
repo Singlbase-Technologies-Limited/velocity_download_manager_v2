@@ -16,6 +16,7 @@ pub mod files;
 pub mod integrity;
 pub mod probe;
 pub mod protocol;
+pub mod request_log;
 pub mod retry;
 pub mod scheduler;
 pub mod sources;

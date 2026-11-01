@@ -26,8 +26,8 @@ pub use capabilities::{
 };
 pub use fetch::{
     AddressProblem, CurlFailure, CurlLoop, FetchError, FetchEvent, FetchRequest, Gate,
-    HostKeyProblem, LoopError, LoopOptions, ProxyConfig, ProxyKind, RequestOptions, ResponseHead,
-    SshKeyFile,
+    HostKeyProblem, LoopError, LoopOptions, ProxyConfig, ProxyKind, RequestEnded, RequestHook,
+    RequestOptions, ResponseHead, SshKeyFile,
 };
 pub use head::file_head;
 pub use pipe::{Fetch, FetchControl, FetchLimit, FetchPipe, GateFn, Offered, Transport};

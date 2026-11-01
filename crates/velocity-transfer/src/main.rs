@@ -87,7 +87,12 @@ fn number<T: std::str::FromStr>(value: Option<&String>, flag: &str) -> Result<T,
 
 fn get(url: &str, destination: PathBuf, options: DownloadOptions) -> Result<(), String> {
     let libcurl = Libcurl::start().map_err(|e| e.to_string())?;
-    let lp = CurlLoop::start(&libcurl, LoopOptions::default()).map_err(|e| e.to_string())?;
+    let loop_options = LoopOptions {
+        // Each request's end on stderr (#263), as the engine logs them.
+        on_request_end: Some(velocity_transfer::request_log::stderr_hook()),
+        ..LoopOptions::default()
+    };
+    let lp = CurlLoop::start(&libcurl, loop_options).map_err(|e| e.to_string())?;
     let started = Instant::now();
     let shown = AtomicU64::new(0);
     let control = Control::with_progress(move |written, total| {

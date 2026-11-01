@@ -30,7 +30,7 @@ use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, OnceLock};
 use std::thread::{self, JoinHandle};
-use std::time::{Duration, SystemTime};
+use std::time::{Duration, Instant, SystemTime};
 
 use curl::easy::{Easy2, Handler, InfoType, List, WriteError};
 use curl::multi::{Easy2Handle, Multi, MultiWaker};
@@ -470,6 +470,45 @@ pub struct LoopOptions {
     /// builds only (PO decision on #69).
     #[cfg(feature = "test-ca")]
     pub ca_file: Option<std::path::PathBuf>,
+    /// Told about each request when it ends, for the engine's log (#263); `None` for nobody.
+    pub on_request_end: Option<RequestHook>,
+}
+
+/// A request that ended, as the loop tells [`LoopOptions::on_request_end`] (#263). It names the
+/// URL by its scheme and host only: a path or a query may hold a token, which redaction can't
+/// always tell from a file name.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RequestEnded {
+    /// `https://example.com`, with the port only when it isn't the scheme's own.
+    pub origin: String,
+    /// The inclusive range asked for, as in [`FetchRequest::range`]; `None` for the whole file.
+    pub range: Option<(u64, Option<u64>)>,
+    /// It opened a connection, rather than reusing one.
+    pub new_connection: bool,
+    /// The last response's status or FTP reply code; `None` when none arrived.
+    pub status: Option<u32>,
+    /// Body bytes received.
+    pub bytes: u64,
+    pub elapsed: Duration,
+    /// How it failed; `None` when it completed.
+    pub error: Option<FetchError>,
+}
+
+/// What [`LoopOptions::on_request_end`] calls. It runs on the loop's thread, so it returns at
+/// once and never calls back into the loop.
+#[derive(Clone)]
+pub struct RequestHook(Arc<dyn Fn(&RequestEnded) + Send + Sync>);
+
+impl RequestHook {
+    pub fn new(f: impl Fn(&RequestEnded) + Send + Sync + 'static) -> Self {
+        RequestHook(Arc::new(f))
+    }
+}
+
+impl std::fmt::Debug for RequestHook {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("RequestHook")
+    }
 }
 
 impl Default for LoopOptions {
@@ -485,6 +524,7 @@ impl Default for LoopOptions {
             http2_prior_knowledge: false,
             #[cfg(feature = "test-ca")]
             ca_file: None,
+            on_request_end: None,
         }
     }
 }
@@ -586,6 +626,7 @@ impl CurlLoop {
             redirecting: false,
             ftp,
             local_address: Box::default(),
+            started: Instant::now(),
         };
         let control = CurlControl {
             token,
@@ -696,6 +737,8 @@ struct Collector {
     /// The local address that `prereq` stopped the request at (#67). Boxed: libcurl holds a
     /// pointer to it (`CURLOPT_PREREQDATA`), which must stay put while the handle lives.
     local_address: Box<OnceLock<String>>,
+    /// When the fetch was asked for, for the log's line when it ends (#263).
+    started: Instant,
 }
 
 impl Collector {
@@ -1246,6 +1289,8 @@ fn run_loop(
     if waker_tx.send(Ok(multi.waker())).is_err() {
         return;
     }
+    let hook = options.on_request_end.clone();
+    let hook = hook.as_ref();
     let mut active: HashMap<usize, Easy2Handle<Collector>> = HashMap::new();
     // Where the next round of resuming rate-paused transfers starts (#49).
     let mut turn = 0usize;
@@ -1288,7 +1333,7 @@ fn run_loop(
                 }
                 Command::Cancel(token) => {
                     if let Some(handle) = active.remove(&token) {
-                        finish(&multi, handle, Err(FetchError::Cancelled));
+                        finish(&multi, handle, Err(FetchError::Cancelled), hook);
                     }
                 }
                 Command::Unpause(token) => {
@@ -1304,7 +1349,7 @@ fn run_loop(
                 }
                 Command::Stop => {
                     for (_, handle) in active.drain() {
-                        finish(&multi, handle, Err(FetchError::LoopStopped));
+                        finish(&multi, handle, Err(FetchError::LoopStopped), hook);
                     }
                     return;
                 }
@@ -1399,7 +1444,7 @@ fn run_loop(
                     (Err(error), Err(e)) => Err(proxy_refusal(&mut handle, e, error)),
                     (outcome, _) => outcome,
                 };
-                finish(&multi, handle, outcome);
+                finish(&multi, handle, outcome, hook);
             }
         }
         let cap = if rate_paused { RATE_CHECK } else { POLL_CAP };
@@ -1412,10 +1457,16 @@ fn run_loop(
     }
 }
 
-/// Removes a transfer from the `Multi` (on the loop thread, as libcurl requires) and sends its
-/// last event.
-fn finish(multi: &Multi, handle: Easy2Handle<Collector>, outcome: Result<(), FetchError>) {
+/// Removes a transfer from the `Multi` (on the loop thread, as libcurl requires), tells `hook`
+/// how it ended, and sends its last event.
+fn finish(
+    multi: &Multi,
+    handle: Easy2Handle<Collector>,
+    outcome: Result<(), FetchError>,
+    hook: Option<&RequestHook>,
+) {
     let events = handle.get_ref().sink.events.clone();
+    let ended = hook.map(|_| ended(&handle));
     // A failed removal is reported to the fetch rather than dropped; a successful outcome then
     // becomes that error.
     let outcome = match multi.remove2(handle) {
@@ -1426,8 +1477,39 @@ fn finish(multi: &Multi, handle: Easy2Handle<Collector>, outcome: Result<(), Fet
             message: format!("the transfer couldn't be removed: {e}"),
         })),
     };
+    if let (Some(hook), Some(mut ended)) = (hook, ended) {
+        ended.error = outcome.as_ref().err().cloned();
+        (hook.0)(&ended);
+    }
     // The reader may have dropped its Fetch; then nobody is waiting for this event.
     let _ = events.send(FetchEvent::Done(outcome));
+}
+
+/// What a transfer did, read from libcurl before its handle is removed (#263). A value libcurl
+/// can't give reads as none: this is for the log, never for a decision.
+fn ended(handle: &Easy2Handle<Collector>) -> RequestEnded {
+    let collector = handle.get_ref();
+    let origin = origin(&collector.request.url).map_or_else(String::new, |o| {
+        let own = matches!(
+            (o.scheme.as_str(), o.port),
+            ("http", 80) | ("https", 443) | ("ftp", 21) | ("ftps", 990) | ("sftp", 22)
+        );
+        if own {
+            format!("{}://{}", o.scheme, o.host)
+        } else {
+            format!("{}://{}:{}", o.scheme, o.host, o.port)
+        }
+    });
+    RequestEnded {
+        origin,
+        range: collector.request.range,
+        new_connection: handle.num_connects().is_ok_and(|n| n > 0),
+        status: handle.response_code().ok().filter(|&c| c > 0),
+        // libcurl's count is an f64 of whole bytes.
+        bytes: handle.download_size().map_or(0, |b| b as u64),
+        elapsed: collector.started.elapsed(),
+        error: None,
+    }
 }
 
 #[cfg(test)]

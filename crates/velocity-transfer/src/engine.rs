@@ -362,6 +362,8 @@ impl InProcessEngine {
             // libcurl's own cap follows the profile's (#57): with many small downloads, each
             // keeping one connection, it is what bounds a host, not the budget.
             max_connections_per_host: MAX_CONNECTIONS as usize,
+            // Each request's end, in the engine's log (#263).
+            on_request_end: Some(crate::request_log::stderr_hook()),
             ..LoopOptions::default()
         };
         let curl = CurlLoop::start(&libcurl, options).map_err(|e| e.to_string())?;

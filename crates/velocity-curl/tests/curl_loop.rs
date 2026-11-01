@@ -1,11 +1,11 @@
 //! The libcurl loop against the local test server (#37): real libcurl, real sockets.
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use velocity_curl::{
     AddressProblem, CurlFailure, CurlLoop, Fetch, FetchError, FetchEvent, FetchRequest, Gate,
-    Libcurl, LoopOptions, RateLimit, RequestOptions, ResponseHead,
+    Libcurl, LoopOptions, RateLimit, RequestEnded, RequestHook, RequestOptions, ResponseHead,
 };
 use velocity_test_http::{seeded_bytes, RangeMode, ServerOptions, TestServer};
 
@@ -771,4 +771,35 @@ fn the_per_host_cap_queues_fetches_past_it() {
         assert!(o.data == data);
     }
     assert_eq!(s.counters().peak_answering, 2);
+}
+
+/// #263: the loop reports each finished request to its hook, for the engine's log: the URL's
+/// scheme and host only, the range, the status, the bytes, and whether its connection was new.
+#[test]
+fn a_finished_request_is_reported_to_the_loop_s_hook() {
+    let (s, _) = serve("a.bin", 300_000, ServerOptions::default());
+    let ended = Arc::new(Mutex::new(Vec::<RequestEnded>::new()));
+    let e = Arc::clone(&ended);
+    let l = start_loop(LoopOptions {
+        on_request_end: Some(RequestHook::new(move |r| e.lock().unwrap().push(r.clone()))),
+        ..LoopOptions::default()
+    });
+    let f = l.fetch(
+        FetchRequest::range(s.url("a.bin"), 1000, Some(100_999)),
+        accept_all,
+    );
+    assert_eq!(collect(&f, None).done, Ok(()));
+    let missing = l.fetch(FetchRequest::get(s.url("missing.bin")), accept_all);
+    collect(&missing, None);
+    let ended = ended.lock().unwrap();
+    assert_eq!(ended.len(), 2, "{ended:?}");
+    let range = &ended[0];
+    assert!(range.origin.starts_with("http://127.0.0.1"), "{range:?}");
+    assert!(!range.origin.contains("a.bin"), "never the path: {range:?}");
+    assert_eq!(range.range, Some((1000, Some(100_999))));
+    assert_eq!(range.status, Some(206));
+    assert_eq!(range.bytes, 100_000);
+    assert!(range.new_connection);
+    assert_eq!(range.error, None);
+    assert_eq!(ended[1].status, Some(404));
 }
