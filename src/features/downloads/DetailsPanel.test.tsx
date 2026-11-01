@@ -95,6 +95,27 @@ describe('the details panel (V1)', () => {
     expect(within(await panel()).getByRole('alert').textContent).toContain('HTTP 404');
   });
 
+  // #248: an SFTP host key's fingerprint is one long word; the user compares it, so it must wrap
+  // inside the panel rather than run past its edge.
+  it('wraps a long word in an error inside the panel', async () => {
+    const fingerprint = 'SHA256:ftodxfmUVqw3bWVdI8IG5VtcFIfEZp0b48OwQYahtokftodxfmUVqw3bWVdI8IG5Vtc';
+    const host = makeRecord({
+      id: 'f',
+      fileName: 'test-50mb.bin',
+      status: 'failed',
+      createdAtMs: 7,
+      error: { class: 'permanent', httpStatus: null, message: `The server's identity isn't confirmed yet. Check that its host key fingerprint is ${fingerprint}, then trust it to continue.`, retryable: false, hostKey: null, confirm: null },
+    });
+    installFakeBackend({ snapshot: withDownloads([host]) });
+    const user = userEvent.setup();
+    renderApp();
+    await user.dblClick(await rowFor('test-50mb.bin'));
+    const alert = within(await panel()).getByRole('alert');
+    expect(alert.textContent).toContain(fingerprint);
+    expect(alert.className).toMatch(/\bmin-w-0\b/);
+    expect(alert.className).toMatch(/\bbreak-words\b/);
+  });
+
   it('keeps the open details panel on the selected download', async () => {
     const user = userEvent.setup();
     renderApp();

@@ -125,7 +125,8 @@ export function DetailsPanel({ id, hidden, actions, busy, needsLogin, now, onClo
         </div>
 
         {d.error ? (
-          <div role="alert" className="mt-3 rounded-md border border-danger/30 bg-danger-soft px-3 py-2 text-xs text-danger">
+          // A long word, such as a host key's fingerprint or a path, wraps inside the panel (#248), as the rows do.
+          <div role="alert" className="mt-3 min-w-0 break-words rounded-md border border-danger/30 bg-danger-soft px-3 py-2 text-xs text-danger">
             <p className="font-medium">{d.error.message}</p>
             <p className="mt-1 opacity-80">
               {d.error.httpStatus !== null ? `HTTP ${String(d.error.httpStatus)}. ` : ''}
