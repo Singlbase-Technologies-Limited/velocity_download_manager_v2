@@ -102,14 +102,21 @@ fn downloads_with_several_connections_when_ranges_work() {
         (report.total, report.written_bytes, report.wasted_bytes),
         (1_000_000, 1_000_000, 0)
     );
-    // The probe finishes first, then the rest runs as four segments at once: five fetches, but
-    // never more than four connections.
-    assert_eq!(report.fetches, 5, "the probe, then four segments");
-    assert_eq!(
-        report.peak_requests, 4,
-        "never more requests open than connections"
+    // The probe finishes first, then the rest runs as segments opened 1, 2, 4 (PO decision on
+    // #247). On loopback the first ones can finish before the last step opens, and the bytes left
+    // go to the connections free then, so how many segments depends on timing: several at once,
+    // but never more than four.
+    let ranges = s.counters().ranges;
+    assert!(
+        report.fetches >= 5,
+        "the probe, then at least four segments: {ranges:?}"
     );
-    assert_eq!(s.counters().gets, 5);
+    assert!(
+        (2..=4).contains(&report.peak_requests),
+        "{} requests open at once, for 4 connections: {ranges:?}",
+        report.peak_requests
+    );
+    assert_eq!(s.counters().gets, u64::from(report.fetches));
     assert!(
         s.counters().connections <= 4,
         "{} connections for a cap of 4",

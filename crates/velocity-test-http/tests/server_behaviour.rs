@@ -6,7 +6,7 @@ use std::net::TcpStream;
 use std::time::Duration;
 
 use velocity_test_http::{
-    seeded_bytes, FirstStatuses, Freeze, RangeMode, ServerOptions, TestServer,
+    seeded_bytes, AnsweringLimit, FirstStatuses, Freeze, RangeMode, ServerOptions, TestServer,
 };
 
 /// One parsed HTTP/1.1 response.
@@ -248,6 +248,42 @@ fn server_with(options: ServerOptions) -> (TestServer, Vec<u8>) {
         TestServer::start(vec![("file.bin".into(), data.clone())], options),
         data,
     )
+}
+
+#[test]
+fn refuses_a_request_beyond_the_answers_it_allows_at_once() {
+    let (s, data) = server_with(ServerOptions {
+        limit_answering: Some(AnsweringLimit {
+            max: 1,
+            status: 429,
+            retry_after: Some("1".into()),
+        }),
+        // Slow, so the first answer is still being sent when the second request comes.
+        throttle_bytes_per_sec: Some(200_000),
+        ..ServerOptions::default()
+    });
+    let mut first = connect(&s);
+    first
+        .write_all(b"GET /file.bin HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n")
+        .unwrap();
+    let mut reader = BufReader::new(first.try_clone().unwrap());
+    let mut status = String::new();
+    reader.read_line(&mut status).unwrap();
+    assert!(status.starts_with("HTTP/1.1 200"), "{status:?}");
+    let mut second = connect(&s);
+    let refused = request(&mut second, "GET", "/file.bin", &[]);
+    assert_eq!(
+        (refused.status, refused.header("Retry-After")),
+        (429, Some("1"))
+    );
+    let mut rest = Vec::new();
+    reader.read_to_end(&mut rest).unwrap();
+    assert!(rest.ends_with(&data[data.len() - 1000..]));
+    // The first answer is over, so the next request is served.
+    let r = request(&mut second, "GET", "/file.bin", &[]);
+    assert_eq!(r.status, 200);
+    assert!(r.body == data);
+    assert_eq!(s.counters().limited.len(), 1);
 }
 
 #[test]

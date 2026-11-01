@@ -13,7 +13,7 @@
 //! - **Connections** (#47): `set_connections` changes the count a transfer uses while it runs,
 //!   without restarting it; a paused transfer uses the new count when it resumes.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -110,6 +110,10 @@ struct State {
     limits: EngineLimits,
     /// The connections all transfers share (#47); the user's setting since #30.
     budget: u32,
+    /// The most connections each host that throttled a transfer serves, by [`host_of`], for as
+    /// long as the engine runs: a later transfer from it starts there, so a server that blocks
+    /// clients after a few refusals isn't asked again (PO decision on #247).
+    throttled: HashMap<String, u32>,
 }
 
 struct Entry {
@@ -840,6 +844,10 @@ impl DirectTransfer for InProcessEngine {
 fn start_worker(shared: &Arc<Shared>, id: TransferId, resume: Option<Resume>) {
     let job = {
         let mut state = lock(&shared.state);
+        let throttled_to = state
+            .transfers
+            .get(&id)
+            .and_then(|e| state.throttled.get(&host_of(&e.job.url)).copied());
         let Some(entry) = state.transfers.get_mut(&id) else {
             return;
         };
@@ -847,6 +855,7 @@ fn start_worker(shared: &Arc<Shared>, id: TransferId, resume: Option<Resume>) {
         let control = Control::with_progress(progress_reporter(shared, id))
             .with_status(status_reporter(shared, id))
             .with_limits(vec![entry.limit.clone(), shared.global.clone()])
+            .with_throttled_to(throttled_to)
             .with_request(RequestOptions {
                 proxy: lock_value(&shared.proxy).as_ref().map(proxy_config),
                 ..entry.job.request.clone()
@@ -946,6 +955,11 @@ fn run(shared: &Shared, id: TransferId, job: &Job, resume: Option<&Resume>, cont
             &job.expected,
             control,
         );
+        if let Some(connections) = control.connections_now().throttled_to {
+            lock(&shared.state)
+                .throttled
+                .insert(host_of(&job.url), connections);
+        }
         let Err(DownloadError::Transfer(e)) = &result else {
             break result;
         };
