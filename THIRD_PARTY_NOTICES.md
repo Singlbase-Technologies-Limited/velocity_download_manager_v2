@@ -323,7 +323,7 @@ In the app, the transfer engine, the torrent helper and the browser's native hos
 | p256 | 0.14.0 | Apache-2.0 OR MIT | MIT | https://github.com/RustCrypto/elliptic-curves |
 | p384 | 0.14.0 | Apache-2.0 OR MIT | MIT | https://github.com/RustCrypto/elliptic-curves |
 | p521 | 0.14.0 | Apache-2.0 OR MIT | MIT | https://github.com/RustCrypto/elliptic-curves |
-| pageant | 0.2.4 | Apache-2.0 | Apache-2.0 | https://github.com/warp-tech/russh |
+| pageant | 0.2.5 | Apache-2.0 | Apache-2.0 | https://github.com/warp-tech/russh |
 | pango | 0.18.3 | MIT | MIT | https://github.com/gtk-rs/gtk-rs-core |
 | pango-sys | 0.18.0 | MIT | MIT | https://github.com/gtk-rs/gtk-rs-core |
 | parking | 2.2.1 | Apache-2.0 OR MIT | MIT | https://github.com/smol-rs/parking |
@@ -383,7 +383,7 @@ In the app, the transfer engine, the torrent helper and the browser's native hos
 | rsqlite-vfs | 0.1.1 | MIT | MIT | https://crates.io/crates/rsqlite-vfs/0.1.1 |
 | rusqlite | 0.40.2 | MIT | MIT | https://github.com/rusqlite/rusqlite |
 | rusqlite_migration | 2.6.0 | Apache-2.0 | Apache-2.0 | https://github.com/cljoly/rusqlite_migration |
-| russh | 0.64.1 | Apache-2.0 | Apache-2.0 | https://github.com/warp-tech/russh |
+| russh | 0.65.0 | Apache-2.0 | Apache-2.0 | https://github.com/warp-tech/russh |
 | russh-cryptovec | 0.62.0 | Apache-2.0 | Apache-2.0 | https://github.com/warp-tech/russh |
 | russh-sftp | 3.0.1 | Apache-2.0 | Apache-2.0 | https://github.com/AspectUnk/russh-sftp |
 | russh-util | 0.52.0 | Apache-2.0 | Apache-2.0 | https://github.com/warp-tech/russh |
@@ -11438,9 +11438,9 @@ SOFTWARE.
 
 These components ship no licence file. They are used under the standard text of their licence; each is named with the authors its package metadata gives:
 
-- pageant 0.2.4, by Eugene
+- pageant 0.2.5, by Eugene
 - rusqlite_migration 2.6.0, by Clément Joly
-- russh 0.64.1, by Pierre-Étienne Meunier
+- russh 0.65.0, by Pierre-Étienne Meunier
 - russh-cryptovec 0.62.0, by Pierre-Étienne Meunier, Eugeny <e@ajenti.org
 - russh-util 0.52.0
 
