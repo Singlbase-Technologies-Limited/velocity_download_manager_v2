@@ -6101,3 +6101,33 @@ fn a_link_s_secrets_reach_no_line_of_the_app_log() {
         );
     }
 }
+
+/// #264: a download that leaves the list says so in the app's log, with whether its files went.
+#[test]
+fn removing_a_download_writes_its_line_to_the_app_log() {
+    use tracing_subscriber::layer::SubscriberExt;
+    let log = crate::logs::AppLog::new();
+    let _default =
+        tracing::subscriber::set_default(tracing_subscriber::registry().with(log.layer()));
+    let (mut m, control, first) = setup();
+    control.progress(TransferId(1), 4096, Some(4096));
+    control.complete(TransferId(1));
+    m.pump(T0 + 1);
+    let second = m.add(DownloadKind::Http, spec(), T0 + 2).unwrap();
+    m.pump(T0 + 3);
+    m.remove(&first, false).unwrap();
+    m.remove(&second, true).unwrap();
+    let lines: Vec<_> = log
+        .lines()
+        .into_iter()
+        .filter(|l| l.message.contains("removed from the list"))
+        .map(|l| l.message)
+        .collect();
+    assert_eq!(
+        lines,
+        [
+            format!("download {first} removed from the list"),
+            format!("download {second} removed from the list, and its files deleted"),
+        ]
+    );
+}

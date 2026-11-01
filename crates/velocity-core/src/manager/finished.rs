@@ -122,6 +122,8 @@ impl Manager {
             let file = delete_files && d.record.status == DownloadStatus::Completed;
             delete_own_files(&d, part, file)
         };
+        // It leaves the list, so its lines would otherwise just stop (#264).
+        super::lifecycle::removed(id, delete_files, &kept).emit();
         self.fill();
         Ok(kept)
     }

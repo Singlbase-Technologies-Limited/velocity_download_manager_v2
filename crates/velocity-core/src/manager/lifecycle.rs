@@ -273,6 +273,39 @@ pub(super) fn added(record: &DownloadRecord) -> Line {
     ))
 }
 
+/// The line for a download that left the list (#264): with its files deleted when they were,
+/// and a warning naming each file that was kept, and why.
+pub(super) fn removed(
+    id: &str,
+    delete_files: bool,
+    kept: &[(std::path::PathBuf, crate::torrent_files::Kept)],
+) -> Line {
+    if !kept.is_empty() {
+        // The file's name only: its folder is the user's.
+        let files = kept
+            .iter()
+            .map(|(path, why)| {
+                let name = path
+                    .file_name()
+                    .map_or_else(|| path.to_string_lossy(), |n| n.to_string_lossy());
+                format!("{name} ({why:?})")
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+        return Line::warn(format!(
+            "download {id} removed from the list, but {} of its files were kept: {files}",
+            kept.len()
+        ));
+    }
+    if delete_files {
+        Line::info(format!(
+            "download {id} removed from the list, and its files deleted"
+        ))
+    } else {
+        Line::info(format!("download {id} removed from the list"))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -547,6 +580,34 @@ mod tests {
         let mut logged = Logged::new(&r);
         r.progress.connections = 30;
         assert!(logged.lines(&r, T0).is_empty());
+    }
+
+    #[test]
+    fn a_download_that_leaves_the_list_says_so_and_whether_its_files_went() {
+        use crate::torrent_files::Kept;
+        use std::path::PathBuf;
+        assert_eq!(
+            removed("d-0006", false, &[]),
+            info("download d-0006 removed from the list")
+        );
+        assert_eq!(
+            removed("d-0006", true, &[]),
+            info("download d-0006 removed from the list, and its files deleted")
+        );
+        let kept = [
+            (
+                PathBuf::from("C:/Downloads/ubuntu.iso"),
+                Kept::Failed(crate::domain::ErrorCode::Io),
+            ),
+            (PathBuf::from("C:/Downloads/album"), Kept::NotEmpty),
+        ];
+        assert_eq!(
+            removed("d-0006", true, &kept),
+            warn(
+                "download d-0006 removed from the list, but 2 of its files were kept: \
+                 ubuntu.iso (Failed(Io)), album (NotEmpty)"
+            )
+        );
     }
 
     impl DownloadRecord {

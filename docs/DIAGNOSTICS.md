@@ -12,8 +12,8 @@ What V2 records about itself, how secrets are kept out of it, and what the user 
   - each change of the storage error;
   - when diagnostics are exported, or couldn't be;
   - what each download did (#251), by its id (`d-0001`), from `velocity_core::manager::lifecycle`:
-    - at info: added, with its protocol and its link's host only (never the path, the query or a login); started, with how far it got; queued; paused; verifying; seeding; completed; removed;
-    - at warn: each retry, with its number, the wait, how far it got, and the failure with its class, its HTTP status and the engine's technical detail (such as `libcurl error 28: …`); a stall; a failure, with the same detail;
+    - at info: added, with its protocol and its link's host only (never the path, the query or a login); started, with how far it got; queued; paused; verifying; seeding; completed; removed; removed from the list, and whether its files were deleted (#264);
+    - at warn: each retry, with its number, the wait, how far it got, and the failure with its class, its HTTP status and the engine's technical detail (such as `libcurl error 28: …`); a stall; a failure, with the same detail; a removal that kept some of its files, naming each file (not its folder) and why;
     - at info: a direct download's connection count when it changes, with what it was allowed and what holds it back.
 
   A download read back at start-up adds no line until it changes. The bounds keep one download from pushing the rest out of the 1,000 lines: a retry is one line (getting going again after it, or after a stall, adds none), and connection changes are logged at most every 30 seconds, and 20 times a run, followed by one line saying further changes aren't. A torrent's peer count isn't logged.
