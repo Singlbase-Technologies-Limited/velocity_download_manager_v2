@@ -79,6 +79,7 @@ From most numerous and fastest to fewest and slowest. Each layer proves what the
 | **Native host and browser** | Message validation in the host; the real extension, host and app in real Chromium and Firefox | Host: `crates/velocity-native-host/tests/host_e2e.rs`, the real host against a real local listener. Browser: `pnpm test:e2e:chromium` (Playwright's Chromium, Windows and Linux) and `pnpm test:e2e:firefox` (geckodriver, Linux), with V1's extension installed too ([BROWSER_EXTENSION.md](BROWSER_EXTENSION.md#tests)) | L2 (host), L4 (browser) | #64, #65 |
 | **Security** | TLS certificate rules per backend, redirect and credential rules, secret-leak scans, filesystem attacks, fuzzed parsers | Fixture suites plus `cargo-fuzz` targets (needs approval) | L2, plus L4 for fuzzing | #67, #69–#73 |
 | **End-to-end and platform** | The packaged app installed on Windows, Linux and macOS; install and upgrade beside V1 | Installer tests, real machines | L4 and L5 | #81–#83 |
+| **Field test** | The installed app used as a user uses it, with real downloads from real servers and real settings: what fixtures can't show, such as servers that cut connections, long downloads, pause, resume and crashes | `pnpm field` ([`tests/field/`](../tests/field/README.md)), by hand on Windows, never in CI | L5 | #262 |
 | **Benchmarks** | V2's own speed, resource use and reliability, measured once the engine and app exist. No aria2 comparison for now ([ADR-0009](decisions/0009-no-aria2-benchmark-gate.md)) | To be designed then | L4 | #77 |
 
 ## Fixture policy
@@ -126,6 +127,12 @@ From most numerous and fastest to fewest and slowest. Each layer proves what the
 - **In what forms:** each secret as written, percent-encoded, and in base64 at each of its three possible alignments, so a `Basic` login or an encoded link is caught too. A secret must be at least 8 bytes, so it can't match by chance.
 - **A running child, on Linux only:** it reads `/proc/<pid>/cmdline` and `environ` of the engine and the torrent helper. On Windows that part prints NOT RUN, and `secret_leaks.rs` checks the command a child is started with instead: one fixed argument and a cleared environment (PO decision on #71).
 - **Where it runs:** `crates/velocity-transfer/tests/secret_leaks.rs` (HTTP login and cookie and FTP login through the child engine; SFTP key and password logins) and `crates/velocity-torrent/tests/manager.rs` (a private tracker's passkey, through the manager and the torrent helper). The scan's own tests plant each kind of leak and check it is found.
+
+## The field test (#262)
+
+The installed app, built from `main`, used the way a person uses it: real links from real servers, pause and resume, closing and killing the app mid-download, torrents. `pnpm field` drives the real window through Playwright and records each download every few seconds, with what is on disk and the app's connections. Every problem becomes an issue in epic #1. It runs by hand on Windows, before each release candidate, never in CI, and never against the public internet in automated tests (the fixture policy above still holds).
+
+How to run a session, what it may download and how links are kept private: [tests/field/README.md](../tests/field/README.md). The scenarios: [tests/field/CHECKLIST.md](../tests/field/CHECKLIST.md). Session reports are comments on #262.
 
 ## How the frontend is tested
 
