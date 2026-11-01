@@ -95,9 +95,10 @@ impl RetryPolicy {
     }
 }
 
-/// The connections a download keeps after a server throttled it: half, and at least one.
-pub fn after_throttling(connections: u32) -> u32 {
-    (connections / 2).max(1)
+/// The connections a download keeps after a server throttled it: half, no more than the
+/// `serving` requests the server was still answering (#247), and at least one.
+pub fn after_throttling(connections: u32, serving: u32) -> u32 {
+    (connections / 2).min(serving).max(1)
 }
 
 #[cfg(test)]
@@ -208,8 +209,16 @@ mod tests {
 
     #[test]
     fn throttling_halves_the_connections_down_to_one() {
-        assert_eq!(after_throttling(8), 4);
-        assert_eq!(after_throttling(3), 1);
-        assert_eq!(after_throttling(1), 1);
+        assert_eq!(after_throttling(8, u32::MAX), 4);
+        assert_eq!(after_throttling(3, u32::MAX), 1);
+        assert_eq!(after_throttling(1, u32::MAX), 1);
+    }
+
+    #[test]
+    fn throttling_keeps_no_more_than_the_server_was_serving() {
+        // proof.ovh.net serves one request and refuses the rest (#247).
+        assert_eq!(after_throttling(8, 1), 1);
+        assert_eq!(after_throttling(8, 3), 3);
+        assert_eq!(after_throttling(8, 0), 1);
     }
 }

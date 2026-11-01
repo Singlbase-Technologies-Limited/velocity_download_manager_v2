@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use velocity_core::domain::FailureClass;
 use velocity_curl::{CurlLoop, Libcurl, LoopOptions};
-use velocity_test_http::{seeded_bytes, Http2Options, Http2Server, RangeMode};
+use velocity_test_http::{seeded_bytes, AnsweringLimit, Http2Options, Http2Server, RangeMode};
 use velocity_transfer::adaptive::AdaptivePolicy;
 use velocity_transfer::download::{
     download, Cadence, DiskOptions, DownloadError, DownloadOptions, Mode,
@@ -276,4 +276,62 @@ fn a_server_that_throttles_each_stream_keeps_one_multiplexed_connection() {
     assert!(!r.own_connections, "{r:?}");
     assert_eq!(c.peak_answering, 4, "it kept the 4 asked for: {c:?}");
     assert_eq!(c.connections, 1, "as streams on one connection: {c:?}");
+}
+
+#[test]
+fn a_server_that_rate_limits_extra_streams_gets_no_new_ones_until_its_wait_is_over() {
+    // proof.ovh.net over HTTP/2: one stream is served, and each stream beyond it is answered 429
+    // (#247). With the app's adaptive connections, the download keeps the stream that works and
+    // finishes, instead of opening stream after stream until the server blocks the client.
+    let (s, data) = serve(
+        12_000_000,
+        Http2Options {
+            limit_answering: Some(AnsweringLimit {
+                max: 1,
+                status: 429,
+                retry_after: Some("1".into()),
+            }),
+            throttle_stream_bytes_per_sec: Some(500_000),
+            ..Http2Options::default()
+        },
+    );
+    let dir = Dir::new("rate-limited");
+    let options = DownloadOptions {
+        connections: 8,
+        adaptive: Some(AdaptivePolicy::DEFAULT),
+        retry: RetryPolicy {
+            stalled_after: Duration::from_secs(2),
+            reset_after: Duration::from_secs(4),
+            ..RetryPolicy::DEFAULT
+        },
+        ..FIXED
+    };
+    download(&h2c_loop(), &s.url("f.bin"), &dir.file("out"), options)
+        .expect("the download finishes on the stream the server allows");
+    assert!(std::fs::read(dir.file("out")).unwrap() == data);
+    let limited = s.counters().limited;
+    // None at all, or one at the opening step (PO decision on #247).
+    let Some(&first) = limited.first() else {
+        return;
+    };
+    let after: Vec<_> = limited.iter().map(|t| *t - first).collect();
+    assert!(
+        after
+            .iter()
+            .filter(|d| **d > Duration::from_millis(300))
+            .all(|d| *d >= Duration::from_secs(1)),
+        "429s at {after:?} after the first"
+    );
+    let c = s.counters();
+    let asked: Vec<_> = c
+        .request_times
+        .iter()
+        .zip(&c.ranges)
+        .map(|(t, r)| (t.saturating_duration_since(first), r))
+        .collect();
+    assert!(
+        limited.len() <= 1,
+        "{} streams refused: {after:?}; requests: {asked:?}",
+        limited.len()
+    );
 }

@@ -76,6 +76,9 @@ pub struct ServerOptions {
     pub redirects: Vec<(String, String)>,
     /// Answers the first requests with an error status, before any other mode (#48).
     pub first_statuses: Option<FirstStatuses>,
+    /// Answers a file request with an error status while this many others are being answered, the
+    /// way a server that rate-limits concurrent requests does (proof.ovh.net's `429`, #247).
+    pub limit_answering: Option<AnsweringLimit>,
     /// Closes the first this many connections after reading a request, without answering (#48).
     pub drop_first: u32,
     /// Freezes the first response to a range after byte 0: it sends `after` body bytes, then
@@ -147,6 +150,15 @@ pub struct FirstStatuses {
     pub retry_after: Option<String>,
 }
 
+/// See [`ServerOptions::limit_answering`]: a request that would make more than `max` answers at
+/// once gets `status` and an empty body, with this `Retry-After` value if any.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AnsweringLimit {
+    pub max: u32,
+    pub status: u16,
+    pub retry_after: Option<String>,
+}
+
 /// See [`ServerOptions::freeze_later_range`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Freeze {
@@ -174,6 +186,8 @@ pub struct Counters {
     pub request_times: Vec<Instant>,
     /// Requests answered by [`ServerOptions::first_statuses`].
     pub first_statuses_sent: u32,
+    /// Requests refused by [`ServerOptions::limit_answering`], and when each was.
+    pub limited: Vec<Instant>,
     /// Connections closed by [`ServerOptions::drop_first`].
     pub dropped: u32,
     /// Whether the response that [`ServerOptions::freeze_later_range`] freezes was sent.
@@ -200,6 +214,27 @@ impl<'a> Answering<'a> {
         c.peak_answering = c.peak_answering.max(c.answering);
         Answering(counters)
     }
+
+    /// Starts one when fewer than `limit.max` are being answered; otherwise counts the refusal
+    /// in [`Counters::limited`]. Checked and counted under one lock, so none slips past.
+    fn within(counters: &'a Mutex<Counters>, limit: &AnsweringLimit) -> Option<Self> {
+        let mut c = counters.lock().unwrap();
+        if c.answering >= limit.max {
+            c.limited.push(Instant::now());
+            return None;
+        }
+        c.answering += 1;
+        c.peak_answering = c.peak_answering.max(c.answering);
+        Some(Answering(counters))
+    }
+}
+
+/// An empty answer with `status`, and `Retry-After` when given.
+fn status_head(status: u16, retry_after: Option<&str>) -> String {
+    let retry = retry_after
+        .map(|v| format!("Retry-After: {v}\r\n"))
+        .unwrap_or_default();
+    format!("HTTP/1.1 {status} Status\r\nContent-Length: 0\r\n{retry}\r\n")
 }
 
 impl Drop for Answering<'_> {
@@ -539,22 +574,28 @@ fn serve_connection(
         }
         if let Some(first) = options.first_statuses.as_ref() {
             if !head && take_count(counters, |c| &mut c.first_statuses_sent, first.count) {
-                let retry = first
-                    .retry_after
-                    .as_ref()
-                    .map(|v| format!("Retry-After: {v}\r\n"))
-                    .unwrap_or_default();
-                let code = first.status;
-                let _ = out.write_all(
-                    format!("HTTP/1.1 {code} Status\r\nContent-Length: 0\r\n{retry}\r\n")
-                        .as_bytes(),
-                );
+                let head = status_head(first.status, first.retry_after.as_deref());
+                let _ = out.write_all(head.as_bytes());
                 if close {
                     return;
                 }
                 continue;
             }
         }
+        let admitted = match options.limit_answering.as_ref() {
+            Some(limit) if !head => match Answering::within(counters, limit) {
+                Some(answering) => Some(answering),
+                None => {
+                    let head = status_head(limit.status, limit.retry_after.as_deref());
+                    let _ = out.write_all(head.as_bytes());
+                    if close {
+                        return;
+                    }
+                    continue;
+                }
+            },
+            _ => None,
+        };
         if let Some((_, location)) = options.redirects.iter().find(|(p, _)| *p == req.path) {
             // With a body, as servers send one: a client must never take it for the file's bytes.
             let body = REDIRECT_BODY;
@@ -608,7 +649,7 @@ fn serve_connection(
             }
             continue;
         }
-        let _answering = Answering::start(counters);
+        let _answering = admitted.unwrap_or_else(|| Answering::start(counters));
         if let (RangeMode::OverrunLaterRanges { extra: over, .. }, true) = (mode, fault) {
             let header = format!("HTTP/1.1 {status}\r\nTransfer-Encoding: chunked\r\n{extra}\r\n");
             if out.write_all(header.as_bytes()).is_err() {

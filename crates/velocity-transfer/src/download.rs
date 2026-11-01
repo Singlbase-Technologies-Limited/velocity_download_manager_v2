@@ -198,6 +198,14 @@ impl Control {
         self
     }
 
+    /// The most connections the server is known to serve this client, from an earlier download
+    /// it throttled (#247); `None` when it isn't known to throttle.
+    pub fn with_throttled_to(self, connections: Option<u32>) -> Self {
+        self.throttled_to
+            .store(connections.unwrap_or(0), Ordering::Release);
+        self
+    }
+
     /// `named` is called with the name a download into a folder chose ([`Target::Folder`]), once
     /// its part file has it (#40).
     pub fn with_naming(mut self, named: impl Fn(&str) + Send + Sync + 'static) -> Self {
@@ -1615,6 +1623,8 @@ struct Active {
     retry_after: RetryAfter,
     /// No byte has come for [`RetryPolicy::stalled_after`].
     quiet: bool,
+    /// A byte of its answer has come: the server serves it (#247).
+    fed: bool,
     /// Stopped because the download now uses fewer connections (#47): it ends at its next write,
     /// and the rest of its lease is leased again.
     retiring: bool,
@@ -1733,6 +1743,7 @@ fn request(
         overran: false,
         retry_after,
         quiet: false,
+        fed: false,
         retiring: false,
         asked: Instant::now(),
         source: asking.source,
@@ -1751,11 +1762,15 @@ fn request(
 ///   missing bytes (report section 5.1, steps 4, 6 and 7);
 /// - a failure worth retrying, or a request silent for too long, frees its connection for a wait,
 ///   and the rest of its lease is leased again after it (#48). A throttling server halves the
-///   connections this download uses;
+///   connections this download uses, and leaves it no more than the requests it was serving;
+/// - it opens one request, then doubles them (1, 2, 4, 8) each time every request opened so far
+///   has received a byte, so a server that refuses extra requests refuses at most one step's
+///   worth: a server that blocks clients after a few refusals doesn't block this one (PO decision
+///   on #247);
 /// - the connections asked for may change while it runs ([`Control::set_connections`], #47): more
 ///   take new leases at once, and fewer stop the newest requests, whose rest is leased again;
-/// - with [`DownloadOptions::adaptive`], it starts with every connection it may use and drops
-///   the ones that don't help ([`Ramp`], #47, #221).
+/// - with [`DownloadOptions::adaptive`], it drops the connections that don't help ([`Ramp`], #47,
+///   #221).
 ///
 /// Returns the fetches made, the splits and the mode.
 #[allow(clippy::too_many_arguments)] // The download's parts; grouping them would add a type for one call.
@@ -1786,8 +1801,15 @@ fn fetch_ranges(
     let pieces = part.pieces.is_some();
     // Why the last source failed, for the error when none is left.
     let mut last_source_error: Option<TransferError> = None;
-    // The most connections a throttling server leaves this download (#48).
-    let mut throttled_to = u32::MAX;
+    // The most connections a throttling server leaves this download (#48), from the start when the
+    // engine already knows the server throttles (#247).
+    let mut throttled_to = match control.throttled_to.load(Ordering::Acquire) {
+        0 => u32::MAX,
+        n => n,
+    };
+    // The requests it may open while it finds what the server serves, and how many have proven
+    // they are served (#247).
+    let (mut opened, mut fed) = (1u32, 0u32);
     // Full preallocation reserves the whole file now that its size is known (#30).
     if options.disk.preallocation == Preallocation::Full {
         part.reserve(total)?;
@@ -1847,7 +1869,11 @@ fn fetch_ranges(
         let mut restart = false;
         if let (Some(r), Some(adaptive), true) = (ramp.as_mut(), options.adaptive, h2) {
             match multiplex {
-                Multiplex::First if r.why(ceiling) == Some(Tuning::NoGain) => {
+                // Not at a server that throttled it: the restart would ask while the stopped
+                // streams are still being answered, and be refused (#247).
+                Multiplex::First
+                    if r.why(ceiling) == Some(Tuning::NoGain) && throttled_to == u32::MAX =>
+                {
                     multiplex = Multiplex::Trying {
                         best: r.best_rate().unwrap_or(0.0),
                         count: r.target(),
@@ -1868,11 +1894,17 @@ fn fetch_ranges(
                 _ => {}
             }
         }
-        let connections = ramp.as_ref().map_or(ceiling, Ramp::target);
-        control.tune(
+        let target = ramp.as_ref().map_or(ceiling, Ramp::target);
+        while fed >= opened && opened < target {
+            opened = opened.saturating_mul(2);
+        }
+        let connections = target.min(opened);
+        control.tune(if connections < target {
+            Some((connections, Tuning::RampingUp))
+        } else {
             ramp.as_ref()
-                .and_then(|r| r.why(ceiling).map(|why| (r.target(), why))),
-        );
+                .and_then(|r| r.why(ceiling).map(|why| (r.target(), why)))
+        });
         // Fewer connections than run now: the newest requests stop.
         let keep = if restart { 0 } else { connections as usize };
         for id in live.iter().skip(keep) {
@@ -1893,7 +1925,10 @@ fn fetch_ranges(
             && anomalies < MAX_ANOMALIES
             && ((active.len() + waiting.len()) as u32) < connections
         {
-            let idle = connections - (active.len() + waiting.len()) as u32;
+            // Leases are sized for every connection the download is heading for, though it opens
+            // them a step at a time: a later step takes fresh bytes instead of splitting a request,
+            // and each request ends at its own end (#247).
+            let idle = target - (active.len() + waiting.len()) as u32;
             let Some(source) = sources.pick(now) else {
                 // Every source is busy, cooling down or gone.
                 if multi && active.is_empty() && waiting.is_empty() {
@@ -1991,6 +2026,11 @@ fn fetch_ranges(
             Err(RecvTimeoutError::Timeout) => continue,
             Err(RecvTimeoutError::Disconnected) => break,
         };
+        // The requests the server is serving now, besides the one this event is about (#247).
+        let serving = active
+            .iter()
+            .filter(|(other, a)| **other != id && a.fed && !a.retiring)
+            .count() as u32;
         // A failure worth retrying frees its connection for a wait; otherwise the download fails.
         let mut retry_later =
             |t: TransferError, retry_after: Option<Duration>, written: u64| match retrier.wait(
@@ -2001,7 +2041,7 @@ fn fetch_ranges(
                 Some(wait) => {
                     waiting.push(Instant::now() + wait);
                     if t.class == FailureClass::Throttled {
-                        throttled_to = retry::after_throttling(connections);
+                        throttled_to = retry::after_throttling(connections, serving);
                         control.throttled_to.store(throttled_to, Ordering::Release);
                     }
                 }
@@ -2055,6 +2095,10 @@ fn fetch_ranges(
                     continue;
                 };
                 a.quiet = false;
+                if !a.fed && !chunk.is_empty() {
+                    a.fed = true;
+                    fed += 1;
+                }
                 let offset = a.position;
                 a.position += chunk.len() as u64;
                 let accepted = match sched

@@ -330,7 +330,7 @@ A failure is classified first ([`failure.rs`](../crates/velocity-transfer/src/fa
 | Class | Examples | What happens |
 |---|---|---|
 | Transient | No answer, or a connection broken during the request; a name that doesn't resolve; a refused connection; the 30 s connect timeout; a failed TLS handshake; `408`; other `5xx`; a stall | Retried after a wait |
-| Throttled | `429`, `503` | Retried after at least what `Retry-After` asks for (seconds or an HTTP date), up to 10 minutes. Without `Retry-After`, at least 60 s, as in V1. The download's connections are halved, down to one |
+| Throttled | `429`, `503` | Retried after at least what `Retry-After` asks for (seconds or an HTTP date), up to 10 minutes. Without `Retry-After`, at least 60 s, as in V1. The download's connections are halved, and kept to no more than the requests the server was still serving, down to one. The engine remembers that count for the host ([Opening](#opening-247)) |
 | Permanent | `401`, `403`, `404`, `410`, other `4xx`; an untrusted certificate; too many redirects; a protocol outside the allowlist; an answer that contradicts itself; a full disk, or a folder V2 may no longer write to | Never retried. A full disk or a refused write checkpoints what reached the disk when a sync still works, and keeps the part file whenever a checkpoint exists, so the user's retry, once it is fixed, resumes (#74) |
 
 ### Inside a download
@@ -415,8 +415,8 @@ A download's connections are the tightest of these, from the outside in:
 |---|---|---|
 | What it asked for | `TransferSpec::max_connections`, or `set_connections` later, at least 1 and at most the per-host cap | `requested` |
 | Its share of the per-host cap and the shared budget | The engine, max-min fairly between the running transfers ([`budget.rs`](../crates/velocity-transfer/src/budget.rs)) | `perHostCap`, `sharedBudget` |
-| A throttling server | A `429` or `503` halves the connections, down to one (#48) | `serverThrottling` |
-| What helps | The adaptive ramp ([`adaptive.rs`](../crates/velocity-transfer/src/adaptive.rs)) | `rampingUp`, `noGain` |
+| A throttling server | A `429` or `503` halves the connections, keeps no more than the server was serving, down to one (#48, #247); remembered for the host while the engine runs | `serverThrottling` |
+| What helps | Opening a step at a time ([Opening](#opening-247)), then the adaptive ramp ([`adaptive.rs`](../crates/velocity-transfer/src/adaptive.rs)) | `rampingUp`, `noGain` |
 | What is left to split | No remainder of at least 2 × `min_split` | `fileSize` |
 
 Snapshots carry the connections in use now (`Progress::connections`) and `connectionDetail`: `requested`, `allowed` and the tightest limit, `limitedBy` ([CONTRACTS.md](CONTRACTS.md)).
@@ -438,7 +438,7 @@ Snapshots carry the connections in use now (`Progress::connections`) and `connec
 
 ### Adaptive connections
 
-The asked-for count is the most a download may use, not a must (PO decision on #47). A download starts with every connection it may use, as V1 does, and drops the ones that don't help (PO decision on #221):
+The asked-for count is the most a download may use, not a must (PO decision on #47). A download opens every connection it may use, a step at a time ([Opening](#opening-247)), and drops the ones that don't help (PO decision on #221):
 
 - **Windows:** the ramp measures the body bytes received over a window of max(2 s, 4 × RTT). RTT is the shortest wait seen between a request and its answer.
 - **Each count is measured for 2 windows,** and judged by their average speed. The first window after the count is set from outside (a new download, a ceiling that rose or fell) isn't measured: it holds the connections' start, and a test server's first burst once made every drop look like a loss (batch run 41178941474).
@@ -453,10 +453,21 @@ The asked-for count is the most a download may use, not a must (PO decision on #
 
 `DownloadOptions::adaptive` is `None` for a fixed count, which the CLI uses to compare fixed plans.
 
+### Opening (#247)
+
+A download doesn't ask for all its connections at once (PO decision on #247):
+
+- **Doubling:** after the probe it opens one request, then 2, 4 and 8, each step once every request opened so far has received a byte. A fixed count and the CLI open the same way.
+- **Fresh ranges, no splits:** leases are sized for the count the download is heading for, so a later step takes unassigned bytes instead of splitting a running request, and each request ends at its own end.
+- **At the first `429` or `503`,** the download keeps no more connections than the requests the server was still serving (at least one), and opens no more ([Retries](#retries-waits-and-stalls-48)).
+- **Remembered per host:** the engine keeps that count, by host name and port, while it runs. A restart, a resume or another download from that host starts there and never asks for more.
+- **Why:** proof.ovh.net serves one request per client at a time, answers the rest `429` within about 200 ms, and blocks a client for about 10 minutes after roughly 6 to 9 refusals in a few seconds. The old opening, all 8 at once after the probe, got the field-test PC blocked on its own (#247, 2026-11-02). Doubling costs a server like that one refusal.
+- **The cost on other servers:** about three round trips to reach 8 connections. Not yet measured against the earlier timings (#221); it is to be measured on the Ubuntu ISO.
+
 ### HTTP/2
 
 - **Multiplexing first:** requests to one host wait for the connection being set up (`CURLOPT_PIPEWAIT`), and share it as streams if it speaks HTTP/2.
-- **Then connections of their own, once:** when the ramp finds that more streams stop helping, the download tries requests on connections of their own (`CURLOPT_FRESH_CONNECT` and `CURLOPT_FORBID_REUSE`), starting again with every connection it may use.
+- **Then connections of their own, once:** when the ramp finds that more streams stop helping, the download tries requests on connections of their own (`CURLOPT_FRESH_CONNECT` and `CURLOPT_FORBID_REUSE`), starting again with every connection it may use. Not after the server throttled the download: the restart would ask while the stopped streams are still being answered, and be refused (#247).
 - **The faster way is kept:** connections of their own stay only if their best speed beats the best multiplexed one by 10%. Otherwise the download goes back to the multiplexed count. Changing the way stops every request first, so each way is measured on its own.
 - **`DownloadReport::own_connections`** says which way was kept.
 - **A split** resets only its stream; the connection stays.
@@ -739,7 +750,7 @@ Run it with `cargo run --release -p velocity-transfer --example high_offset_writ
 - **FTP over several connections:** one connection until #77 measures whether more help.
 - **Connection values:** the per-host cap and the smallest piece come from the performance profile (#57), and the budget from the user's engine settings ([SETTINGS.md](SETTINGS.md#engine), #30). The ramp's values are engine defaults, to tune by measurement (#77).
 - **Learning per host:** what a host allowed isn't remembered between downloads (a non-goal of #47).
-- **Throttling across downloads:** a `429` or `503` halves the connections of the download that got it, not of the other downloads to that host.
+- **Throttling across downloads:** a `429` or `503` halves the connections of the download that got it, not of the other downloads already running to that host. Downloads that start later from that host start at the remembered count ([Opening](#opening-247)).
 - **Retry settings:** the user's engine settings over `RetryPolicy::DEFAULT` ([SETTINGS.md](SETTINGS.md#engine), #30), read when a download starts or retries.
 - **Integrity without the app:** a whole-file hash that a server gives (`Repr-Digest`) is deferred (report section 5.3).
 - **Metalink in the app:** off by default, as in V1; the Settings screen's Advanced section turns it on (`advanced.enableMetalink`, #30).

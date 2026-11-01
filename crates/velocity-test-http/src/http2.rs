@@ -20,7 +20,8 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio::runtime::Runtime;
 
 use crate::{
-    answer, parse_range, takes_fault, Answering, Counters, FileHeaders, Pace, RangeMode, Served,
+    answer, parse_range, takes_fault, Answering, AnsweringLimit, Counters, FileHeaders, Pace,
+    RangeMode, Served,
 };
 
 /// What the HTTP/2 server does, beyond serving its files.
@@ -35,6 +36,8 @@ pub struct Http2Options {
     /// Limits only the first response to a range after byte 0 to this many body bytes per second,
     /// so that one stream is slower than the others (a range split, #42).
     pub throttle_first_later_range: Option<u64>,
+    /// Answers a stream with an error status while this many others are being answered (#247).
+    pub limit_answering: Option<AnsweringLimit>,
 }
 
 /// A running HTTP/2 server on 127.0.0.1 and a free port. It stops when dropped.
@@ -183,6 +186,22 @@ async fn serve_stream(
         let _ = respond.send_response(not_found, true);
         return;
     };
+    let admitted = match options.limit_answering.as_ref() {
+        Some(limit) if !head => match Answering::within(&counters, limit) {
+            Some(answering) => Some(answering),
+            None => {
+                let mut refused = Response::builder()
+                    .status(limit.status)
+                    .header(header::CONTENT_LENGTH, 0);
+                if let Some(wait) = &limit.retry_after {
+                    refused = refused.header(header::RETRY_AFTER, wait);
+                }
+                let _ = respond.send_response(refused.body(()).expect("a valid response"), true);
+                return;
+            }
+        },
+        _ => None,
+    };
     let range = range_header.as_deref().and_then(parse_range);
     let mode = options.range_mode;
     let fault = takes_fault(mode, range, &counters);
@@ -206,7 +225,7 @@ async fn serve_stream(
     if end {
         return;
     }
-    let _answering = Answering::start(&counters);
+    let answering = admitted.unwrap_or_else(|| Answering::start(&counters));
     let mut rate = options.throttle_stream_bytes_per_sec;
     if let (Some(slow), Some((start, _))) = (options.throttle_first_later_range, range) {
         let mut c = counters.lock().unwrap();
@@ -215,7 +234,8 @@ async fn serve_stream(
             rate = Some(slow);
         }
     }
-    if let Err(Stopped::Reset) = send_body(&mut stream, answer.body, rate, &counters, &pace).await {
+    let sent = send_body(&mut stream, answer.body, rate, &counters, &pace, answering).await;
+    if let Err(Stopped::Reset) = sent {
         counters.lock().unwrap().streams_reset += 1;
     }
 }
@@ -229,14 +249,17 @@ enum Stopped {
 }
 
 /// Sends `body` in 16 KiB chunks within HTTP/2 flow control, pacing them to `rate` bytes per
-/// second when set, and to the connection's `pace`.
+/// second when set, and to the connection's `pace`. The response stops counting as `answering`
+/// as its last frame goes, before the client can see it end and ask again (#247).
 async fn send_body(
     stream: &mut SendStream<Bytes>,
     body: &[u8],
     rate: Option<u64>,
     counters: &Mutex<Counters>,
     pace: &Pace,
+    answering: Answering<'_>,
 ) -> Result<(), Stopped> {
+    let mut answering = Some(answering);
     const CHUNK: usize = 16 * 1024;
     let started = Instant::now();
     let mut sent = 0u64;
@@ -268,6 +291,9 @@ async fn send_body(
             let last = rest.is_empty() && i + 1 == count;
             // Counted before the send, as the HTTP/1.1 server does (#38).
             counters.lock().unwrap().body_bytes_sent += part.len() as u64;
+            if last {
+                drop(answering.take());
+            }
             if let Err(e) = stream.send_data(part, last) {
                 return Err(if e.is_reset() {
                     Stopped::Reset

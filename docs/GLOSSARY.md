@@ -4,7 +4,7 @@ Terms used across V2's documents, issues and code, in alphabetical order. Where 
 
 | Term | Meaning |
 |---|---|
-| **Adaptive connections (ramp)** | Starting a download with every connection it may use, then dropping one at a time while the speed holds, and bringing back the last one whose loss made it slower. The asked-for count is the most it may use, not a must ([ENGINE_INTERNALS.md](ENGINE_INTERNALS.md#adaptive-connections); #47, #221) |
+| **Adaptive connections (ramp)** | Opening every connection a download may use, a step at a time (1, 2, 4, 8; #247), then dropping one at a time while the speed holds, and bringing back the last one whose loss made it slower. The asked-for count is the most it may use, not a must ([ENGINE_INTERNALS.md](ENGINE_INTERNALS.md#adaptive-connections); #47, #221) |
 | **ADR** | Architecture decision record: one numbered, accepted decision with its context and consequences. See [decisions/](decisions/README.md) |
 | **Anomaly** | An answer that contradicts its request: a wrong or malformed `Content-Range`, a length that disagrees with it, a multipart body, or a body that stops short of or runs past its range. The first is retried; a second on the same download ends ranges for it ([ENGINE_INTERNALS.md](ENGINE_INTERNALS.md); report §5.1; #41) |
 | **Automatic category** | The category a download gets from its file name's extension: the first category that lists it. Also when the server names the file after the download started ([FILE_NAMING.md](FILE_NAMING.md); #31) |

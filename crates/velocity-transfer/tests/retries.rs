@@ -7,7 +7,9 @@ use std::time::{Duration, Instant};
 
 use velocity_core::domain::{DownloadStatus, FailureClass};
 use velocity_curl::{CurlLoop, Libcurl, LoopOptions};
-use velocity_test_http::{seeded_bytes, FirstStatuses, Freeze, ServerOptions, TestServer};
+use velocity_test_http::{
+    seeded_bytes, AnsweringLimit, FirstStatuses, Freeze, ServerOptions, TestServer,
+};
 use velocity_transfer::download::{
     download_with, Cadence, Control, DiskOptions, DownloadError, DownloadOptions, DownloadReport,
     Mode,
@@ -124,6 +126,44 @@ fn a_429_with_retry_after_5_gets_no_request_before_5_s() {
         "{:?}",
         seen.lock().unwrap()
     );
+}
+
+#[test]
+fn a_server_that_rate_limits_extra_requests_gets_no_new_ones_until_its_wait_is_over() {
+    // proof.ovh.net answers 429 to range requests beyond the ones it is serving (#247). The
+    // download keeps the request that works and finishes, instead of asking again and again.
+    let (s, data) = serve(ServerOptions {
+        limit_answering: Some(AnsweringLimit {
+            max: 1,
+            status: 429,
+            retry_after: Some("1".into()),
+        }),
+        throttle_bytes_per_sec: Some(400_000),
+        ..ServerOptions::default()
+    });
+    let dir = Dir::new("rate-limited");
+    let dest = dir.file("out.bin");
+    run(&s.url("f.bin"), &dest, OPTIONS, &Control::default())
+        .expect("the download finishes on the request the server allows");
+    assert!(std::fs::read(&dest).unwrap() == data);
+    let limited = s.counters().limited;
+    // The requests already sent when the first 429 came are refused too; after that, nothing more
+    // goes to the server than it serves until the second it asked for has passed.
+    // None at all, or one at the opening step (PO decision on #247).
+    let Some(&first) = limited.first() else {
+        return;
+    };
+    let later: Vec<_> = limited
+        .iter()
+        .map(|t| *t - first)
+        .filter(|d| *d > Duration::from_millis(300))
+        .collect();
+    assert!(
+        later.iter().all(|d| *d >= Duration::from_secs(1)),
+        "429s at {:?} after the first",
+        limited.iter().map(|t| *t - first).collect::<Vec<_>>()
+    );
+    assert!(limited.len() <= 1, "{} requests refused", limited.len());
 }
 
 #[test]

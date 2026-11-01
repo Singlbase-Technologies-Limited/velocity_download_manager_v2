@@ -11,7 +11,7 @@ use velocity_core::domain::{DownloadStatus, FailureClass};
 use velocity_core::transfer::{
     DirectTransfer, Limits, TransferEvent, TransferId, TransferSnapshot, TransferSpec,
 };
-use velocity_test_http::{seeded_bytes, Freeze, ServerOptions, TestServer};
+use velocity_test_http::{seeded_bytes, AnsweringLimit, Freeze, ServerOptions, TestServer};
 use velocity_transfer::engine::InProcessEngine;
 use velocity_transfer::retry::RetryPolicy;
 
@@ -119,6 +119,54 @@ fn serve(options: ServerOptions) -> (TestServer, Vec<u8>) {
         TestServer::start(vec![("f.bin".into(), data.clone())], options),
         data,
     )
+}
+
+#[test]
+fn a_server_that_refused_extra_requests_gets_no_more_from_later_downloads() {
+    // proof.ovh.net blocks a client after a few refused requests (#247): once a server has
+    // answered 429, the engine remembers how many requests it serves, and the next download from
+    // it starts there instead of finding out again (PO decision on #247).
+    let data = seeded_bytes(10_000_000, 247);
+    let s = TestServer::start(
+        vec![("f.bin".into(), data.clone())],
+        ServerOptions {
+            limit_answering: Some(AnsweringLimit {
+                max: 1,
+                status: 429,
+                retry_after: Some("1".into()),
+            }),
+            throttle_bytes_per_sec: Some(4_000_000),
+            ..ServerOptions::default()
+        },
+    );
+    let dir = Dir::new("remembered");
+    let mut engine = engine(FAST);
+    let events = engine.subscribe();
+    let first = dir.0.join("first.bin");
+    let id = engine.add(spec(s.url("f.bin"), first.clone(), 8)).unwrap();
+    assert_eq!(
+        snapshots_until(&events, id, finished).pop().unwrap().status,
+        DownloadStatus::Completed
+    );
+    assert!(std::fs::read(&first).unwrap() == data);
+    let refused = s.counters().limited.len();
+    assert!(
+        refused <= 1,
+        "the first download was refused {refused} times"
+    );
+
+    let second = dir.0.join("second.bin");
+    let id = engine.add(spec(s.url("f.bin"), second.clone(), 8)).unwrap();
+    assert_eq!(
+        snapshots_until(&events, id, finished).pop().unwrap().status,
+        DownloadStatus::Completed
+    );
+    assert!(std::fs::read(&second).unwrap() == data);
+    assert_eq!(
+        s.counters().limited.len(),
+        refused,
+        "the second download was refused"
+    );
 }
 
 #[test]

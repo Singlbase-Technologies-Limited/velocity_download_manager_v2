@@ -78,7 +78,7 @@ The torrent helper's own settings are the `torrent` section, `TorrentSettings` (
 
 ## Performance
 
-**Performance profiles are limits for the adaptive engine** ([ADR-0005](decisions/0005-v1-features-without-aria2.md), #57), not V1's aria2 option sets. Within a profile's limits, a download starts with every connection it may use, and the engine drops those that don't make it faster ([ENGINE_INTERNALS.md](ENGINE_INTERNALS.md#adaptive-connections), #47, #221). A server that gains nothing from more connections gets fewer.
+**Performance profiles are limits for the adaptive engine** ([ADR-0005](decisions/0005-v1-features-without-aria2.md), #57), not V1's aria2 option sets. Within a profile's limits, a download opens every connection it may use, a step at a time, and the engine drops those that don't make it faster ([ENGINE_INTERNALS.md](ENGINE_INTERNALS.md#adaptive-connections), #47, #221). A server that gains nothing from more connections gets fewer.
 
 | Profile | Connections, per download and per server | Smallest piece | Notes |
 |---|---|---|---|
